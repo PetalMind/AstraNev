@@ -153,19 +153,17 @@ private actor LodzTransitRepository {
                     let provider = ValhallaRouteProvider(endpoint: endpoint)
                     for index in journey.legs.indices where journey.legs[index].isTransfer {
                         let leg = journey.legs[index]
+                        let transferDeparture = index > 0 && journey.legs[index - 1].isTransfer
+                            ? journey.legs[index - 1].arrival : leg.departure
                         guard let from = leg.coordinates.first, let to = leg.coordinates.last,
-                              let previousRide = journey.legs[..<index].last(where: { $0.mode != "WALK" }),
                               let walkingRoute = try? await provider.calculateRoutes(from: from, to: to,
                                                                                      mode: .walking).first else {
                             return nil
                         }
                         let nextRide = journey.legs.suffix(from: index + 1).first(where: { $0.mode != "WALK" })
-                        if let nextRide {
-                            let available = nextRide.departure.timeIntervalSince(previousRide.arrival)
-                            guard walkingRoute.expectedTravelTime + leg.minimumTransferTime <= available else { return nil }
-                        }
                         journey.legs[index].coordinates = walkingRoute.coordinates
-                        journey.legs[index].arrival = previousRide.arrival
+                        journey.legs[index].departure = transferDeparture
+                        journey.legs[index].arrival = transferDeparture
                             .addingTimeInterval(walkingRoute.expectedTravelTime + leg.minimumTransferTime)
                         if nextRide == nil,
                            journey.legs.indices.contains(index + 1),
@@ -182,6 +180,20 @@ private actor LodzTransitRepository {
                         changed = true
                     }
                     guard changed else { return resolved }
+                    for nextRideIndex in journey.legs.indices where journey.legs[nextRideIndex].mode != "WALK" {
+                        let previousRideIndex = journey.legs[..<nextRideIndex].lastIndex(where: { $0.mode != "WALK" })
+                        let transferStartIndex = (previousRideIndex.map { $0 + 1 } ?? 0)..<nextRideIndex
+                        let transfers = transferStartIndex.map { journey.legs[$0] }.filter(\.isTransfer)
+                        guard !transfers.isEmpty else { continue }
+                        let startTime = previousRideIndex.map { journey.legs[$0].arrival }
+                            ?? transfers[0].departure
+                        let required = transfers.reduce(0.0) {
+                            $0 + $1.arrival.timeIntervalSince($1.departure)
+                        }
+                        guard required <= journey.legs[nextRideIndex].departure.timeIntervalSince(startTime) else {
+                            return nil
+                        }
+                    }
                     resolved.journey = journey
                     resolved.expectedTravelTime = journey.arrival.timeIntervalSince(journey.departure)
                     resolved.coordinates = journey.legs.flatMap { leg in
