@@ -47,7 +47,7 @@ Te ustawienia aplikacja przekazuje wyłącznie dla samochodu. Faktyczny wariant 
 
 Można dodać do ośmiu przystanków. Zwykłe wyznaczanie trasy zachowuje ich bieżącą kolejność. Dla samochodu, marszu i roweru dostępna jest osobna optymalizacja kolejności przez endpoint Valhalli `/optimized_route`. Aplikacja sprawdza długość zwróconej listy i zakres indeksów, po czym zmienia kolejność punktów i ponownie liczy trasę.
 
-## Kolej i komunikacja miejska
+## Komunikacja: kolej i MPK Łódź
 
 `LodzTransitRouteProvider` łączy miejski rozkład MPK i jego feedy GTFS-Realtime z krajowym rozkładem pociągów PKP PLK/ŁKA i feedem aktualizacji czasu przejazdu. Te publiczne źródła pobierane są bez klucza API. Identyfikatory krajowego feedu dostają prefiks `rail/`, aby nie kolidowały z identyfikatorami MPK. Baza GTFS jest przechowywana w cache; jej ponowne załadowanie z cache jest oznaczane w wyniku. Obowiązywanie kursów jest liczone według kalendarza `Europe/Warsaw`, z uwzględnieniem wyjątków kalendarza GTFS. Dane realtime mają stan `live` do 90 sekund, `degraded` do 180 sekund, `stale` powyżej 180 sekund albo `unavailable`, gdy feed nie ma poprawnego znacznika czasu. Nieświeże aktualizacje nie zmieniają czasów kursów.
 
@@ -108,8 +108,9 @@ Podczas nawigacji `MapMatcher` ocenia kandydackie odcinki geometrii według odle
 
 - Dla tras samochodowych, pieszych i rowerowych ponowne wyznaczanie rozpoczyna się, gdy confidence spadnie poniżej `0,25` przez co najmniej dwie sekundy, przy dokładności GPS nie gorszej niż 45 m i odległości od trasy większej niż `max(40 m, 1,5 × dokładność GPS)`. Między automatycznymi próbami musi minąć co najmniej 20 sekund. Słaby pomiar nie wywołuje pochopnego reroutingu.
 - Przy przeliczeniu pozostają nieodwiedzone przystanki pośrednie i ładowania. Są wybierane, jeśli leżą ponad 50 m przed aktualnym postępem na poprzedniej geometrii, a następnie sortowane wzdłuż tej geometrii.
-- Dane TomTom o przepływie i zdarzeniach aktualizują pozostały czas. Jeśli Valhalla zwróciła kilka wariantów, NaviAstra porównuje ich czasy z bieżącymi danymi przepływu, opóźnieniami i kategoriami zdarzeń; przy oszczędności co najmniej dwóch minut lub 15% może przełączyć na szybszy wariant.
-- Kategorię `roadClosed` TomTom aplikacja mapuje z pola strukturalnego `iconCategory`. Zamknięcie położone 100 m–10 km przed użytkownikiem może uruchomić dodatkowe zapytanie do Valhalli z punktem do ominięcia.
+- Kafelki przepływu i zdarzeń TomTom Orbis rysują ruch w bieżącym widoku mapy. Podczas prowadzenia raster ustępuje miejsca trasie, a własne znaczniki pokazują dopasowane zdarzenia do 12 km przed kierowcą. Osobny pomiar Flow Segment Data opisuje drogę najbliższą GPS, a zdarzenia w promieniu około 3,5 km zasilają pobliskie znaczniki.
+- `RouteTrafficMonitor` wybiera pozostały odcinek o horyzoncie do 25 minut, z limitem zależnym od średniej prędkości (18 km dla ruchu miejskiego, 35 km dla dróg krajowych i 100 km dla szybkich tras). Orbis pobiera zdarzenia z nakładających się zapytań wzdłuż korytarza trasy; geometria zdarzenia musi pasować do drogi w odległości do 140 m. Wyniki odświeżają ETA i wybór wariantu, a zamknięcia przed kierowcą uruchamiają trasę omijającą.
+- Odświeżanie danych pobliskich odbywa się co 120 s poza nawigacją i co 60 s podczas jazdy. Dla zdarzeń do 10 km skraca się do 30 s, a dla zamknięcia do 3 km do 20 s. Po przeliczeniu trasy pobieranie korytarza rusza ponownie od razu.
 - Aplikacja nie zapisuje feedu TomTom do kafli live traffic Valhalli. Wybór ruchowy działa na wariantach zwróconych przez skonfigurowany serwer; pełna optymalizacja drogi wymaga serwera Valhalla z aktualnymi kaflami ruchu.
 - Automatyczny mechanizm „poza trasą” nie działa dla P+R. Połączenia MPK korzystają z osobnego śledzenia etapu podróży i danych realtime.
 

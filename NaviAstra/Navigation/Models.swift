@@ -198,10 +198,10 @@ enum TransportMode: String, CaseIterable, Identifiable {
     var id: Self { self }
     var title: String {
         switch self {
-        case .car: "Samochód"
+        case .car: "Auto"
         case .walking: "Pieszo"
         case .bicycle: "Rower"
-        case .transit: "Pociągi i komunikacja"
+        case .transit: "Komunikacja"
         case .parkRide: "P+R"
         }
     }

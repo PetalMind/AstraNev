@@ -6,6 +6,7 @@ struct PlaceDetailsView: View {
     let onPlanRoute: () -> Void
     let isNavigating: Bool
     let primaryActionTitle: String
+    let supplementalDetails: [String]
 
     @State private var details: PlaceDetails?
     @State private var isSaved: Bool
@@ -19,12 +20,14 @@ struct PlaceDetailsView: View {
 
     init(result: SearchResult, isSaved: Bool, onSave: @escaping () -> Bool,
          isNavigating: Bool = false, primaryActionTitle: String = "Wyznacz trasę",
+         supplementalDetails: [String] = [],
          onPlanRoute: @escaping () -> Void) {
         self.result = result
         self.onSave = onSave
         self.onPlanRoute = onPlanRoute
         self.isNavigating = isNavigating
         self.primaryActionTitle = primaryActionTitle
+        self.supplementalDetails = supplementalDetails
         _details = State(initialValue: PlaceDetails.partial(for: result))
         _isSaved = State(initialValue: isSaved)
     }
@@ -72,6 +75,10 @@ struct PlaceDetailsView: View {
             }
 
             Divider()
+            ForEach(supplementalDetails, id: \.self) { detail in
+                Label(detail, systemImage: "info.circle")
+                    .font(.subheadline)
+            }
             if let details { detailsContent(details) }
 
             if isLoading {
@@ -413,8 +420,15 @@ struct PlaceSearchResultRow: View {
     let onSelect: () -> Void
     var isNavigating = false
     var primaryActionTitle = "Wyznacz trasę"
+    var supplementalDetails: [String] = []
 
     @State private var isExpanded = false
+    var showsSourceSubtitle = true
+    var primaryMetaLine: String? = nil
+
+    private var allSupplementalDetails: [String] {
+        (primaryMetaLine.map { [$0] } ?? []) + supplementalDetails
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -431,11 +445,28 @@ struct PlaceSearchResultRow: View {
                         Text(result.destination.name)
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(.primary)
-                        Text(result.subtitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        if showsSourceSubtitle {
+                            Text(result.subtitle)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        if let primaryMetaLine {
+                            Text(primaryMetaLine)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                         if let summary = result.travelSummary {
-                            Text(summary).font(.caption).foregroundStyle(.secondary)
+                            Text(summary)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        ForEach(supplementalDetails, id: \.self) { detail in
+                            Text(detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
                     }
                     Spacer(minLength: 0)
@@ -451,7 +482,8 @@ struct PlaceSearchResultRow: View {
 
             if isExpanded {
                 PlaceDetailsView(result: result, isSaved: isSaved, onSave: onSave,
-                                 isNavigating: isNavigating, primaryActionTitle: primaryActionTitle, onPlanRoute: onSelect)
+                                 isNavigating: isNavigating, primaryActionTitle: primaryActionTitle,
+                                 supplementalDetails: allSupplementalDetails, onPlanRoute: onSelect)
                     .id(result.placeIdentity.cacheKey)
                     .padding(.bottom, 8)
                     .transition(.opacity.combined(with: .move(edge: .top)))

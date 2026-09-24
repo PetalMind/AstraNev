@@ -110,6 +110,53 @@ struct NaviAstraTests {
         #expect(progress == nil)
     }
 
+    @Test @MainActor func routeTrafficLookAheadUsesTravelTimeAndRoadSpeed() {
+        let cityRoute = route(from: Coordinate(latitude: 0, longitude: 0),
+                              to: Coordinate(latitude: 0, longitude: 0.8),
+                              expectedTravelTime: 10_800)
+        let highwayRoute = route(from: Coordinate(latitude: 0, longitude: 0),
+                                 to: Coordinate(latitude: 0, longitude: 0.8),
+                                 expectedTravelTime: 3_200)
+
+        let cityDistance = RouteTrafficMonitor.lookAheadDistance(for: cityRoute, progress: nil)
+        let highwayDistance = RouteTrafficMonitor.lookAheadDistance(for: highwayRoute, progress: nil)
+
+        #expect(abs(cityDistance - cityRoute.distance * 1_500 / 10_800) < 1)
+        #expect(abs(highwayDistance - highwayRoute.distance * 1_500 / 3_200) < 1)
+        #expect(highwayDistance > cityDistance)
+    }
+
+    @Test @MainActor func routeTrafficCorridorSplitsQueriesAndFiltersIncidentsByRoutePosition() {
+        let route = route(from: Coordinate(latitude: 0, longitude: 0),
+                          to: Coordinate(latitude: 0, longitude: 0.5),
+                          expectedTravelTime: 2_000)
+        let boxes = RouteTrafficMonitor.queryBoxes(for: route, from: 2_000, through: 42_000)
+        let matchedIncident = TrafficIncident(
+            id: "road-closure",
+            description: "Droga zamknięta",
+            coordinate: Coordinate(latitude: 0.01, longitude: 0.2),
+            delaySeconds: nil,
+            category: .roadClosed,
+            severity: .indefinite,
+            geometry: [Coordinate(latitude: 0.01, longitude: 0.2),
+                       Coordinate(latitude: 0.0003, longitude: 0.2)])
+        let outsideCorridor = TrafficIncident(
+            id: "nearby-road",
+            description: "Korek",
+            coordinate: Coordinate(latitude: 0.002, longitude: 0.3),
+            delaySeconds: 120,
+            category: .jam,
+            severity: .moderate)
+
+        let matched = RouteTrafficMonitor.matching([matchedIncident, outsideCorridor], to: route,
+                                                   from: 2_000, through: 42_000)
+
+        #expect(boxes.count >= 5)
+        #expect(matched.map(\.id) == ["road-closure"])
+        #expect((matched.first?.distanceAlongRoute ?? 0) > 20_000)
+        #expect((matched.first?.distanceAlongRoute ?? .infinity) < 25_000)
+    }
+
     @MainActor private func sampleTransitRoute() -> NavigationRoute {
         let now = Date()
         let coordinates = (0...10).map { index in
@@ -131,5 +178,14 @@ struct NaviAstraTests {
             .reduce(0.0) { $0 + $1.0.distance(to: $1.1) }
         return NavigationRoute(coordinates: coordinates, distance: distance,
                                expectedTravelTime: 600, maneuvers: [], journey: journey)
+    }
+
+    @MainActor private func route(from origin: Coordinate, to destination: Coordinate,
+                                  expectedTravelTime: TimeInterval) -> NavigationRoute {
+        let coordinates = [origin, destination]
+        return NavigationRoute(coordinates: coordinates,
+                               distance: origin.distance(to: destination),
+                               expectedTravelTime: expectedTravelTime,
+                               maneuvers: [])
     }
 }

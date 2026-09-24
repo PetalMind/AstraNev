@@ -32,13 +32,8 @@ struct TransitDetailsSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    switch selection {
-                    case .stop(let stop): stopContents(stop)
-                    case .vehicle(let vehicle): tripContents(vehicle: vehicle)
-                    case .departure: tripContents(vehicle: nil)
-                    case .line(let line): lineContents(line)
-                    }
+                LazyVStack(alignment: .leading, spacing: contentSpacing) {
+                    selectionContents
                     if let railwayAttribution {
                         Text(railwayAttribution)
                             .font(.caption2).foregroundStyle(.secondary)
@@ -64,6 +59,45 @@ struct TransitDetailsSheet: View {
                     guard !Task.isCancelled else { break }
                     await refreshDetails()
                 }
+            }
+        }
+    }
+
+    private var contentSpacing: CGFloat {
+        if case .line = selection { return 14 }
+        return 18
+    }
+
+    @ViewBuilder
+    private var selectionContents: some View {
+        switch selection {
+        case .stop(let stop):
+            stopContents(stop)
+        case .vehicle(let vehicle):
+            tripContents(vehicle: vehicle)
+        case .departure:
+            tripContents(vehicle: nil)
+        case .line(let line):
+            HStack(spacing: 12) {
+                TransitLineBadge(title: line.name, color: line.colorHex)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(modeLabel(line.mode))
+                        .font(.headline)
+                    if !line.directions.isEmpty {
+                        Text(line.directions).font(.subheadline).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Text("Przystanki na trasie").font(.headline)
+            ForEach(line.stops.indices, id: \.self) { index in
+                let stop = line.stops[index]
+                HStack(spacing: 12) {
+                    Text("\(index + 1)").font(.caption.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(.secondary).frame(width: 24)
+                    Text(stop.name).font(.subheadline)
+                    Spacer()
+                }
+                .padding(.vertical, 4)
             }
         }
     }
@@ -207,31 +241,6 @@ struct TransitDetailsSheet: View {
             ProgressView("Pobieram przebieg kursu…").frame(maxWidth: .infinity).padding(.top, 30)
         } else {
             ContentUnavailableView("Brak szczegółów kursu", systemImage: "train.side.front.car", description: Text("Nie udało się pobrać kolejnych przystanków."))
-        }
-    }
-
-    private func lineContents(_ line: TransitLineDetails) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) {
-                TransitLineBadge(title: line.name, color: line.colorHex)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(modeLabel(line.mode))
-                        .font(.headline)
-                    if !line.directions.isEmpty {
-                        Text(line.directions).font(.subheadline).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            Text("Przystanki na trasie").font(.headline)
-            ForEach(Array(line.stops.enumerated()), id: \.element.id) { index, stop in
-                HStack(spacing: 12) {
-                    Text("\(index + 1)").font(.caption.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(.secondary).frame(width: 24)
-                    Text(stop.name).font(.subheadline)
-                    Spacer()
-                }
-                .padding(.vertical, 4)
-            }
         }
     }
 

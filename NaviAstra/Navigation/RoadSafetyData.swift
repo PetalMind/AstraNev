@@ -127,7 +127,7 @@ struct OSMRoadSpeedSegment: Codable, Equatable, Sendable {
     let tags: [String: String]
 }
 
-struct RoadDataSnapshot: Codable, Sendable {
+nonisolated struct RoadDataSnapshot: Codable, Sendable {
     let speedSegments: [OSMRoadSpeedSegment]
     let alerts: [RoadSafetyAlert]
     let fetchedAt: Date

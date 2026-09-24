@@ -6,9 +6,19 @@ import MapKit
 import SwiftUI
 
 private nonisolated enum MacRouteLineKind: Equatable {
-    case activeCasing, active, future, alternative, traveled, traffic, departed, accuracy
+    case activeCasing, active, activeHighlight, future, alternative, traveled, traffic, departed, accuracy
     case journeyCasing(walking: Bool, cycling: Bool)
     case journeyLeg(color: UInt32, walking: Bool, cycling: Bool)
+}
+
+private struct TransitStopRenderKey: Equatable {
+    let center: Coordinate
+    let zoom: Double
+    let selectedStopID: String?
+    let selectedRouteID: String?
+    let selectedTripStopIDs: Set<String>
+    let transitStopCount: Int
+    let showsOnlyRouteEndpoints: Bool
 }
 
 /// The iOS MapLibre binary has no macOS slice. This adapter renders the shared navigation state.
@@ -76,9 +86,15 @@ struct MapLibreView: NSViewRepresentable {
         private var accuracyHaloRadius: Double?
         private var destinationPin: MKPointAnnotation?
         private var positionPin: MKPointAnnotation?
+        private var lastPositionMarkerAngle: Int?
+        private var lastPositionMarkerIsNavigating: Bool?
+        private var lastDestinationMarkerIsArrived: Bool?
         private var transitVehiclePins: [String: MKPointAnnotation] = [:]
         private var transitStopPins: [String: MKPointAnnotation] = [:]
+        private var lastTransitStopRenderKey: TransitStopRenderKey?
         private var transitLineOverlay: MKPolyline?
+        private var trafficRasterOverlays: [String: MKTileOverlay] = [:]
+        private var trafficRasterTemplates: [String: String] = [:]
         private var shownTransitRouteID: String?
         private var shownTransitLineCoordinates: [Coordinate] = []
         private var closurePin: MKPointAnnotation?
@@ -86,6 +102,7 @@ struct MapLibreView: NSViewRepresentable {
         private var searchIDs: [UUID] = []
         private var incidentPins: [MKPointAnnotation] = []
         private var shownIncidentIDs: [String] = []
+        private var shownIncidents: [TrafficIncident] = []
         private var roadAlertPins: [MKPointAnnotation] = []
         private var shownRoadAlertIDs: [String] = []
         private var shownRoadAlerts: [RoadSafetyAlert] = []
@@ -112,7 +129,6 @@ struct MapLibreView: NSViewRepresentable {
         private var lastBaseMap: BaseMap?
         private var lastDimension: MapDimension?
         private var lastCameraMode: MapDimension?
-        private var lastTrafficVisibility: Bool?
         private var lastPOICategories: Set<MapPOICategory>?
         private var lastBuildingVisibility: Bool?
         private var routeTransitionTimer: Timer?
@@ -225,10 +241,19 @@ struct MapLibreView: NSViewRepresentable {
                 lastBaseMap = parent.settings.baseMap
                 lastDimension = parent.settings.cameraMode
             }
-            if lastTrafficVisibility != parent.settings.overlays.traffic {
-                map.showsTraffic = parent.settings.overlays.traffic
-                lastTrafficVisibility = parent.settings.overlays.traffic
-            }
+            let trafficTemplate = parent.colorScheme == .dark
+                ? parent.state.trafficDarkTileURLTemplate
+                : parent.state.trafficLightTileURLTemplate
+            let incidentTemplate = parent.colorScheme == .dark
+                ? parent.state.trafficDarkIncidentTileURLTemplate
+                : parent.state.trafficLightIncidentTileURLTemplate
+            let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
+            let showsNativeTraffic = parent.settings.overlays.traffic && !isNavigating &&
+                trafficTemplate == nil && incidentTemplate == nil
+            if map.showsTraffic != showsNativeTraffic { map.showsTraffic = showsNativeTraffic }
+            updateTrafficRasterOverlays(on: map, flowTemplate: trafficTemplate,
+                                        incidentTemplate: incidentTemplate,
+                                        visible: parent.settings.overlays.traffic && !isNavigating)
             if lastPOICategories != parent.settings.visiblePOICategories {
                 let categories = parent.settings.visiblePOICategories.flatMap { category -> [MKPointOfInterestCategory] in
                     switch category {
@@ -269,7 +294,13 @@ struct MapLibreView: NSViewRepresentable {
                 for route in parent.state.alternatives {
                     let previousKind: MacRouteLineKind = route.id == oldActiveID ? .active : .alternative
                     let from = animateSelection ? previousStyle(for: route.id, kind: previousKind, in: previousOverlays) : nil
-                    addOverlay(route.coordinates, kind: .alternative, routeID: route.id, transitionFrom: from, to: map)
+                    let dashPeriod = max(300, route.distance / 40)
+                    let dashes = RouteMapGeometry.dashedSegments(route.coordinates,
+                                                                 dashLength: max(180, dashPeriod * 0.6),
+                                                                 gapLength: max(120, dashPeriod * 0.4))
+                    for path in dashes {
+                        addOverlay(path, kind: .alternative, routeID: route.id, transitionFrom: from, to: map)
+                    }
                 }
                 if animateReroute, let previousActive {
                     let dark = parent.colorScheme == .dark
@@ -312,21 +343,33 @@ struct MapLibreView: NSViewRepresentable {
                 destinationPin?.coordinate = destination.coordinate.cl
             } else if let pin = destinationPin { map.removeAnnotation(pin); destinationPin = nil }
 
-            let incidents = !showsOnlyRouteEndpoints && parent.settings.overlays.traffic
-                ? (parent.state.traffic?.incidents ?? []) : []
+            let routeDistance = parent.state.progress?.traveledDistance ?? 0
+            let incidents = parent.settings.overlays.traffic
+                ? (parent.state.traffic?.incidents ?? []).filter { incident in
+                    guard isNavigating else { return true }
+                    guard let distance = incident.distanceAlongRoute else { return false }
+                    return distance > routeDistance && distance <= routeDistance + 12_000
+                }
+                : []
             let incidentIDs = incidents.map(\.id)
             if incidentIDs != shownIncidentIDs {
                 map.removeAnnotations(incidentPins)
                 incidentPins = incidents.map { incident in
                     let pin = MKPointAnnotation()
                     pin.coordinate = incident.coordinate.cl
-                    pin.title = incident.description
+                    pin.title = incident.mapTitle
+                    pin.subtitle = incident.mapSubtitle
                     return pin
                 }
                 map.addAnnotations(incidentPins)
                 shownIncidentIDs = incidentIDs
             }
-            let routeDistance = parent.state.progress?.traveledDistance ?? 0
+            shownIncidents = Array(incidents)
+            for (incident, pin) in zip(incidents, incidentPins) {
+                pin.coordinate = incident.coordinate.cl
+                pin.title = incident.mapTitle
+                pin.subtitle = incident.mapSubtitle
+            }
             let roadAlerts = (!showsOnlyRouteEndpoints ? parent.state.roadSafetyAlerts : [])
                 .filter { alert in
                     guard let distance = alert.distanceAlongRoute else { return false }
@@ -354,8 +397,9 @@ struct MapLibreView: NSViewRepresentable {
             scheduleTransitAnnotationUpdate(on: map)
             updateSelectedTransitLine(on: map)
 
-            if let location = (parent.state.weakGPS ? parent.state.cameraLocation : parent.state.location) {
-                let isFollowingRoute = parent.state.status == .navigating || parent.state.status == .rerouting
+            let puckLocation = parent.state.weakGPS ? parent.state.cameraLocation : parent.state.location
+            let isFollowingRoute = parent.state.status == .navigating || parent.state.status == .rerouting
+            if let location = puckLocation {
                 let coordinate: Coordinate
                 if isFollowingRoute, let route = parent.state.route {
                     coordinate = projection(for: location.coordinate, on: route)?.coordinate ?? location.coordinate
@@ -370,6 +414,25 @@ struct MapLibreView: NSViewRepresentable {
             }
 
             applyCameraIntent(to: map)
+
+            if let positionPin, let view = map.view(for: positionPin) {
+                view.centerOffset = isFollowingRoute ? CGPoint(x: 0, y: 16) : .zero
+                let relativeBearing = puckLocation.flatMap { location -> CLLocationDirection? in
+                    guard isFollowingRoute, location.course.isFinite, location.course >= 0 else { return nil }
+                    return location.course - map.camera.heading
+                }
+                let angle = relativeBearing.map { Int($0.rounded()) }
+                if lastPositionMarkerAngle != angle || lastPositionMarkerIsNavigating != isFollowingRoute {
+                    view.image = positionMarkerImage(navigating: isFollowingRoute, relativeBearing: relativeBearing)
+                    lastPositionMarkerAngle = angle
+                    lastPositionMarkerIsNavigating = isFollowingRoute
+                }
+            }
+            if lastDestinationMarkerIsArrived != (parent.state.status == .arrived),
+               let destinationPin, let view = map.view(for: destinationPin) {
+                view.image = destinationMarkerImage(arrived: parent.state.status == .arrived)
+                lastDestinationMarkerIsArrived = parent.state.status == .arrived
+            }
 
             if lastStatus != parent.state.status || lastColorScheme != parent.colorScheme {
                 for overlay in allStyledOverlays {
@@ -426,8 +489,17 @@ struct MapLibreView: NSViewRepresentable {
 
         private func updateTransitStopPins(on map: MKMapView) {
             let zoom = log2(360 / max(0.00001, map.region.span.longitudeDelta))
-            let visibleRadius = max(500, 12_000 / pow(2, max(0, zoom - 12)))
             let center = Coordinate(latitude: map.centerCoordinate.latitude, longitude: map.centerCoordinate.longitude)
+            let renderKey = TransitStopRenderKey(center: center, zoom: zoom,
+                                                  selectedStopID: parent.selectedTransitStopID,
+                                                  selectedRouteID: parent.selectedTransitRouteID,
+                                                  selectedTripStopIDs: parent.selectedTransitTripStopIDs,
+                                                  transitStopCount: parent.transitStops.count,
+                                                  showsOnlyRouteEndpoints: showsOnlyRouteEndpoints)
+            guard lastTransitStopRenderKey != renderKey else { return }
+            lastTransitStopRenderKey = renderKey
+
+            let visibleRadius = max(500, 12_000 / pow(2, max(0, zoom - 12)))
             let candidates = (showsOnlyRouteEndpoints ? [] : parent.transitStops).compactMap { stop -> (TransitStop, Double)? in
                 let isSelected = stop.id == parent.selectedTransitStopID
                 if !parent.selectedTransitTripStopIDs.isEmpty,
@@ -592,6 +664,29 @@ struct MapLibreView: NSViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            if let index = incidentPins.firstIndex(where: { $0 === annotation }),
+               shownIncidents.indices.contains(index) {
+                let incident = shownIncidents[index]
+                let marker = MKMarkerAnnotationView(annotation: annotation,
+                                                    reuseIdentifier: "traffic-incident-\(incident.category.rawValue)")
+                marker.glyphImage = NSImage(systemSymbolName: incident.isRoadClosure ? "xmark.octagon.fill" : "exclamationmark.triangle.fill",
+                                            accessibilityDescription: incident.mapTitle)
+                marker.markerTintColor = incident.isRoadClosure ? .systemRed : .systemOrange
+                marker.canShowCallout = true
+                marker.displayPriority = .defaultHigh
+                return marker
+            }
+
+            if let pin = closurePin, pin === annotation {
+                let marker = MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: "traffic-road-closure")
+                marker.glyphImage = NSImage(systemSymbolName: "xmark.octagon.fill",
+                                            accessibilityDescription: "Droga zamknięta")
+                marker.markerTintColor = .systemRed
+                marker.canShowCallout = true
+                marker.displayPriority = .defaultHigh
+                return marker
+            }
+
             if let index = searchPins.firstIndex(where: { $0 === annotation }) {
                 let marker = MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: nil)
                 marker.glyphText = String(index + 1)
@@ -639,25 +734,16 @@ struct MapLibreView: NSViewRepresentable {
                 let identifier = "user-position"
                 let view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) ?? MKAnnotationView(annotation: annotation, reuseIdentifier: identifier)
                 view.annotation = annotation
-                let size = NSSize(width: 28, height: 28)
-                view.image = NSImage(size: size, flipped: false) { rect in
-                    let circle = rect.insetBy(dx: 1.25, dy: 1.25)
-                    NSColor.systemBlue.setFill()
-                    NSBezierPath(ovalIn: circle).fill()
-                    NSColor.white.setStroke()
-                    let border = NSBezierPath(ovalIn: circle)
-                    border.lineWidth = 2.5
-                    border.stroke()
-                    NSColor.white.setFill()
-                    let arrow = NSBezierPath()
-                    arrow.move(to: NSPoint(x: 14, y: 22))
-                    arrow.line(to: NSPoint(x: 21, y: 7))
-                    arrow.line(to: NSPoint(x: 14, y: 10))
-                    arrow.line(to: NSPoint(x: 7, y: 7))
-                    arrow.close()
-                    arrow.fill()
-                    return true
+                let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
+                let location = parent.state.weakGPS ? parent.state.cameraLocation : parent.state.location
+                let relativeBearing = location.flatMap { location -> CLLocationDirection? in
+                    guard isNavigating, location.course.isFinite, location.course >= 0 else { return nil }
+                    return location.course - mapView.camera.heading
                 }
+                view.image = positionMarkerImage(navigating: isNavigating, relativeBearing: relativeBearing)
+                view.centerOffset = isNavigating ? CGPoint(x: 0, y: 16) : .zero
+                lastPositionMarkerAngle = relativeBearing.map { Int($0.rounded()) }
+                lastPositionMarkerIsNavigating = isNavigating
                 view.displayPriority = .required
                 return view
             }
@@ -665,10 +751,46 @@ struct MapLibreView: NSViewRepresentable {
             let identifier = "destination"
             let view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) ?? MKAnnotationView(annotation: annotation, reuseIdentifier: identifier)
             view.annotation = annotation
-            let symbol = NSImage(systemSymbolName: "mappin.circle.fill", accessibilityDescription: "Cel")
-            view.image = symbol?.withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [.systemRed]))
+            view.image = destinationMarkerImage(arrived: parent.state.status == .arrived)
+            lastDestinationMarkerIsArrived = parent.state.status == .arrived
             view.displayPriority = .required
             return view
+        }
+
+        private func positionMarkerImage(navigating: Bool, relativeBearing: CLLocationDirection?) -> NSImage {
+            NSImage(size: NSSize(width: 28, height: 28), flipped: false) { rect in
+                guard let context = NSGraphicsContext.current?.cgContext else { return false }
+                let circle = rect.insetBy(dx: 1.25, dy: 1.25)
+                context.setFillColor(NSColor.systemBlue.cgColor)
+                context.fillEllipse(in: circle)
+                context.setStrokeColor(NSColor.white.cgColor)
+                context.setLineWidth(2.5)
+                context.strokeEllipse(in: circle)
+                guard navigating, let relativeBearing else { return true }
+
+                context.saveGState()
+                context.translateBy(x: rect.midX, y: rect.midY)
+                context.rotate(by: CGFloat(relativeBearing * .pi / 180))
+                context.translateBy(x: -rect.midX, y: -rect.midY)
+                let arrow = CGMutablePath()
+                arrow.move(to: CGPoint(x: 14, y: 22))
+                arrow.addLine(to: CGPoint(x: 20, y: 8))
+                arrow.addLine(to: CGPoint(x: 14, y: 11))
+                arrow.addLine(to: CGPoint(x: 8, y: 8))
+                arrow.closeSubpath()
+                context.addPath(arrow)
+                context.setFillColor(NSColor.white.cgColor)
+                context.fillPath()
+                context.restoreGState()
+                return true
+            }
+        }
+
+        private func destinationMarkerImage(arrived: Bool) -> NSImage? {
+            let symbol = NSImage(systemSymbolName: arrived ? "checkmark.circle.fill" : "mappin.circle.fill",
+                                 accessibilityDescription: arrived ? "Dotarłeś do celu" : "Cel")
+            return symbol?.withSymbolConfiguration(NSImage.SymbolConfiguration(
+                paletteColors: [arrived ? .systemGreen : .systemRed]))
         }
 
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
@@ -686,6 +808,9 @@ struct MapLibreView: NSViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            if let tileOverlay = overlay as? MKTileOverlay {
+                return MKTileOverlayRenderer(tileOverlay: tileOverlay)
+            }
             if let transitLineOverlay, overlay === transitLineOverlay {
                 let renderer = MKPolylineRenderer(polyline: transitLineOverlay)
                 let color = parent.transitLineColor ?? 0x248BFF
@@ -701,12 +826,39 @@ struct MapLibreView: NSViewRepresentable {
             let renderer = MKPolylineRenderer(polyline: line)
             if let styled = styledOverlay(for: line) {
                 apply(presentedStyle(for: styled), to: renderer)
-                if styled.kind == .active || styled.kind == .activeCasing {
+                if styled.kind == .active || styled.kind == .activeCasing || styled.kind == .activeHighlight {
                     renderer.strokeEnd = parent.state.status == .routePreview
                         ? CGFloat(parent.state.routeRevealProgress) : 1
                 }
             }
             return renderer
+        }
+
+        private func updateTrafficRasterOverlays(on map: MKMapView, flowTemplate: String?,
+                                                 incidentTemplate: String?, visible: Bool) {
+            let requested: [(identifier: String, template: String?)] = visible
+                ? [("flow", flowTemplate), ("incidents", incidentTemplate)]
+                : []
+            let requestedIDs = Set(requested.compactMap { $0.template == nil ? nil : $0.identifier })
+            for identifier in Array(trafficRasterOverlays.keys) where !requestedIDs.contains(identifier) {
+                if let overlay = trafficRasterOverlays.removeValue(forKey: identifier) {
+                    map.removeOverlay(overlay)
+                }
+                trafficRasterTemplates[identifier] = nil
+            }
+            for item in requested {
+                guard let template = item.template,
+                      trafficRasterTemplates[item.identifier] != template else { continue }
+                if let oldOverlay = trafficRasterOverlays.removeValue(forKey: item.identifier) {
+                    map.removeOverlay(oldOverlay)
+                }
+                let overlay = MKTileOverlay(urlTemplate: template)
+                overlay.canReplaceMapContent = false
+                overlay.tileSize = CGSize(width: 256, height: 256)
+                trafficRasterOverlays[item.identifier] = overlay
+                trafficRasterTemplates[item.identifier] = template
+                map.addOverlay(overlay, level: .aboveRoads)
+            }
         }
 
         private func addOverlay(_ coordinates: [Coordinate], kind: MacRouteLineKind, routeID: UUID? = nil,
@@ -748,6 +900,7 @@ struct MapLibreView: NSViewRepresentable {
                        transitionFrom: animateSelection || animateReroute ? invisibleCasing : nil, to: map)
             addOverlay(legs.active, kind: .active, routeID: route.id,
                        transitionFrom: transitionStyle, to: map)
+            addOverlay(legs.active, kind: .activeHighlight, routeID: route.id, to: map)
         }
 
         private func activeRouteLegs(for route: NavigationRoute) -> RouteLegGeometry {
@@ -759,7 +912,7 @@ struct MapLibreView: NSViewRepresentable {
         private func updateRouteReveal(on map: MKMapView) {
             let progress = parent.state.status == .routePreview
                 ? CGFloat(parent.state.routeRevealProgress) : 1
-            for overlay in routeOverlays where overlay.kind == .active || overlay.kind == .activeCasing {
+            for overlay in routeOverlays where overlay.kind == .active || overlay.kind == .activeCasing || overlay.kind == .activeHighlight {
                 guard let renderer = map.renderer(for: overlay.polyline) as? MKPolylineRenderer else { continue }
                 renderer.strokeEnd = progress
                 renderer.setNeedsDisplay()
@@ -937,6 +1090,7 @@ struct MapLibreView: NSViewRepresentable {
             if closurePin == nil {
                 let pin = MKPointAnnotation()
                 pin.title = "Droga zamknięta"
+                pin.subtitle = "TomTom zgłasza zamknięty odcinek drogi."
                 closurePin = pin
                 map.addAnnotation(pin)
             }
@@ -981,6 +1135,10 @@ struct MapLibreView: NSViewRepresentable {
                 return LineStyle(hex: activeRouteColor(dark: dark),
                                  opacity: parent.state.status == .rerouting ? 0.3 : 1,
                                  width: activeRouteWidth(navigating: navigating))
+            case .activeHighlight:
+                let opacity = parent.state.status == .rerouting ? 0.2 : (dark ? 0.76 : 0.66)
+                return LineStyle(hex: 0xFFFFFF, opacity: opacity,
+                                 width: max(1.5, activeRouteWidth(navigating: navigating) * 0.22))
             case .future:
                 return LineStyle(hex: dark ? RouteColorPalette.alternativeDark : RouteColorPalette.alternativeLight,
                                  opacity: 0.82, width: max(4, activeRouteWidth(navigating: navigating) - 4))
@@ -993,7 +1151,7 @@ struct MapLibreView: NSViewRepresentable {
                                  width: journeyLegWidth(walking: walking, cycling: cycling, navigating: navigating))
             case .alternative:
                 return LineStyle(hex: dark ? RouteColorPalette.alternativeDark : RouteColorPalette.alternativeLight,
-                                 opacity: navigating ? 0 : 0.44, width: 5)
+                                 opacity: navigating ? 0 : 0.52, width: 5)
             case .accuracy:
                 return LineStyle(hex: 0x26A69A, opacity: 0.14, width: 6)
             case .traveled:

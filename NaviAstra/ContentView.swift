@@ -107,7 +107,8 @@ struct ContentView: View {
     private var navigationMapSettings: MapSettings {
         var settings = mapSettings
         if engine.state.destination != nil && engine.state.status != .idle {
-            settings.overlays.poi = false
+            let shouldShowContextualPOI = isNavigating || engine.state.status == .arrived
+            if !shouldShowContextualPOI { settings.overlays.poi = false }
         }
         if isNavigating || engine.state.status == .arrived {
             if engine.state.status == .arrived || (engine.state.progress?.remainingDistance ?? .infinity) < 500 {
@@ -173,8 +174,14 @@ struct ContentView: View {
                          onTransitVehicleSelect: { openTransitVehicle($0) },
                          onMapReady: revealMapSplash,
                          onMapPan: {
-                             guard engine.state.destination == nil else { return }
-                             discoveryDrawerCollapseRequest += 1
+                             withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
+                                 routePreviewExpanded = false
+                                 destinationExpanded = false
+                                 navigationPanelExpanded = false
+                             }
+                             if engine.state.destination == nil {
+                                 discoveryDrawerCollapseRequest += 1
+                             }
                          }) { coordinate in
                 let destination = Destination(name: "Wybrany punkt", coordinate: coordinate)
                 selectDestination(destination, recordSearch: false)
@@ -461,52 +468,65 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
+    private var mapLayerMenuActions: some View {
+        Section("Mapa") {
+            ForEach(BaseMap.allCases.filter { mapCapabilities.supports($0) }) { baseMap in
+                Button {
+                    supportedBaseMap.wrappedValue = baseMap.rawValue
+                } label: {
+                    mapMenuLabel(baseMap.title, selected: supportedBaseMap.wrappedValue == baseMap.rawValue)
+                }
+            }
+
+            if mapCapabilities.supports3DCamera {
+                ForEach(MapDimension.allCases) { dimension in
+                    Button {
+                        mapDimension = dimension.rawValue
+                    } label: {
+                        mapMenuLabel(dimension.title, selected: mapDimension == dimension.rawValue)
+                    }
+                }
+            }
+        }
+
+        Section("Warstwy") {
+            if mapCapabilities.supportsTrafficOverlay {
+                Toggle("Ruch drogowy", isOn: $mapTrafficVisible)
+            }
+            if mapCapabilities.supportsPOIToggle {
+                Toggle("Punkty POI", isOn: $mapPOIVisible)
+            }
+            if mapCapabilities.supportsTransitOverlay {
+                Toggle("Wyróżnij kolej i tramwaje", isOn: $mapTransitVisible)
+            }
+            if mapCapabilities.supportsCyclingOverlay {
+                Toggle("Trasy rowerowe", isOn: $mapCyclingVisible)
+            }
+            if mapCapabilities.supports3DBuildings {
+                Toggle("Budynki 3D", isOn: $mapBuildingsVisible)
+            }
+        }
+    }
+
     private var mapLayersMenu: some View {
         Menu {
-            Section("Mapa") {
-                ForEach(BaseMap.allCases.filter { mapCapabilities.supports($0) }) { baseMap in
-                    Button {
-                        supportedBaseMap.wrappedValue = baseMap.rawValue
-                    } label: {
-                        mapMenuLabel(baseMap.title, selected: supportedBaseMap.wrappedValue == baseMap.rawValue)
-                    }
-                }
-
-                if mapCapabilities.supports3DCamera {
-                    ForEach(MapDimension.allCases) { dimension in
-                        Button {
-                            mapDimension = dimension.rawValue
-                        } label: {
-                            mapMenuLabel(dimension.title, selected: mapDimension == dimension.rawValue)
-                        }
-                    }
-                }
-            }
-
-            Section("Warstwy") {
-                if mapCapabilities.supportsTrafficOverlay {
-                    Toggle("Ruch drogowy", isOn: $mapTrafficVisible)
-                }
-                if mapCapabilities.supportsPOIToggle {
-                    Toggle("Punkty POI", isOn: $mapPOIVisible)
-                }
-                if mapCapabilities.supportsTransitOverlay {
-                    Toggle("Wyróżnij kolej i tramwaje", isOn: $mapTransitVisible)
-                }
-                if mapCapabilities.supportsCyclingOverlay {
-                    Toggle("Trasy rowerowe", isOn: $mapCyclingVisible)
-                }
-                if mapCapabilities.supports3DBuildings {
-                    Toggle("Budynki 3D", isOn: $mapBuildingsVisible)
-                }
-            }
-
+            mapLayerMenuActions
         } label: {
             circleSurface {
                 Image(systemName: "square.3.layers.3d")
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(.primary)
             }
+        }
+        .accessibilityLabel("Wygląd i warstwy mapy")
+    }
+
+    private var journeyMapLayersMenu: some View {
+        Menu {
+            mapLayerMenuActions
+        } label: {
+            journeyActionLabel("Wygląd i warstwy", symbol: "square.3.layers.3d")
         }
         .accessibilityLabel("Wygląd i warstwy mapy")
     }
@@ -609,6 +629,29 @@ struct ContentView: View {
                 laneGuidance
             }
 
+            if engine.state.transportMode == .car, let incident = nextRouteTrafficIncident {
+                HStack(spacing: 7) {
+                    Image(systemName: incident.isRoadClosure ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
+                        .foregroundStyle(incident.isRoadClosure ? Color.red : Color.orange)
+                    Text("\(incident.category.mapLabel) · za \(distance(max(0, (incident.distanceAlongRoute ?? 0) - (engine.state.progress?.traveledDistance ?? 0))))")
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    Spacer(minLength: 0)
+                    if let delay = incident.delaySeconds, delay > 0 {
+                        Text("+\(max(1, Int((Double(delay) / 60).rounded()))) min")
+                            .fontWeight(.semibold)
+                            .monospacedDigit()
+                    }
+                }
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+                .accessibilityElement(children: .combine)
+            }
+
             if engine.state.transportMode != .parkRide,
                let maneuver = engine.state.progress?.nextManeuver,
                let exitNumber = maneuver.exitNumber {
@@ -629,6 +672,17 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
         .modifier(NavigationGlassSurface(radius: 21))
         .accessibilityElement(children: .combine)
+    }
+
+    private var nextRouteTrafficIncident: TrafficIncident? {
+        guard engine.state.route != nil else { return nil }
+        let traveledDistance = engine.state.progress?.traveledDistance ?? 0
+        return (engine.state.traffic?.incidents ?? [])
+            .filter { incident in
+                guard let distance = incident.distanceAlongRoute else { return false }
+                return distance > traveledDistance && distance <= traveledDistance + 12_000
+            }
+            .min { ($0.distanceAlongRoute ?? .infinity) < ($1.distanceAlongRoute ?? .infinity) }
     }
 
     private var transitNavigationHeader: some View {
@@ -819,15 +873,21 @@ struct ContentView: View {
     }
 
     private var routeCalculatingCard: some View {
-        HStack(spacing: 12) {
-            ProgressView()
-            Text("Wyznaczanie trasy…")
-                .font(.headline)
-            Spacer()
-            Button("Anuluj", systemImage: "xmark") { engine.stop() }
-                .labelStyle(.iconOnly)
+        VStack(alignment: .leading, spacing: 12) {
+            if engine.state.destination != nil {
+                transportSelector
+            }
+            HStack(spacing: 12) {
+                ProgressView()
+                Text("Wyznaczanie trasy…")
+                    .font(.headline)
+                    .contentTransition(.opacity)
+                Spacer()
+                Button("Anuluj", systemImage: "xmark") { engine.stop() }
+                    .labelStyle(.iconOnly)
+            }
         }
-        .padding(18)
+        .padding(14)
         .modifier(NavigationGlassSurface(radius: 26))
     }
 
@@ -1169,35 +1229,54 @@ struct ContentView: View {
                 Button {
                     Task { await engine.selectTransportMode(mode) }
                 } label: {
-                    VStack(spacing: 3) {
-                        Image(systemName: mode.symbol)
-                            .font(.system(size: 16, weight: .medium))
-                        Text(compactTitle(for: mode))
-                            .font(.system(size: 10, weight: .medium))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
-                    }
-                    .foregroundStyle(engine.state.transportMode == mode ? Color.accentColor : Color.primary)
-                    .frame(maxWidth: .infinity)
-                    .frame(minHeight: 48)
-                    .background {
+                    Group {
                         if engine.state.transportMode == mode {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(Color.accentColor.opacity(0.14))
-                                .matchedGeometryEffect(id: "selected-transport", in: transportSelectionNamespace)
+                            HStack(spacing: 8) {
+                                Image(systemName: mode.symbol)
+                                    .font(.system(size: 16, weight: .semibold))
+                                Text(mode.title)
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.8)
+                            }
                         } else {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(Color.primary.opacity(0.045))
+                            VStack(spacing: 3) {
+                                Image(systemName: mode.symbol)
+                                    .font(.system(size: 15, weight: .medium))
+                                Text(compactTitle(for: mode))
+                                    .font(.system(size: 9, weight: .medium))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.75)
+                            }
                         }
                     }
-                    .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .foregroundStyle(engine.state.transportMode == mode ? Color.accentColor : Color.secondary)
+                    .frame(maxWidth: engine.state.transportMode == mode ? 132 : .infinity)
+                    .layoutPriority(engine.state.transportMode == mode ? 1 : 0)
+                    .frame(minHeight: 48)
+                    .padding(.horizontal, engine.state.transportMode == mode ? 5 : 0)
+                    .background {
+                        if engine.state.transportMode == mode {
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(Color.accentColor.opacity(0.16))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .strokeBorder(Color.accentColor.opacity(0.12), lineWidth: 1)
+                                }
+                                .matchedGeometryEffect(id: "selected-transport", in: transportSelectionNamespace)
+                        } else {
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(Color.primary.opacity(0.035))
+                        }
+                    }
+                    .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(mode.title)
                 .accessibilityAddTraits(engine.state.transportMode == mode ? .isSelected : [])
             }
         }
-        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: engine.state.transportMode)
+        .animation(.spring(response: 0.34, dampingFraction: 0.88), value: engine.state.transportMode)
     }
 
     private func compactTitle(for mode: TransportMode) -> String {
@@ -1205,7 +1284,7 @@ struct ContentView: View {
         case .car: "Auto"
         case .walking: "Pieszo"
         case .bicycle: "Rower"
-        case .transit: "Kolej"
+        case .transit: "Komunikacja"
         case .parkRide: "P+R"
         }
     }
@@ -1558,14 +1637,24 @@ struct ContentView: View {
             }
             Spacer()
             layout {
-                mapLayersMenu
+                if isNavigating {
+                    Button {
+                        engine.state.voiceEnabled.toggle()
+                    } label: {
+                        circleSurface {
+                            Image(systemName: engine.state.voiceEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                                .font(.system(size: 17, weight: .semibold))
+                                .foregroundStyle(engine.state.voiceEnabled ? Color.accentColor : Color.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(engine.state.voiceEnabled ? "Wyłącz komunikaty głosowe" : "Włącz komunikaty głosowe")
+                } else {
+                    mapLayersMenu
+                }
                 Button {
                     if isNavigating {
-                        if engine.state.cameraState == .freeLook || engine.state.cameraState == .routeOverview {
-                            engine.returnToFollow()
-                        } else {
-                            engine.showRouteOverview()
-                        }
+                        engine.returnToFollow()
                     } else if engine.state.cameraState == .routeOverview {
                         engine.returnToFollow()
                     } else if engine.state.route != nil {
@@ -1575,8 +1664,8 @@ struct ContentView: View {
                     }
                 } label: {
                     circleSurface {
-                        Image(systemName: isNavigating && engine.state.cameraState == .freeLook
-                              || engine.state.cameraState == .routeOverview ? "location.fill" : "scope")
+                        Image(systemName: isNavigating ? "location.north.fill"
+                              : engine.state.cameraState == .routeOverview ? "location.fill" : "scope")
                             .font(.system(size: 17, weight: .semibold))
                             .foregroundStyle(.primary)
                     }
@@ -1593,10 +1682,11 @@ struct ContentView: View {
                     }
                 }
                 .accessibilityLabel(isNavigating
-                    ? ((engine.state.cameraState == .freeLook || engine.state.cameraState == .routeOverview)
-                       ? "Wróć do prowadzenia" : "Przegląd trasy")
+                    ? "Wróć do prowadzenia"
                     : (engine.state.route == nil ? "Moja pozycja" : (engine.state.cameraState == .routeOverview ? "Wróć do mapy" : "Przegląd trasy")))
-                .accessibilityHint("Przełącza między przeglądem trasy i prowadzeniem")
+                .accessibilityHint(isNavigating
+                    ? "Ustawia kamerę na bieżącej pozycji i kierunku podróży"
+                    : "Przełącza między mapą i przeglądem trasy")
             }
         }
     }
@@ -1693,13 +1783,7 @@ struct ContentView: View {
                     } label: {
                         journeyActionLabel("Opcje trasy", symbol: "slider.horizontal.3")
                     }
-                    Button {
-                        engine.state.voiceEnabled.toggle()
-                    } label: {
-                        journeyActionLabel(engine.state.voiceEnabled ? "Głos włączony" : "Głos wyłączony",
-                                           symbol: engine.state.voiceEnabled ? "speaker.wave.2" : "speaker.slash")
-                    }
-                    .accessibilityLabel(engine.state.voiceEnabled ? "Wyłącz komunikaty głosowe" : "Włącz komunikaty głosowe")
+                    journeyMapLayersMenu
                     Button { showTrafficDetails = true } label: {
                         journeyActionLabel("Ruch na żywo", symbol: "car.side")
                     }
@@ -1710,6 +1794,8 @@ struct ContentView: View {
                 .buttonStyle(.plain)
                 if engine.state.transportMode == .transit {
                     transitJourneyTimeline
+                } else if engine.state.transportMode == .parkRide {
+                    parkRideJourneyTimeline
                 }
                 Divider()
                 Button(role: .destructive) { engine.stop() } label: {
@@ -1826,6 +1912,20 @@ struct ContentView: View {
         case .unavailable:
             return "Dane o opóźnieniach niedostępne · pokazano rozkład"
         }
+    }
+
+    private func transitFreshnessIndicator(for journey: Journey) -> some View {
+        let presentation = switch journey.realtimeFreshness {
+        case .live: ("dot.radiowaves.left.and.right", Color.green)
+        case .degraded: ("clock.badge.exclamationmark", Color.orange)
+        case .stale: ("clock", Color.secondary)
+        case .unavailable: ("minus.circle", Color.secondary)
+        }
+        return Label(transitRealtimeStatus(for: journey), systemImage: presentation.0)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(presentation.1)
+            .lineLimit(2)
+            .accessibilityElement(children: .combine)
     }
 
     private func refreshTransitJourneyDetails() async {
@@ -1996,6 +2096,8 @@ struct ContentView: View {
         Group {
             if let journey = engine.state.route?.journey {
                 VStack(spacing: 10) {
+                    transitFreshnessIndicator(for: journey)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     ForEach(Array(journey.legs.enumerated()), id: \.element.id) { index, leg in
                         HStack(alignment: .top, spacing: 11) {
                             Image(systemName: leg.mode == "WALK" ? "figure.walk"
@@ -2035,6 +2137,124 @@ struct ContentView: View {
                     }
                 }
             }
+        }
+    }
+
+    private var parkRideJourneyTimeline: some View {
+        Group {
+            if let journey = engine.state.route?.journey {
+                VStack(alignment: .leading, spacing: 11) {
+                    Text("Etapy podróży")
+                        .font(.subheadline.weight(.semibold))
+                    transitFreshnessIndicator(for: journey)
+                    HStack(alignment: .top, spacing: 8) {
+                        metric(value: time(journey.arrival.timeIntervalSince(journey.departure)), caption: "całość")
+                        if journey.walkingDuration > 0 {
+                            metric(value: time(journey.walkingDuration), caption: "pieszo")
+                        }
+                        if journey.waitingDuration > 0 {
+                            metric(value: time(journey.waitingDuration), caption: "oczekiwanie")
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(spacing: 0) {
+                        ForEach(Array(journey.legs.enumerated()), id: \.element.id) { index, leg in
+                            HStack(alignment: .top, spacing: 11) {
+                                Image(systemName: parkRideLegSymbol(leg.mode))
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(Color.accentColor)
+                                    .frame(width: 30, height: 30)
+                                    .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 9))
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(parkRideLegTitle(leg))
+                                        .font(.subheadline.weight(.semibold))
+                                    Text("\(leg.departure.formatted(date: .omitted, time: .shortened))–\(leg.arrival.formatted(date: .omitted, time: .shortened)) · \(time(max(0, leg.arrival.timeIntervalSince(leg.departure))))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Text(leg.from)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    if !leg.transitStops.isEmpty {
+                                        Text("\(max(1, leg.transitStops.count - 1)) przystanków")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    if let delay = displayedTransitDelay(for: leg), abs(delay) >= 30 {
+                                        Text(delayLabel(TimeInterval(delay)))
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(transitDelayColor(delay))
+                                    } else if hasLiveTransitUpdate(for: leg) {
+                                        Label("Na żywo", systemImage: "dot.radiowaves.left.and.right")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityElement(children: .combine)
+
+                            if leg.mode == "CAR" {
+                                HStack(spacing: 9) {
+                                    Image(systemName: "parkingsign.circle.fill")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(Color.accentColor)
+                                        .frame(width: 30, height: 25)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Parking P+R · \(leg.to)")
+                                            .font(.caption.weight(.semibold))
+                                        Text("Koniec odcinka autem · przesiadka na komunikację")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.leading, 1)
+                                .padding(.vertical, 7)
+                                .accessibilityElement(children: .combine)
+                            }
+
+                            if index < journey.legs.count - 1 {
+                                Rectangle()
+                                    .fill(Color.secondary.opacity(0.2))
+                                    .frame(width: 2, height: 10)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.leading, 14)
+                                    .padding(.vertical, 3)
+                            }
+                        }
+                    }
+                    ForEach(Array(journey.alerts.enumerated()), id: \.offset) { _, alert in
+                        Label(alert, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.accentColor.opacity(0.055), in: RoundedRectangle(cornerRadius: 16))
+            }
+        }
+    }
+
+    private func parkRideLegSymbol(_ mode: String) -> String {
+        switch mode {
+        case "CAR": "car.fill"
+        case "WALK": "figure.walk"
+        case "RAIL": "train.side.front.car"
+        case "TRAM": "tram.fill"
+        default: "bus.fill"
+        }
+    }
+
+    private func parkRideLegTitle(_ leg: JourneyLeg) -> String {
+        switch leg.mode {
+        case "CAR": "Samochodem do \(leg.to)"
+        case "WALK": "Pieszo · \(leg.to)"
+        case "RAIL": "\(leg.line ?? "Pociąg") · \(leg.to)"
+        case "TRAM": "\(leg.line.flatMap { $0.isEmpty ? nil : $0 } ?? "Tramwaj") · \(leg.to)"
+        default: "\(leg.line ?? "Autobus") · \(leg.to)"
         }
     }
 
@@ -3100,6 +3320,13 @@ private struct NearbyPlacesSheet: View {
     let onSelect: (Destination) -> Void
     @State private var category: NearbyPlaceCategory
     @State private var retryID = UUID()
+    @State private var expandedRadius = false
+    @State private var openNowOnly = false
+    @State private var open24HoursOnly = false
+    @State private var selectedFuelType: String?
+    @State private var selectedOperator: String?
+    @State private var minimumChargingPower: Double?
+    @State private var selectedConnector: String?
 
     init(engine: NavigationEngine, nearDestination: Bool, initialCategory: NearbyPlaceCategory,
          savedPlaces: [SavedPlace], onSave: @escaping (Destination) -> Bool,
@@ -3117,13 +3344,136 @@ private struct NearbyPlacesSheet: View {
         nearDestination ? [.parking, .parkRide] : [.fuel, .food, .parking, .charging, .parkRide]
     }
 
+    private var nearestSearch: Bool {
+        !nearDestination && engine.state.destination == nil
+    }
+
+    private var availableOperators: [String] {
+        Array(Set(engine.state.nearbySuggestions.compactMap { $0.candidate.operatorOrBrand })).sorted()
+    }
+
+    private var availableFuelTypes: [String] {
+        Array(Set(engine.state.nearbySuggestions.flatMap { $0.candidate.fuelTypes })).sorted()
+    }
+
+    private var availableConnectors: [String] {
+        Array(Set(engine.state.nearbySuggestions.flatMap { $0.candidate.chargingStation?.connectorTypes ?? [] })).sorted()
+    }
+
+    private var availablePowerThresholds: [Double] {
+        [50.0, 100.0, 150.0].filter { threshold in
+            engine.state.nearbySuggestions.contains { ($0.candidate.chargingStation?.maximumPowerKW ?? 0) >= threshold }
+        }
+    }
+
+    private var hasOpeningHoursData: Bool {
+        engine.state.nearbySuggestions.contains { $0.candidate.isOpenNow != nil }
+    }
+
+    private var has24HourData: Bool {
+        engine.state.nearbySuggestions.contains { $0.candidate.isOpen24Hours }
+    }
+
+    private var hasApplicableFilters: Bool {
+        category == .fuel
+            ? hasOpeningHoursData || has24HourData || !availableFuelTypes.isEmpty || !availableOperators.isEmpty
+            : category == .charging && (!availableConnectors.isEmpty || !availablePowerThresholds.isEmpty || !availableOperators.isEmpty)
+    }
+
+    private var activeFilterCount: Int {
+        (openNowOnly ? 1 : 0) + (open24HoursOnly ? 1 : 0) +
+            (selectedFuelType == nil ? 0 : 1) + (selectedOperator == nil ? 0 : 1) +
+            (minimumChargingPower == nil ? 0 : 1) + (selectedConnector == nil ? 0 : 1)
+    }
+
+    private var filteredSuggestions: [RouteStopSuggestion] {
+        engine.state.nearbySuggestions.filter { suggestion in
+            let candidate = suggestion.candidate
+            if openNowOnly && candidate.isOpenNow != true { return false }
+            if open24HoursOnly && !candidate.isOpen24Hours { return false }
+            if let selectedFuelType, !candidate.fuelTypes.contains(selectedFuelType) { return false }
+            if let selectedOperator, candidate.operatorOrBrand != selectedOperator { return false }
+            if let minimumChargingPower,
+               (candidate.chargingStation?.maximumPowerKW ?? 0) < minimumChargingPower { return false }
+            if let selectedConnector,
+               !(candidate.chargingStation?.connectorTypes.contains(selectedConnector) ?? false) { return false }
+            return true
+        }
+    }
+
+    private func clearFilters() {
+        openNowOnly = false
+        open24HoursOnly = false
+        selectedFuelType = nil
+        selectedOperator = nil
+        minimumChargingPower = nil
+        selectedConnector = nil
+    }
+
+    private func fuelTypeTitle(_ value: String) -> String {
+        switch value.lowercased() {
+        case "octane_95": "Benzyna 95"
+        case "octane_98": "Benzyna 98"
+        case "diesel": "Diesel"
+        case "lpg": "LPG"
+        case "cng": "CNG"
+        case "h2": "Wodór"
+        case "e10": "E10"
+        case "e85": "E85"
+        default: value.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    private func connectorTitle(_ value: String) -> String {
+        switch value.lowercased() {
+        case "ccs", "ccs2", "ccs_combo_2": "CCS"
+        case "type2", "type_2": "Type 2"
+        case "chademo": "CHAdeMO"
+        case "tesla_supercharger": "Tesla"
+        default: value.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    private func supplementalDetails(for candidate: NearbyPlaceCandidate) -> [String] {
+        var details: [String] = []
+        if let operatorName = candidate.operatorOrBrand { details.append(operatorName) }
+        if candidate.category == .fuel {
+            if !candidate.fuelTypes.isEmpty {
+                details.append(candidate.fuelTypes.map(fuelTypeTitle).joined(separator: " · "))
+            }
+            if candidate.isOpen24Hours {
+                details.append("Otwarte 24h")
+            } else if let rawHours = candidate.openingHours,
+                      let status = PlaceOpeningHours(rawValue: rawHours).statusText() {
+                details.append(status)
+            }
+        } else if candidate.category == .charging, let station = candidate.chargingStation {
+            var capabilities: [String] = []
+            if let power = station.maximumPowerKW {
+                capabilities.append("\(Int(power.rounded())) kW")
+            }
+            if !station.connectorTypes.isEmpty {
+                capabilities.append(station.connectorTypes.map(connectorTitle).joined(separator: " / "))
+            }
+            if !capabilities.isEmpty { details.append(capabilities.joined(separator: " · ")) }
+            if let count = station.chargingPointCount { details.append("\(count) stanowiska") }
+            if station.availability == .unavailable { details.append("Oznaczona jako niedziałająca w OSM") }
+        }
+        return details
+    }
+
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 12) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(categories) { value in
-                            Button { category = value } label: {
+                            Button {
+                                guard category != value else { return }
+                                category = value
+                                expandedRadius = false
+                                clearFilters()
+                            } label: {
                                 Label(value.title, systemImage: value.symbol)
                                     .font(.subheadline.weight(.medium))
                                     .padding(.horizontal, 12)
@@ -3137,15 +3487,77 @@ private struct NearbyPlacesSheet: View {
                     }
                 }
 
+                if hasApplicableFilters {
+                    HStack {
+                        Menu {
+                            if category == .fuel {
+                                if hasOpeningHoursData {
+                                    Toggle("Otwarte teraz", isOn: $openNowOnly)
+                                }
+                                if has24HourData {
+                                    Toggle("Całodobowe 24h", isOn: $open24HoursOnly)
+                                }
+                                if !availableFuelTypes.isEmpty {
+                                    Picker("Rodzaj paliwa", selection: $selectedFuelType) {
+                                        Text("Dowolne").tag(Optional<String>.none)
+                                        ForEach(availableFuelTypes, id: \.self) { value in
+                                            Text(fuelTypeTitle(value)).tag(Optional<String>.some(value))
+                                        }
+                                    }
+                                }
+                            }
+                            if category == .charging {
+                                if !availablePowerThresholds.isEmpty {
+                                    Picker("Moc minimalna", selection: $minimumChargingPower) {
+                                        Text("Dowolna").tag(Optional<Double>.none)
+                                        ForEach(availablePowerThresholds, id: \.self) { value in
+                                            Text("Co najmniej \(Int(value)) kW").tag(Optional<Double>.some(value))
+                                        }
+                                    }
+                                }
+                                if !availableConnectors.isEmpty {
+                                    Picker("Złącze", selection: $selectedConnector) {
+                                        Text("Dowolne").tag(Optional<String>.none)
+                                        ForEach(availableConnectors, id: \.self) { value in
+                                            Text(connectorTitle(value)).tag(Optional<String>.some(value))
+                                        }
+                                    }
+                                }
+                            }
+                            if !availableOperators.isEmpty {
+                                Picker("Operator", selection: $selectedOperator) {
+                                    Text("Dowolny").tag(Optional<String>.none)
+                                    ForEach(availableOperators, id: \.self) { value in
+                                        Text(value).tag(Optional<String>.some(value))
+                                    }
+                                }
+                            }
+                            if activeFilterCount > 0 {
+                                Divider()
+                                Button("Wyczyść filtry", systemImage: "xmark.circle", action: clearFilters)
+                            }
+                        } label: {
+                            Label(activeFilterCount == 0 ? "Filtry" : "Filtry · \(activeFilterCount)",
+                                  systemImage: "line.3.horizontal.decrease.circle")
+                                .font(.subheadline.weight(.medium))
+                        }
+                        Spacer()
+                    }
+                }
+
                 Text(nearDestination
                      ? "Parking jest wyszukiwany w pobliżu celu. Dostępność wolnych miejsc nie jest sprawdzana."
-                     : "Miejsca do 1,5 km od pozostałej trasy. Czas objazdu uzupełniamy po znalezieniu wyników.")
+                     : nearestSearch
+                        ? "Najbliższe miejsca do \(expandedRadius ? 15 : 5) km od Twojej lokalizacji."
+                        : "Miejsca do 1,5 km od pozostałej trasy. Czas objazdu uzupełniamy po znalezieniu wyników.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
                 switch engine.state.nearbyStatus {
                 case .idle, .searching:
-                    ProgressView(nearDestination ? "Szukam parkingów do 2 km od celu…" : "Szukam miejsc wzdłuż trasy…")
+                    ProgressView(nearDestination
+                                 ? "Szukam parkingów do 2 km od celu…"
+                                 : nearestSearch ? "Szukam najbliższych miejsc…" : "Szukam miejsc wzdłuż trasy…")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .unavailable(let message):
                     ContentUnavailableView("Nie udało się wyszukać miejsc",
@@ -3158,12 +3570,23 @@ private struct NearbyPlacesSheet: View {
                     if engine.state.nearbySuggestions.isEmpty {
                         ContentUnavailableView("Brak miejsc w pobliżu",
                                                systemImage: category.symbol,
-                                               description: Text("Spróbuj innej kategorii lub wyszukaj w innym miejscu."))
+                                               description: Text(nearestSearch
+                                                   ? "Możesz rozszerzyć wyszukiwanie do 15 km."
+                                                   : "Spróbuj innej kategorii lub wyszukaj w innym miejscu."))
+                    } else if filteredSuggestions.isEmpty {
+                        VStack(spacing: 8) {
+                            ContentUnavailableView("Brak wyników z tymi filtrami",
+                                                   systemImage: "line.3.horizontal.decrease.circle",
+                                                   description: Text("Zmień filtry albo wyczyść je, aby zobaczyć wszystkie miejsca."))
+                            Button("Wyczyść filtry", action: clearFilters)
+                                .buttonStyle(.bordered)
+                        }
                     } else {
-                        Text("Znaleziono: \(engine.state.nearbySuggestions.count)")
+                        Text("Znaleziono: \(filteredSuggestions.count)")
                             .font(.subheadline.weight(.semibold))
-                        List(Array(engine.state.nearbySuggestions.enumerated()), id: \.element.id) { index, suggestion in
+                        List(Array(filteredSuggestions.enumerated()), id: \.element.id) { index, suggestion in
                             let result = searchResult(suggestion)
+                            let details = supplementalDetails(for: suggestion.candidate)
                             PlaceSearchResultRow(
                                 result: result, index: index + 1,
                                 isSaved: savedPlaces.contains { $0.kind == .favorite && $0.destination.coordinate == result.destination.coordinate },
@@ -3172,8 +3595,11 @@ private struct NearbyPlacesSheet: View {
                                     onSelect(result.destination)
                                     dismiss()
                                 },
-                                isNavigating: true,
-                                primaryActionTitle: nearDestination ? "Wybierz parking" : "Dodaj przystanek")
+                                isNavigating: !nearestSearch,
+                                primaryActionTitle: nearDestination ? "Wybierz parking" : nearestSearch ? "Jedź" : "Dodaj przystanek",
+                                supplementalDetails: Array(details.dropFirst()),
+                                showsSourceSubtitle: false,
+                                primaryMetaLine: details.first)
                         }
                         .listStyle(.plain)
                     }
@@ -3181,14 +3607,33 @@ private struct NearbyPlacesSheet: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 14)
-            .navigationTitle(nearDestination ? "Parking przy celu" : "Miejsca po trasie")
+            .navigationTitle(nearDestination
+                             ? "Parking przy celu"
+                             : nearestSearch ? "Najbliższe miejsca" : "Miejsca po trasie")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Zamknij") { dismiss() }
                 }
             }
-            .task(id: "\(category.rawValue)-\(retryID)") {
-                await engine.searchNearbyPlaces(category, nearDestination: nearDestination)
+            .task(id: "\(category.rawValue)-\(retryID)-\(expandedRadius)") {
+                await engine.searchNearbyPlaces(category, nearDestination: nearDestination,
+                                                searchRadius: expandedRadius ? 15_000 : 5_000,
+                                                resultLimit: expandedRadius ? 50 : 25)
+            }
+            .safeAreaInset(edge: .bottom) {
+                if nearestSearch, !expandedRadius, engine.state.nearbyStatus == .available {
+                    Button {
+                        expandedRadius = true
+                    } label: {
+                        Label("Pokaż więcej · do 15 km", systemImage: "arrow.down.circle")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(.bar)
+                }
             }
         }
     }
@@ -3205,7 +3650,12 @@ private struct NearbyPlacesSheet: View {
                             city: nil, countryCode: nil, isPOI: true,
                             osmID: candidate.id.replacingOccurrences(of: "-", with: ":"),
                             category: candidate.osmCategory ?? category,
-                            straightDistance: nearDestination ? engine.state.destination.map { $0.coordinate.distance(to: candidate.destination.coordinate) } : nil,
+                            straightDistance: nearDestination
+                                ? engine.state.destination.map { $0.coordinate.distance(to: candidate.destination.coordinate) }
+                                : nearestSearch
+                                    ? engine.state.location?.coordinate.distance(to: candidate.destination.coordinate)
+                                    : nil,
+                            travelTime: suggestion.travelTime, travelDistance: suggestion.travelDistance,
                             detour: suggestion.detourSeconds, travelEstimateStatus: suggestion.estimateStatus)
     }
 

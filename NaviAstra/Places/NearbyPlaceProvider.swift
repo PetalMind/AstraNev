@@ -49,7 +49,24 @@ struct NearbyPlaceCandidate: Identifiable {
     var distanceFromRoute: Double
     var osmCategory: String? = nil
     var distanceToRoute: Double = 0
+    var brand: String? = nil
+    var operatorName: String? = nil
+    var openingHours: String? = nil
+    var fuelTypes: [String] = []
     var chargingStation: ChargingStationCapabilities? = nil
+
+    var operatorOrBrand: String? {
+        [operatorName, brand].compactMap { $0 }.first { $0 != destination.name }
+    }
+
+    var isOpenNow: Bool? {
+        guard let openingHours else { return nil }
+        return PlaceOpeningHours(rawValue: openingHours).isOpen()
+    }
+
+    var isOpen24Hours: Bool {
+        openingHours?.trimmingCharacters(in: .whitespacesAndNewlines) == "24/7"
+    }
 }
 
 enum ChargingStationAvailability: String {
@@ -59,6 +76,7 @@ enum ChargingStationAvailability: String {
 struct ChargingStationCapabilities {
     let connectorTypes: [String]
     let maximumPowerKW: Double?
+    let chargingPointCount: Int?
     let publicAccess: Bool?
     let availability: ChargingStationAvailability
 }
@@ -66,6 +84,8 @@ struct ChargingStationCapabilities {
 struct RouteStopSuggestion: Identifiable {
     var candidate: NearbyPlaceCandidate
     var detourSeconds: TimeInterval?
+    var travelTime: TimeInterval? = nil
+    var travelDistance: Double? = nil
     var estimateStatus: TravelEstimateStatus = .calculating
     var id: String { candidate.id }
 }
@@ -83,17 +103,21 @@ enum NearbyPlaceError: LocalizedError {
 struct OpenStreetMapNearbyPlaceProvider {
     private let endpoint = URL(string: UserDefaults.standard.string(forKey: "overpassServer") ?? "https://overpass-api.de/api/interpreter")!
 
-    func search(_ category: NearbyPlaceCategory, along route: [Coordinate], radius: Double = 900) async throws -> [NearbyPlaceCandidate] {
+    func search(_ category: NearbyPlaceCategory, along route: [Coordinate], radius: Double = 900,
+                resultLimit: Int = 25) async throws -> [NearbyPlaceCandidate] {
         guard route.count > 1 else { throw NearbyPlaceError.invalidResponse }
-        return try await load(category, around: [route[0]], radius: radius, referenceRoute: route)
+        return try await load(category, around: [route[0]], radius: radius,
+                              referenceRoute: route, resultLimit: resultLimit)
     }
 
-    func search(_ category: NearbyPlaceCategory, around coordinate: Coordinate, radius: Double = 2_000) async throws -> [NearbyPlaceCandidate] {
-        try await load(category, around: [coordinate], radius: radius, referenceRoute: nil)
+    func search(_ category: NearbyPlaceCategory, around coordinate: Coordinate, radius: Double = 2_000,
+                resultLimit: Int = 25) async throws -> [NearbyPlaceCandidate] {
+        try await load(category, around: [coordinate], radius: radius,
+                       referenceRoute: nil, resultLimit: resultLimit)
     }
 
     private func load(_ category: NearbyPlaceCategory, around centers: [Coordinate], radius: Double,
-                      referenceRoute: [Coordinate]?) async throws -> [NearbyPlaceCandidate] {
+                      referenceRoute: [Coordinate]?, resultLimit: Int) async throws -> [NearbyPlaceCandidate] {
         let area: String
         if let referenceRoute {
             area = RouteSearchCorridor.around(referenceRoute, radius: radius)
@@ -153,6 +177,10 @@ struct OpenStreetMapNearbyPlaceProvider {
                                                category: category, distanceFromRoute: pathDistance,
                                                osmCategory: tags["amenity"] ?? tags["shop"],
                                                distanceToRoute: routeDistance,
+                                               brand: tags["brand"],
+                                               operatorName: tags["operator"],
+                                               openingHours: tags["opening_hours"],
+                                               fuelTypes: category == .fuel ? Self.fuelTypes(from: tags) : [],
                                                chargingStation: category == .charging
                                                    ? Self.chargingCapabilities(from: tags) : nil))
         }
@@ -160,7 +188,7 @@ struct OpenStreetMapNearbyPlaceProvider {
         for candidate in found.sorted(by: { $0.distanceFromRoute < $1.distanceFromRoute }) {
             guard !unique.contains(where: { $0.destination.coordinate.distance(to: candidate.destination.coordinate) < 15 }) else { continue }
             unique.append(candidate)
-            if unique.count == 25 { break }
+            if unique.count >= max(1, min(resultLimit, 100)) { break }
         }
         let namesByID = Dictionary(uniqueKeysWithValues: unique.map { ($0.id, $0.destination.name) })
         await OpenStreetMapPlaceDetailsProvider.cacheSearchDetails(decoded.elements.compactMap { element in
@@ -169,6 +197,14 @@ struct OpenStreetMapNearbyPlaceProvider {
             return (id: "\(type):\(element.id)", name: name, tags: tags)
         })
         return unique
+    }
+
+    private static func fuelTypes(from tags: [String: String]) -> [String] {
+        tags.compactMap { entry -> String? in
+            let (key, value) = entry
+            guard key.hasPrefix("fuel:"), value.lowercased() != "no" else { return nil }
+            return String(key.dropFirst("fuel:".count))
+        }.sorted()
     }
 
     private static func chargingCapabilities(from tags: [String: String]) -> ChargingStationCapabilities {
@@ -191,6 +227,10 @@ struct OpenStreetMapNearbyPlaceProvider {
                 }
             }
         let maximumPower = outputValues.filter { $0 > 0 && $0 <= 1_000 }.max()
+        let chargingPointCount = [tags["charging_station:capacity"], tags["capacity"]]
+            .compactMap { $0 }
+            .compactMap(Int.init)
+            .first { $0 > 0 }
         let access = tags["access"]?.lowercased()
         let publicAccess: Bool? = {
             guard let access else { return nil }
@@ -207,6 +247,7 @@ struct OpenStreetMapNearbyPlaceProvider {
         }
         return ChargingStationCapabilities(connectorTypes: connectors.sorted(),
                                            maximumPowerKW: maximumPower,
+                                           chargingPointCount: chargingPointCount,
                                            publicAccess: publicAccess,
                                            availability: availability)
     }

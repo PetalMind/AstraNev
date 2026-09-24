@@ -1,5 +1,20 @@
 import Foundation
+import os
 import zlib
+
+private enum TransitSignposting {
+    static let log = OSLog(subsystem: "STDMSolution.NaviAstra", category: "TransitPlanning")
+
+    static func begin(_ name: StaticString) -> OSSignpostID {
+        let identifier = OSSignpostID(log: log)
+        os_signpost(.begin, log: log, name: name, signpostID: identifier)
+        return identifier
+    }
+
+    static func end(_ name: StaticString, identifier: OSSignpostID) {
+        os_signpost(.end, log: log, name: name, signpostID: identifier)
+    }
+}
 
 nonisolated enum TransitRoutingError: LocalizedError {
     case invalidResponse
@@ -125,32 +140,65 @@ private actor LodzTransitRepository {
 
     func calculateRoutes(from: Coordinate, to: Coordinate, departingAt: Date,
                          walkingRoutingEndpoint: URL) async throws -> [NavigationRoute] {
-        let database = try await loadDatabase()
-        let realtime = await loadRealtime()
+        let totalInterval = TransitSignposting.begin("TransitPlanning")
+        defer { TransitSignposting.end("TransitPlanning", identifier: totalInterval) }
+
+        let databaseInterval = TransitSignposting.begin("GTFSLoad")
+        let database: GTFSDatabase
+        do {
+            database = try await loadDatabase()
+            TransitSignposting.end("GTFSLoad", identifier: databaseInterval)
+        } catch {
+            TransitSignposting.end("GTFSLoad", identifier: databaseInterval)
+            throw error
+        }
         guard walkingRoutingEndpoint.scheme == "https" else { throw RoutingError.invalidEndpoint }
         let boardingStops = database.stops.filter { database.servedStopIDs.contains($0.id) }
+
+        // Realtime does not need to finish before the independent walking matrices start.
+        async let realtimeRequest = loadRealtimeForRoutePlanning()
         async let originWalksRequest = walkingOptions(from: from, stops: boardingStops,
                                                        endpoint: walkingRoutingEndpoint)
         async let destinationWalksRequest = walkingOptions(from: to, stops: boardingStops,
                                                             endpoint: walkingRoutingEndpoint)
-        let (originWalks, destinationApproaches) = try await (originWalksRequest, destinationWalksRequest)
+        let (realtime, originWalks, destinationApproaches) = try await (
+            realtimeRequest, originWalksRequest, destinationWalksRequest)
         let destinationWalks = destinationApproaches.map { option in
             TransitWalkOption(stop: option.stop, distance: option.distance, duration: option.duration,
                               coordinates: Array(option.coordinates.reversed()))
         }
-        let planned = try Self.plan(database: database, realtime: realtime, from: from, to: to,
+        let searchInterval = TransitSignposting.begin("TransitSearch")
+        let planned: [NavigationRoute]
+        do {
+            planned = try Self.plan(database: database, realtime: realtime, from: from, to: to,
                                     departingAt: departingAt, originWalks: originWalks,
                                     destinationWalks: destinationWalks,
                                     usingCachedSchedule: databaseWasCached)
+            TransitSignposting.end("TransitSearch", identifier: searchInterval)
+        } catch {
+            TransitSignposting.end("TransitSearch", identifier: searchInterval)
+            throw error
+        }
         return await resolveTransferWalks(in: planned, endpoint: walkingRoutingEndpoint)
+    }
+
+    private func loadRealtimeForRoutePlanning() async -> GTFSRealtimeSnapshot {
+        let interval = TransitSignposting.begin("RealtimeFetch")
+        defer { TransitSignposting.end("RealtimeFetch", identifier: interval) }
+        return await loadRealtime()
     }
 
     private func walkingOptions(from coordinate: Coordinate, stops: [GTFSStop],
                                 endpoint: URL) async throws -> [TransitWalkOption] {
+        let matrixInterval = TransitSignposting.begin("WalkingMatrix")
+        defer { TransitSignposting.end("WalkingMatrix", identifier: matrixInterval) }
+
+        let nearbyStopsInterval = TransitSignposting.begin("NearbyStops")
         let candidates = Self.nearestStops(to: coordinate, in: stops,
                                            maximumDistance: Self.maximumAccessWalkDistance,
                                            localLimit: Self.maximumLocalWalkingCandidates,
                                            railwayLimit: Self.maximumRailWalkingCandidates)
+        TransitSignposting.end("NearbyStops", identifier: nearbyStopsInterval)
         let provider = ValhallaRouteProvider(endpoint: endpoint)
         var results: [TransitWalkOption] = []
         var start = 0
@@ -225,119 +273,159 @@ private actor LodzTransitRepository {
     }
 
     private func resolveTransferWalks(in routes: [NavigationRoute], endpoint: URL) async -> [NavigationRoute] {
-        await withTaskGroup(of: NavigationRoute?.self, returning: [NavigationRoute].self) { group in
-            for route in routes {
-                group.addTask {
-                    guard var journey = route.journey else { return nil }
-                    var resolved = route
-                    var changed = false
-                    let provider = ValhallaRouteProvider(endpoint: endpoint)
-                    for index in journey.legs.indices where journey.legs[index].mode == "WALK" {
-                        let leg = journey.legs[index]
-                        if !leg.isTransfer && leg.coordinates.count > 2 { continue }
-                        let transferDeparture: Date
-                        if leg.isTransfer, index > 0, journey.legs[index - 1].mode == "WALK" {
-                            transferDeparture = journey.legs[index - 1].arrival
-                        } else if leg.from == "Punkt początkowy" {
-                            transferDeparture = journey.departure
-                        } else if leg.to == "Cel", index > 0 {
-                            transferDeparture = journey.legs[index - 1].arrival
-                        } else {
-                            transferDeparture = leg.departure
-                        }
-                        guard let from = leg.coordinates.first, let to = leg.coordinates.last else { return nil }
-                        let walkingCoordinates: [Coordinate]
-                        let walkingDuration: TimeInterval
-                        if from.distance(to: to) <= 1 {
-                            walkingCoordinates = [from, to]
-                            walkingDuration = 0
-                        } else if let walkingRoute = try? await provider.calculateRoutes(
-                            from: from, to: to, mode: .walking).first {
-                            walkingCoordinates = walkingRoute.coordinates
-                            walkingDuration = walkingRoute.expectedTravelTime
-                        } else {
-                            return nil
-                        }
-                        if !leg.isTransfer && walkingDuration > Self.maximumAccessWalkTime {
-                            return nil
-                        }
-                        let nextRide = journey.legs.suffix(from: index + 1).first(where: { $0.mode != "WALK" })
-                        journey.legs[index].coordinates = walkingCoordinates
-                        journey.legs[index].departure = transferDeparture
-                        journey.legs[index].arrival = transferDeparture
-                            .addingTimeInterval(walkingDuration + (leg.isTransfer ? leg.minimumTransferTime : 0))
-                        if nextRide == nil,
-                           journey.legs.indices.contains(index + 1),
-                           journey.legs[index + 1].mode == "WALK" {
-                            let egressDuration = journey.legs[index + 1].arrival.timeIntervalSince(
-                                journey.legs[index + 1].departure)
-                            journey.legs[index + 1].departure = journey.legs[index].arrival
-                            journey.legs[index + 1].arrival = journey.legs[index].arrival
-                                .addingTimeInterval(egressDuration)
-                            journey.arrival = journey.legs[index + 1].arrival
-                        } else if nextRide == nil {
-                            journey.arrival = journey.legs[index].arrival
-                        }
-                        changed = true
-                    }
-                    guard changed else { return resolved }
-                    for nextRideIndex in journey.legs.indices where journey.legs[nextRideIndex].mode != "WALK" {
-                        let previousRideIndex = journey.legs[..<nextRideIndex].lastIndex(where: { $0.mode != "WALK" })
-                        let walkingStartIndex = (previousRideIndex.map { $0 + 1 } ?? 0)..<nextRideIndex
-                        let walkLegs = walkingStartIndex.map { journey.legs[$0] }.filter { $0.mode == "WALK" }
-                        guard !walkLegs.isEmpty else { continue }
-                        let startTime = previousRideIndex.map { journey.legs[$0].arrival }
-                            ?? journey.departure
-                        let required = walkLegs.reduce(0.0) {
-                            $0 + $1.arrival.timeIntervalSince($1.departure)
-                        }
-                        guard required <= journey.legs[nextRideIndex].departure.timeIntervalSince(startTime) else {
-                            return nil
-                        }
-                    }
-                    let rideDuration = journey.legs.filter { $0.mode != "WALK" }
-                        .reduce(0.0) { $0 + $1.arrival.timeIntervalSince($1.departure) }
-                    journey.walkingDuration = journey.legs.filter { $0.mode == "WALK" }
-                        .reduce(0.0) {
-                            $0 + max(0, $1.arrival.timeIntervalSince($1.departure) - $1.minimumTransferTime)
-                        }
-                    journey.waitingDuration = max(0, journey.arrival.timeIntervalSince(journey.departure)
-                        - rideDuration - journey.walkingDuration)
-                    resolved.journey = journey
-                    resolved.expectedTravelTime = journey.arrival.timeIntervalSince(journey.departure)
-                    resolved.coordinates = journey.legs.flatMap { leg in
-                        leg.coordinates.isEmpty ? [] : Array(leg.coordinates.dropFirst(leg.coordinates.isEmpty ? 0 : 1))
-                    }
-                    if let first = journey.legs.first?.coordinates.first {
-                        resolved.coordinates.insert(first, at: 0)
-                    }
-                    resolved.distance = zip(resolved.coordinates, resolved.coordinates.dropFirst())
-                        .reduce(0.0) { $0 + $1.0.distance(to: $1.1) }
-                    return resolved
+        let interval = TransitSignposting.begin("GeometryFetch")
+        defer { TransitSignposting.end("GeometryFetch", identifier: interval) }
+
+        var requestsByKey: [TransitWalkingGeometryKey: TransitWalkingGeometryRequest] = [:]
+        for route in routes {
+            guard let journey = route.journey else { continue }
+            for leg in journey.legs where leg.mode == "WALK" {
+                if !leg.isTransfer && leg.coordinates.count > 2 { continue }
+                guard let from = leg.coordinates.first, let to = leg.coordinates.last,
+                      from.distance(to: to) > 1 else { continue }
+                let request = TransitWalkingGeometryRequest(from: from, to: to)
+                requestsByKey[request.key] = request
+            }
+        }
+
+        let geometries = await loadWalkingGeometries(
+            requests: Array(requestsByKey.values), endpoint: endpoint)
+        var resolved: [NavigationRoute] = []
+        for route in routes {
+            if let route = resolveTransferWalks(in: route, geometries: geometries) {
+                resolved.append(route)
+            }
+        }
+
+        let ranked = resolved.sorted { Self.generalizedCost($0) < Self.generalizedCost($1) }
+        let fastest = ranked.min { $0.expectedTravelTime < $1.expectedTravelTime }
+        let fewestTransfers = ranked.min {
+            ($0.journey?.transferCount ?? Int.max, $0.expectedTravelTime)
+                < ($1.journey?.transferCount ?? Int.max, $1.expectedTravelTime)
+        }
+        let leastWalking = ranked.min {
+            ($0.journey?.walkingDuration ?? .infinity, $0.expectedTravelTime)
+                < ($1.journey?.walkingDuration ?? .infinity, $1.expectedTravelTime)
+        }
+        var selected: [NavigationRoute] = []
+        for candidate in [ranked.first, fastest, fewestTransfers, leastWalking].compactMap({ $0 }) {
+            guard !selected.contains(where: { Self.transitSignature($0) == Self.transitSignature(candidate) }) else { continue }
+            selected.append(candidate)
+            if selected.count == 3 { break }
+        }
+        return selected.sorted { Self.generalizedCost($0) < Self.generalizedCost($1) }
+    }
+
+    private func loadWalkingGeometries(
+        requests: [TransitWalkingGeometryRequest], endpoint: URL
+    ) async -> [TransitWalkingGeometryKey: TransitWalkingGeometry] {
+        await withTaskGroup(
+            of: (TransitWalkingGeometryKey, TransitWalkingGeometry?).self,
+            returning: [TransitWalkingGeometryKey: TransitWalkingGeometry].self
+        ) { group in
+            var requestsIterator = requests.makeIterator()
+            let concurrencyLimit = min(4, requests.count)
+            for _ in 0..<concurrencyLimit {
+                guard let request = requestsIterator.next() else { break }
+                group.addTask { await fetchTransitWalkingGeometry(request, endpoint: endpoint) }
+            }
+
+            var geometries: [TransitWalkingGeometryKey: TransitWalkingGeometry] = [:]
+            while let (key, geometry) = await group.next() {
+                if let geometry { geometries[key] = geometry }
+                if let request = requestsIterator.next() {
+                    group.addTask { await fetchTransitWalkingGeometry(request, endpoint: endpoint) }
                 }
             }
-            var resolved: [NavigationRoute] = []
-            for await route in group {
-                if let route { resolved.append(route) }
-            }
-            let ranked = resolved.sorted { Self.generalizedCost($0) < Self.generalizedCost($1) }
-            let fastest = ranked.min { $0.expectedTravelTime < $1.expectedTravelTime }
-            let fewestTransfers = ranked.min {
-                ($0.journey?.transferCount ?? Int.max, $0.expectedTravelTime)
-                    < ($1.journey?.transferCount ?? Int.max, $1.expectedTravelTime)
-            }
-            let leastWalking = ranked.min {
-                ($0.journey?.walkingDuration ?? .infinity, $0.expectedTravelTime)
-                    < ($1.journey?.walkingDuration ?? .infinity, $1.expectedTravelTime)
-            }
-            var selected: [NavigationRoute] = []
-            for candidate in [ranked.first, fastest, fewestTransfers, leastWalking].compactMap({ $0 }) {
-                guard !selected.contains(where: { Self.transitSignature($0) == Self.transitSignature(candidate) }) else { continue }
-                selected.append(candidate)
-                if selected.count == 3 { break }
-            }
-            return selected.sorted { Self.generalizedCost($0) < Self.generalizedCost($1) }
+            return geometries
         }
+    }
+
+    private func resolveTransferWalks(
+        in route: NavigationRoute,
+        geometries: [TransitWalkingGeometryKey: TransitWalkingGeometry]
+    ) -> NavigationRoute? {
+        guard var journey = route.journey else { return nil }
+        var resolved = route
+        var changed = false
+        for index in journey.legs.indices where journey.legs[index].mode == "WALK" {
+            let leg = journey.legs[index]
+            if !leg.isTransfer && leg.coordinates.count > 2 { continue }
+            guard let from = leg.coordinates.first, let to = leg.coordinates.last else { return nil }
+            let walkingGeometry: TransitWalkingGeometry
+            if from.distance(to: to) <= 1 {
+                walkingGeometry = TransitWalkingGeometry(coordinates: [from, to], duration: 0)
+            } else {
+                let key = TransitWalkingGeometryKey(from: from, to: to)
+                guard let geometry = geometries[key] else { return nil }
+                walkingGeometry = geometry
+            }
+            if !leg.isTransfer && walkingGeometry.duration > Self.maximumAccessWalkTime {
+                return nil
+            }
+
+            let transferDeparture: Date
+            if leg.isTransfer, index > 0, journey.legs[index - 1].mode == "WALK" {
+                transferDeparture = journey.legs[index - 1].arrival
+            } else if leg.from == "Punkt początkowy" {
+                transferDeparture = journey.departure
+            } else if leg.to == "Cel", index > 0 {
+                transferDeparture = journey.legs[index - 1].arrival
+            } else {
+                transferDeparture = leg.departure
+            }
+            let nextRide = journey.legs.suffix(from: index + 1).first(where: { $0.mode != "WALK" })
+            journey.legs[index].coordinates = walkingGeometry.coordinates
+            journey.legs[index].departure = transferDeparture
+            journey.legs[index].arrival = transferDeparture.addingTimeInterval(
+                walkingGeometry.duration + (leg.isTransfer ? leg.minimumTransferTime : 0))
+            if nextRide == nil,
+               journey.legs.indices.contains(index + 1),
+               journey.legs[index + 1].mode == "WALK" {
+                let egressDuration = journey.legs[index + 1].arrival.timeIntervalSince(
+                    journey.legs[index + 1].departure)
+                journey.legs[index + 1].departure = journey.legs[index].arrival
+                journey.legs[index + 1].arrival = journey.legs[index].arrival
+                    .addingTimeInterval(egressDuration)
+                journey.arrival = journey.legs[index + 1].arrival
+            } else if nextRide == nil {
+                journey.arrival = journey.legs[index].arrival
+            }
+            changed = true
+        }
+        guard changed else { return resolved }
+        for nextRideIndex in journey.legs.indices where journey.legs[nextRideIndex].mode != "WALK" {
+            let previousRideIndex = journey.legs[..<nextRideIndex].lastIndex(where: { $0.mode != "WALK" })
+            let walkingStartIndex = (previousRideIndex.map { $0 + 1 } ?? 0)..<nextRideIndex
+            let walkLegs = walkingStartIndex.map { journey.legs[$0] }.filter { $0.mode == "WALK" }
+            guard !walkLegs.isEmpty else { continue }
+            let startTime = previousRideIndex.map { journey.legs[$0].arrival } ?? journey.departure
+            let required = walkLegs.reduce(0.0) {
+                $0 + $1.arrival.timeIntervalSince($1.departure)
+            }
+            guard required <= journey.legs[nextRideIndex].departure.timeIntervalSince(startTime) else {
+                return nil
+            }
+        }
+        let rideDuration = journey.legs.filter { $0.mode != "WALK" }
+            .reduce(0.0) { $0 + $1.arrival.timeIntervalSince($1.departure) }
+        journey.walkingDuration = journey.legs.filter { $0.mode == "WALK" }
+            .reduce(0.0) {
+                $0 + max(0, $1.arrival.timeIntervalSince($1.departure) - $1.minimumTransferTime)
+            }
+        journey.waitingDuration = max(0, journey.arrival.timeIntervalSince(journey.departure)
+            - rideDuration - journey.walkingDuration)
+        resolved.journey = journey
+        resolved.expectedTravelTime = journey.arrival.timeIntervalSince(journey.departure)
+        resolved.coordinates = journey.legs.flatMap { leg in
+            leg.coordinates.isEmpty ? [] : Array(leg.coordinates.dropFirst())
+        }
+        if let first = journey.legs.first?.coordinates.first {
+            resolved.coordinates.insert(first, at: 0)
+        }
+        resolved.distance = zip(resolved.coordinates, resolved.coordinates.dropFirst())
+            .reduce(0.0) { $0 + $1.0.distance(to: $1.1) }
+        return resolved
     }
 
     func departures(at stopID: String, limit: Int) async -> [TransitDeparture] {
@@ -806,6 +894,9 @@ private actor LodzTransitRepository {
             if current.isEmpty { break }
         }
 
+        let rankingInterval = TransitSignposting.begin("CandidateRanking")
+        defer { TransitSignposting.end("CandidateRanking", identifier: rankingInterval) }
+
         let rankedCandidates = candidates.sorted {
             candidateCost($0, departingAt: departingAt, instances: instances)
                 < candidateCost($1, departingAt: departingAt, instances: instances)
@@ -848,7 +939,7 @@ private actor LodzTransitRepository {
         for candidate in [unique.first, fastest, fewestTransfers, leastWalking].compactMap({ $0 }) + unique {
             guard !selected.contains(where: { transitSignature($0) == transitSignature(candidate) }) else { continue }
             selected.append(candidate)
-            if selected.count == 8 { break }
+            if selected.count == 4 { break }
         }
         return selected
     }
@@ -1287,6 +1378,47 @@ private nonisolated struct TransitPlanCandidate {
     let label: TransitPathLabel
     let destinationWalk: TransitWalkOption
     let arrival: Date
+}
+
+private nonisolated struct TransitWalkingGeometryKey: Hashable, Sendable {
+    let fromLatitude: UInt64
+    let fromLongitude: UInt64
+    let toLatitude: UInt64
+    let toLongitude: UInt64
+
+    init(from: Coordinate, to: Coordinate) {
+        fromLatitude = from.latitude.bitPattern
+        fromLongitude = from.longitude.bitPattern
+        toLatitude = to.latitude.bitPattern
+        toLongitude = to.longitude.bitPattern
+    }
+}
+
+private nonisolated struct TransitWalkingGeometryRequest: Sendable {
+    let from: Coordinate
+    let to: Coordinate
+    var key: TransitWalkingGeometryKey { TransitWalkingGeometryKey(from: from, to: to) }
+}
+
+private nonisolated struct TransitWalkingGeometry: Sendable {
+    let coordinates: [Coordinate]
+    let duration: TimeInterval
+}
+
+private func fetchTransitWalkingGeometry(
+    _ request: TransitWalkingGeometryRequest,
+    endpoint: URL
+) async -> (TransitWalkingGeometryKey, TransitWalkingGeometry?) {
+    do {
+        guard let route = try await ValhallaRouteProvider(endpoint: endpoint)
+            .calculateRoutes(from: request.from, to: request.to, mode: .walking).first else {
+            return (request.key, nil)
+        }
+        return (request.key, TransitWalkingGeometry(coordinates: route.coordinates,
+                                                    duration: route.expectedTravelTime))
+    } catch {
+        return (request.key, nil)
+    }
 }
 
 private nonisolated struct TransitRide {

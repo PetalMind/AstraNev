@@ -94,7 +94,7 @@ struct SearchResult: Identifiable {
             return "+\(minutes) min objazdu (szacunek)"
         }
         if let travelTime, let travelDistance {
-            return "\(max(1, Int((travelTime / 60).rounded(.up)))) min • \(String(format: "%.1f", travelDistance / 1000)) km"
+            return "\(String(format: "%.1f", travelDistance / 1000)) km · ~\(max(1, Int((travelTime / 60).rounded(.up)))) min"
         }
         if travelEstimateStatus == .calculating {
             if let distance = detourDistance {

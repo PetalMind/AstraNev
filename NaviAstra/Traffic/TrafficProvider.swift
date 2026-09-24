@@ -22,7 +22,7 @@ struct TrafficFlow {
 
 enum TrafficIncidentCategory: String, Equatable {
     case unknown, accident, fog, dangerousConditions, rain, ice, jam, laneClosed
-    case roadClosed, roadWorks, wind, flooding, detour, cluster
+    case roadClosed, roadWorks, wind, flooding, detour, cluster, brokenDownVehicle
 
     init(tomTomValue: Int?) {
         switch tomTomValue {
@@ -42,6 +42,10 @@ enum TrafficIncidentCategory: String, Equatable {
         default: self = .unknown
         }
     }
+
+    init(tomTomValue: String?) {
+        self = tomTomValue.flatMap(TrafficIncidentCategory.init(rawValue:)) ?? .unknown
+    }
 }
 
 enum TrafficIncidentSeverity: String, Equatable {
@@ -56,6 +60,50 @@ enum TrafficIncidentSeverity: String, Equatable {
         default: self = .unknown
         }
     }
+
+    init(tomTomValue: String?) {
+        switch tomTomValue {
+        case "minor": self = .minor
+        case "moderate": self = .moderate
+        case "major": self = .major
+        case "indefinite", "undefined": self = .indefinite
+        default: self = .unknown
+        }
+    }
+}
+
+extension TrafficIncidentCategory {
+    var mapLabel: String {
+        switch self {
+        case .unknown: "Zdarzenie drogowe"
+        case .accident: "Wypadek"
+        case .fog: "Mgła"
+        case .dangerousConditions: "Niebezpieczne warunki"
+        case .rain: "Intensywny deszcz"
+        case .ice: "Oblodzenie"
+        case .jam: "Korek"
+        case .laneClosed: "Zamknięty pas ruchu"
+        case .roadClosed: "Droga zamknięta"
+        case .roadWorks: "Roboty drogowe"
+        case .wind: "Silny wiatr"
+        case .flooding: "Podtopienie"
+        case .detour: "Objazd"
+        case .cluster: "Zbiorcze utrudnienie"
+        case .brokenDownVehicle: "Unieruchomiony pojazd"
+        }
+    }
+}
+
+extension TrafficIncidentSeverity {
+    var mapLabel: String {
+        switch self {
+        case .unknown: "Nieokreślone utrudnienie"
+        case .minor: "Niewielkie utrudnienie"
+        case .moderate: "Umiarkowane utrudnienie"
+        case .major: "Poważne utrudnienie"
+        case .indefinite: "Nieokreślona skala utrudnienia"
+        }
+    }
 }
 
 struct TrafficIncident: Identifiable {
@@ -65,8 +113,34 @@ struct TrafficIncident: Identifiable {
     let delaySeconds: Int?
     let category: TrafficIncidentCategory
     let severity: TrafficIncidentSeverity
+    let geometry: [Coordinate]
+    let distanceAlongRoute: Double?
+
+    init(id: String, description: String, coordinate: Coordinate, delaySeconds: Int?,
+         category: TrafficIncidentCategory, severity: TrafficIncidentSeverity,
+         geometry: [Coordinate] = [], distanceAlongRoute: Double? = nil) {
+        self.id = id
+        self.description = description
+        self.coordinate = coordinate
+        self.delaySeconds = delaySeconds
+        self.category = category
+        self.severity = severity
+        self.geometry = geometry
+        self.distanceAlongRoute = distanceAlongRoute
+    }
 
     var isRoadClosure: Bool { category == .roadClosed }
+
+    var mapTitle: String { isRoadClosure ? "Droga zamknięta" : description }
+
+    var mapSubtitle: String {
+        var details = [category.mapLabel, severity.mapLabel]
+        if let delaySeconds, delaySeconds > 0 {
+            details.append("Opóźnienie około \(max(1, Int((Double(delaySeconds) / 60).rounded()))) min")
+        }
+        if description != mapTitle { details.append(description) }
+        return details.joined(separator: " · ")
+    }
 }
 
 struct TrafficSnapshot {
@@ -77,8 +151,35 @@ struct TrafficSnapshot {
     let incidentDataAvailable: Bool
 }
 
+struct TrafficBoundingBox: Equatable, Sendable {
+    let minLongitude: Double
+    let minLatitude: Double
+    let maxLongitude: Double
+    let maxLatitude: Double
+
+    var queryValue: String {
+        "\(minLongitude),\(minLatitude),\(maxLongitude),\(maxLatitude)"
+    }
+
+    static func around(_ point: Coordinate, radiusMeters: Double) -> Self {
+        let latitudeDelta = radiusMeters / 111_320
+        let longitudeDelta = radiusMeters / max(1_000, 111_320 * abs(cos(point.latitude * .pi / 180)))
+        return Self(minLongitude: point.longitude - longitudeDelta,
+                    minLatitude: point.latitude - latitudeDelta,
+                    maxLongitude: point.longitude + longitudeDelta,
+                    maxLatitude: point.latitude + latitudeDelta)
+    }
+}
+
+enum TrafficTileStyle: String {
+    case light, dark
+}
+
 protocol TrafficProvider {
-    func snapshot(near: Coordinate, route: NavigationRoute?, progress: RouteProgress?) async throws -> TrafficSnapshot
+    func snapshot(near: Coordinate, incidentRadiusMeters: Double) async throws -> TrafficSnapshot
+    func incidents(in boxes: [TrafficBoundingBox]) async throws -> [TrafficIncident]
+    func rasterFlowTileURLTemplate(style: TrafficTileStyle) -> String?
+    func rasterIncidentTileURLTemplate(style: TrafficTileStyle) -> String?
 }
 
 enum TrafficError: LocalizedError {
@@ -94,9 +195,9 @@ enum TrafficError: LocalizedError {
 struct TomTomTrafficProvider: TrafficProvider {
     let apiKey: String
 
-    func snapshot(near point: Coordinate, route: NavigationRoute?, progress: RouteProgress?) async throws -> TrafficSnapshot {
+    func snapshot(near point: Coordinate, incidentRadiusMeters: Double) async throws -> TrafficSnapshot {
         async let flowRequest = fetchFlow(near: point)
-        async let incidentRequest = fetchIncidents(near: point, route: route, progress: progress)
+        async let incidentRequest = incidents(in: [.around(point, radiusMeters: incidentRadiusMeters)])
         let flow: Result<TrafficFlow?, Error>
         do { flow = .success(try await flowRequest) }
         catch { flow = .failure(error) }
@@ -114,6 +215,38 @@ struct TomTomTrafficProvider: TrafficProvider {
         return TrafficSnapshot(flow: flowValue ?? nil, incidents: incidentValue, updatedAt: Date(),
                                partialError: partialError,
                                incidentDataAvailable: { if case .success = incidents { true } else { false } }())
+    }
+
+    func incidents(in boxes: [TrafficBoundingBox]) async throws -> [TrafficIncident] {
+        guard !boxes.isEmpty else { return [] }
+        return try await withThrowingTaskGroup(of: [TrafficIncident].self) { group in
+            var nextBox = 0
+            for _ in 0..<min(4, boxes.count) {
+                let box = boxes[nextBox]
+                nextBox += 1
+                group.addTask { try await fetchIncidents(in: box) }
+            }
+            var unique: [String: TrafficIncident] = [:]
+            for try await incidents in group {
+                for incident in incidents where unique[incident.id] == nil {
+                    unique[incident.id] = incident
+                }
+                if nextBox < boxes.count {
+                    let box = boxes[nextBox]
+                    nextBox += 1
+                    group.addTask { try await fetchIncidents(in: box) }
+                }
+            }
+            return Array(unique.values)
+        }
+    }
+
+    func rasterFlowTileURLTemplate(style: TrafficTileStyle) -> String? {
+        "https://api.tomtom.com/maps/orbis/traffic/flow/raster/tile/{z}/{x}/{y}?apiVersion=2&key=\(apiKey)&style=\(style.rawValue)&tileSize=256"
+    }
+
+    func rasterIncidentTileURLTemplate(style: TrafficTileStyle) -> String? {
+        "https://api.tomtom.com/maps/orbis/traffic/incidents/raster/tile/{z}/{x}/{y}?apiVersion=2&key=\(apiKey)&style=\(style.rawValue)&tileSize=256"
     }
 
     private func fetchFlow(near point: Coordinate) async throws -> TrafficFlow? {
@@ -136,46 +269,44 @@ struct TomTomTrafficProvider: TrafficProvider {
                            coordinates: coordinates, updatedAt: Date())
     }
 
-    private func fetchIncidents(near point: Coordinate, route: NavigationRoute?, progress: RouteProgress?) async throws -> [TrafficIncident] {
-        let latDelta = 0.045
-        let lonDelta = 0.045 / max(0.25, cos(point.latitude * .pi / 180))
-        var url = URLComponents(string: "https://api.tomtom.com/traffic/services/5/incidentDetails")!
+    private func fetchIncidents(in box: TrafficBoundingBox) async throws -> [TrafficIncident] {
+        var url = URLComponents(string: "https://api.tomtom.com/maps/orbis/traffic/incidents/details")!
         url.queryItems = [
-            URLQueryItem(name: "key", value: apiKey),
-            URLQueryItem(name: "bbox", value: "\(point.longitude - lonDelta),\(point.latitude - latDelta),\(point.longitude + lonDelta),\(point.latitude + latDelta)"),
-            URLQueryItem(name: "fields", value: "{incidents{type,geometry{type,coordinates},properties{id,events{description},delay,iconCategory,magnitudeOfDelay}}}"),
-            URLQueryItem(name: "language", value: "pl-PL"),
-            URLQueryItem(name: "timeValidityFilter", value: "present")
+            URLQueryItem(name: "apiVersion", value: "2"),
+            URLQueryItem(name: "bbox", value: box.queryValue),
+            URLQueryItem(name: "timeValidity", value: "present")
         ]
-        let data = try await load(url.url!)
+        var request = URLRequest(url: url.url!)
+        request.timeoutInterval = 12
+        request.setValue(apiKey, forHTTPHeaderField: "TomTom-Api-Key")
+        request.setValue("2", forHTTPHeaderField: "TomTom-Api-Version")
+        request.setValue("incidents(type,geometry(type,coordinates),properties(id,events(description),delayInSeconds,iconCategory,magnitudeOfDelay))",
+                         forHTTPHeaderField: "Attributes")
+        request.setValue("pl-PL", forHTTPHeaderField: "Accept-Language")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let data = try await load(request)
+        guard !data.isEmpty else { return [] }
         let features = try JSONDecoder().decode(IncidentResponse.self, from: data).incidents
         return features.compactMap { feature in
             let points = feature.geometry.points
             guard !points.isEmpty else { return nil }
-            let coordinate: Coordinate
-            if let route {
-                guard let closest = points.compactMap({ coordinate -> (Coordinate, RouteProjection)? in
-                    guard let projection = MapMatcher.project(coordinate, onto: route.coordinates) else { return nil }
-                    return (coordinate, projection)
-                }).min(by: { $0.1.distanceFromRoute < $1.1.distanceFromRoute }),
-                closest.1.distanceFromRoute < 120 else { return nil }
-                if let progress, closest.1.alongRoute + 50 < progress.traveledDistance || closest.1.alongRoute > progress.traveledDistance + 8_000 { return nil }
-                coordinate = closest.0
-            } else {
-                coordinate = points.min(by: { $0.distance(to: point) < $1.distance(to: point) })!
-            }
             let description = feature.properties.events?.first?.description ?? "Utrudnienie drogowe"
             return TrafficIncident(id: feature.properties.id ?? UUID().uuidString,
-                                   description: description, coordinate: coordinate,
-                                   delaySeconds: feature.properties.delay,
+                                   description: description, coordinate: points[points.count / 2],
+                                   delaySeconds: feature.properties.delayInSeconds,
                                    category: TrafficIncidentCategory(tomTomValue: feature.properties.iconCategory),
-                                   severity: TrafficIncidentSeverity(tomTomValue: feature.properties.magnitudeOfDelay))
+                                   severity: TrafficIncidentSeverity(tomTomValue: feature.properties.magnitudeOfDelay),
+                                   geometry: points)
         }
     }
 
     private func load(_ url: URL) async throws -> Data {
         var request = URLRequest(url: url)
         request.timeoutInterval = 12
+        return try await load(request)
+    }
+
+    private func load(_ request: URLRequest) async throws -> Data {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let response = response as? HTTPURLResponse else { throw TrafficError.invalidResponse }
         guard (200...299).contains(response.statusCode) else { throw TrafficError.http(response.statusCode) }
@@ -202,9 +333,9 @@ struct TomTomTrafficProvider: TrafficProvider {
     private struct IncidentProperties: Decodable {
         let id: String?
         let events: [IncidentEvent]?
-        let delay: Int?
-        let iconCategory: Int?
-        let magnitudeOfDelay: Int?
+        let delayInSeconds: Int?
+        let iconCategory: String?
+        let magnitudeOfDelay: String?
     }
     private struct IncidentEvent: Decodable { let description: String? }
     private struct JSONCoordinates: Decodable {

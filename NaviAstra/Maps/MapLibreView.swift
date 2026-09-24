@@ -5,9 +5,19 @@ import SwiftUI
 import UIKit
 
 private nonisolated enum RouteLineKind: Equatable {
-    case activeCasing, active, future, alternative, traveled, traffic, departed, accuracy
+    case activeCasing, active, activeHighlight, future, alternative, traveled, traffic, departed, accuracy
     case journeyCasing(walking: Bool, cycling: Bool)
     case journeyLeg(color: UInt32, walking: Bool, cycling: Bool)
+}
+
+private struct TransitStopRenderKey: Equatable {
+    let center: Coordinate
+    let zoom: Double
+    let selectedStopID: String?
+    let selectedRouteID: String?
+    let selectedTripStopIDs: Set<String>
+    let transitStopCount: Int
+    let showsOnlyRouteEndpoints: Bool
 }
 
 struct MapLibreView: UIViewRepresentable {
@@ -82,8 +92,12 @@ struct MapLibreView: UIViewRepresentable {
         private var accuracyHaloRadius: Double?
         private var destinationPin: MLNPointAnnotation?
         private var vehiclePin: MLNPointAnnotation?
+        private weak var vehicleAnnotationView: MLNAnnotationView?
+        private weak var vehicleArrow: UIImageView?
+        private var destinationMarkerIsArrived: Bool?
         private var transitVehiclePins: [String: MLNPointAnnotation] = [:]
         private var transitStopPins: [String: MLNPointAnnotation] = [:]
+        private var lastTransitStopRenderKey: TransitStopRenderKey?
         private var transitLine: MLNPolyline?
         private var shownTransitRouteID: String?
         private var shownTransitLineCoordinates: [Coordinate] = []
@@ -92,6 +106,7 @@ struct MapLibreView: UIViewRepresentable {
         private var searchIDs: [UUID] = []
         private var incidentPins: [MLNPointAnnotation] = []
         private var shownIncidentIDs: [String] = []
+        private var shownIncidents: [TrafficIncident] = []
         private var roadAlertPins: [MLNPointAnnotation] = []
         private var shownRoadAlertIDs: [String] = []
         private var shownRoadAlerts: [RoadSafetyAlert] = []
@@ -105,6 +120,8 @@ struct MapLibreView: UIViewRepresentable {
         private var cachedRouteProjection: RouteProjection?
         private var trafficCoordinates: [Coordinate]?
         private var trafficColorHex: UInt32?
+        private var trafficRasterTemplate: String?
+        private var trafficRasterVisible: Bool?
         private var lastStatus: NavigationStatus?
         private var lastColorScheme: ColorScheme?
         private var lastStyleURL: URL?
@@ -212,6 +229,9 @@ struct MapLibreView: UIViewRepresentable {
             updatePOIDensity(on: mapView)
             activeRouteSource = nil
             activeRouteStyleKey = ""
+            trafficRasterTemplate = nil
+            trafficRasterVisible = nil
+            updateTrafficRasterLayer(on: mapView)
             if let route = parent.state.route { updateActiveRouteShape(route, on: mapView) }
         }
 
@@ -259,7 +279,13 @@ struct MapLibreView: UIViewRepresentable {
                 for route in parent.state.alternatives {
                     let previousKind: RouteLineKind = route.id == oldActiveID ? .active : .alternative
                     let from = animateSelection ? previousStyle(for: route.id, kind: previousKind, in: previousLines) : nil
-                    addLine(route.coordinates, kind: .alternative, routeID: route.id, transitionFrom: from, to: map)
+                    let dashPeriod = max(300, route.distance / 40)
+                    let dashes = RouteMapGeometry.dashedSegments(route.coordinates,
+                                                                 dashLength: max(180, dashPeriod * 0.6),
+                                                                 gapLength: max(120, dashPeriod * 0.4))
+                    for path in dashes {
+                        addLine(path, kind: .alternative, routeID: route.id, transitionFrom: from, to: map)
+                    }
                 }
                 if animateReroute, let previousActive {
                     let dark = parent.colorScheme == .dark
@@ -287,6 +313,7 @@ struct MapLibreView: UIViewRepresentable {
 
             updateTraveledLine(on: map)
             updateTrafficLine(on: map)
+            updateTrafficRasterLayer(on: map)
             if showsOnlyRouteEndpoints {
                 removeClosurePin(from: map)
             } else {
@@ -302,21 +329,34 @@ struct MapLibreView: UIViewRepresentable {
                 destinationPin?.coordinate = destination.coordinate.cl
             } else if let pin = destinationPin { map.removeAnnotation(pin); destinationPin = nil }
 
-            let incidents = !showsOnlyRouteEndpoints && parent.settings.overlays.traffic
-                ? (parent.state.traffic?.incidents ?? []) : []
+            let routeDistance = parent.state.progress?.traveledDistance ?? 0
+            let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
+            let incidents = parent.settings.overlays.traffic
+                ? (parent.state.traffic?.incidents ?? []).filter { incident in
+                    guard isNavigating else { return true }
+                    guard let distance = incident.distanceAlongRoute else { return false }
+                    return distance > routeDistance && distance <= routeDistance + 12_000
+                }
+                : []
             let incidentIDs = incidents.map(\.id)
             if incidentIDs != shownIncidentIDs {
                 map.removeAnnotations(incidentPins)
                 incidentPins = incidents.map { incident in
                     let pin = MLNPointAnnotation()
                     pin.coordinate = incident.coordinate.cl
-                    pin.title = incident.description
+                    pin.title = incident.mapTitle
+                    pin.subtitle = incident.mapSubtitle
                     return pin
                 }
                 map.addAnnotations(incidentPins)
                 shownIncidentIDs = incidentIDs
             }
-            let routeDistance = parent.state.progress?.traveledDistance ?? 0
+            shownIncidents = Array(incidents)
+            for (incident, pin) in zip(incidents, incidentPins) {
+                pin.coordinate = incident.coordinate.cl
+                pin.title = incident.mapTitle
+                pin.subtitle = incident.mapSubtitle
+            }
             let roadAlerts = (!showsOnlyRouteEndpoints ? parent.state.roadSafetyAlerts : [])
                 .filter { alert in
                     guard let distance = alert.distanceAlongRoute else { return false }
@@ -364,6 +404,18 @@ struct MapLibreView: UIViewRepresentable {
                 marker.layer.shadowOpacity = parent.state.weakGPS ? 0.42 : 0.22
                 marker.layer.shadowRadius = parent.state.weakGPS ? 7 : 4
             }
+            let isFollowingRoute = parent.state.status == .navigating || parent.state.status == .rerouting
+            vehicleAnnotationView?.centerOffset = isFollowingRoute ? CGVector(dx: 0, dy: 18) : .zero
+            if let puckLocation = (parent.state.weakGPS ? parent.state.cameraLocation : parent.state.location),
+               isFollowingRoute, puckLocation.course.isFinite, puckLocation.course >= 0 {
+                let relativeBearing = puckLocation.course - map.camera.heading
+                vehicleArrow?.isHidden = false
+                vehicleArrow?.transform = CGAffineTransform(rotationAngle: CGFloat(relativeBearing * .pi / 180))
+            } else {
+                vehicleArrow?.isHidden = true
+                vehicleArrow?.transform = .identity
+            }
+            updateDestinationMarker(on: map)
 
             applyCameraIntent(to: map)
 
@@ -422,8 +474,17 @@ struct MapLibreView: UIViewRepresentable {
 
         private func updateTransitStopPins(on map: MLNMapView) {
             let zoom = map.zoomLevel
-            let visibleRadius = max(500, 12_000 / pow(2, max(0, zoom - 12)))
             let center = Coordinate(latitude: map.centerCoordinate.latitude, longitude: map.centerCoordinate.longitude)
+            let renderKey = TransitStopRenderKey(center: center, zoom: zoom,
+                                                  selectedStopID: parent.selectedTransitStopID,
+                                                  selectedRouteID: parent.selectedTransitRouteID,
+                                                  selectedTripStopIDs: parent.selectedTransitTripStopIDs,
+                                                  transitStopCount: parent.transitStops.count,
+                                                  showsOnlyRouteEndpoints: showsOnlyRouteEndpoints)
+            guard lastTransitStopRenderKey != renderKey else { return }
+            lastTransitStopRenderKey = renderKey
+
+            let visibleRadius = max(500, 12_000 / pow(2, max(0, zoom - 12)))
             let candidates = (showsOnlyRouteEndpoints ? [] : parent.transitStops).compactMap { stop -> (TransitStop, Double)? in
                 let isSelected = stop.id == parent.selectedTransitStopID
                 if !parent.selectedTransitTripStopIDs.isEmpty,
@@ -602,6 +663,22 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MLNMapView, viewFor annotation: MLNAnnotation) -> MLNAnnotationView? {
+            if let index = incidentPins.firstIndex(where: { $0 === annotation }),
+               shownIncidents.indices.contains(index) {
+                let incident = shownIncidents[index]
+                return trafficMarkerView(for: annotation,
+                                         reuseIdentifier: "traffic-incident-\(incident.category.rawValue)",
+                                         symbolName: incident.isRoadClosure ? "xmark.octagon.fill" : "exclamationmark.triangle.fill",
+                                         color: incident.isRoadClosure ? .systemRed : .systemOrange)
+            }
+
+            if let closurePin, annotation === closurePin {
+                return trafficMarkerView(for: annotation,
+                                         reuseIdentifier: "traffic-road-closure",
+                                         symbolName: "xmark.octagon.fill",
+                                         color: .systemRed)
+            }
+
             if let index = searchPins.firstIndex(where: { $0 === annotation }) {
                 let marker = MLNAnnotationView(reuseIdentifier: nil)
                 marker.frame = CGRect(x: 0, y: 0, width: 32, height: 32)
@@ -684,21 +761,26 @@ struct MapLibreView: UIViewRepresentable {
                     view.addSubview(marker)
                     view.frame = marker.frame
                     vehicleMarker = marker
+                    vehicleArrow = arrow
                 }
+                vehicleAnnotationView = view
                 return view
             }
             guard let pin = destinationPin, annotation === pin else { return nil }
             let identifier = "destination"
             let view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) ?? MLNAnnotationView(reuseIdentifier: identifier)
             if view.subviews.isEmpty {
-                let marker = UIImageView(image: UIImage(systemName: "mappin.circle.fill"))
-                marker.tintColor = .systemRed
+                let marker = UIImageView()
                 marker.contentMode = .scaleAspectFit
                 marker.frame = CGRect(x: 0, y: 0, width: 30, height: 36)
                 view.addSubview(marker)
                 view.frame = marker.frame
                 view.transform = CGAffineTransform(scaleX: 0.7, y: 0.7)
                 view.alpha = 0
+            }
+            destinationMarkerIsArrived = nil
+            updateDestinationMarker(on: mapView, for: view)
+            if view.alpha == 0 {
                 UIView.animate(withDuration: 0.28, delay: 0, options: .curveEaseOut) {
                     view.transform = .identity
                     view.alpha = 1
@@ -707,10 +789,54 @@ struct MapLibreView: UIViewRepresentable {
             return view
         }
 
+        private func updateDestinationMarker(on map: MLNMapView, for annotationView: MLNAnnotationView? = nil) {
+            guard let pin = destinationPin,
+                  let view = annotationView ?? map.view(for: pin),
+                  let marker = view.subviews.compactMap({ $0 as? UIImageView }).first else { return }
+            let arrived = parent.state.status == .arrived
+            guard destinationMarkerIsArrived != arrived else { return }
+            marker.image = UIImage(systemName: arrived ? "checkmark.circle.fill" : "mappin.circle.fill")
+            marker.tintColor = arrived ? .systemGreen : .systemRed
+            destinationMarkerIsArrived = arrived
+            if arrived {
+                marker.transform = CGAffineTransform(scaleX: 0.78, y: 0.78)
+                UIView.animate(withDuration: 0.32, delay: 0, usingSpringWithDamping: 0.72,
+                               initialSpringVelocity: 0.4, options: [.beginFromCurrentState]) {
+                    marker.transform = .identity
+                }
+            }
+        }
+
+        private func trafficMarkerView(for annotation: MLNAnnotation,
+                                       reuseIdentifier: String,
+                                       symbolName: String,
+                                       color: UIColor) -> MLNAnnotationView {
+            let marker = MLNAnnotationView(reuseIdentifier: reuseIdentifier)
+            marker.frame = CGRect(x: 0, y: 0, width: 32, height: 32)
+            marker.backgroundColor = color
+            marker.layer.cornerRadius = 16
+            marker.layer.borderWidth = 1.5
+            marker.layer.borderColor = UIColor.white.cgColor
+            marker.layer.shadowColor = UIColor.black.cgColor
+            marker.layer.shadowOpacity = 0.24
+            marker.layer.shadowRadius = 3
+            marker.isAccessibilityElement = true
+            marker.accessibilityLabel = annotation.title ?? "Informacja o ruchu"
+            marker.accessibilityHint = annotation.subtitle.flatMap { $0 }
+            let image = UIImageView(image: UIImage(systemName: symbolName))
+            image.tintColor = .white
+            image.contentMode = .scaleAspectFit
+            image.frame = CGRect(x: 7, y: 7, width: 18, height: 18)
+            marker.addSubview(image)
+            return marker
+        }
+
         func mapView(_ mapView: MLNMapView, annotationCanShowCallout annotation: MLNAnnotation) -> Bool {
             transitVehiclePins.values.contains { $0 === annotation }
                 || transitStopPins.values.contains { $0 === annotation }
                 || roadAlertPins.contains { $0 === annotation }
+                || incidentPins.contains { $0 === annotation }
+                || (closurePin.map { $0 === annotation } ?? false)
         }
 
         func mapView(_ mapView: MLNMapView, regionDidChangeAnimated animated: Bool) {
@@ -782,6 +908,7 @@ struct MapLibreView: UIViewRepresentable {
             let sourceID = "naviastra-active-route-source"
             let casingID = "naviastra-active-route-casing"
             let lineID = "naviastra-active-route-line"
+            let highlightID = "naviastra-active-route-highlight"
             let source: MLNShapeSource
             if let existing = style.source(withIdentifier: sourceID) as? MLNShapeSource {
                 source = existing
@@ -817,6 +944,17 @@ struct MapLibreView: UIViewRepresentable {
                 line.lineWidthTransition = MLNTransitionMake(0.3, 0)
                 style.addLayer(line)
             }
+            let highlight: MLNLineStyleLayer
+            if let existing = style.layer(withIdentifier: highlightID) as? MLNLineStyleLayer {
+                highlight = existing
+            } else {
+                highlight = MLNLineStyleLayer(identifier: highlightID, source: source)
+                highlight.lineCap = NSExpression(forConstantValue: "round")
+                highlight.lineJoin = NSExpression(forConstantValue: "round")
+                highlight.lineColorTransition = MLNTransitionMake(0.3, 0)
+                highlight.lineWidthTransition = MLNTransitionMake(0.3, 0)
+                style.addLayer(highlight)
+            }
             updateActiveRouteStyle(on: map)
 
             let progress = parent.state.status == .routePreview ? parent.state.routeRevealProgress : 1
@@ -829,10 +967,12 @@ struct MapLibreView: UIViewRepresentable {
         private func updateActiveRouteStyle(on map: MLNMapView) {
             guard let style = map.style,
                   let casing = style.layer(withIdentifier: "naviastra-active-route-casing") as? MLNLineStyleLayer,
-                  let line = style.layer(withIdentifier: "naviastra-active-route-line") as? MLNLineStyleLayer else { return }
+                  let line = style.layer(withIdentifier: "naviastra-active-route-line") as? MLNLineStyleLayer,
+                  let highlight = style.layer(withIdentifier: "naviastra-active-route-highlight") as? MLNLineStyleLayer else { return }
             let casingStyle = lineStyle(for: .activeCasing)
             let activeStyle = lineStyle(for: .active)
-            let key = "\(casingStyle.hex)-\(casingStyle.opacity)-\(casingStyle.width)-\(activeStyle.hex)-\(activeStyle.opacity)-\(activeStyle.width)"
+            let highlightStyle = lineStyle(for: .activeHighlight)
+            let key = "\(casingStyle.hex)-\(casingStyle.opacity)-\(casingStyle.width)-\(activeStyle.hex)-\(activeStyle.opacity)-\(activeStyle.width)-\(highlightStyle.hex)-\(highlightStyle.opacity)-\(highlightStyle.width)"
             guard key != activeRouteStyleKey else { return }
             activeRouteStyleKey = key
             casing.lineColor = NSExpression(forConstantValue: color(hex: casingStyle.hex, opacity: 1))
@@ -841,6 +981,9 @@ struct MapLibreView: UIViewRepresentable {
             line.lineColor = NSExpression(forConstantValue: color(hex: activeStyle.hex, opacity: 1))
             line.lineOpacity = NSExpression(forConstantValue: activeStyle.opacity)
             line.lineWidth = NSExpression(forConstantValue: activeStyle.width)
+            highlight.lineColor = NSExpression(forConstantValue: color(hex: highlightStyle.hex, opacity: 1))
+            highlight.lineOpacity = NSExpression(forConstantValue: highlightStyle.opacity)
+            highlight.lineWidth = NSExpression(forConstantValue: highlightStyle.width)
         }
 
         private func addJourneyLegs(_ legs: [JourneyLeg], routeID: UUID, transitionStyle: LineStyle?,
@@ -1000,6 +1143,48 @@ struct MapLibreView: UIViewRepresentable {
             }
         }
 
+        private func updateTrafficRasterLayer(on map: MLNMapView) {
+            let flowTemplate = parent.colorScheme == .dark
+                ? parent.state.trafficDarkTileURLTemplate
+                : parent.state.trafficLightTileURLTemplate
+            let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
+            let isVisible = parent.settings.overlays.traffic && !isNavigating
+            let incidentTemplate = parent.colorScheme == .dark
+                ? parent.state.trafficDarkIncidentTileURLTemplate
+                : parent.state.trafficLightIncidentTileURLTemplate
+            let templateKey = "\(flowTemplate ?? "")|\(incidentTemplate ?? "")"
+            guard templateKey != trafficRasterTemplate || isVisible != trafficRasterVisible else { return }
+            guard let style = map.style else { return }
+
+            let tileLayers = ["navi-astra-traffic-flow", "navi-astra-traffic-incidents"]
+            for identifier in tileLayers {
+                if let layer = style.layer(withIdentifier: identifier) { style.removeLayer(layer) }
+                if let source = style.source(withIdentifier: identifier) { style.removeSource(source) }
+            }
+            trafficRasterTemplate = templateKey
+            trafficRasterVisible = isVisible
+            guard isVisible else { return }
+
+            let tileSources: [(identifier: String, template: String?, opacity: Double)] = [
+                ("navi-astra-traffic-flow", flowTemplate, 0.78),
+                ("navi-astra-traffic-incidents", incidentTemplate, 0.88)
+            ]
+            for tile in tileSources {
+                guard let template = tile.template else { continue }
+                let source = MLNRasterTileSource(identifier: tile.identifier,
+                                                 tileURLTemplates: [template],
+                                                 options: [.tileSize: 256])
+                let layer = MLNRasterStyleLayer(identifier: tile.identifier, source: source)
+                layer.rasterOpacity = NSExpression(forConstantValue: tile.opacity)
+                style.addSource(source)
+                if let firstLabelLayer = style.layers.first(where: { $0 is MLNSymbolStyleLayer }) {
+                    style.insertLayer(layer, below: firstLabelLayer)
+                } else {
+                    style.addLayer(layer)
+                }
+            }
+        }
+
         private func updateClosurePin(on map: MLNMapView) {
             guard parent.settings.overlays.traffic, let flow = parent.state.traffic?.flow, flow.roadClosure, !flow.coordinates.isEmpty else {
                 removeClosurePin(from: map)
@@ -1008,6 +1193,7 @@ struct MapLibreView: UIViewRepresentable {
             if closurePin == nil {
                 let pin = MLNPointAnnotation()
                 pin.title = "Droga zamknięta"
+                pin.subtitle = "TomTom zgłasza zamknięty odcinek drogi."
                 closurePin = pin
                 map.addAnnotation(pin)
             }
@@ -1041,6 +1227,10 @@ struct MapLibreView: UIViewRepresentable {
                 return LineStyle(hex: activeRouteColor(dark: dark),
                                  opacity: parent.state.status == .rerouting ? 0.3 : 1,
                                  width: activeRouteWidth(navigating: navigating))
+            case .activeHighlight:
+                let opacity = parent.state.status == .rerouting ? 0.2 : (dark ? 0.76 : 0.66)
+                return LineStyle(hex: 0xFFFFFF, opacity: opacity,
+                                 width: max(1.5, activeRouteWidth(navigating: navigating) * 0.22))
             case .future:
                 return LineStyle(hex: dark ? RouteColorPalette.alternativeDark : RouteColorPalette.alternativeLight,
                                  opacity: 0.82, width: max(4, activeRouteWidth(navigating: navigating) - 4))
@@ -1053,7 +1243,7 @@ struct MapLibreView: UIViewRepresentable {
                                  width: journeyLegWidth(walking: walking, cycling: cycling, navigating: navigating))
             case .alternative:
                 return LineStyle(hex: dark ? RouteColorPalette.alternativeDark : RouteColorPalette.alternativeLight,
-                                 opacity: navigating ? 0 : 0.44, width: 5)
+                                 opacity: navigating ? 0 : 0.52, width: 5)
             case .accuracy:
                 return LineStyle(hex: 0x26A69A, opacity: 0.14, width: 6)
             case .traveled:
@@ -1236,6 +1426,7 @@ private final class NaviAstraMapStyle {
                 layer.isVisible = settings.overlays.buildings3D && settings.cameraMode == .threeD
                 layer.fillExtrusionColor = NSExpression(forConstantValue: color(dark ? 0x4A6271 : 0xC2D1D9))
                 layer.fillExtrusionOpacity = NSExpression(forConstantValue: navigating ? 0.42 : 0.72)
+                layer.fillExtrusionHasVerticalGradient = NSExpression(forConstantValue: true)
             }
             if let layer = layer as? MLNLineStyleLayer {
                 let source = layer.sourceLayerIdentifier ?? ""

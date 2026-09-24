@@ -40,6 +40,10 @@ final class NavigationState {
     var roadSafetyStatus: RoadSafetyStatus = .idle
     var traffic: TrafficSnapshot?
     var trafficStatus: TrafficStatus = .notConfigured
+    var trafficLightTileURLTemplate: String?
+    var trafficDarkTileURLTemplate: String?
+    var trafficLightIncidentTileURLTemplate: String?
+    var trafficDarkIncidentTileURLTemplate: String?
     var nearbySuggestions: [RouteStopSuggestion] = []
     var nearbyStatus: NearbySearchStatus = .idle
     var transitVehicles: [TransitVehicle] = []
@@ -476,6 +480,12 @@ final class NavigationEngine {
     private var trafficProjectionUpdatedAt: Date?
     private var projectedTrafficIncidents: [(alongRoute: Double, delaySeconds: Int?)] = []
     private var trafficRequestInFlight = false
+    private var routeTrafficRequestInFlight = false
+    private var lastRouteTrafficFetch = Date.distantPast
+    private var latestNearbyTrafficSnapshot: TrafficSnapshot?
+    private var routeTrafficIncidents: [TrafficIncident] = []
+    private var routeTrafficDataAvailable = false
+    private var routeTrafficUpdatedAt: Date?
     private var speedLimitRequestInFlight = false
     private var speedLimitProvider: SpeedLimitProvider
     private let roadDataProvider: RoadDataProvider
@@ -500,6 +510,7 @@ final class NavigationEngine {
             trafficProvider = TomTomTrafficProvider(apiKey: key)
             state.trafficStatus = .updating
         }
+        updateTrafficTileURLTemplates()
         locationManager.onLocation = { [weak self] in self?.receive($0) }
         locationManager.onAuthorization = { [weak self] authorization in
             guard let self else { return }
@@ -813,6 +824,7 @@ final class NavigationEngine {
         guard TrafficCredential.save(apiKey?.trimmingCharacters(in: .whitespacesAndNewlines)) else { return false }
         let normalizedKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines)
         trafficProvider = normalizedKey == nil || normalizedKey!.isEmpty ? nil : TomTomTrafficProvider(apiKey: normalizedKey!)
+        updateTrafficTileURLTemplates()
         invalidateTraffic()
         state.traffic = nil
         state.trafficStatus = trafficProvider == nil ? .notConfigured : .updating
@@ -820,35 +832,143 @@ final class NavigationEngine {
         if trafficProvider != nil { refreshTraffic(force: true) }
         return true
     }
+
+    private func updateTrafficTileURLTemplates() {
+        state.trafficLightTileURLTemplate = trafficProvider?.rasterFlowTileURLTemplate(style: .light)
+        state.trafficDarkTileURLTemplate = trafficProvider?.rasterFlowTileURLTemplate(style: .dark)
+        state.trafficLightIncidentTileURLTemplate = trafficProvider?.rasterIncidentTileURLTemplate(style: .light)
+        state.trafficDarkIncidentTileURLTemplate = trafficProvider?.rasterIncidentTileURLTemplate(style: .dark)
+    }
+
     func refreshTraffic(force: Bool = false) {
         guard state.transportMode == .car || state.status == .idle else { return }
         guard let trafficProvider else { state.trafficStatus = .notConfigured; return }
-        guard let location = state.location else { return }
-        guard !trafficRequestInFlight, force || Date().timeIntervalSince(lastTrafficFetch) >= 90 else { return }
+        let coordinate = state.location?.coordinate
+        let isNavigating = state.status == .navigating || state.status == .rerouting
+        let nearbyRefreshInterval: TimeInterval = isNavigating ? 60 : 120
+        if let coordinate, !trafficRequestInFlight,
+           force || Date().timeIntervalSince(lastTrafficFetch) >= nearbyRefreshInterval {
+            startNearbyTrafficRefresh(using: trafficProvider, at: coordinate)
+        }
+
+        guard let route = state.route,
+              state.status == .routePreview || isNavigating else { return }
+        let progress = state.progress
+        let routeInterval = routeTrafficRefreshInterval(progress: progress)
+        if !routeTrafficRequestInFlight,
+           force || Date().timeIntervalSince(lastRouteTrafficFetch) >= routeInterval {
+            startRouteTrafficRefresh(using: trafficProvider, route: route, progress: progress)
+        }
+    }
+
+    private func startNearbyTrafficRefresh(using provider: TrafficProvider, at coordinate: Coordinate) {
         trafficRequestInFlight = true
         lastTrafficFetch = Date()
-        state.trafficStatus = .updating
+        if state.traffic == nil { state.trafficStatus = .updating }
         let generation = trafficGeneration
-        let route = state.route
-        let coordinate = location.coordinate
         Task {
             defer { if generation == trafficGeneration { trafficRequestInFlight = false } }
             do {
-                let snapshot = try await trafficProvider.snapshot(near: coordinate, route: nil, progress: nil)
+                let snapshot = try await provider.snapshot(near: coordinate, incidentRadiusMeters: 3_500)
                 guard generation == trafficGeneration else { return }
-                state.traffic = snapshot
+                latestNearbyTrafficSnapshot = snapshot
+                publishTrafficSnapshot()
                 state.trafficStatus = .available
-                if (state.status == .navigating || state.status == .rerouting), let route {
-                    selectTrafficAdjustedRoute(from: snapshot, currentRoute: route, location: coordinate)
+                if let route = state.route, state.status == .navigating || state.status == .rerouting {
+                    let published = state.traffic ?? snapshot
+                    if confirmedClosureAhead(in: published, on: route, progress: state.progress) == nil {
+                        selectTrafficAdjustedRoute(from: published, currentRoute: route, location: coordinate)
+                    }
                 }
                 updateProgress()
-                handleConfirmedClosure(in: snapshot, near: location.coordinate)
+                if let published = state.traffic { handleConfirmedClosure(in: published, near: coordinate) }
             } catch {
                 guard generation == trafficGeneration else { return }
-                state.traffic = nil
+                publishTrafficSnapshot()
                 state.trafficStatus = .unavailable(error.localizedDescription)
             }
         }
+    }
+
+    private func startRouteTrafficRefresh(using provider: TrafficProvider, route: NavigationRoute,
+                                          progress: RouteProgress?) {
+        let startDistance = max(0, progress?.traveledDistance ?? 0)
+        let lookAhead = RouteTrafficMonitor.lookAheadDistance(for: route, progress: progress)
+        let endDistance = startDistance + lookAhead
+        let boxes = RouteTrafficMonitor.queryBoxes(for: route, from: startDistance, through: endDistance)
+        guard !boxes.isEmpty else { return }
+        routeTrafficRequestInFlight = true
+        lastRouteTrafficFetch = Date()
+        if state.traffic == nil { state.trafficStatus = .updating }
+        let generation = trafficGeneration
+        let routeID = route.id
+        Task {
+            defer { if generation == trafficGeneration { routeTrafficRequestInFlight = false } }
+            do {
+                let incidents = try await provider.incidents(in: boxes)
+                guard generation == trafficGeneration,
+                      state.route?.id == routeID else { return }
+                routeTrafficIncidents = RouteTrafficMonitor.matching(
+                    incidents, to: route, from: startDistance, through: endDistance)
+                routeTrafficDataAvailable = true
+                routeTrafficUpdatedAt = Date()
+                publishTrafficSnapshot()
+                state.trafficStatus = .available
+                if let published = state.traffic {
+                    let closureAhead = confirmedClosureAhead(in: published, on: route, progress: state.progress) != nil
+                    if !closureAhead, state.status == .navigating,
+                       let location = state.location?.coordinate {
+                        selectTrafficAdjustedRoute(from: published, currentRoute: route,
+                                                   location: location)
+                    }
+                    if let location = state.location?.coordinate {
+                        handleConfirmedClosure(in: published, near: location)
+                    }
+                }
+            } catch {
+                guard generation == trafficGeneration else { return }
+                routeTrafficIncidents = []
+                routeTrafficDataAvailable = false
+                routeTrafficUpdatedAt = nil
+                publishTrafficSnapshot()
+                state.trafficStatus = .unavailable(error.localizedDescription)
+            }
+        }
+    }
+
+    private func routeTrafficRefreshInterval(progress: RouteProgress?) -> TimeInterval {
+        let distance = progress?.traveledDistance ?? 0
+        let nearest = routeTrafficIncidents.compactMap { incident -> (Double, Bool)? in
+            guard let along = incident.distanceAlongRoute, along > distance else { return nil }
+            return (along - distance, incident.isRoadClosure)
+        }.min { $0.0 < $1.0 }
+        if nearest?.1 == true, (nearest?.0 ?? .infinity) <= 3_000 { return 20 }
+        if (nearest?.0 ?? .infinity) <= 10_000 { return 30 }
+        return state.status == .routePreview ? 90 : 60
+    }
+
+    private func publishTrafficSnapshot() {
+        let now = Date()
+        let nearby = latestNearbyTrafficSnapshot.flatMap {
+            now.timeIntervalSince($0.updatedAt) <= 180 ? $0 : nil
+        }
+        let routeDataIsFresh = routeTrafficDataAvailable &&
+            now.timeIntervalSince(routeTrafficUpdatedAt ?? .distantPast) <= 120
+        guard nearby != nil || routeDataIsFresh else {
+            state.traffic = nil
+            return
+        }
+        var incidentsByID: [String: TrafficIncident] = [:]
+        for incident in (nearby?.incidents ?? []) + (routeDataIsFresh ? routeTrafficIncidents : []) {
+            incidentsByID[incident.id] = incident
+        }
+        let routeUpdatedAt = routeDataIsFresh ? (routeTrafficUpdatedAt ?? .distantPast) : .distantPast
+        state.traffic = TrafficSnapshot(
+            flow: nearby?.flow,
+            incidents: Array(incidentsByID.values),
+            updatedAt: max(nearby?.updatedAt ?? .distantPast, routeUpdatedAt),
+            partialError: nearby?.partialError,
+            incidentDataAvailable: (nearby?.incidentDataAvailable ?? false) || routeDataIsFresh)
     }
 
     private func selectTrafficAdjustedRoute(from snapshot: TrafficSnapshot,
@@ -873,6 +993,11 @@ final class NavigationEngine {
         updateProgress()
         invalidateSpeedLimit()
         if let currentLocation = state.location { refreshSpeedLimit(for: currentLocation) }
+        routeTrafficIncidents = []
+        routeTrafficDataAvailable = false
+        routeTrafficUpdatedAt = nil
+        lastRouteTrafficFetch = .distantPast
+        publishTrafficSnapshot()
     }
 
     private func trafficAdjustedETA(for route: NavigationRoute, snapshot: TrafficSnapshot,
@@ -1024,21 +1149,28 @@ final class NavigationEngine {
 
     private var nearbySearchID = UUID()
 
-    func searchNearbyPlaces(_ category: NearbyPlaceCategory, nearDestination: Bool = false) async {
+    func searchNearbyPlaces(_ category: NearbyPlaceCategory, nearDestination: Bool = false,
+                            searchRadius: Double = 5_000, resultLimit: Int = 25) async {
         let searchID = UUID()
         nearbySearchID = searchID
         state.nearbySuggestions = []
-        guard let destination = state.destination else {
+        let destination = state.destination
+        guard !nearDestination || destination != nil else {
             state.nearbyStatus = .unavailable("Najpierw wybierz cel podróży.")
             return
         }
         let current = state.location?.coordinate
+        let nearestSearch = !nearDestination && destination == nil
         var coordinates = state.route?.coordinates ?? []
         if let current, let projection = MapMatcher.project(current, onto: coordinates) {
             coordinates = [projection.coordinate] + Array(coordinates.dropFirst(projection.segment + 1))
         }
-        guard nearDestination || coordinates.count > 1 else {
+        guard nearDestination || nearestSearch || coordinates.count > 1 else {
             state.nearbyStatus = .unavailable("Najpierw wyznacz trasę, aby znaleźć miejsca po drodze.")
+            return
+        }
+        guard !nearestSearch || current != nil else {
+            state.nearbyStatus = .unavailable("Poczekaj na ustalenie pozycji GPS i spróbuj ponownie.")
             return
         }
         let preferences = state.routingPreferences
@@ -1046,16 +1178,29 @@ final class NavigationEngine {
         state.nearbyStatus = .searching
         do {
             let placeProvider = OpenStreetMapNearbyPlaceProvider()
-            let candidates = nearDestination
-                ? try await placeProvider.search(category, around: destination.coordinate, radius: 2_000)
-                : try await placeProvider.search(category, along: coordinates, radius: 1_500)
+            let candidates: [NearbyPlaceCandidate]
+            if nearDestination, let destination {
+                candidates = try await placeProvider.search(category, around: destination.coordinate, radius: 2_000)
+            } else if nearestSearch, let current {
+                candidates = try await placeProvider.search(category, around: current,
+                                                            radius: searchRadius, resultLimit: resultLimit)
+            } else {
+                candidates = try await placeProvider.search(category, along: coordinates, radius: 1_500)
+            }
             try Task.checkCancellation()
             guard nearbySearchID == searchID else { return }
-            state.nearbySuggestions = candidates.map {
-                RouteStopSuggestion(candidate: $0, estimateStatus: .unavailable)
+            state.nearbySuggestions = candidates.enumerated().map { index, candidate in
+                RouteStopSuggestion(candidate: candidate,
+                                    estimateStatus: nearestSearch && index < 8 ? .calculating : .unavailable)
             }
             state.nearbyStatus = .available
-            guard !candidates.isEmpty, let current, state.transportMode == .car,
+            if nearestSearch {
+                guard let current, !candidates.isEmpty else { return }
+                await estimateNearbyTravel(for: Array(candidates.prefix(8)), from: current,
+                                           preferences: state.routingPreferences, searchID: searchID)
+                return
+            }
+            guard !nearestSearch, !candidates.isEmpty, let destination, let current, state.transportMode == .car,
                   let provider = routeProvider as? AdvancedRouteProvider else { return }
             let selected = Array(candidates.prefix(8))
             for index in selected.indices { state.nearbySuggestions[index].estimateStatus = .calculating }
@@ -1131,8 +1276,71 @@ final class NavigationEngine {
         }
     }
 
+    private func estimateNearbyTravel(for candidates: [NearbyPlaceCandidate], from origin: Coordinate,
+                                      preferences: RoutingPreferences, searchID: UUID) async {
+        guard let provider = routeProvider as? AdvancedRouteProvider else {
+            for index in state.nearbySuggestions.indices {
+                state.nearbySuggestions[index].estimateStatus = .unavailable
+            }
+            return
+        }
+        for index in candidates.indices where index < state.nearbySuggestions.count {
+            state.nearbySuggestions[index].estimateStatus = .calculating
+        }
+        do {
+            if let matrix = routeProvider as? ValhallaRouteProvider {
+                let rows = try await matrix.searchMatrix(sources: [origin],
+                    targets: candidates.map { $0.destination.coordinate }, mode: .car,
+                    preferences: preferences)
+                try Task.checkCancellation()
+                guard nearbySearchID == searchID else { return }
+                for index in candidates.indices {
+                    let estimate = rows[0][index]
+                    state.nearbySuggestions[index].travelTime = estimate.time
+                    state.nearbySuggestions[index].travelDistance = estimate.distance.map { $0 * 1_000 }
+                }
+            } else {
+                for start in stride(from: 0, to: candidates.count, by: 3) {
+                    try Task.checkCancellation()
+                    guard nearbySearchID == searchID else { return }
+                    await withTaskGroup(of: (Int, TimeInterval?, Double?).self) { group in
+                        for index in start..<min(start + 3, candidates.count) {
+                            let candidate = candidates[index]
+                            group.addTask { @MainActor in
+                                do {
+                                    let route = try await provider.calculateRoutes(from: origin,
+                                        to: candidate.destination.coordinate, through: [], mode: .car,
+                                        preferences: preferences, avoiding: []).first
+                                    return (index, route?.expectedTravelTime, route?.distance)
+                                } catch {
+                                    return (index, nil, nil)
+                                }
+                            }
+                        }
+                        for await (index, travelTime, travelDistance) in group {
+                            guard nearbySearchID == searchID, !Task.isCancelled else { continue }
+                            state.nearbySuggestions[index].travelTime = travelTime
+                            state.nearbySuggestions[index].travelDistance = travelDistance
+                        }
+                    }
+                }
+            }
+        } catch {
+            guard nearbySearchID == searchID, !Task.isCancelled else { return }
+        }
+        guard nearbySearchID == searchID, !Task.isCancelled else { return }
+        for index in candidates.indices where index < state.nearbySuggestions.count {
+            let suggestion = state.nearbySuggestions[index]
+            state.nearbySuggestions[index].estimateStatus = suggestion.travelTime != nil && suggestion.travelDistance != nil
+                ? .notRequested : .unavailable
+        }
+    }
+
     func selectNearbyPlace(_ destination: Destination, asFinalParking: Bool) async {
-        guard state.destination != nil else { return }
+        guard state.destination != nil else {
+            await preview(destination)
+            return
+        }
         let active = state.status == .navigating || state.status == .rerouting
         if asFinalParking {
             state.destination = destination
@@ -1297,9 +1505,9 @@ final class NavigationEngine {
             if state.cameraState != .startingNavigation { updateNavigationCameraState() }
             if state.transportMode == .car {
                 refreshSpeedLimit(for: state.location!)
-                refreshTraffic()
             }
         }
+        if state.transportMode == .car { refreshTraffic() }
     }
     private func updateProgress() {
         if state.transportMode == .transit,
@@ -1605,7 +1813,13 @@ final class NavigationEngine {
     private func invalidateTraffic() {
         trafficGeneration += 1
         trafficRequestInFlight = false
+        routeTrafficRequestInFlight = false
         lastTrafficFetch = .distantPast
+        lastRouteTrafficFetch = .distantPast
+        latestNearbyTrafficSnapshot = nil
+        routeTrafficIncidents = []
+        routeTrafficDataAvailable = false
+        routeTrafficUpdatedAt = nil
         state.traffic = nil
     }
     private func invalidateSpeedLimit() {
@@ -2042,12 +2256,8 @@ final class NavigationEngine {
         guard (state.status == .navigating || state.status == .rerouting), let route = state.route,
               let progress = state.progress, state.transportMode == .car,
               let provider = routeProvider as? AdvancedRouteProvider else { return }
-        let closureIncident = snapshot.incidents.first { incident in
-            guard let projection = MapMatcher.project(incident.coordinate, onto: route.coordinates) else { return false }
-            return incident.isRoadClosure && projection.alongRoute > progress.traveledDistance + 100 &&
-                projection.alongRoute < progress.traveledDistance + 10_000
-        }
-        guard let closureIncident, autoReroutedClosures.insert(closureIncident.id).inserted else { return }
+        guard let closureIncident = confirmedClosureAhead(in: snapshot, on: route, progress: progress) else { return }
+        guard autoReroutedClosures.insert(closureIncident.id).inserted else { return }
         Task {
             do {
                 let stops = unvisitedStops(from: location)
@@ -2080,6 +2290,33 @@ final class NavigationEngine {
                 state.errorMessage = "Nie udało się ominąć zgłoszonego zamknięcia: \(error.localizedDescription)"
             }
         }
+    }
+
+    private func confirmedClosureAhead(in snapshot: TrafficSnapshot, on route: NavigationRoute,
+                                       progress: RouteProgress?) -> TrafficIncident? {
+        let traveledDistance = progress?.traveledDistance ?? 0
+        let lookAheadEnd = traveledDistance + RouteTrafficMonitor.lookAheadDistance(for: route, progress: progress)
+        return snapshot.incidents.compactMap { incident -> (TrafficIncident, Double)? in
+            let updatedAt = incident.distanceAlongRoute != nil
+                ? routeTrafficUpdatedAt
+                : latestNearbyTrafficSnapshot?.updatedAt
+            guard let updatedAt, Date().timeIntervalSince(updatedAt) <= 120 else { return nil }
+            guard incident.isRoadClosure,
+                  let distance = closureDistanceAlongRoute(for: incident, on: route),
+                  distance > traveledDistance + 100,
+                  distance < lookAheadEnd else { return nil }
+            return (incident, distance)
+        }.min { $0.1 < $1.1 }?.0
+    }
+
+    private func closureDistanceAlongRoute(for incident: TrafficIncident,
+                                           on route: NavigationRoute) -> Double? {
+        if let alongRoute = incident.distanceAlongRoute { return alongRoute }
+        let geometry = incident.geometry.isEmpty ? [incident.coordinate] : incident.geometry
+        guard let projection = geometry.compactMap({ MapMatcher.project($0, onto: route.coordinates) })
+            .min(by: { $0.distanceFromRoute < $1.distanceFromRoute }),
+              projection.distanceFromRoute <= RouteTrafficMonitor.routeMatchToleranceMeters else { return nil }
+        return projection.alongRoute
     }
 }
 
