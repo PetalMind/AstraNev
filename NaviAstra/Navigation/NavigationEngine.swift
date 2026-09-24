@@ -56,11 +56,12 @@ enum NearbySearchStatus: Equatable {
 }
 
 enum EVPlanningError: LocalizedError {
-    case rangeNotConfigured, chargersUnavailable
+    case rangeNotConfigured, consumptionNotConfigured, chargersUnavailable
     var errorDescription: String? {
         switch self {
         case .rangeNotConfigured: "Wpisz szacowany zasięg EV w ustawieniach, aby uwzględnić postoje na ładowanie."
-        case .chargersUnavailable: "Nie znaleziono wystarczającej liczby ładowarek w danych OpenStreetMap w zasięgu tej trasy."
+        case .consumptionNotConfigured: "Wpisz zużycie energii oraz maksymalną moc ładowania auta w ustawieniach EV."
+        case .chargersUnavailable: "Nie znaleziono wystarczającej liczby publicznych ładowarek ze znanym złączem i mocą w danych OpenStreetMap."
         }
     }
 }
@@ -1728,6 +1729,10 @@ final class NavigationEngine {
                                    provider: AdvancedRouteProvider) async throws -> [NavigationRoute] {
         let preferences = state.routingPreferences
         guard preferences.evRangeKilometers > 0 else { throw EVPlanningError.rangeNotConfigured }
+        guard preferences.evConsumptionKWhPer100Km > 0,
+              preferences.evMaximumChargingPowerKW > 0 else {
+            throw EVPlanningError.consumptionNotConfigured
+        }
         let baseRoutes = try await provider.calculateRoutes(from: from, to: to,
                                                             through: explicitStops.map(\.coordinate), mode: .car,
                                                             preferences: preferences, avoiding: [])
@@ -1735,30 +1740,39 @@ final class NavigationEngine {
         let availableRange = preferences.availableEVRangeKilometers * 1_000
         let fullRange = preferences.evRangeKilometers * 1_000
         guard availableRange > 0, fullRange > 0 else { throw EVPlanningError.rangeNotConfigured }
-        guard baseRoute.distance > availableRange * 0.8 else {
+        let baseLength = zip(baseRoute.coordinates, baseRoute.coordinates.dropFirst())
+            .reduce(0.0) { $0 + $1.0.distance(to: $1.1) }
+        guard baseLength > 0 else { throw RoutingError.invalidResponse }
+        guard baseLength > availableRange * 0.8 else {
             state.evChargingStops = []
             return baseRoutes
         }
 
         let chargers = try await OpenStreetMapNearbyPlaceProvider().search(.charging, along: baseRoute.coordinates,
                                                                            radius: 1_200)
-        let routeLength = zip(baseRoute.coordinates, baseRoute.coordinates.dropFirst())
-            .reduce(0.0) { $0 + $1.0.distance(to: $1.1) }
-        guard routeLength > 0 else { throw RoutingError.invalidResponse }
+        let eligibleChargers = chargers.filter { candidate in
+            guard let station = candidate.chargingStation,
+                  station.availability != .unavailable,
+                  station.publicAccess != false,
+                  let power = station.maximumPowerKW, power > 0,
+                  !station.connectorTypes.isEmpty else { return false }
+            return preferences.evConnectorTypes.isEmpty
+                || !Set(station.connectorTypes).isDisjoint(with: preferences.evConnectorTypes)
+        }.sorted { $0.distanceFromRoute < $1.distanceFromRoute }
         var selected: [NearbyPlaceCandidate] = []
         var progress = 0.0
         var segmentRange = availableRange
-        while routeLength - progress > segmentRange * 0.8 {
+        while baseLength - progress > segmentRange * 0.8 {
             let limit = progress + segmentRange * 0.68
             let selectedIDs = Set(selected.map(\.id))
-            guard let next = chargers.last(where: { candidate in
+            guard let next = eligibleChargers.last(where: { candidate in
                 candidate.distanceFromRoute > progress + 300 && candidate.distanceFromRoute <= limit &&
                     !selectedIDs.contains(candidate.id)
             }) else { throw EVPlanningError.chargersUnavailable }
             selected.append(next)
             progress = next.distanceFromRoute
             segmentRange = fullRange
-            if selected.count >= 10 { throw EVPlanningError.chargersUnavailable }
+            if selected.count > 10 { throw EVPlanningError.chargersUnavailable }
         }
         let orderedStops = (explicitStops.map { destination -> (Destination, Double) in
             let along = MapMatcher.project(destination.coordinate, onto: baseRoute.coordinates)?.alongRoute ?? .infinity
@@ -1766,9 +1780,72 @@ final class NavigationEngine {
         } + selected.map { ($0.destination, $0.distanceFromRoute) })
             .sorted { $0.1 < $1.1 }
             .map(\.0)
-        state.evChargingStops = selected.map(\.destination)
-        return try await provider.calculateRoutes(from: from, to: to, through: orderedStops.map(\.coordinate),
-                                                  mode: .car, preferences: preferences, avoiding: [])
+        let routes = try await provider.calculateRoutes(from: from, to: to,
+                                                        through: orderedStops.map(\.coordinate),
+                                                        mode: .car, preferences: preferences, avoiding: [])
+        var energyFeasible: [NavigationRoute] = []
+        for var route in routes {
+            guard let chargePlan = evChargePlan(on: route, chargingCandidates: selected,
+                                                fullRange: fullRange, initialRange: availableRange,
+                                                consumptionKWhPer100Km: preferences.evConsumptionKWhPer100Km,
+                                                vehicleMaximumPowerKW: preferences.evMaximumChargingPowerKW) else {
+                continue
+            }
+            route.chargingStops = chargePlan.stops
+            route.chargingDuration = chargePlan.duration
+            route.expectedTravelTime += chargePlan.duration
+            energyFeasible.append(route)
+        }
+        guard !energyFeasible.isEmpty else { throw EVPlanningError.chargersUnavailable }
+        state.evChargingStops = energyFeasible[0].chargingStops.map(\.destination)
+        return energyFeasible.sorted { $0.expectedTravelTime < $1.expectedTravelTime }
+    }
+
+    private func evChargePlan(on route: NavigationRoute, chargingCandidates: [NearbyPlaceCandidate],
+                              fullRange: Double, initialRange: Double,
+                              consumptionKWhPer100Km: Double,
+                              vehicleMaximumPowerKW: Double) -> (stops: [EVChargingStop], duration: TimeInterval)? {
+        let routeLength = zip(route.coordinates, route.coordinates.dropFirst())
+            .reduce(0.0) { $0 + $1.0.distance(to: $1.1) }
+        guard routeLength > 0 else { return nil }
+        let stations = chargingCandidates.compactMap { candidate -> (NearbyPlaceCandidate, Double, ChargingStationCapabilities)? in
+            guard let station = candidate.chargingStation,
+                  let projection = MapMatcher.project(candidate.destination.coordinate, onto: route.coordinates),
+                  projection.distanceFromRoute <= 1_500,
+                  station.maximumPowerKW != nil else { return nil }
+            return (candidate, projection.alongRoute, station)
+        }.sorted { $0.1 < $1.1 }
+        guard !stations.isEmpty else { return nil }
+        var progress = 0.0
+        var remainingRange = initialRange
+        var plans: [EVChargingStop] = []
+        for index in stations.indices {
+            let (candidate, stationPosition, station) = stations[index]
+            let distanceToStation = stationPosition - progress
+            guard distanceToStation > 0,
+                  distanceToStation <= remainingRange * 0.8 else { return nil }
+            let rangeAtStation = remainingRange - distanceToStation
+            let nextPosition = index + 1 < stations.count ? stations[index + 1].1 : routeLength
+            let distanceToNextStop = nextPosition - stationPosition
+            guard distanceToNextStop > 0,
+                  distanceToNextStop <= fullRange * 0.8 else { return nil }
+            let targetRange = min(fullRange, distanceToNextStop / 0.8)
+            let addedRange = max(0, targetRange - rangeAtStation)
+            let acceptedPower = min(station.maximumPowerKW ?? 0, vehicleMaximumPowerKW)
+            guard acceptedPower > 0 else { return nil }
+            let energyKWh = addedRange / 1_000 / 100 * consumptionKWhPer100Km
+            let chargingTime = energyKWh / acceptedPower * 3_600
+            plans.append(EVChargingStop(
+                id: candidate.id, destination: candidate.destination,
+                connectorTypes: station.connectorTypes, maximumPowerKW: acceptedPower,
+                estimatedChargingTime: chargingTime,
+                availabilityKnown: station.availability == .available,
+                publicAccess: station.publicAccess))
+            remainingRange = min(fullRange, rangeAtStation + addedRange)
+            progress = stationPosition
+        }
+        guard routeLength - progress <= remainingRange * 0.8 else { return nil }
+        return (plans, plans.reduce(0) { $0 + $1.estimatedChargingTime })
     }
 
     private func handleConfirmedClosure(in snapshot: TrafficSnapshot, near location: Coordinate) {
