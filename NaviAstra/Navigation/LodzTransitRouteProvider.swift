@@ -120,7 +120,10 @@ private actor LodzTransitRepository {
                                 endpoint: URL) async -> [TransitWalkOption] {
         let candidates = Self.nearestStops(to: coordinate, in: stops, maximumDistance: 3_000, limit: 16)
         return await withTaskGroup(of: TransitWalkOption?.self, returning: [TransitWalkOption].self) { group in
-            for (stop, distance) in candidates {
+            var nextCandidate = 0
+            for _ in 0..<min(4, candidates.count) {
+                let (stop, distance) = candidates[nextCandidate]
+                nextCandidate += 1
                 group.addTask {
                     if distance <= 15 {
                         return TransitWalkOption(stop: stop, distance: distance, duration: 0,
@@ -138,6 +141,22 @@ private actor LodzTransitRepository {
             var results: [TransitWalkOption] = []
             for await result in group {
                 if let result { results.append(result) }
+                guard nextCandidate < candidates.count else { continue }
+                let (stop, distance) = candidates[nextCandidate]
+                nextCandidate += 1
+                group.addTask {
+                    if distance <= 15 {
+                        return TransitWalkOption(stop: stop, distance: distance, duration: 0,
+                                                 coordinates: [coordinate, stop.coordinate])
+                    }
+                    let provider = ValhallaRouteProvider(endpoint: endpoint)
+                    guard let route = try? await provider.calculateRoutes(from: coordinate, to: stop.coordinate,
+                                                                          mode: .walking).first,
+                          route.expectedTravelTime <= Self.maximumAccessWalkTime else { return nil }
+                    return TransitWalkOption(stop: stop, distance: route.distance,
+                                             duration: route.expectedTravelTime,
+                                             coordinates: route.coordinates)
+                }
             }
             return results.sorted { $0.duration < $1.duration }
         }
@@ -194,6 +213,14 @@ private actor LodzTransitRepository {
                             return nil
                         }
                     }
+                    let rideDuration = journey.legs.filter { $0.mode != "WALK" }
+                        .reduce(0.0) { $0 + $1.arrival.timeIntervalSince($1.departure) }
+                    journey.walkingDuration = journey.legs.filter { $0.mode == "WALK" }
+                        .reduce(0.0) {
+                            $0 + max(0, $1.arrival.timeIntervalSince($1.departure) - $1.minimumTransferTime)
+                        }
+                    journey.waitingDuration = max(0, journey.arrival.timeIntervalSince(journey.departure)
+                        - rideDuration - journey.walkingDuration)
                     resolved.journey = journey
                     resolved.expectedTravelTime = journey.arrival.timeIntervalSince(journey.departure)
                     resolved.coordinates = journey.legs.flatMap { leg in
