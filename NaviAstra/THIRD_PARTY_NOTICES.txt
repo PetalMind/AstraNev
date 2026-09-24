@@ -1,0 +1,13 @@
+Third-party software bundled with NaviAstra
+
+opening_hours.js 3.14.0
+Copyright and contributor notices are included in opening_hours.js.
+License: GNU Lesser General Public License, version 3 only (LGPL-3.0-only).
+The license text is in opening-hours-LGPL-3.0.txt.
+Source: https://github.com/opening-hours/opening_hours.js
+
+SunCalc 2.0.1
+Copyright (c) 2026, Volodymyr Agafonkin.
+License: BSD 2-Clause License.
+The license text is in suncalc-BSD-2-Clause.txt.
+Source: https://github.com/mourner/suncalc

@@ -90,7 +90,7 @@ struct PlaceDetailsView: View {
                     Button("Spróbuj ponownie", systemImage: "arrow.clockwise") { retry += 1 }
                         .font(.caption.weight(.semibold))
                 }
-            } else if result.isPOI, details?.hasAdditionalInformation != true {
+            } else if result.isPOI, details?.hasAdditionalInformation != true, supplementalDetails.isEmpty {
                 Text("Brak dodatkowych informacji o tym miejscu.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -126,6 +126,14 @@ struct PlaceDetailsView: View {
             } catch {
                 guard !Task.isCancelled else { return }
                 loadError = "Nie udało się uzupełnić informacji. Dostępne dane pozostają widoczne."
+            }
+            if let current = details,
+               current.timeZoneIdentifier == nil,
+               let timeZoneIdentifier = await PlaceTimeZoneResolver.identifier(for: result.destination.coordinate) {
+                guard !Task.isCancelled else { return }
+                var updated = current
+                updated.timeZoneIdentifier = timeZoneIdentifier
+                details = updated
             }
         }
     }
@@ -171,7 +179,7 @@ struct PlaceDetailsView: View {
             Label("Parking: \(parking)", systemImage: "parkingsign.circle").font(.subheadline)
         }
         if let parking = details.osmParking {
-            parkingInformation(parking)
+            parkingInformation(parking, details: details)
         }
         if let driveThrough = details.driveThrough {
             Label(driveThrough.lowercased() == "yes" ? "Drive-through" : "Drive-through: \(driveThrough)", systemImage: "car.side")
@@ -179,7 +187,7 @@ struct PlaceDetailsView: View {
         }
     }
 
-    private func parkingInformation(_ parking: ParkingInformation) -> some View {
+    private func parkingInformation(_ parking: ParkingInformation, details: PlaceDetails) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Label("Warunki parkowania", systemImage: "parkingsign.circle.fill")
                 .font(.subheadline.weight(.semibold))
@@ -232,7 +240,7 @@ struct PlaceDetailsView: View {
                 parkingRow("Rodzaj", parkingType.replacingOccurrences(of: "_", with: " "))
             }
             if let openingHours = parking.openingHours, !openingHours.isEmpty {
-                openingHoursDisclosure(openingHours)
+                openingHoursDisclosure(openingHours, details: details)
             }
 
             ForEach(parking.streetSides, id: \.side) { side in
@@ -321,9 +329,12 @@ struct PlaceDetailsView: View {
         }
     }
 
-    private func openingHoursDisclosure(_ rawHours: String) -> some View {
+    private func openingHoursDisclosure(_ rawHours: String, details: PlaceDetails) -> some View {
         DisclosureGroup("Godziny parkowania", isExpanded: $showHours) {
-            if let rows = PlaceOpeningHours(rawValue: rawHours).weeklyRows {
+            if let rows = PlaceOpeningHours(rawValue: rawHours,
+                                            coordinate: details.coordinate,
+                                            countryCode: details.countryCode,
+                                            timeZoneIdentifier: details.timeZoneIdentifier).weeklyRows {
                 ForEach(Array(rows.enumerated()), id: \.offset) { item in
                     HStack {
                         Text(item.element.0).frame(width: 46, alignment: .leading)
@@ -421,19 +432,23 @@ struct PlaceSearchResultRow: View {
     var isNavigating = false
     var primaryActionTitle = "Wyznacz trasę"
     var supplementalDetails: [String] = []
+    var expandedDetails: [String]? = nil
 
     @State private var isExpanded = false
     var showsSourceSubtitle = true
     var primaryMetaLine: String? = nil
+    var onExpand: (() -> Void)? = nil
 
     private var allSupplementalDetails: [String] {
-        (primaryMetaLine.map { [$0] } ?? []) + supplementalDetails
+        expandedDetails ?? supplementalDetails
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
+                let expands = !isExpanded
+                withAnimation(.easeInOut(duration: 0.2)) { isExpanded = expands }
+                if expands { onExpand?() }
             } label: {
                 HStack(spacing: 13) {
                     Text("\(index)")

@@ -512,7 +512,7 @@ private struct OverpassMember: Decodable {
     }
 }
 
-enum SpeedLimitParser {
+nonisolated enum SpeedLimitParser {
     static func parse(_ rawValue: String?, tags: [String: String] = [:]) -> Int? {
         guard let rawValue else { return polishLegalDefault(tags) }
         let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -587,7 +587,7 @@ enum SpeedLimitParser {
     }
 }
 
-enum ConditionalSpeedLimitResolver {
+nonisolated enum ConditionalSpeedLimitResolver {
     static func speedLimit(tags: [String: String], heading: Double,
                            segment: OSMRoadSpeedSegment, projection: RouteProjection,
                            date: Date, timeZone: TimeZone) -> Int? {

@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 #if os(iOS)
 import UIKit
 #endif
@@ -23,6 +24,7 @@ struct ContentView: View {
     @State private var mapPlaceEstimateTask: Task<Void, Never>?
     @State private var serverAddress = UserDefaults.standard.string(forKey: "routingServer") ?? "https://valhalla1.openstreetmap.de"
     @State private var showSettings = false
+    @State private var showVoiceControls = false
     @State private var showRouteSettings = false
     @State private var showFavorites = false
     @State private var showHistory = false
@@ -77,6 +79,28 @@ struct ContentView: View {
         return selectedTransitTripStopIDs
     }
 
+    private var activeNavigationTransitLeg: JourneyLeg? {
+        guard isNavigating, let legs = engine.state.route?.journey?.legs else { return nil }
+        if let index = engine.state.transitProgress?.legIndex, legs.indices.contains(index) {
+            if legs[index].mode != "WALK" { return legs[index] }
+            return legs.dropFirst(index + 1).first { $0.mode != "WALK" }
+        }
+        return legs.first { $0.mode != "WALK" && $0.arrival > Date() }
+    }
+
+    private var activeTransitStopID: String? {
+        if let progress = engine.state.transitProgress,
+           let legs = engine.state.route?.journey?.legs,
+           legs.indices.contains(progress.legIndex), legs[progress.legIndex].mode != "WALK" {
+            return progress.nextStop?.stopID
+        }
+        return activeNavigationTransitLeg?.transitStops.first?.stopID
+    }
+
+    private var alightingTransitStopID: String? {
+        activeNavigationTransitLeg?.transitStops.last?.stopID
+    }
+
     private var supportedBaseMap: Binding<String> {
         Binding(
             get: {
@@ -129,6 +153,51 @@ struct ContentView: View {
         engine.state.status == .navigating || engine.state.status == .rerouting
     }
 
+    private var availablePolishVoices: [AVSpeechSynthesisVoice] {
+        AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language == "pl-PL" }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private var voiceEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { engine.state.voiceEnabled },
+            set: { engine.setVoiceEnabled($0) })
+    }
+
+    private var voiceVerbosityBinding: Binding<VoiceVerbosity> {
+        Binding(
+            get: { engine.state.voicePreferences.verbosity },
+            set: { value in updateVoicePreferences { $0.verbosity = value } })
+    }
+
+    private var voiceIdentifierBinding: Binding<String> {
+        Binding(
+            get: {
+                let identifier = engine.state.voicePreferences.voiceIdentifier ?? ""
+                return availablePolishVoices.contains(where: { $0.identifier == identifier }) ? identifier : ""
+            },
+            set: { value in updateVoicePreferences { $0.voiceIdentifier = value.isEmpty ? nil : value } })
+    }
+
+    private var voiceRateBinding: Binding<Double> {
+        Binding(
+            get: { Double(engine.state.voicePreferences.speechRate) },
+            set: { value in updateVoicePreferences { $0.speechRate = Float(value) } })
+    }
+
+    private var voiceVolumeBinding: Binding<Double> {
+        Binding(
+            get: { Double(engine.state.voicePreferences.volume) },
+            set: { value in updateVoicePreferences { $0.volume = Float(value) } })
+    }
+
+    private func updateVoicePreferences(_ update: (inout VoiceGuidancePreferences) -> Void) {
+        var preferences = engine.state.voicePreferences
+        update(&preferences)
+        engine.setVoicePreferences(preferences)
+    }
+
     private var hasRoutePreviewContext: Bool {
         engine.state.destination != nil && !isNavigating &&
             (engine.state.status == .routePreview || engine.state.status == .routeCalculating || engine.state.status == .error)
@@ -161,6 +230,8 @@ struct ContentView: View {
                          selectedTransitRouteID: selectedTransitRouteID,
                          selectedTransitTripID: selectedTransitTripID,
                          selectedTransitTripStopIDs: transitStopIDsForMap,
+                         activeTransitStopID: activeTransitStopID,
+                         alightingTransitStopID: alightingTransitStopID,
                          transitLineCoordinates: transitLineCoordinatesForMap,
                          transitLineColor: selectedTransitLine?.colorHex,
                          settings: navigationMapSettings,
@@ -346,22 +417,7 @@ struct ContentView: View {
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
         }
-        .sheet(isPresented: $showTrafficDetails) {
-            NavigationStack {
-                ScrollView {
-                    trafficCard
-                        .padding()
-                }
-                .navigationTitle("Ruch na żywo")
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("Zamknij") { showTrafficDetails = false }
-                    }
-                }
-            }
-            .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.visible)
-        }
+        .sheet(isPresented: $showTrafficDetails) { trafficDetailsSheet }
         .task {
             engine.onTripFinished = { trip in localData.addTrip(trip) }
             engine.startLocation()
@@ -1535,7 +1591,7 @@ struct ContentView: View {
 
     private func transitETA(_ departure: Date, now: Date) -> String {
         let minutes = Int(ceil(departure.timeIntervalSince(now) / 60))
-        return minutes <= 0 ? "teraz" : "\(minutes) min"
+        return minutes <= 0 ? "teraz" : time(TimeInterval(minutes * 60))
     }
 
     private func transitDelayColor(_ seconds: Int?) -> Color {
@@ -1627,6 +1683,56 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private var voiceQuickControls: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            Toggle("Komunikaty głosowe", isOn: voiceEnabledBinding)
+            Picker("Gadatliwość", selection: voiceVerbosityBinding) {
+                ForEach(VoiceVerbosity.allCases) { value in
+                    Text(value.title).tag(value)
+                }
+            }
+            Picker("Głos polski", selection: voiceIdentifierBinding) {
+                Text("Automatyczny").tag("")
+                ForEach(availablePolishVoices, id: \.identifier) { voice in
+                    Text(voice.name).tag(voice.identifier)
+                }
+            }
+            voiceSliderRow(
+                title: "Tempo",
+                value: voiceRateBinding,
+                range: 0.38...0.62,
+                valueDescription: String(format: "%.0f%%", Double(engine.state.voicePreferences.speechRate) * 200)
+            )
+            voiceSliderRow(
+                title: "Głośność",
+                value: voiceVolumeBinding,
+                range: 0...1,
+                valueDescription: String(format: "%.0f%%", Double(engine.state.voicePreferences.volume) * 100)
+            )
+            Button("Więcej ustawień głosu") {
+                showVoiceControls = false
+                showSettings = true
+            }
+            .font(.footnote.weight(.semibold))
+        }
+        .padding(16)
+        .frame(width: 300)
+    }
+
+    private func voiceSliderRow(title: String, value: Binding<Double>,
+                                range: ClosedRange<Double>, valueDescription: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(valueDescription)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            Slider(value: value, in: range)
+        }
+    }
+
     private func mapControl(compact: Bool) -> some View {
         let layout = compact ? AnyLayout(HStackLayout(spacing: 10)) : AnyLayout(VStackLayout(spacing: 10))
         return HStack(alignment: .bottom) {
@@ -1639,7 +1745,7 @@ struct ContentView: View {
             layout {
                 if isNavigating {
                     Button {
-                        engine.state.voiceEnabled.toggle()
+                        engine.setVoiceEnabled(!engine.state.voiceEnabled)
                     } label: {
                         circleSurface {
                             Image(systemName: engine.state.voiceEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
@@ -1649,6 +1755,18 @@ struct ContentView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(engine.state.voiceEnabled ? "Wyłącz komunikaty głosowe" : "Włącz komunikaty głosowe")
+                    Button {
+                        showVoiceControls.toggle()
+                    } label: {
+                        circleSurface {
+                            Image(systemName: "slider.horizontal.3")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(.primary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Sterowanie głosem")
+                    .popover(isPresented: $showVoiceControls) { voiceQuickControls }
                 } else {
                     mapLayersMenu
                 }
@@ -2041,7 +2159,9 @@ struct ContentView: View {
                         .background(mapTransitColor(leg.lineColorHex ?? 0x2867B2), in: RoundedRectangle(cornerRadius: 10))
                     VStack(alignment: .leading, spacing: 2) {
                         Text(leg.to).font(.subheadline.weight(.semibold)).lineLimit(1)
-                        Text(minutesUntilDeparture > 0 ? "Odjazd za \(minutesUntilDeparture) min" : "W podróży · do \(leg.to)")
+                        Text(minutesUntilDeparture > 0
+                             ? "Odjazd za \(transitETA(leg.departure, now: context.date))"
+                             : "W podróży · do \(leg.to)")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 0)
@@ -2459,183 +2579,267 @@ struct ContentView: View {
         .buttonStyle(.plain)
     }
 
+    private var trafficDetailsSheet: some View {
+        NavigationStack {
+            ScrollView { trafficCard.padding() }
+                .navigationTitle("Ruch na żywo")
+                .toolbar {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Zamknij") { showTrafficDetails = false }
+                    }
+                }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
     private var settingsSheet: some View {
         NavigationStack {
-            Form {
-                Section("Rodzaj mapy") {
-                    Picker("Mapa bazowa", selection: supportedBaseMap) {
-                        ForEach(BaseMap.allCases) { value in
-                            Text(value.title).tag(value.rawValue)
-                                .disabled(!mapCapabilities.supports(value))
-                        }
-                    }
-                    if !mapCapabilities.supportsSatellite {
-                        unavailableReason("Mapa satelitarna", reason: "Obecne źródło mapy nie udostępnia zdjęć satelitarnych.")
-                    }
-                    if !mapCapabilities.supportsTerrain {
-                        unavailableReason("Mapa terenowa", reason: "Obecne źródło mapy nie udostępnia terenu.")
+            settingsForm
+                .navigationTitle("Ustawienia")
+                .toolbar {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Zamknij") { showSettings = false }
                     }
                 }
-
-                Section("Wygląd") {
-                    Picker("Wygląd", selection: $mapAppearance) {
-                        ForEach(MapAppearance.allCases) { value in Text(value.title).tag(value.rawValue) }
-                    }
-                    .disabled(!mapCapabilities.supportsApplicationDarkMode)
-                    if !mapCapabilities.supportsMapDarkStyle {
-                        Text("Styl mapy nie obsługuje wariantu nocnego. Wybór zmienia tylko wygląd aplikacji.")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
-
-                Section("Perspektywa i budynki") {
-                    Picker("Kamera", selection: $mapDimension) {
-                        ForEach(MapDimension.allCases) { value in Text(value.title).tag(value.rawValue) }
-                    }
-                    .pickerStyle(.segmented)
-                    .disabled(!mapCapabilities.supports3DCamera)
-                    if mapCapabilities.supports3DBuildings {
-                        Toggle("Budynki 3D", isOn: $mapBuildingsVisible)
-                    } else {
-                        unavailableToggle("Budynki 3D", reason: "Obecny styl mapy nie udostępnia osobnej warstwy budynków.")
-                    }
-                }
-
-                Section("Szczegóły mapy") {
-                    if mapCapabilities.supportsTrafficOverlay {
-                        Toggle("Ruch drogowy", isOn: $mapTrafficVisible)
-                    } else {
-                        unavailableToggle("Ruch drogowy", reason: "Obecny dostawca nie udostępnia warstwy ruchu.")
-                    }
-                    if mapCapabilities.supportsPOIToggle {
-                        Toggle("POI", isOn: $mapPOIVisible)
-                    } else {
-                        unavailableToggle("POI", reason: "Obecny styl mapy nie pozwala osobno ukryć punktów zainteresowania.")
-                    }
-                    if mapCapabilities.supportsTransitOverlay {
-                        Toggle("Wyróżnij kolej i tramwaje", isOn: $mapTransitVisible)
-                    } else {
-                        unavailableToggle("Transport publiczny", reason: "Brak niezależnej warstwy u obecnego dostawcy mapy.")
-                    }
-                    if mapCapabilities.supportsCyclingOverlay {
-                        Toggle("Trasy rowerowe", isOn: $mapCyclingVisible)
-                    } else {
-                        unavailableToggle("Trasy rowerowe", reason: "Brak niezależnej warstwy u obecnego dostawcy mapy.")
-                    }
-                }
-
-                Section("Kategorie miejsc na mapie") {
-                    ForEach(MapPOICategory.allCases) { category in
-                        Toggle(category.title, isOn: Binding(
-                            get: { mapPOICategories & category.mask != 0 },
-                            set: { enabled in
-                                if enabled { mapPOICategories |= category.mask }
-                                else { mapPOICategories &= ~category.mask }
-                            }))
-                    }
-                    .disabled(!mapPOIVisible)
-                    Text("Podczas prowadzenia mapa wybiera z zaznaczonych kategorii miejsca przydatne dla danego sposobu podróży. Przy celu wyróżnia parkingi i przystanki.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-
-                Section("Prowadzenie i ostrzeżenia") {
-                    Toggle("Komunikaty głosowe", isOn: Binding(
-                        get: { engine.state.voiceEnabled },
-                        set: { engine.state.voiceEnabled = $0 }
-                    ))
-                    Toggle("Ostrzegaj o przekroczeniu limitu", isOn: $speedWarningsEnabled)
-                }
-
-                Section("Preferencje trasy i pojazd elektryczny") {
-                    Toggle("Unikaj dróg płatnych", isOn: $routingDraft.avoidTolls)
-                    Toggle("Unikaj autostrad", isOn: $routingDraft.avoidHighways)
-                    Toggle("Unikaj promów", isOn: $routingDraft.avoidFerries)
-                    Toggle("Unikaj dróg gruntowych", isOn: $routingDraft.avoidUnpaved)
-                    Text("Serwer może poprowadzić tym typem drogi, jeśli nie ma rozsądnej alternatywy.")
-                        .font(.footnote).foregroundStyle(.secondary)
-
-                    Toggle("Uwzględnij zasięg EV", isOn: $routingDraft.evPlanningEnabled)
-                    if routingDraft.evPlanningEnabled {
-                        TextField("Zasięg przy pełnej baterii (km)", value: $routingDraft.evRangeKilometers,
-                                  format: .number.precision(.fractionLength(0)))
-                        Stepper("Poziom baterii: \(routingDraft.evBatteryPercent)%",
-                                value: $routingDraft.evBatteryPercent, in: 1...100, step: 5)
-                        TextField("Zużycie (kWh/100 km)", value: $routingDraft.evConsumptionKWhPer100Km,
-                                  format: .number.precision(.fractionLength(1)))
-                        TextField("Maks. moc ładowania auta (kW)", value: $routingDraft.evMaximumChargingPowerKW,
-                                  format: .number.precision(.fractionLength(0)))
-                        evConnectorToggle("ccs", title: "CCS")
-                        evConnectorToggle("type2", title: "Type 2")
-                        evConnectorToggle("chademo", title: "CHAdeMO")
-                        Text("Dostępny zasięg: \(Int(routingDraft.availableEVRangeKilometers.rounded())) km. Zaznaczone złącza filtrują stacje; pusty wybór dopuszcza wszystkie znane typy. Czas szacujemy z zużycia auta i mocy w OpenStreetMap, bez sprawdzania zajętości na żywo.")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                    Button("Zastosuj preferencje trasy") {
-                        Task { await engine.updateRoutingPreferences(routingDraft) }
-                    }
-                }
-
-                Section("Ruch na żywo · TomTom") {
-                    NavigationLink {
-                        ScrollView { trafficCard.padding() }
-                            .navigationTitle("Ruch na żywo")
-                    } label: {
-                        Label("Bieżące warunki", systemImage: "car.side")
-                    }
-                    Text(trafficConfigured
-                         ? "Klucz API zapisany na tym urządzeniu."
-                         : "Wpisz klucz API TomTom, aby włączyć bieżący ruch.")
-                    SecureField("Klucz API TomTom", text: $trafficKey)
-                    Button("Zapisz klucz") {
-                        guard !trafficKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-                        if engine.configureTraffic(apiKey: trafficKey) {
-                            trafficConfigured = true
-                            trafficKey = ""
-                        } else {
-                            engine.state.errorMessage = "Nie udało się zapisać klucza w pęku kluczy."
-                        }
-                    }
-                    .disabled(trafficKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                    if trafficConfigured {
-                        Button("Wyłącz ruch i usuń klucz", role: .destructive) {
-                            if engine.configureTraffic(apiKey: nil) { trafficConfigured = false }
-                            else { engine.state.errorMessage = "Nie udało się usunąć klucza z pęku kluczy." }
-                        }
-                    }
-                }
-
-                Section("Serwer Valhalla") {
-                    TextField("https://…", text: $serverAddress)
-                        .autocorrectionDisabled()
-                    Button("Zapisz serwer") {
-                        guard let url = URL(string: serverAddress), url.scheme == "https", url.host != nil else {
-                            engine.state.errorMessage = "Podaj poprawny adres HTTPS serwera Valhalla."
-                            return
-                        }
-                        UserDefaults.standard.set(serverAddress, forKey: "routingServer")
-                        engine.updateProvider(ValhallaRouteProvider(endpoint: url))
-                        showSettings = false
-                    }
-                }
-
-                Section("Komunikacja miejska · MPK Łódź") {
-                    Text("Rozkłady autobusów i tramwajów, aktualizacje kursów, opóźnienia i komunikaty są pobierane bezpośrednio z otwartych danych miasta Łodzi. Mapa pokazuje świeże pozycje pojazdów. Rozkład jest zapisywany na urządzeniu i odświeżany raz dziennie.")
-                    Link("Otwarte dane Łódź", destination: URL(string: "https://otwarte.miasto.lodz.pl/transport_komunikacja/")!)
-                    Link("Rozkłady MPK Łódź", destination: URL(string: "https://www.mpk.lodz.pl/rozklady/linie.jsp")!)
-                }
-
-                Text("Mapa, wyszukiwanie, routing, limity i ruch na żywo wymagają internetu. TomTom może zmienić ETA i wybór spośród wariantów Valhalli; limity są informacyjne. Trasy i GPS są zapisywane tylko w lokalnej historii podróży. Tryb offline nie jest dostępny.")
-                    .font(.footnote)
-            }
-            .navigationTitle("Ustawienia")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Zamknij") { showSettings = false }
-                }
-            }
-            .onAppear { routingDraft = engine.state.routingPreferences }
+                .onAppear { routingDraft = engine.state.routingPreferences }
         }
+    }
+
+    private var settingsForm: some View {
+        Form {
+            settingsMapTypeSection
+            settingsAppearanceSection
+            settingsCameraSection
+            settingsMapDetailsSection
+            settingsPOISection
+            settingsGuidanceSection
+            settingsVoiceSection
+            settingsRoutingSection
+            settingsTrafficSection
+            settingsValhallaSection
+            settingsTransitSection
+            settingsDisclaimer
+        }
+    }
+
+    private var settingsMapTypeSection: some View {
+        Section("Rodzaj mapy") {
+            Picker("Mapa bazowa", selection: supportedBaseMap) {
+                ForEach(BaseMap.allCases) { value in
+                    Text(value.title).tag(value.rawValue)
+                        .disabled(!mapCapabilities.supports(value))
+                }
+            }
+            if !mapCapabilities.supportsSatellite {
+                unavailableReason("Mapa satelitarna", reason: "Obecne źródło mapy nie udostępnia zdjęć satelitarnych.")
+            }
+            if !mapCapabilities.supportsTerrain {
+                unavailableReason("Mapa terenowa", reason: "Obecne źródło mapy nie udostępnia terenu.")
+            }
+        }
+    }
+
+    private var settingsAppearanceSection: some View {
+        Section("Wygląd") {
+            Picker("Wygląd", selection: $mapAppearance) {
+                ForEach(MapAppearance.allCases) { value in Text(value.title).tag(value.rawValue) }
+            }
+            .disabled(!mapCapabilities.supportsApplicationDarkMode)
+            if !mapCapabilities.supportsMapDarkStyle {
+                Text("Styl mapy nie obsługuje wariantu nocnego. Wybór zmienia tylko wygląd aplikacji.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var settingsCameraSection: some View {
+        Section("Perspektywa i budynki") {
+            Picker("Kamera", selection: $mapDimension) {
+                ForEach(MapDimension.allCases) { value in Text(value.title).tag(value.rawValue) }
+            }
+            .pickerStyle(.segmented)
+            .disabled(!mapCapabilities.supports3DCamera)
+            if mapCapabilities.supports3DBuildings {
+                Toggle("Budynki 3D", isOn: $mapBuildingsVisible)
+            } else {
+                unavailableToggle("Budynki 3D", reason: "Obecny styl mapy nie udostępnia osobnej warstwy budynków.")
+            }
+        }
+    }
+
+    private var settingsMapDetailsSection: some View {
+        Section("Szczegóły mapy") {
+            if mapCapabilities.supportsTrafficOverlay {
+                Toggle("Ruch drogowy", isOn: $mapTrafficVisible)
+            } else {
+                unavailableToggle("Ruch drogowy", reason: "Obecny dostawca nie udostępnia warstwy ruchu.")
+            }
+            if mapCapabilities.supportsPOIToggle {
+                Toggle("POI", isOn: $mapPOIVisible)
+            } else {
+                unavailableToggle("POI", reason: "Obecny styl mapy nie pozwala osobno ukryć punktów zainteresowania.")
+            }
+            if mapCapabilities.supportsTransitOverlay {
+                Toggle("Wyróżnij kolej i tramwaje", isOn: $mapTransitVisible)
+            } else {
+                unavailableToggle("Transport publiczny", reason: "Brak niezależnej warstwy u obecnego dostawcy mapy.")
+            }
+            if mapCapabilities.supportsCyclingOverlay {
+                Toggle("Trasy rowerowe", isOn: $mapCyclingVisible)
+            } else {
+                unavailableToggle("Trasy rowerowe", reason: "Brak niezależnej warstwy u obecnego dostawcy mapy.")
+            }
+        }
+    }
+
+    private var settingsPOISection: some View {
+        Section("Kategorie miejsc na mapie") {
+            ForEach(MapPOICategory.allCases) { category in
+                Toggle(category.title, isOn: Binding(
+                    get: { mapPOICategories & category.mask != 0 },
+                    set: { enabled in
+                        if enabled { mapPOICategories |= category.mask }
+                        else { mapPOICategories &= ~category.mask }
+                    }))
+            }
+            .disabled(!mapPOIVisible)
+            Text("Podczas prowadzenia mapa wybiera z zaznaczonych kategorii miejsca przydatne dla danego sposobu podróży. Przy celu wyróżnia parkingi i przystanki.")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    private var settingsGuidanceSection: some View {
+        Section("Prowadzenie i ostrzeżenia") {
+            Toggle("Komunikaty głosowe", isOn: voiceEnabledBinding)
+            Toggle("Ostrzegaj o przekroczeniu limitu", isOn: $speedWarningsEnabled)
+        }
+    }
+
+    private var settingsVoiceSection: some View {
+        Section("Głos i komunikaty") {
+            Picker("Gadatliwość", selection: voiceVerbosityBinding) {
+                ForEach(VoiceVerbosity.allCases) { value in
+                    Text(value.title).tag(value)
+                }
+            }
+            Text(engine.state.voicePreferences.verbosity.detail)
+                .font(.footnote).foregroundStyle(.secondary)
+            Picker("Głos polski", selection: voiceIdentifierBinding) {
+                Text("Automatyczny").tag("")
+                ForEach(availablePolishVoices, id: \.identifier) { voice in
+                    Text(voice.name).tag(voice.identifier)
+                }
+            }
+            if availablePolishVoices.isEmpty {
+                Text("System nie udostępnia listy głosów polskich; aplikacja poprosi o głos systemowy.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            voiceSliderRow(
+                title: "Tempo mowy",
+                value: voiceRateBinding,
+                range: 0.38...0.62,
+                valueDescription: String(format: "%.0f%%", Double(engine.state.voicePreferences.speechRate) * 200)
+            )
+            voiceSliderRow(
+                title: "Głośność komunikatów",
+                value: voiceVolumeBinding,
+                range: 0...1,
+                valueDescription: String(format: "%.0f%%", Double(engine.state.voicePreferences.volume) * 100)
+            )
+        }
+    }
+
+    private var settingsRoutingSection: some View {
+        Section("Preferencje trasy i pojazd elektryczny") {
+            Toggle("Unikaj dróg płatnych", isOn: $routingDraft.avoidTolls)
+            Toggle("Unikaj autostrad", isOn: $routingDraft.avoidHighways)
+            Toggle("Unikaj promów", isOn: $routingDraft.avoidFerries)
+            Toggle("Unikaj dróg gruntowych", isOn: $routingDraft.avoidUnpaved)
+            Text("Serwer może poprowadzić tym typem drogi, jeśli nie ma rozsądnej alternatywy.")
+                .font(.footnote).foregroundStyle(.secondary)
+
+            Toggle("Uwzględnij zasięg EV", isOn: $routingDraft.evPlanningEnabled)
+            if routingDraft.evPlanningEnabled {
+                TextField("Zasięg przy pełnej baterii (km)", value: $routingDraft.evRangeKilometers,
+                          format: .number.precision(.fractionLength(0)))
+                Stepper("Poziom baterii: \(routingDraft.evBatteryPercent)%",
+                        value: $routingDraft.evBatteryPercent, in: 1...100, step: 5)
+                TextField("Zużycie (kWh/100 km)", value: $routingDraft.evConsumptionKWhPer100Km,
+                          format: .number.precision(.fractionLength(1)))
+                TextField("Maks. moc ładowania auta (kW)", value: $routingDraft.evMaximumChargingPowerKW,
+                          format: .number.precision(.fractionLength(0)))
+                evConnectorToggle("ccs", title: "CCS")
+                evConnectorToggle("type2", title: "Type 2")
+                evConnectorToggle("chademo", title: "CHAdeMO")
+                Text("Dostępny zasięg: \(Int(routingDraft.availableEVRangeKilometers.rounded())) km. Zaznaczone złącza filtrują stacje; pusty wybór dopuszcza wszystkie znane typy. Czas szacujemy z zużycia auta i mocy w OpenStreetMap, bez sprawdzania zajętości na żywo.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            Button("Zastosuj preferencje trasy") {
+                Task { await engine.updateRoutingPreferences(routingDraft) }
+            }
+        }
+    }
+
+    private var settingsTrafficSection: some View {
+        Section("Ruch na żywo · TomTom") {
+            NavigationLink {
+                ScrollView { trafficCard.padding() }
+                    .navigationTitle("Ruch na żywo")
+            } label: {
+                Label("Bieżące warunki", systemImage: "car.side")
+            }
+            Text(trafficConfigured
+                 ? "Klucz API zapisany na tym urządzeniu."
+                 : "Wpisz klucz API TomTom, aby włączyć bieżący ruch.")
+            SecureField("Klucz API TomTom", text: $trafficKey)
+            Button("Zapisz klucz") {
+                guard !trafficKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                if engine.configureTraffic(apiKey: trafficKey) {
+                    trafficConfigured = true
+                    trafficKey = ""
+                } else {
+                    engine.state.errorMessage = "Nie udało się zapisać klucza w pęku kluczy."
+                }
+            }
+            .disabled(trafficKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+            if trafficConfigured {
+                Button("Wyłącz ruch i usuń klucz", role: .destructive) {
+                    if engine.configureTraffic(apiKey: nil) { trafficConfigured = false }
+                    else { engine.state.errorMessage = "Nie udało się usunąć klucza z pęku kluczy." }
+                }
+            }
+        }
+    }
+
+    private var settingsValhallaSection: some View {
+        Section("Serwer Valhalla") {
+            TextField("https://…", text: $serverAddress)
+                .autocorrectionDisabled()
+            Button("Zapisz serwer") {
+                guard let url = URL(string: serverAddress), url.scheme == "https", url.host != nil else {
+                    engine.state.errorMessage = "Podaj poprawny adres HTTPS serwera Valhalla."
+                    return
+                }
+                UserDefaults.standard.set(serverAddress, forKey: "routingServer")
+                engine.updateProvider(ValhallaRouteProvider(endpoint: url))
+                showSettings = false
+            }
+        }
+    }
+
+    private var settingsTransitSection: some View {
+        Section("Komunikacja miejska · MPK Łódź") {
+            Text("Rozkłady autobusów i tramwajów, aktualizacje kursów, opóźnienia i komunikaty są pobierane bezpośrednio z otwartych danych miasta Łodzi. Mapa pokazuje świeże pozycje pojazdów. Rozkład jest zapisywany na urządzeniu i odświeżany raz dziennie.")
+            Link("Otwarte dane Łódź", destination: URL(string: "https://otwarte.miasto.lodz.pl/transport_komunikacja/")!)
+            Link("Rozkłady MPK Łódź", destination: URL(string: "https://www.mpk.lodz.pl/rozklady/linie.jsp")!)
+        }
+    }
+
+    private var settingsDisclaimer: some View {
+        Text("Mapa, wyszukiwanie, routing, limity i ruch na żywo wymagają internetu. TomTom może zmienić ETA i wybór spośród wariantów Valhalli; limity są informacyjne. Trasy i GPS są zapisywane tylko w lokalnej historii podróży. Tryb offline nie jest dostępny.")
+            .font(.footnote)
     }
 
     private var routeSettingsSheet: some View {
@@ -3345,33 +3549,41 @@ private struct NearbyPlacesSheet: View {
     }
 
     private var nearestSearch: Bool {
-        !nearDestination && engine.state.destination == nil
+        !nearDestination && engine.state.status != .navigating && engine.state.status != .rerouting
     }
 
     private var availableOperators: [String] {
-        Array(Set(engine.state.nearbySuggestions.compactMap { $0.candidate.operatorOrBrand })).sorted()
+        Array(Set(engine.state.nearbySuggestions
+            .filter { $0.candidate.category == category }
+            .compactMap { $0.candidate.operatorOrBrand })).sorted()
     }
 
     private var availableFuelTypes: [String] {
-        Array(Set(engine.state.nearbySuggestions.flatMap { $0.candidate.fuelTypes })).sorted()
+        Array(Set(engine.state.nearbySuggestions
+            .filter { $0.candidate.category == .fuel }
+            .flatMap { $0.candidate.fuelTypes })).sorted()
     }
 
     private var availableConnectors: [String] {
-        Array(Set(engine.state.nearbySuggestions.flatMap { $0.candidate.chargingStation?.connectorTypes ?? [] })).sorted()
+        Array(Set(engine.state.nearbySuggestions
+            .filter { $0.candidate.category == .charging }
+            .flatMap { $0.candidate.chargingStation?.connectorTypes ?? [] })).sorted()
     }
 
     private var availablePowerThresholds: [Double] {
         [50.0, 100.0, 150.0].filter { threshold in
-            engine.state.nearbySuggestions.contains { ($0.candidate.chargingStation?.maximumPowerKW ?? 0) >= threshold }
+            engine.state.nearbySuggestions.contains {
+                $0.candidate.category == .charging && ($0.candidate.chargingStation?.maximumPowerKW ?? 0) >= threshold
+            }
         }
     }
 
     private var hasOpeningHoursData: Bool {
-        engine.state.nearbySuggestions.contains { $0.candidate.isOpenNow != nil }
+        engine.state.nearbySuggestions.contains { $0.candidate.category == category && $0.candidate.isOpenNow != nil }
     }
 
     private var has24HourData: Bool {
-        engine.state.nearbySuggestions.contains { $0.candidate.isOpen24Hours }
+        engine.state.nearbySuggestions.contains { $0.candidate.category == category && $0.candidate.isOpen24Hours }
     }
 
     private var hasApplicableFilters: Bool {
@@ -3437,15 +3649,20 @@ private struct NearbyPlacesSheet: View {
     private func supplementalDetails(for candidate: NearbyPlaceCandidate) -> [String] {
         var details: [String] = []
         if let operatorName = candidate.operatorOrBrand { details.append(operatorName) }
+        if candidate.isOpen24Hours {
+            details.append("Otwarte 24h")
+        } else if let rawHours = candidate.openingHours,
+                  let timeZoneIdentifier = candidate.timeZoneIdentifier
+                    ?? PlaceTimeZoneResolver.cachedIdentifier(for: candidate.destination.coordinate),
+                  let status = PlaceOpeningHours(rawValue: rawHours,
+                                                 coordinate: candidate.destination.coordinate,
+                                                 countryCode: candidate.countryCode,
+                                                 timeZoneIdentifier: timeZoneIdentifier).statusText() {
+            details.append(status)
+        }
         if candidate.category == .fuel {
             if !candidate.fuelTypes.isEmpty {
                 details.append(candidate.fuelTypes.map(fuelTypeTitle).joined(separator: " · "))
-            }
-            if candidate.isOpen24Hours {
-                details.append("Otwarte 24h")
-            } else if let rawHours = candidate.openingHours,
-                      let status = PlaceOpeningHours(rawValue: rawHours).statusText() {
-                details.append(status)
             }
         } else if candidate.category == .charging, let station = candidate.chargingStation {
             var capabilities: [String] = []
@@ -3456,10 +3673,45 @@ private struct NearbyPlacesSheet: View {
                 capabilities.append(station.connectorTypes.map(connectorTitle).joined(separator: " / "))
             }
             if !capabilities.isEmpty { details.append(capabilities.joined(separator: " · ")) }
-            if let count = station.chargingPointCount { details.append("\(count) stanowiska") }
+            if let count = station.chargingPointCount { details.append(chargingPointCountTitle(count)) }
             if station.availability == .unavailable { details.append("Oznaczona jako niedziałająca w OSM") }
         }
         return details
+    }
+
+    private func expandedDetails(for candidate: NearbyPlaceCandidate) -> [String] {
+        if candidate.category == .fuel {
+            return candidate.fuelTypes.map(fuelTypeTitle)
+        }
+        guard candidate.category == .charging, let station = candidate.chargingStation else { return [] }
+        var details: [String] = []
+        var capabilities: [String] = []
+        if let power = station.maximumPowerKW {
+            capabilities.append("\(Int(power.rounded())) kW")
+        }
+        if !station.connectorTypes.isEmpty {
+            capabilities.append(station.connectorTypes.map(connectorTitle).joined(separator: " / "))
+        }
+        if !capabilities.isEmpty { details.append(capabilities.joined(separator: " · ")) }
+        if let count = station.chargingPointCount { details.append(chargingPointCountTitle(count)) }
+        if station.availability == .unavailable { details.append("Oznaczona jako niedziałająca w OSM") }
+        details.append("Brak danych o wolnych stanowiskach na żywo")
+        return details
+    }
+
+    private func chargingPointCountTitle(_ count: Int) -> String {
+        let remainder = count % 100
+        let suffix: String
+        if (12...14).contains(remainder) {
+            suffix = "punktów ładowania"
+        } else {
+            switch count % 10 {
+            case 1: suffix = "punkt ładowania"
+            case 2...4: suffix = "punkty ładowania"
+            default: suffix = "punktów ładowania"
+            }
+        }
+        return "\(count) \(suffix)"
     }
 
     var body: some View {
@@ -3473,6 +3725,8 @@ private struct NearbyPlacesSheet: View {
                                 category = value
                                 expandedRadius = false
                                 clearFilters()
+                                engine.state.nearbySuggestions = []
+                                engine.state.nearbyStatus = .searching
                             } label: {
                                 Label(value.title, systemImage: value.symbol)
                                     .font(.subheadline.weight(.medium))
@@ -3490,13 +3744,13 @@ private struct NearbyPlacesSheet: View {
                 if hasApplicableFilters {
                     HStack {
                         Menu {
+                            if hasOpeningHoursData {
+                                Toggle("Otwarte teraz", isOn: $openNowOnly)
+                            }
+                            if has24HourData {
+                                Toggle("Całodobowe 24h", isOn: $open24HoursOnly)
+                            }
                             if category == .fuel {
-                                if hasOpeningHoursData {
-                                    Toggle("Otwarte teraz", isOn: $openNowOnly)
-                                }
-                                if has24HourData {
-                                    Toggle("Całodobowe 24h", isOn: $open24HoursOnly)
-                                }
                                 if !availableFuelTypes.isEmpty {
                                     Picker("Rodzaj paliwa", selection: $selectedFuelType) {
                                         Text("Dowolne").tag(Optional<String>.none)
@@ -3548,7 +3802,7 @@ private struct NearbyPlacesSheet: View {
                 Text(nearDestination
                      ? "Parking jest wyszukiwany w pobliżu celu. Dostępność wolnych miejsc nie jest sprawdzana."
                      : nearestSearch
-                        ? "Najbliższe miejsca do \(expandedRadius ? 15 : 5) km od Twojej lokalizacji."
+                        ? "\(category.title) w promieniu do \(expandedRadius ? 15 : 5) km od Twojej lokalizacji."
                         : "Miejsca do 1,5 km od pozostałej trasy. Czas objazdu uzupełniamy po znalezieniu wyników.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -3587,6 +3841,18 @@ private struct NearbyPlacesSheet: View {
                         List(Array(filteredSuggestions.enumerated()), id: \.element.id) { index, suggestion in
                             let result = searchResult(suggestion)
                             let details = supplementalDetails(for: suggestion.candidate)
+                            let operatorName = suggestion.candidate.operatorOrBrand
+                            let remainingDetails = operatorName == nil ? details : Array(details.dropFirst())
+                            let shouldEstimateOnExpand = nearestSearch
+                                && suggestion.estimateStatus != .calculating
+                                && (suggestion.travelTime == nil || suggestion.travelDistance == nil)
+                            let estimateOnExpand: (() -> Void)? = shouldEstimateOnExpand
+                                ? { _ = Task { await engine.estimateNearbyTravel(for: suggestion.id) } }
+                                : nil
+                            let navigationActive = engine.state.status == .navigating || engine.state.status == .rerouting
+                            let primaryActionTitle = nearDestination
+                                ? "Wybierz parking"
+                                : navigationActive ? "Dodaj przystanek" : "Jedź"
                             PlaceSearchResultRow(
                                 result: result, index: index + 1,
                                 isSaved: savedPlaces.contains { $0.kind == .favorite && $0.destination.coordinate == result.destination.coordinate },
@@ -3595,11 +3861,13 @@ private struct NearbyPlacesSheet: View {
                                     onSelect(result.destination)
                                     dismiss()
                                 },
-                                isNavigating: !nearestSearch,
-                                primaryActionTitle: nearDestination ? "Wybierz parking" : nearestSearch ? "Jedź" : "Dodaj przystanek",
-                                supplementalDetails: Array(details.dropFirst()),
+                                isNavigating: navigationActive,
+                                primaryActionTitle: primaryActionTitle,
+                                supplementalDetails: remainingDetails,
+                                expandedDetails: expandedDetails(for: suggestion.candidate),
                                 showsSourceSubtitle: false,
-                                primaryMetaLine: details.first)
+                                primaryMetaLine: operatorName,
+                                onExpand: estimateOnExpand)
                         }
                         .listStyle(.plain)
                     }
@@ -3609,7 +3877,7 @@ private struct NearbyPlacesSheet: View {
             .padding(.top, 14)
             .navigationTitle(nearDestination
                              ? "Parking przy celu"
-                             : nearestSearch ? "Najbliższe miejsca" : "Miejsca po trasie")
+                             : nearestSearch ? category.title : "\(category.title) po trasie")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Zamknij") { dismiss() }
@@ -3621,7 +3889,8 @@ private struct NearbyPlacesSheet: View {
                                                 resultLimit: expandedRadius ? 50 : 25)
             }
             .safeAreaInset(edge: .bottom) {
-                if nearestSearch, !expandedRadius, engine.state.nearbyStatus == .available {
+                if nearestSearch, !expandedRadius, engine.state.nearbyStatus == .available,
+                   engine.state.nearbySuggestions.allSatisfy({ $0.estimateStatus != .calculating }) {
                     Button {
                         expandedRadius = true
                     } label: {
@@ -3647,9 +3916,12 @@ private struct NearbyPlacesSheet: View {
         case .charging: "charging_station"
         }
         return SearchResult(destination: candidate.destination, street: nil, houseNumber: nil,
-                            city: nil, countryCode: nil, isPOI: true,
+                            city: nil, countryCode: candidate.countryCode, isPOI: true,
                             osmID: candidate.id.replacingOccurrences(of: "-", with: ":"),
                             category: candidate.osmCategory ?? category,
+                            brand: candidate.brand, operatorName: candidate.operatorName,
+                            openingHours: candidate.openingHours,
+                            timeZoneIdentifier: candidate.timeZoneIdentifier,
                             straightDistance: nearDestination
                                 ? engine.state.destination.map { $0.coordinate.distance(to: candidate.destination.coordinate) }
                                 : nearestSearch

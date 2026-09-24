@@ -19,6 +19,8 @@ Dłuższe dotknięcie mapy wybiera cel na iOS; na macOS służy do tego podwójn
 
 Aplikacja wymaga internetu do map, wyszukiwania, wyznaczania trasy, danych drogowych i ruchu. Limity i kamery OSM są pobierane korytarzem wybranej trasy z publicznego Overpass i cache'owane lokalnie przez 24 godziny; gdy limitu OSM nie da się jednoznacznie dopasować, `/locate` wysyła bieżącą pozycję do skonfigurowanego serwera Valhalla. Planer MPK pobiera rozkład i realtime z miejskich otwartych danych. Ruch wysyła bieżącą pozycję do TomTom. Zgoda na lokalizację „Zawsze” jest używana wyłącznie podczas aktywnej nawigacji komunikacją i jest wyłączana po zakończeniu podróży lub dotarciu do celu. Rozwinięcie szczegółów POI wysyła typ i identyfikator obiektu OSM do Overpass, jeśli źródło je udostępnia; dla kafli MapLibre typ jest potwierdzany przez bliski obiekt z pasującym ID i nazwą. MapKit używa ścisłego dopasowania nazwy i pozycji jako fallbacku. Odpowiedź jest przechowywana lokalnie do 24 godzin. Historia przechowuje cel i zbiorcze statystyki, bez pełnego śladu GPS. Tryb offline nie jest zaimplementowany. Publiczny Overpass jest źródłem prototypowym; produkcyjne wdrożenie wymaga własnego importera i bazy. Publiczne usługi map, wyszukiwania i routingu wymagają oceny dostępności oraz limitów przed wydaniem produkcyjnym.
 
+Szczegółowy opis źródeł, pobierania i interpretacji danych POI, sklepów oraz godzin otwarcia znajduje się w [docs/PLACES.md](docs/PLACES.md).
+
 Do kompilacji iOS wymagany jest pełny Xcode z obsługą iOS 27. Cel `NaviAstraMac` wymaga macOS 15 lub nowszego.
 
 

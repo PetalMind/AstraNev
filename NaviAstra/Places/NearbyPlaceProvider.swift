@@ -52,6 +52,8 @@ struct NearbyPlaceCandidate: Identifiable {
     var brand: String? = nil
     var operatorName: String? = nil
     var openingHours: String? = nil
+    var countryCode: String? = nil
+    var timeZoneIdentifier: String? = nil
     var fuelTypes: [String] = []
     var chargingStation: ChargingStationCapabilities? = nil
 
@@ -59,9 +61,15 @@ struct NearbyPlaceCandidate: Identifiable {
         [operatorName, brand].compactMap { $0 }.first { $0 != destination.name }
     }
 
-    var isOpenNow: Bool? {
+    @MainActor var isOpenNow: Bool? {
         guard let openingHours else { return nil }
-        return PlaceOpeningHours(rawValue: openingHours).isOpen()
+        let resolvedTimeZoneIdentifier = self.timeZoneIdentifier
+            ?? PlaceTimeZoneResolver.cachedIdentifier(for: destination.coordinate)
+        guard let resolvedTimeZoneIdentifier else { return nil }
+        return PlaceOpeningHours(rawValue: openingHours,
+                                 coordinate: destination.coordinate,
+                                 countryCode: countryCode,
+                                 timeZoneIdentifier: resolvedTimeZoneIdentifier).isOpen()
     }
 
     var isOpen24Hours: Bool {
@@ -180,6 +188,7 @@ struct OpenStreetMapNearbyPlaceProvider {
                                                brand: tags["brand"],
                                                operatorName: tags["operator"],
                                                openingHours: tags["opening_hours"],
+                                               countryCode: Self.countryCode(from: tags),
                                                fuelTypes: category == .fuel ? Self.fuelTypes(from: tags) : [],
                                                chargingStation: category == .charging
                                                    ? Self.chargingCapabilities(from: tags) : nil))
@@ -189,6 +198,20 @@ struct OpenStreetMapNearbyPlaceProvider {
             guard !unique.contains(where: { $0.destination.coordinate.distance(to: candidate.destination.coordinate) < 15 }) else { continue }
             unique.append(candidate)
             if unique.count >= max(1, min(resultLimit, 100)) { break }
+        }
+        if unique.contains(where: { $0.openingHours != nil }) {
+            let timezoneCoordinate = referenceRoute == nil ? centers.first : unique.first(where: { $0.openingHours != nil })?.destination.coordinate
+            let timezoneReuseRadius = referenceRoute == nil ? min(radius, 5_000) : 1_000
+            if let timezoneCoordinate,
+               let timeZoneIdentifier = await PlaceTimeZoneResolver.identifier(for: timezoneCoordinate) {
+                unique = unique.map { candidate in
+                    guard candidate.openingHours != nil,
+                          candidate.destination.coordinate.distance(to: timezoneCoordinate) <= timezoneReuseRadius else { return candidate }
+                    var value = candidate
+                    value.timeZoneIdentifier = timeZoneIdentifier
+                    return value
+                }
+            }
         }
         let namesByID = Dictionary(uniqueKeysWithValues: unique.map { ($0.id, $0.destination.name) })
         await OpenStreetMapPlaceDetailsProvider.cacheSearchDetails(decoded.elements.compactMap { element in
@@ -205,6 +228,12 @@ struct OpenStreetMapNearbyPlaceProvider {
             guard key.hasPrefix("fuel:"), value.lowercased() != "no" else { return nil }
             return String(key.dropFirst("fuel:".count))
         }.sorted()
+    }
+
+    private static func countryCode(from tags: [String: String]) -> String? {
+        guard let value = tags["addr:country"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              value.count == 2, value.allSatisfy(\.isLetter) else { return nil }
+        return value.lowercased()
     }
 
     private static func chargingCapabilities(from tags: [String: String]) -> ChargingStationCapabilities {

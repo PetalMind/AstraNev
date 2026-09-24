@@ -2,17 +2,129 @@ import Foundation
 import os
 import zlib
 
-private enum TransitSignposting {
+private nonisolated enum TransitSignposting {
     static let log = OSLog(subsystem: "STDMSolution.NaviAstra", category: "TransitPlanning")
 
-    static func begin(_ name: StaticString) -> OSSignpostID {
+    static func begin(_ name: StaticString, planningID: UInt64? = nil) -> OSSignpostID {
         let identifier = OSSignpostID(log: log)
-        os_signpost(.begin, log: log, name: name, signpostID: identifier)
+        if let planningID {
+            os_signpost(.begin, log: log, name: name, signpostID: identifier,
+                        "planningID=%{public}llu", planningID)
+        } else {
+            os_signpost(.begin, log: log, name: name, signpostID: identifier)
+        }
         return identifier
     }
 
-    static func end(_ name: StaticString, identifier: OSSignpostID) {
-        os_signpost(.end, log: log, name: name, signpostID: identifier)
+    static func end(_ name: StaticString, identifier: OSSignpostID, planningID: UInt64? = nil) {
+        if let planningID {
+            os_signpost(.end, log: log, name: name, signpostID: identifier,
+                        "planningID=%{public}llu", planningID)
+        } else {
+            os_signpost(.end, log: log, name: name, signpostID: identifier)
+        }
+    }
+
+    static func event(_ name: StaticString, value: Int, planningID: UInt64? = nil) {
+        if let planningID {
+            os_signpost(.event, log: log, name: name,
+                        "planningID=%{public}llu value=%{public}d", planningID, value)
+        } else {
+            os_signpost(.event, log: log, name: name, "value=%{public}d", value)
+        }
+    }
+
+    static func summary(_ value: String, planningID: UInt64) {
+        os_signpost(.event, log: log, name: "PlanningSummary",
+                    "planningID=%{public}llu %{public}@", planningID, value as NSString)
+    }
+}
+
+private nonisolated final class TransitPlanningTrace: @unchecked Sendable {
+    private let lock = NSLock()
+    private let startedAt = ProcessInfo.processInfo.systemUptime
+    private var durations: [String: Double] = [:]
+    private var counts: [String: Int] = [:]
+    private var values: [String: String] = [:]
+
+    func recordDuration(_ name: String, startedAt: TimeInterval) {
+        let milliseconds = max(0, (ProcessInfo.processInfo.systemUptime - startedAt) * 1_000)
+        lock.lock()
+        durations[name] = max(durations[name] ?? 0, milliseconds)
+        lock.unlock()
+    }
+
+    func setCount(_ name: String, value: Int) {
+        lock.lock()
+        counts[name] = value
+        lock.unlock()
+    }
+
+    func setValue(_ name: String, value: String) {
+        lock.lock()
+        values[name] = value
+        lock.unlock()
+    }
+
+    func recordElapsedDuration(_ name: String) {
+        recordDuration(name, startedAt: startedAt)
+    }
+
+    func addCount(_ name: String, value: Int) {
+        lock.lock()
+        counts[name, default: 0] += value
+        lock.unlock()
+    }
+
+    func emitSummary(planningID: UInt64) {
+        lock.lock()
+        let durations = self.durations
+        let counts = self.counts
+        let values = self.values
+        lock.unlock()
+
+        func duration(_ name: String) -> String {
+            guard let value = durations[name] else { return "n/a" }
+            return "\(Int(value.rounded()))ms"
+        }
+        func count(_ name: String) -> String {
+            counts[name].map(String.init) ?? "n/a"
+        }
+        func value(_ name: String) -> String {
+            values[name] ?? "n/a"
+        }
+        let shapeHitRate: String
+        if let reachable = counts["matrixReachableTargets"], reachable > 0,
+           let shapes = counts["matrixShapesReturned"] {
+            shapeHitRate = "\(Int((Double(shapes) / Double(reachable) * 100).rounded()))%"
+        } else {
+            shapeHitRate = "n/a"
+        }
+        let total = Int(((ProcessInfo.processInfo.systemUptime - startedAt) * 1_000).rounded())
+        let summary = "total=\(total)ms gtfsLoad=\(duration("GTFSLoad")) indexBuild=\(duration("ScheduleIndexBuild")) "
+            + "realtimeWait=\(duration("RealtimeWait")) realtimeFetch=\(duration("RealtimeBackgroundFetch")) "
+            + "nearbyStopsMax=\(duration("NearbyStops")) "
+            + "walkingMatrixMax=\(duration("WalkingMatrix")) transitSearch=\(duration("TransitSearch")) "
+            + "candidateRanking=\(duration("CandidateRanking")) geometryFetch=\(duration("GeometryFetch")) "
+            + "timeToStaticCandidates=\(duration("TimeToStaticCandidates")) "
+            + "timeToRouteReady=\(duration("TimeToRouteReady")) "
+            + "counts[nearbyStops=\(count("nearbyStops")), tripDaysExamined=\(count("tripDaysExamined")), "
+            + "activeTrips=\(count("activeTrips")), activeRoutes=\(count("activeRoutes")), "
+            + "routesTouched=\(count("routesTouched")), "
+            + "stopsWithDepartures=\(count("stopsWithDepartures")), candidates=\(count("candidates")), "
+            + "uniqueRoutes=\(count("uniqueRoutes")), walkingSegments=\(count("walkingSegments")), "
+            + "rounds=\(count("roundsExecuted")), matrixCalls=\(count("matrixCalls")), "
+            + "matrixTargets=\(count("matrixTargetsSent")), matrixHTTPErrorCount=\(count("matrixHTTPErrorCount")), "
+            + "matrixErrorCount=\(count("matrixErrorCount")), "
+            + "matrixHTTPErrorStatus=\(count("matrixHTTPErrorStatus")), "
+            + "matrixFallbackCount=\(count("matrixFallbackCount")), fallbackRequestCount=\(count("fallbackRequestCount")), "
+            + "matrixReachable=\(count("matrixReachableTargets")), matrixUnreachable=\(count("matrixUnreachableTargets")), "
+            + "matrixOverWalkLimit=\(count("matrixOverWalkLimit")), matrixShapesReturned=\(count("matrixShapesReturned")), "
+            + "matrixShapeHitRate=\(shapeHitRate), "
+            + "geometryCacheHits=\(count("geometryCacheHits")), geometryRequests=\(count("geometryRequests")), "
+            + "realtimeAgeSeconds=\(count("realtimeAgeSeconds")), realtimeFreshness=\(value("realtimeFreshness")), "
+            + "realtimeUsed=\(value("realtimeUsed")), realtimeRefreshDeferred=\(count("realtimeRefreshDeferred"))]"
+        TransitSignposting.summary(summary, planningID: planningID)
     }
 }
 
@@ -75,8 +187,16 @@ struct LodzTransitRouteProvider {
         await LodzTransitRepository.shared.departures(at: stopID, limit: limit)
     }
 
+    func departures(at stopIDs: [String], limit: Int = 10) async -> [TransitDeparture] {
+        await LodzTransitRepository.shared.departures(at: stopIDs, limit: limit)
+    }
+
     func alerts(for stopID: String) async -> [String] {
         await LodzTransitRepository.shared.alerts(for: stopID)
+    }
+
+    func alerts(for stopIDs: [String]) async -> [String] {
+        await LodzTransitRepository.shared.alerts(for: stopIDs)
     }
 
     func railwayScheduleAttribution() async -> String? {
@@ -109,12 +229,14 @@ private actor LodzTransitRepository {
     static let shared = LodzTransitRepository()
     private static let maximumSearchWindow: TimeInterval = 18 * 60 * 60
     private static let maximumAccessWalkTime: TimeInterval = 30 * 60
-    private static let walkingMatrixBatchSize = 40
-    private static let maximumLocalWalkingCandidates = walkingMatrixBatchSize * 2
-    private static let maximumRailWalkingCandidates = walkingMatrixBatchSize
+    // Conservative client batch size; the server's Valhalla max_locations is configuration-specific.
+    private static let walkingMatrixBatchSize = 20
+    private static let maximumLocalWalkingCandidates = walkingMatrixBatchSize * 4
+    private static let maximumRailWalkingCandidates = walkingMatrixBatchSize * 2
     private static let maximumAccessWalkDistance: Double = 10_000
     private static let fallbackWalkingCandidateCountPerNetwork = 8
     private static let fallbackWalkingResultsPerNetwork = 4
+    private static let maximumCachedWalkingGeometries = 512
 
     private let staticFeedURL = URL(string: "https://otwarte.miasto.lodz.pl/wp-content/uploads/2025/06/GTFS.zip")!
     private let tripUpdatesURL = URL(string: "https://otwarte.miasto.lodz.pl/wp-content/uploads/2025/06/trip_updates.bin")!
@@ -137,103 +259,226 @@ private actor LodzTransitRepository {
     private var vehiclesSnapshot: [GTFSRealtimeVehicle] = []
     private var vehiclesUpdatedAt: Date?
     private var vehiclesLoadedAt: Date?
+    private var nextPlanningID: UInt64 = 0
+    private var walkingGeometryCache: [String: [TransitWalkingGeometryKey: TransitWalkingGeometry]] = [:]
+    private var walkingGeometryCacheOrder: [String: [TransitWalkingGeometryKey]] = [:]
 
     func calculateRoutes(from: Coordinate, to: Coordinate, departingAt: Date,
                          walkingRoutingEndpoint: URL) async throws -> [NavigationRoute] {
-        let totalInterval = TransitSignposting.begin("TransitPlanning")
-        defer { TransitSignposting.end("TransitPlanning", identifier: totalInterval) }
+        nextPlanningID &+= 1
+        let planningID = nextPlanningID
+        let trace = TransitPlanningTrace()
+        let totalInterval = TransitSignposting.begin("TransitPlanning", planningID: planningID)
+        defer {
+            TransitSignposting.end("TransitPlanning", identifier: totalInterval, planningID: planningID)
+            trace.emitSummary(planningID: planningID)
+        }
 
-        let databaseInterval = TransitSignposting.begin("GTFSLoad")
         let database: GTFSDatabase
         do {
-            database = try await loadDatabase()
-            TransitSignposting.end("GTFSLoad", identifier: databaseInterval)
-        } catch {
-            TransitSignposting.end("GTFSLoad", identifier: databaseInterval)
-            throw error
+            let startedAt = ProcessInfo.processInfo.systemUptime
+            let databaseInterval = TransitSignposting.begin("GTFSLoad", planningID: planningID)
+            defer {
+                TransitSignposting.end("GTFSLoad", identifier: databaseInterval, planningID: planningID)
+                trace.recordDuration("GTFSLoad", startedAt: startedAt)
+            }
+            database = try await loadDatabase(planningID: planningID, trace: trace)
         }
         guard walkingRoutingEndpoint.scheme == "https" else { throw RoutingError.invalidEndpoint }
         let boardingStops = database.stops.filter { database.servedStopIDs.contains($0.id) }
 
         // Realtime does not need to finish before the independent walking matrices start.
-        async let realtimeRequest = loadRealtimeForRoutePlanning()
+        async let realtimeRequest = loadRealtimeForRoutePlanning(planningID: planningID, trace: trace)
         async let originWalksRequest = walkingOptions(from: from, stops: boardingStops,
-                                                       endpoint: walkingRoutingEndpoint)
+                                                       endpoint: walkingRoutingEndpoint,
+                                                       planningID: planningID, trace: trace)
         async let destinationWalksRequest = walkingOptions(from: to, stops: boardingStops,
-                                                            endpoint: walkingRoutingEndpoint)
+                                                            endpoint: walkingRoutingEndpoint,
+                                                            planningID: planningID, trace: trace)
         let (realtime, originWalks, destinationApproaches) = try await (
             realtimeRequest, originWalksRequest, destinationWalksRequest)
         let destinationWalks = destinationApproaches.map { option in
             TransitWalkOption(stop: option.stop, distance: option.distance, duration: option.duration,
-                              coordinates: Array(option.coordinates.reversed()))
+                              coordinates: Array(option.coordinates.reversed()),
+                              hasResolvedGeometry: option.hasResolvedGeometry)
         }
-        let searchInterval = TransitSignposting.begin("TransitSearch")
+        let searchInterval = TransitSignposting.begin("TransitSearch", planningID: planningID)
+        let searchStartedAt = ProcessInfo.processInfo.systemUptime
         let planned: [NavigationRoute]
         do {
             planned = try Self.plan(database: database, realtime: realtime, from: from, to: to,
                                     departingAt: departingAt, originWalks: originWalks,
                                     destinationWalks: destinationWalks,
-                                    usingCachedSchedule: databaseWasCached)
-            TransitSignposting.end("TransitSearch", identifier: searchInterval)
+                                    usingCachedSchedule: databaseWasCached,
+                                    planningID: planningID, trace: trace)
+            trace.recordElapsedDuration("TimeToStaticCandidates")
+            TransitSignposting.end("TransitSearch", identifier: searchInterval, planningID: planningID)
+            trace.recordDuration("TransitSearch", startedAt: searchStartedAt)
         } catch {
-            TransitSignposting.end("TransitSearch", identifier: searchInterval)
+            TransitSignposting.end("TransitSearch", identifier: searchInterval, planningID: planningID)
+            trace.recordDuration("TransitSearch", startedAt: searchStartedAt)
             throw error
         }
-        return await resolveTransferWalks(in: planned, endpoint: walkingRoutingEndpoint)
+        let routes = await resolveTransferWalks(in: planned, endpoint: walkingRoutingEndpoint,
+                                                planningID: planningID, trace: trace)
+        trace.recordElapsedDuration("TimeToRouteReady")
+        return routes
     }
 
-    private func loadRealtimeForRoutePlanning() async -> GTFSRealtimeSnapshot {
-        let interval = TransitSignposting.begin("RealtimeFetch")
-        defer { TransitSignposting.end("RealtimeFetch", identifier: interval) }
-        return await loadRealtime()
+    private func loadRealtimeForRoutePlanning(planningID: UInt64,
+                                             trace: TransitPlanningTrace) async -> GTFSRealtimeSnapshot {
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let now = Date()
+        let snapshot: GTFSRealtimeSnapshot
+        let shouldRefresh: Bool
+        let cachedSnapshotAge = realtimeLoadedAt.map { max(0, now.timeIntervalSince($0)) }
+        var usedCachedSnapshot = false
+        if let realtimeSnapshot, let realtimeLoadedAt,
+           now.timeIntervalSince(realtimeLoadedAt) < 45 {
+            snapshot = realtimeSnapshot
+            shouldRefresh = false
+            usedCachedSnapshot = true
+        } else if let realtimeSnapshot, let realtimeLoadedAt,
+                  now.timeIntervalSince(realtimeLoadedAt) <= 180 {
+            snapshot = realtimeSnapshot
+            shouldRefresh = true
+            usedCachedSnapshot = true
+        } else {
+            snapshot = .empty
+            shouldRefresh = true
+        }
+        if let cachedSnapshotAge {
+            trace.setCount("realtimeAgeSeconds", value: Int(cachedSnapshotAge.rounded()))
+        }
+        trace.setValue("realtimeUsed", value: usedCachedSnapshot && snapshot.isAvailable ? "yes" : "no")
+        trace.setValue("realtimeFreshness", value: usedCachedSnapshot
+                       ? snapshot.freshness.rawValue : "static_only")
+        trace.recordDuration("RealtimeWait", startedAt: startedAt)
+        if shouldRefresh {
+            trace.setCount("realtimeRefreshDeferred", value: 1)
+            TransitSignposting.event("RealtimeRefreshDeferred", value: 1, planningID: planningID)
+            let fetchStartedAt = ProcessInfo.processInfo.systemUptime
+            let interval = TransitSignposting.begin("RealtimeBackgroundFetch", planningID: planningID)
+            Task(priority: .utility) { [weak self] in
+                guard let self else { return }
+                _ = await self.loadRealtime()
+                let milliseconds = Int(((ProcessInfo.processInfo.systemUptime - fetchStartedAt) * 1_000).rounded())
+                trace.recordDuration("RealtimeBackgroundFetch", startedAt: fetchStartedAt)
+                TransitSignposting.end("RealtimeBackgroundFetch", identifier: interval, planningID: planningID)
+                TransitSignposting.event("RealtimeFetchDurationMS", value: milliseconds,
+                                         planningID: planningID)
+            }
+        }
+        return snapshot
     }
 
     private func walkingOptions(from coordinate: Coordinate, stops: [GTFSStop],
-                                endpoint: URL) async throws -> [TransitWalkOption] {
-        let matrixInterval = TransitSignposting.begin("WalkingMatrix")
-        defer { TransitSignposting.end("WalkingMatrix", identifier: matrixInterval) }
+                                endpoint: URL, planningID: UInt64,
+                                trace: TransitPlanningTrace) async throws -> [TransitWalkOption] {
+        let matrixStartedAt = ProcessInfo.processInfo.systemUptime
+        let matrixInterval = TransitSignposting.begin("WalkingMatrix", planningID: planningID)
+        defer {
+            TransitSignposting.end("WalkingMatrix", identifier: matrixInterval, planningID: planningID)
+            trace.recordDuration("WalkingMatrix", startedAt: matrixStartedAt)
+        }
 
-        let nearbyStopsInterval = TransitSignposting.begin("NearbyStops")
+        let nearbyStartedAt = ProcessInfo.processInfo.systemUptime
+        let nearbyStopsInterval = TransitSignposting.begin("NearbyStops", planningID: planningID)
         let candidates = Self.nearestStops(to: coordinate, in: stops,
                                            maximumDistance: Self.maximumAccessWalkDistance,
                                            localLimit: Self.maximumLocalWalkingCandidates,
                                            railwayLimit: Self.maximumRailWalkingCandidates)
-        TransitSignposting.end("NearbyStops", identifier: nearbyStopsInterval)
+        TransitSignposting.end("NearbyStops", identifier: nearbyStopsInterval, planningID: planningID)
+        trace.recordDuration("NearbyStops", startedAt: nearbyStartedAt)
+        trace.addCount("nearbyStops", value: candidates.count)
+        TransitSignposting.event("NearbyStopCount", value: candidates.count, planningID: planningID)
         let provider = ValhallaRouteProvider(endpoint: endpoint)
         var results: [TransitWalkOption] = []
         var start = 0
         var matrixUnavailable = false
+        var matrixCalls = 0
+        var matrixReachableTargets = 0
+        var matrixUnreachableTargets = 0
+        var matrixOverWalkLimit = 0
+        var matrixShapesReturned = 0
+        let localCandidateCount = candidates.filter { !$0.0.id.hasPrefix("rail/") }.count
+        let railwayCandidateCount = candidates.count - localCandidateCount
+        let requiredLocalResults = min(4, localCandidateCount)
+        let requiredRailwayResults = min(2, railwayCandidateCount)
         while start < candidates.count {
             let end = min(start + Self.walkingMatrixBatchSize, candidates.count)
             let batch = Array(candidates[start..<end])
             let costs: [WalkingRouteCost?]
             do {
+                matrixCalls += 1
+                trace.addCount("matrixTargetsSent", value: batch.count)
                 costs = try await provider.walkingCosts(from: coordinate, to: batch.map { $0.0.coordinate })
             } catch is CancellationError {
                 throw CancellationError()
+            } catch RoutingError.server(let statusCode) {
+                trace.addCount("matrixHTTPErrorCount", value: 1)
+                trace.setCount("matrixHTTPErrorStatus", value: statusCode)
+                TransitSignposting.event("WalkingMatrixHTTPErrorStatus", value: statusCode,
+                                         planningID: planningID)
+                matrixUnavailable = true
+                break
             } catch {
+                trace.addCount("matrixErrorCount", value: 1)
                 matrixUnavailable = true
                 break
             }
             for index in batch.indices {
-                guard let cost = costs[index], cost.duration <= Self.maximumAccessWalkTime else { continue }
+                guard let cost = costs[index] else {
+                    matrixUnreachableTargets += 1
+                    continue
+                }
+                matrixReachableTargets += 1
+                if (cost.coordinates?.count ?? 0) > 1 { matrixShapesReturned += 1 }
+                guard cost.duration <= Self.maximumAccessWalkTime else {
+                    matrixOverWalkLimit += 1
+                    continue
+                }
                 let stop = batch[index].0
+                let coordinates = cost.coordinates.flatMap { $0.count > 1 ? $0 : nil }
+                    ?? [coordinate, stop.coordinate]
                 results.append(TransitWalkOption(stop: stop, distance: cost.distance,
                                                  duration: cost.duration,
-                                                 coordinates: [coordinate, stop.coordinate]))
+                                                 coordinates: coordinates,
+                                                 hasResolvedGeometry: (cost.coordinates?.count ?? 0) > 1))
             }
             start = end
+            let localResults = results.lazy.filter { !$0.stop.id.hasPrefix("rail/") }.count
+            let railwayResults = results.count - localResults
+            let hasEnoughCoverage = localResults >= requiredLocalResults
+                && railwayResults >= requiredRailwayResults
+            let hasUsefulLocalCoverage = results.count >= 12 && localResults >= requiredLocalResults
+            if hasEnoughCoverage || hasUsefulLocalCoverage { break }
         }
+        trace.addCount("matrixCalls", value: matrixCalls)
+        trace.addCount("matrixReachableTargets", value: matrixReachableTargets)
+        trace.addCount("matrixUnreachableTargets", value: matrixUnreachableTargets)
+        trace.addCount("matrixOverWalkLimit", value: matrixOverWalkLimit)
+        trace.addCount("matrixShapesReturned", value: matrixShapesReturned)
+        let matrixGeometries = results.filter(\.hasResolvedGeometry).count
+        trace.addCount("matrixGeometries", value: matrixGeometries)
+        TransitSignposting.event("WalkingMatrixBatchCount", value: matrixCalls, planningID: planningID)
+        TransitSignposting.event("WalkingMatrixGeometryCount", value: matrixGeometries,
+                                 planningID: planningID)
         if matrixUnavailable, results.isEmpty {
+            trace.addCount("matrixFallbackCount", value: 1)
+            trace.addCount("matrixFallbacks", value: 1)
+            TransitSignposting.event("WalkingMatrixFallbackUsed", value: 1, planningID: planningID)
             return try await fallbackWalkingOptions(from: coordinate, candidates: candidates,
-                                                    endpoint: endpoint)
+                                                    endpoint: endpoint,
+                                                    planningID: planningID, trace: trace)
         }
         return results
     }
 
     private func fallbackWalkingOptions(from coordinate: Coordinate,
                                        candidates: [(GTFSStop, Double)],
-                                       endpoint: URL) async throws -> [TransitWalkOption] {
+                                       endpoint: URL, planningID: UInt64,
+                                       trace: TransitPlanningTrace) async throws -> [TransitWalkOption] {
         let provider = ValhallaRouteProvider(endpoint: endpoint)
         var results: [TransitWalkOption] = []
         let candidateGroups = [
@@ -246,12 +491,17 @@ private actor LodzTransitRepository {
             var networkResults = 0
             for (stop, _) in group {
                 do {
+                    trace.addCount("fallbackRequestCount", value: 1)
+                    trace.addCount("fallbackRouteCalls", value: 1)
+                    TransitSignposting.event("WalkingFallbackRouteCall", value: 1,
+                                             planningID: planningID)
                     guard let route = try await provider.calculateRoutes(from: coordinate, to: stop.coordinate,
                                                                          mode: .walking).first,
                           route.expectedTravelTime <= Self.maximumAccessWalkTime else { continue }
                     results.append(TransitWalkOption(stop: stop, distance: route.distance,
                                                      duration: route.expectedTravelTime,
-                                                     coordinates: route.coordinates))
+                                                     coordinates: route.coordinates,
+                                                     hasResolvedGeometry: route.coordinates.count > 1))
                     networkResults += 1
                     if networkResults >= Self.fallbackWalkingResultsPerNetwork { break }
                 } catch is CancellationError {
@@ -272,15 +522,21 @@ private actor LodzTransitRepository {
         return results.sorted { $0.duration < $1.duration }
     }
 
-    private func resolveTransferWalks(in routes: [NavigationRoute], endpoint: URL) async -> [NavigationRoute] {
-        let interval = TransitSignposting.begin("GeometryFetch")
-        defer { TransitSignposting.end("GeometryFetch", identifier: interval) }
+    private func resolveTransferWalks(in routes: [NavigationRoute], endpoint: URL,
+                                      planningID: UInt64,
+                                      trace: TransitPlanningTrace) async -> [NavigationRoute] {
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let interval = TransitSignposting.begin("GeometryFetch", planningID: planningID)
+        defer {
+            TransitSignposting.end("GeometryFetch", identifier: interval, planningID: planningID)
+            trace.recordDuration("GeometryFetch", startedAt: startedAt)
+        }
 
         var requestsByKey: [TransitWalkingGeometryKey: TransitWalkingGeometryRequest] = [:]
         for route in routes {
             guard let journey = route.journey else { continue }
             for leg in journey.legs where leg.mode == "WALK" {
-                if !leg.isTransfer && leg.coordinates.count > 2 { continue }
+                if !leg.isTransfer && (leg.hasResolvedWalkingGeometry || leg.coordinates.count > 2) { continue }
                 guard let from = leg.coordinates.first, let to = leg.coordinates.last,
                       from.distance(to: to) > 1 else { continue }
                 let request = TransitWalkingGeometryRequest(from: from, to: to)
@@ -288,8 +544,43 @@ private actor LodzTransitRepository {
             }
         }
 
-        let geometries = await loadWalkingGeometries(
-            requests: Array(requestsByKey.values), endpoint: endpoint)
+        let endpointKey = endpoint.absoluteString
+        var geometries = walkingGeometryCache[endpointKey] ?? [:]
+        var cacheOrder = walkingGeometryCacheOrder[endpointKey] ?? []
+        // Walking geometry requests currently use Valhalla's fixed pedestrian profile.
+        // The endpoint is part of the outer cache key; coordinates and direction are in the inner key.
+        for key in requestsByKey.keys where geometries[key] != nil {
+            Self.touchWalkingGeometryCacheKey(key, in: &cacheOrder)
+        }
+        let cachedGeometries = geometries
+        let cachedRequestKeys = Set(requestsByKey.keys.filter { geometries[$0] != nil })
+        let missingRequests = requestsByKey.values.filter { cachedGeometries[$0.key] == nil }
+        let fetchedGeometries = await loadWalkingGeometries(requests: Array(missingRequests), endpoint: endpoint)
+        // The actor can process another planning request while network fetches are suspended.
+        // Merge into its latest cache state so concurrent requests do not discard each other's entries.
+        geometries = walkingGeometryCache[endpointKey] ?? geometries
+        cacheOrder = walkingGeometryCacheOrder[endpointKey] ?? cacheOrder
+        for key in cachedRequestKeys {
+            Self.touchWalkingGeometryCacheKey(key, in: &cacheOrder)
+        }
+        for key in fetchedGeometries.keys {
+            Self.touchWalkingGeometryCacheKey(key, in: &cacheOrder)
+        }
+        geometries.merge(fetchedGeometries) { _, fetched in fetched }
+        while cacheOrder.count > Self.maximumCachedWalkingGeometries {
+            let leastRecentlyUsed = cacheOrder.removeFirst()
+            geometries.removeValue(forKey: leastRecentlyUsed)
+        }
+        walkingGeometryCache[endpointKey] = geometries
+        walkingGeometryCacheOrder[endpointKey] = cacheOrder
+        let cacheHits = requestsByKey.count - missingRequests.count
+        trace.setCount("geometryCacheHits", value: cacheHits)
+        trace.setCount("geometryRequests", value: missingRequests.count)
+        trace.setCount("walkingSegments", value: requestsByKey.count)
+        TransitSignposting.event("UniqueWalkingGeometryCount", value: requestsByKey.count,
+                                 planningID: planningID)
+        TransitSignposting.event("WalkingGeometryCacheHits", value: cacheHits, planningID: planningID)
+        TransitSignposting.event("WalkingGeometryRequests", value: missingRequests.count, planningID: planningID)
         var resolved: [NavigationRoute] = []
         for route in routes {
             if let route = resolveTransferWalks(in: route, geometries: geometries) {
@@ -314,6 +605,16 @@ private actor LodzTransitRepository {
             if selected.count == 3 { break }
         }
         return selected.sorted { Self.generalizedCost($0) < Self.generalizedCost($1) }
+    }
+
+    private static func touchWalkingGeometryCacheKey(
+        _ key: TransitWalkingGeometryKey,
+        in order: inout [TransitWalkingGeometryKey]
+    ) {
+        if let existingIndex = order.firstIndex(of: key) {
+            order.remove(at: existingIndex)
+        }
+        order.append(key)
     }
 
     private func loadWalkingGeometries(
@@ -435,14 +736,30 @@ private actor LodzTransitRepository {
                                after: Date(), limit: limit)
     }
 
-    func alerts(for stopID: String) async -> [String] {
-        guard !stopID.hasPrefix("rail/") else { return [] }
+    func departures(at stopIDs: [String], limit: Int) async -> [TransitDeparture] {
         guard let database = try? await loadDatabase() else { return [] }
         let realtime = await loadRealtime()
-        let routeIDs = database.routeIDsByStop[stopID] ?? []
+        let uniqueStopIDs = Array(Set(stopIDs)).sorted().prefix(20)
+        let departures = uniqueStopIDs.flatMap { stopID in
+            Self.departures(database: database, realtime: realtime, stopID: stopID,
+                            after: Date(), limit: limit)
+        }.sorted { $0.estimatedDeparture < $1.estimatedDeparture }
+        return Array(departures.prefix(limit))
+    }
+
+    func alerts(for stopID: String) async -> [String] {
+        await alerts(for: [stopID])
+    }
+
+    func alerts(for stopIDs: [String]) async -> [String] {
+        let cityStopIDs = Set(stopIDs.filter { !$0.hasPrefix("rail/") })
+        guard !cityStopIDs.isEmpty else { return [] }
+        guard let database = try? await loadDatabase() else { return [] }
+        let realtime = await loadRealtime()
+        let routeIDs = Set(cityStopIDs.flatMap { database.routeIDsByStop[$0] ?? [] })
         return Array(realtime.alerts.filter {
             $0.isActive(at: Date()) && (($0.routeIDs.isEmpty && $0.stopIDs.isEmpty)
-                || $0.stopIDs.contains(stopID) || !$0.routeIDs.isDisjoint(with: routeIDs))
+                || !$0.stopIDs.isDisjoint(with: cityStopIDs) || !$0.routeIDs.isDisjoint(with: routeIDs))
         }.map(\.message).filter { !$0.isEmpty }.prefix(3))
     }
 
@@ -672,7 +989,8 @@ private actor LodzTransitRepository {
                                   stops: stops, nearbyStop: closestStop, nearbyDepartures: nearbyDepartures)
     }
 
-    private func loadDatabase() async throws -> GTFSDatabase {
+    private func loadDatabase(planningID: UInt64? = nil,
+                              trace: TransitPlanningTrace? = nil) async throws -> GTFSDatabase {
         if let database, let databaseLoadedAt,
            Date().timeIntervalSince(databaseLoadedAt) < 86_400 {
             return database
@@ -687,7 +1005,8 @@ private actor LodzTransitRepository {
             let railwayURL = railwayFeedURL
             loadTask = Task.detached(priority: .utility) {
                 try await TransitGTFSLoader.load(cacheDirectory: directory, feedURL: feedURL,
-                                                 railwayFeedURL: railwayURL)
+                                                 railwayFeedURL: railwayURL,
+                                                 planningID: planningID, trace: trace)
             }
             databaseLoadTask = loadTask
         }
@@ -810,28 +1129,18 @@ private actor LodzTransitRepository {
                              from origin: Coordinate, to destination: Coordinate,
                              departingAt: Date, originWalks: [TransitWalkOption],
                              destinationWalks: [TransitWalkOption],
-                             usingCachedSchedule: Bool) throws -> [NavigationRoute] {
+                             usingCachedSchedule: Bool, planningID: UInt64,
+                             trace: TransitPlanningTrace) throws -> [NavigationRoute] {
         guard !originWalks.isEmpty, !destinationWalks.isEmpty else {
             if !database.railwayFeedAvailable { throw TransitRoutingError.railwayFeedUnavailable }
             throw TransitRoutingError.outsideCoverage
         }
 
-        let instances = activeTripInstances(database: database, realtime: realtime, after: departingAt)
-        guard !instances.isEmpty else {
-            if !database.railwayFeedAvailable { throw TransitRoutingError.railwayFeedUnavailable }
-            throw TransitRoutingError.noJourney
-        }
+        var instances: [GTFSTripInstance] = []
         var departuresByStop: [String: [TransitBoardingDeparture]] = [:]
-        for (instanceIndex, instance) in instances.enumerated() {
-            for stopIndex in instance.times.indices {
-                departuresByStop[instance.times[stopIndex].stopID, default: []]
-                    .append(TransitBoardingDeparture(instanceIndex: instanceIndex, stopIndex: stopIndex,
-                                                     time: instance.times[stopIndex].departure))
-            }
-        }
-        for stopID in Array(departuresByStop.keys) {
-            departuresByStop[stopID]?.sort { $0.time < $1.time }
-        }
+        var activeRouteIDs: Set<String> = []
+        var indexedTripIDs: Set<String> = []
+        var indexedStopIDs: Set<String> = []
 
         let stopByID = Dictionary(uniqueKeysWithValues: database.stops.map { ($0.id, $0) })
         var initial: [String: [TransitPathLabel]] = [:]
@@ -848,9 +1157,37 @@ private actor LodzTransitRepository {
 
         var layers: [[String: [TransitPathLabel]]] = [initial]
         var candidates: [TransitPlanCandidate] = []
+        var touchedRouteIDs: Set<String> = []
+        var roundsExecuted = 0
         for ridesUsed in 1...4 {
             guard let previous = layers.last else { break }
+            roundsExecuted = ridesUsed
             let boardingLabels = transferClosure(previous, database: database)
+            let newlyReachedStops = Set(boardingLabels.keys).subtracting(indexedStopIDs)
+            indexedStopIDs.formUnion(newlyReachedStops)
+            let tripIDs = Set(newlyReachedStops.flatMap { database.tripIDsByStop[$0] ?? [] })
+                .subtracting(indexedTripIDs)
+            indexedTripIDs.formUnion(tripIDs)
+            let discoveredInstances = activeTripInstances(
+                database: database, realtime: realtime, after: departingAt,
+                onlyTripIDs: tripIDs, planningID: planningID, trace: trace)
+            let firstNewInstanceIndex = instances.count
+            instances.append(contentsOf: discoveredInstances)
+            var stopsWithNewDepartures: Set<String> = []
+            for (offset, instance) in discoveredInstances.enumerated() {
+                let instanceIndex = firstNewInstanceIndex + offset
+                activeRouteIDs.insert(instance.route.id)
+                for stopIndex in instance.times.indices {
+                    let stopID = instance.times[stopIndex].stopID
+                    departuresByStop[stopID, default: []]
+                        .append(TransitBoardingDeparture(instanceIndex: instanceIndex, stopIndex: stopIndex,
+                                                         time: instance.times[stopIndex].departure))
+                    stopsWithNewDepartures.insert(stopID)
+                }
+            }
+            for stopID in stopsWithNewDepartures {
+                departuresByStop[stopID]?.sort { $0.time < $1.time }
+            }
             var current: [String: [TransitPathLabel]] = [:]
             for (stopID, labels) in boardingLabels {
                 guard let departures = departuresByStop[stopID] else { continue }
@@ -861,6 +1198,7 @@ private actor LodzTransitRepository {
                     for departure in departures[startIndex...] {
                         if departure.time > departingAt.addingTimeInterval(maximumSearchWindow) { break }
                         let instance = instances[departure.instanceIndex]
+                        touchedRouteIDs.insert(instance.route.id)
                         for downstreamIndex in (departure.stopIndex + 1)..<instance.times.count {
                             let downstream = instance.times[downstreamIndex]
                             let ride = TransitRide(instanceIndex: departure.instanceIndex,
@@ -894,13 +1232,26 @@ private actor LodzTransitRepository {
             if current.isEmpty { break }
         }
 
-        let rankingInterval = TransitSignposting.begin("CandidateRanking")
-        defer { TransitSignposting.end("CandidateRanking", identifier: rankingInterval) }
-
+        trace.setCount("roundsExecuted", value: roundsExecuted)
+        TransitSignposting.event("TransitRoundsExecuted", value: roundsExecuted, planningID: planningID)
+        trace.setCount("activeTrips", value: instances.count)
+        trace.setCount("activeRoutes", value: activeRouteIDs.count)
+        trace.setCount("stopsWithDepartures", value: departuresByStop.count)
+        TransitSignposting.event("ActiveTripInstanceCount", value: instances.count, planningID: planningID)
+        TransitSignposting.event("ActiveRouteCount", value: activeRouteIDs.count, planningID: planningID)
+        TransitSignposting.event("StopsWithDepartures", value: departuresByStop.count, planningID: planningID)
+        trace.setCount("routesTouched", value: touchedRouteIDs.count)
+        TransitSignposting.event("RoutesTouched", value: touchedRouteIDs.count, planningID: planningID)
+        let rankingStartedAt = ProcessInfo.processInfo.systemUptime
+        let rankingInterval = TransitSignposting.begin("CandidateRanking", planningID: planningID)
+        trace.setCount("candidates", value: candidates.count)
+        TransitSignposting.event("StaticCandidateCount", value: candidates.count, planningID: planningID)
         let rankedCandidates = candidates.sorted {
             candidateCost($0, departingAt: departingAt, instances: instances)
                 < candidateCost($1, departingAt: departingAt, instances: instances)
         }
+        TransitSignposting.end("CandidateRanking", identifier: rankingInterval, planningID: planningID)
+        trace.recordDuration("CandidateRanking", startedAt: rankingStartedAt)
         var routes: [NavigationRoute] = []
         for candidate in rankedCandidates {
             if let route = makeRoute(candidate: candidate, database: database, realtime: realtime,
@@ -921,6 +1272,8 @@ private actor LodzTransitRepository {
             guard !signature.isEmpty, seen.insert(signature).inserted else { continue }
             unique.append(route)
         }
+        trace.setCount("uniqueRoutes", value: unique.count)
+        TransitSignposting.event("UniqueTransitRouteCount", value: unique.count, planningID: planningID)
         guard !unique.isEmpty else {
             if !database.railwayFeedAvailable { throw TransitRoutingError.railwayFeedUnavailable }
             throw TransitRoutingError.noJourney
@@ -1040,19 +1393,47 @@ private actor LodzTransitRepository {
             let distance = coordinate.distance(to: stop.coordinate)
             return distance <= maximumDistance ? (stop, distance) : nil
         }.sorted { $0.1 < $1.1 }
-        let local = nearby.filter { !$0.0.id.hasPrefix("rail/") }.prefix(localLimit)
-        let railway = nearby.filter { $0.0.id.hasPrefix("rail/") }.prefix(railwayLimit)
-        return (Array(local) + Array(railway)).sorted { $0.1 < $1.1 }
+        let local = Array(nearby.filter { !$0.0.id.hasPrefix("rail/") }.prefix(localLimit))
+        let railway = Array(nearby.filter { $0.0.id.hasPrefix("rail/") }.prefix(railwayLimit))
+        let prioritizedLocalCount = min(12, local.count)
+        let prioritizedRailwayCount = min(8, railway.count)
+        let prioritized = (Array(local.prefix(prioritizedLocalCount))
+            + Array(railway.prefix(prioritizedRailwayCount))).sorted { $0.1 < $1.1 }
+        let remaining = (Array(local.dropFirst(prioritizedLocalCount))
+            + Array(railway.dropFirst(prioritizedRailwayCount))).sorted { $0.1 < $1.1 }
+        return prioritized + remaining
     }
 
     private static func publicStop(_ stop: GTFSStop, database: GTFSDatabase) -> TransitStop {
         let routes = database.routeIDsByStop[stop.id] ?? []
         let lineNames = routes.compactMap { database.routes[$0]?.displayName }
+        let stationID = stop.parentStation?.isEmpty == false
+            ? stop.parentStation
+            : stop.locationType == 1 ? stop.id : nil
+        let station = stationID.flatMap { database.stopByID[$0] }
+        let stationRouteIDs: Set<String> = {
+            guard let stationID else { return routes }
+            let members = database.stopsByStationID[stationID] ?? [stop]
+            return Set(members.flatMap { database.routeIDsByStop[$0.id] ?? [] })
+        }()
+        let stationLineNames = stationRouteIDs.compactMap { database.routes[$0]?.displayName }
+        let modes = Set(stationRouteIDs.compactMap { routeID -> TransitStopMode? in
+            guard let route = database.routes[routeID] else { return nil }
+            switch route.mode {
+            case "RAIL": return .rail
+            case "TRAM": return .tram
+            default: return .bus
+            }
+        })
         return TransitStop(id: stop.id, name: stop.name, address: stop.address,
                            coordinate: stop.coordinate,
-                           isMajor: stop.parentStation?.isEmpty == false || stop.locationType == 1
-                               || Set(lineNames).count >= 4,
-                           lineIDs: Array(routes).sorted(), lines: Array(Set(lineNames)).sorted())
+                           isMajor: stop.locationType == 1 || Set(stationLineNames).count >= 4
+                               || modes.contains(.rail) && stop.parentStation?.isEmpty == false,
+                           lineIDs: Array(routes).sorted(), lines: Array(Set(lineNames)).sorted(),
+                           modes: modes,
+                           stationID: stationID,
+                           stationName: station?.name,
+                           stationCoordinate: station?.coordinate)
     }
 
     private static func railwayAttribution(for database: GTFSDatabase) -> String {
@@ -1111,7 +1492,10 @@ private actor LodzTransitRepository {
 
     private static func activeTripInstances(database: GTFSDatabase, realtime: GTFSRealtimeSnapshot,
                                             after departure: Date,
-                                            onlyStopIDs: Set<String>? = nil) -> [GTFSTripInstance] {
+                                            onlyStopIDs: Set<String>? = nil,
+                                            onlyTripIDs: Set<String>? = nil,
+                                            planningID: UInt64? = nil,
+                                            trace: TransitPlanningTrace? = nil) -> [GTFSTripInstance] {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Europe/Warsaw")!
         let today = calendar.startOfDay(for: departure)
@@ -1122,12 +1506,17 @@ private actor LodzTransitRepository {
         }
 
         let trips: [GTFSTrip]
-        if let onlyStopIDs {
+        if let onlyTripIDs {
+            trips = onlyTripIDs.compactMap { database.tripsByID[$0] }
+        } else if let onlyStopIDs {
             let tripIDs = Set(onlyStopIDs.flatMap { database.tripIDsByStop[$0] ?? [] })
             trips = tripIDs.compactMap { database.tripsByID[$0] }
         } else {
             trips = database.trips
         }
+        let tripsExamined = trips.count * serviceDates.count
+        trace?.addCount("tripDaysExamined", value: tripsExamined)
+        TransitSignposting.event("TripsExamined", value: tripsExamined, planningID: planningID)
         var instances: [GTFSTripInstance] = []
         for serviceDate in serviceDates {
             let dateString = GTFSDate.string(from: serviceDate)
@@ -1204,7 +1593,8 @@ private actor LodzTransitRepository {
         if originWalk.duration > 0.1 {
             legs.append(JourneyLeg(mode: "WALK", from: "Punkt początkowy", to: firstStop.name,
                                     departure: departingAt, arrival: departingAt.addingTimeInterval(originWalk.duration),
-                                    realTime: false, coordinates: originWalk.coordinates))
+                                    realTime: false, coordinates: originWalk.coordinates,
+                                    hasResolvedWalkingGeometry: originWalk.hasResolvedGeometry))
         }
         var relevantRoutes = Set<String>()
         var relevantStops = Set<String>([firstStop.id, candidate.destinationWalk.stop.id])
@@ -1263,7 +1653,8 @@ private actor LodzTransitRepository {
             legs.append(JourneyLeg(mode: "WALK", from: candidate.destinationWalk.stop.name, to: "Cel",
                                    departure: candidate.label.arrival,
                                    arrival: candidate.arrival, realTime: false,
-                                   coordinates: candidate.destinationWalk.coordinates))
+                                   coordinates: candidate.destinationWalk.coordinates,
+                                   hasResolvedWalkingGeometry: candidate.destinationWalk.hasResolvedGeometry))
         }
 
         var coordinates: [Coordinate] = []
@@ -1363,6 +1754,7 @@ private nonisolated struct TransitWalkOption: Sendable {
     let distance: Double
     let duration: TimeInterval
     let coordinates: [Coordinate]
+    let hasResolvedGeometry: Bool
 }
 
 private nonisolated struct TransitFootpath: Sendable {
@@ -1540,6 +1932,7 @@ private nonisolated struct GTFSDatabase: Sendable {
     let normalizedRouteNames: [String: String]
     let lineDirections: [String: String]
     let stopByID: [String: GTFSStop]
+    let stopsByStationID: [String: [GTFSStop]]
     let tripsByID: [String: GTFSTrip]
     let tripIDsByStop: [String: [String]]
     let routeIDsByStop: [String: Set<String>]
@@ -1754,6 +2147,10 @@ private nonisolated struct GTFSDatabase: Sendable {
             values.sorted().prefix(2).joined(separator: " ↔ ")
         }
         stopByID = Dictionary(parsedStops.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        stopsByStationID = Dictionary(grouping: parsedStops.compactMap { stop -> (String, GTFSStop)? in
+            if let parent = stop.parentStation, !parent.isEmpty { return (parent, stop) }
+            return stop.locationType == 1 ? (stop.id, stop) : nil
+        }, by: { $0.0 }).mapValues { $0.map(\.1) }
         tripsByID = Dictionary(trips.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         tripIDsByStop = groupedStops.reduce(into: [String: [String]]()) { result, entry in
             for stop in entry.value { result[stop.stopID, default: []].append(entry.key) }
@@ -1826,7 +2223,8 @@ private nonisolated struct LoadedGTFSArchive: Sendable {
 
 private nonisolated enum TransitGTFSLoader {
     static func load(cacheDirectory: URL, feedURL: URL,
-                     railwayFeedURL: URL) async throws -> LoadedTransitDatabase {
+                     railwayFeedURL: URL, planningID: UInt64?,
+                     trace: TransitPlanningTrace?) async throws -> LoadedTransitDatabase {
         try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
         async let cityArchiveRequest = loadArchive(cacheDirectory: cacheDirectory,
                                                    filename: "lodz-gtfs.zip", feedURL: feedURL)
@@ -1843,10 +2241,19 @@ private nonisolated enum TransitGTFSLoader {
         }
         let database: GTFSDatabase
         do {
-            database = try GTFSDatabase(feeds: feeds)
-        } catch {
-            guard railwayArchive != nil else { throw error }
-            database = try GTFSDatabase(feeds: [feeds[0]])
+            let indexStartedAt = ProcessInfo.processInfo.systemUptime
+            let indexInterval = TransitSignposting.begin("ScheduleIndexBuild", planningID: planningID)
+            defer {
+                TransitSignposting.end("ScheduleIndexBuild", identifier: indexInterval,
+                                       planningID: planningID)
+                trace?.recordDuration("ScheduleIndexBuild", startedAt: indexStartedAt)
+            }
+            do {
+                database = try GTFSDatabase(feeds: feeds)
+            } catch {
+                guard railwayArchive != nil else { throw error }
+                database = try GTFSDatabase(feeds: [feeds[0]])
+            }
         }
         return LoadedTransitDatabase(database: database,
                                      wasCached: cityArchive.wasCached && (railwayArchive?.wasCached ?? true))

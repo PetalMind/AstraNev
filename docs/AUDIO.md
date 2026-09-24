@@ -1,81 +1,105 @@
 # Audio i komunikaty głosowe
 
-Dokument opisuje bieżącą implementację dźwięku w NaviAstra. Audio aplikacji służy do syntezy komunikatów nawigacyjnych przez `AVSpeechSynthesizer`. Nie ma tu odtwarzacza muzyki, plików dźwiękowych ani nagrywania z mikrofonu.
+Dokument opisuje syntezę mowy w NaviAstra: źródła zdarzeń, harmonogram wypowiedzi, priorytety, tryby podróży, ustawienia i zachowanie sesji audio. Aplikacja używa `AVSpeechSynthesizer`; nie odtwarza tu muzyki ani plików dźwiękowych i nie nagrywa mikrofonu.
 
-## Przepływ komunikatu
+## Architektura
 
-1. `NavigationEngine.updateProgress()` oblicza pozycję na trasie i sprawdza, czy pojawił się manewr, ostrzeżenie drogowe albo zdarzenie w podróży komunikacją.
-2. Jeśli komunikaty są włączone, silnik głosowy sprawdza odległość oraz klucz deduplikacji. Ten sam etap tego samego komunikatu nie jest powtarzany przy każdym pomiarze GPS.
-3. Silnik tworzy `AVSpeechUtterance` z polskim głosem `pl-PL` i przekazuje go do `AVSpeechSynthesizer`.
-4. Na iOS przed syntezą aktywowana jest sesja audio. Na macOS syntezator jest wywoływany bez `AVAudioSession`.
+```text
+NavigationEngine.updateProgress()
+        ↓
+VoiceGuidanceEngine
+  treść, progi, preferencje, klucze zdarzeń
+        ↓
+VoiceAnnouncementScheduler
+  priorytety, kolejka, przerwania, odstęp, deduplikacja
+        ↓
+AVSpeechSynthesizer
+  + AVAudioSession na iOS
+```
 
-Instrukcja manewru pochodzi z modelu trasy. Aplikacja używa własnej polskiej nazwy manewru, jeśli ją ma, w przeciwnym razie tekstu dostawcy trasy. Do wybranych manewrów dodaje nazwę ulicy.
+`NavigationEngine` dostarcza kontekst GPS i trasę. `VoiceGuidanceEngine` zamienia go na komunikaty, a prywatny `VoiceAnnouncementScheduler` decyduje, czy wypowiedź może rozpocząć się teraz, czekać, przerwać inną albo zostać pominięta. Obsługa audio nie zmienia geometrii ani wyboru trasy.
 
-## Jakie komunikaty są wypowiadane
+## Źródła i rodzaje komunikatów
 
-### Manewry na trasie drogowej
+### Manewry
 
-Manewr może mieć trzy etapy. Prędkość przekazywana do obliczeń jest wyrażona w metrach na sekundę.
+Dystans do następnego manewru i bieżąca prędkość wyznaczają trzy etapy. Prędkość jest w metrach na sekundę.
 
-| Etap | Warunek odległości od manewru | Początek komunikatu |
+| Etap | Warunek | Tekst |
 |---|---|---|
-| Wcześniejsza zapowiedź | do `max(200 m, min(1200 m, prędkość × 24 s))` | „Za … metrów …” |
-| Bliższa zapowiedź | do `max(80 m, prędkość × 8 s)` | „Za … metrów …” |
-| Manewr teraz | do 35 m | Sama instrukcja manewru |
+| Wcześniejszy | do `max(200 m, min(1200 m, prędkość × 24 s))` | „Za … metrów …” |
+| Bliższy | do `max(80 m, prędkość × 8 s)` | „Za … metrów …” |
+| Bezpośredni | do 35 m | Sama instrukcja manewru |
 
-Każdy etap danego manewru jest zapowiadany najwyżej raz do resetu silnika głosowego. Przy wypowiedzeniu manewru aplikacja natychmiast przerywa poprzednią wypowiedź, jeśli syntezator nadal mówi. Odległość w prefiksie jest zaokrąglana w dół do wielokrotności 50 m; przy odległości poniżej 50 m prefiks może więc brzmieć „Za 0 metrów”.
+Odległość we wcześniejszych etapach jest zaokrąglana w dół do 50 m. Prefiks jest pomijany poniżej 50 m, więc system nie wypowie „Za 0 metrów”. Tryb „Mała” pomija etap bliższy. Treść pochodzi z `Maneuver.spokenInstruction` i może zawierać nazwę ulicy.
 
-### Ostrzeżenia drogowe
+### Alerty drogowe i zdarzenia ruchu
 
-Głosowo zapowiadane są tylko typy oznaczone jako egzekwowanie przepisów — fotoradary, początki i końce odcinkowego pomiaru oraz rejestracja przejazdu na czerwonym świetle — oraz `speedLimitChange`. Ostrzeżenie może zostać wypowiedziane przy dystansie do 1200 m, ponownie do 250 m i bez prefiksu do 40 m. Dla zmiany limitu tekst zawiera nową wartość, jeśli jest dostępna.
+Alerty trasy (`RoadSafetyAlert`) są kwalifikowane według typu ustawieniem gadatliwości. Obsługiwane są: fotoradar, początek i koniec odcinkowego pomiaru, kamera na czerwonym świetle, zmiana i zmienny limit, wypadek, roboty drogowe, zamknięcie, korek, przejazd kolejowy, strefa szkolna i niebezpieczny zakręt. Zmiana limitu wypowiada jego wartość, jeśli dostawca ją podał.
 
-Pozostałe typy alertów drogowych, takie jak wypadek, roboty drogowe, zamknięcie drogi czy zmienny limit, nie przechodzą obecnie filtra komunikatu głosowego.
+Etapy alertu: do 1200 m, do 250 m i bezpośrednio do 40 m. Alerty drogowe są dopasowane do geometrii trasy. Na trasie P+R dane te są pobierane dla odcinka samochodowego i ogłoszenia są aktywne tylko podczas tego odcinka.
 
-Przełącznik „Ostrzegaj o przekroczeniu limitu” steruje wizualnym oznaczeniem przekroczenia na karcie prędkości. Samo przekroczenie limitu nie uruchamia komunikatu głosowego. Głosowe zapowiedzi dotyczą alertów przypisanych do trasy, a nie porównania bieżącej prędkości z limitem.
+Incydenty ruchu (`TrafficIncident`) mogą dodać wypadek, mgłę, niebezpieczne warunki, deszcz, oblodzenie, korek, zamknięty pas/drogę, roboty, wiatr, podtopienie, objazd lub unieruchomiony pojazd. Incydent musi być z aktualnego, maksymalnie 180-sekundowego obrazu ruchu i znajdować się przed użytkownikiem, w odległości do 1200 m. Gdy dostawca nie podał dystansu po trasie, geometria musi dać się dopasować do trasy z tolerancją 120 m. W trybie „Szczegółowa” komunikat o korku zawiera również opóźnienie, jeśli jest dostępne.
 
-### Komunikacja miejska i pociągi
+### Komunikacja, dojście i P+R
 
-Podczas aktywnej nawigacji w trybie „Komunikacja” aplikacja wypowiada:
+Aktywna podróż komunikacją ogłasza dojście do kolejnego przystanku lub celu, przesiadkę, linię i kierunek oraz wysiadanie dwa przystanki przed przystankiem docelowym i na następnym przystanku. Zapowiedzi wysiadania wymagają potwierdzenia jazdy pojazdem na podstawie postępu, prędkości lub aktualnej pozycji pojazdu. Zapowiedź na następnym przystanku ma priorytet manewru bezpośredniego.
 
-- wskazówkę dojścia dla aktualnego odcinka pieszego, raz na dany odcinek podróży;
-- informację o wysiadaniu dwa przystanki przed celem odcinka;
-- przypomnienie o wysiadaniu na następnym przystanku;
-- informację o linii i kierunku kolejnej przesiadki, jeśli występuje;
-- „Dotarłeś do celu”, gdy zaakceptowana pozycja GPS znajduje się do 45 m od celu.
+P+R używa wspólnego postępu `JourneyLeg`: prowadzenie drogowe i alerty działają na pierwszym odcinku samochodowym, a odcinki piesze i komunikacyjne korzystają z tych samych wskazówek dojścia, potwierdzania jazdy i komunikatów o wysiadaniu co zwykła podróż komunikacją.
 
-Zapowiedzi o wysiadaniu są wypowiadane dopiero po potwierdzeniu, że użytkownik znajduje się w pojeździe. Zdarzenia są deduplikowane osobno dla odcinka, kursu i etapu wysiadania.
+### Przyjazd i przeliczenie trasy
 
-Trasa P+R zawiera odcinek samochodowy i odcinki komunikacyjne, ale nie przechodzi przez gałąź komunikatów zarezerwowaną dla trybu `.transit`. Ma ogólne prowadzenie oparte na manewrach trasy; kod tej ścieżki nie planuje dla P+R wypowiedzi o dojściu, wysiadaniu, przesiadce ani komunikatu o dotarciu do celu z gałęzi komunikacyjnej.
+Przyjazd przechodzi przez wspólną metodę `arriveAtDestination()` i może wypowiedzieć „Dotarłeś do celu” dla każdego trybu, o ile głos jest włączony. Komunikat ma priorytet krytyczny. Odległość wykrycia wynosi do 45 m dla komunikacji i P+R; pozostałe tryby wymagają bliskości końca trasy i niskiej prędkości.
 
-### Przyjazd innymi trasami
+Po udanym przeliczeniu trasy jest dodawana informacja „Trasa została przeliczona”. Reset po reroutingu zachowuje zakończone klucze semantyczne, a usuwa kolejkę i bieżącą wypowiedź. Dzięki temu ten sam manewr lub alert nie wraca tylko dlatego, że provider nadał trasie nowe ID.
 
-W zwykłej nawigacji drogowej, pieszej lub rowerowej warunek dotarcia kończy prowadzenie i resetuje syntezator. Osobny głosowy komunikat o dotarciu jest obecnie zaimplementowany dla trybu „Komunikacja”, nie dla tych trybów.
+## Kolejka, priorytety i deduplikacja
 
-## Sterowanie
+Scheduler porządkuje wypowiedzi według priorytetów (od najwyższego):
 
-- `voiceEnabled` domyślnie ma wartość `true`.
-- Przełącznik „Komunikaty głosowe” jest dostępny w ustawieniach oraz jako przycisk głośnika podczas nawigacji. Oba sterują tą samą wartością stanu.
-- Wartość nie jest zapisywana w `UserDefaults` ani `AppStorage`. Po utworzeniu nowego `NavigationState` komunikaty są domyślnie włączone.
-- Wyłączenie komunikatów blokuje kolejne wywołania zapowiedzi. Nie wywołuje `stopSpeaking`, więc wypowiedź już rozpoczęta — lub oczekująca na aktywację sesji iOS — może jeszcze się odezwać.
-- `voice.reset()` jest wywoływane przy rozpoczęciu nawigacji, jawnym zakończeniu przez `stop()`, dotarciu do celu na trasie drogowej/pieszej/rowerowej oraz po udanym przeliczeniu trasy. Czyści deduplikację i zatrzymuje bieżącą mowę. Na iOS reset dodatkowo kolejkuje dezaktywację sesji audio. Przyjazd w trybie komunikacji najpierw wypowiada komunikat o dotarciu i nie wykonuje w tym miejscu resetu.
+1. **Krytyczny** — przyjazd, zamknięcie drogi oraz poważne, bliskie incydenty; może przerwać każdą wypowiedź.
+2. **Manewr bezpośredni** — instrukcja do 35 m, ostatnie ostrzeżenie drogowe lub wysiadanie na następnym przystanku; może przerwać informację albo alert bezpieczeństwa.
+3. **Nawigacja** — zapowiedź manewru, wskazówka odcinka pieszego i przeliczenie trasy.
+4. **Bezpieczeństwo** — pozostałe alerty drogowe i incydenty.
+5. **Informacja** — korek lub zbiorcze utrudnienie.
 
-## iOS, macOS i sesja audio
+Priorytet bezpieczeństwa może przerwać informację. Wypowiedzi niższego priorytetu nie przerywają bieżącej. Gdy audio jest zajęte, nowe informacje są pomijane, a pozostałe trafiają do uporządkowanej kolejki. Dla wypowiedzi poza krytycznymi i bezpośrednimi scheduler zachowuje odstęp 2,5 sekundy po zakończonej mowie.
 
-Na iOS `VoiceGuidanceEngine` ustawia kategorię `AVAudioSession` na `.playback`, tryb `.spokenAudio` i opcję `.duckOthers`, po czym aktywuje sesję przed przekazaniem tekstu do syntezatora. Operacje zmiany sesji są wykonywane kolejno. Aktywacja i żądania mowy mają liczniki generacji, które pozwalają odrzucić spóźnioną operację po resecie lub nowszym komunikacie.
+Klucz `pending` blokuje dodanie tego samego zdarzenia drugi raz podczas oczekiwania lub mówienia. Klucz trafia do `spoken` dopiero po callbacku `didFinish` syntezatora. Błąd aktywacji sesji, watchdog bez startu i callback anulowania zwalniają klucz, pozwalając na ponowienie. Callback `didStart` oznacza jedynie rozpoczęcie, nie sukces. Watchdog kończy próbę, jeśli syntezator nie rozpocznie jej w ciągu 8 sekund.
 
-Konfiguracja iOS deklaruje tło `audio` w `UIBackgroundModes`. W połączeniu z sesją `.playback` jest to konfiguracja używana do komunikatów audio, gdy nawigacja działa w tle. Tryb komunikacji prosi dodatkowo o uprawnienie do lokalizacji w tle.
+Manewry są deduplikowane semantycznie na podstawie rodzaju, znormalizowanej nazwy ulicy i przybliżonej lokalizacji, osobno dla każdego etapu. Alerty i incydenty używają ich stabilnego ID i etapu, a podróże — ID odcinka lub kursu. Klucze zakończonych wypowiedzi przetrwają rerouting; rozpoczęcie nowej nawigacji czyści je.
 
-Jeśli konfiguracja lub aktywacja sesji iOS zakończy się błędem albo aktywacja zwróci `false`, bieżący komunikat jest pomijany. Błąd nie jest pokazywany użytkownikowi i nie ma jawnego ponowienia ani awaryjnego wywołania syntezatora poza sesją.
+## Ustawienia i panel audio
 
-Na macOS aplikacja wywołuje `AVSpeechSynthesizer.speak` bez konfiguracji sesji audio. Kod nie ustawia osobno głośności, tempa mowy ani urządzenia wyjściowego; wybór wyjścia pozostaje po stronie systemu. Dla obu platform ustawiany jest język `pl-PL`; dostępność konkretnego głosu zależy od systemu.
+Preferencje są zapisywane w `UserDefaults` pod kluczami `voiceEnabled`, `voiceVerbosity`, `voiceIdentifier`, `voiceSpeechRate` i `voiceVolume`. Domyślnie głos jest włączony, tryb to „Standardowa”, tempo wynosi `0.5`, a głośność `1.0`.
+
+Użytkownik może ustawić:
+
+- **Gadatliwość:** „Mała”, „Standardowa” lub „Szczegółowa”. Mała pomija bliższy etap manewru, korek, zdarzenia zbiorcze i część mniej krytycznych alertów; nadal podaje wysiadanie na następnym przystanku. Standardowa pomija korki i zdarzenia zbiorcze. Szczegółowa obejmuje znane typy i podaje czas opóźnienia korka, gdy dostawca go udostępni.
+- **Głos:** automatyczny polski głos systemowy albo głos `pl-PL` z listy udostępnionej przez system. Niedostępny zapisany identyfikator wraca do automatycznego wyboru.
+- **Tempo:** suwak `0.38–0.62` przekazywany do `AVSpeechUtterance.rate`.
+- **Głośność komunikatu:** suwak `0–1` przekazywany do `AVSpeechUtterance.volume`; nie zmienia systemowej głośności ani muzyki.
+
+Ustawienia są w sekcji „Głos i komunikaty”. Podczas prowadzenia przycisk głośnika przełącza mowę, a panel pod ikoną suwaków udostępnia te same opcje w skrócie.
+
+Wyłączenie głosu natychmiast zatrzymuje bieżącą wypowiedź, opróżnia kolejkę i unieważnia oczekujące aktywacje audio. Ponowne włączenie nie odtwarza anulowanych komunikatów; następne zdarzenia mogą zostać wygenerowane normalnie. Jawne zakończenie nawigacji zatrzymuje mowę i czyści deduplikację.
+
+## Platformy i sesja audio
+
+Na iOS scheduler ustawia kategorię `AVAudioSession` na `.playback`, tryb `.spokenAudio` i opcję `.duckOthers`, aby ściszyć inne odtwarzanie na czas komunikatu. Operacje aktywacji i dezaktywacji sesji są szeregowowane. Identyfikator wypowiedzi i licznik generacji unieważniają spóźnione operacje po przerwaniu, wyciszeniu lub resecie.
+
+Jeśli aktywacja sesji się nie powiedzie lub zwróci brak aktywacji, komunikat nie jest oznaczany jako wypowiedziany. Bieżąca próba jest zwalniana i może zostać ponowiona, gdy źródło zdarzenia ponownie ją zgłosi. Błąd nie ma osobnego komunikatu w interfejsie. Konfiguracja iOS deklaruje tryb audio w tle w `UIBackgroundModes`; podróże z odcinkiem komunikacji proszą też o uprawnienie lokalizacyjne „Zawsze”.
+
+Na macOS `AVSpeechSynthesizer` jest wywoływany bez `AVAudioSession`; wybór urządzenia wyjściowego pozostaje po stronie systemu. Na obu platformach systemowy głos `pl-PL` może nie być dostępny — wtedy automatyczny wybór pozostaje zależny od zainstalowanych głosów.
 
 ## Mapa implementacji
 
 | Obszar | Plik i symbol |
 |---|---|
-| Stan domyślny przełącznika | [`NavigationEngine.swift`](../NaviAstra/Navigation/NavigationEngine.swift#L35) — `NavigationState.voiceEnabled` |
-| Synteza, deduplikacja i sesja audio | [`NavigationEngine.swift`](../NaviAstra/Navigation/NavigationEngine.swift#L344) — `VoiceGuidanceEngine` |
-| Wyznaczanie treści mowy dla manewrów | [`Models.swift`](../NaviAstra/Navigation/Models.swift#L163) — `Maneuver.spokenInstruction` |
-| Wywołania dla manewrów, alertów, przyjazdu i przesiadek | [`NavigationEngine.swift`](../NaviAstra/Navigation/NavigationEngine.swift#L1443) — `updateProgress()` i `updateTransitVoice(for:journey:)` |
-| Kontrolki komunikatów | [`ContentView.swift`](../NaviAstra/ContentView.swift#L1640) — przycisk podczas prowadzenia; sekcja „Prowadzenie i ostrzeżenia” znajduje się w tej samej karcie ustawień |
-| Tryby audio i lokalizacji działające w tle na iOS | [`NaviAstra-iOS-Info.plist`](../Config/NaviAstra-iOS-Info.plist) |
+| Ustawienia głosu i kolejka | [`VoiceGuidanceEngine.swift`](../NaviAstra/Navigation/VoiceGuidanceEngine.swift) — `VoiceGuidancePreferences`, `VoiceGuidanceEngine`, `VoiceAnnouncementScheduler` |
+| Integracja z GPS, podróżą i przyjazdem | [`NavigationEngine.swift`](../NaviAstra/Navigation/NavigationEngine.swift) — `updateProgress()`, `updateJourneyVoiceProgress()`, `updateTransitVoice(for:journey:)`, `arriveAtDestination()` |
+| Tekst manewru | [`Models.swift`](../NaviAstra/Navigation/Models.swift) — `Maneuver.spokenInstruction` |
+| Typy alertów drogowych | [`RoadSafetyData.swift`](../NaviAstra/Navigation/RoadSafetyData.swift) — `RoadAlertType`, `RoadSafetyAlert` |
+| Typy incydentów ruchu | [`TrafficProvider.swift`](../NaviAstra/Traffic/TrafficProvider.swift) — `TrafficIncidentCategory`, `TrafficIncident` |
+| Panel podczas prowadzenia i ustawienia | [`ContentView.swift`](../NaviAstra/ContentView.swift) — `voiceQuickControls`, przycisk mapy i sekcja „Głos i komunikaty” |
+| Konfiguracja audio i lokalizacji w tle iOS | [`NaviAstra-iOS-Info.plist`](../Config/NaviAstra-iOS-Info.plist) |

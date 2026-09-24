@@ -1,4 +1,3 @@
-import AVFoundation
 import CoreLocation
 import Foundation
 import Observation
@@ -32,7 +31,17 @@ final class NavigationState {
     var estimatedArrival: Date?
     var lastTrip: TripRecord?
     var errorMessage: String?
-    var voiceEnabled = true
+    var voicePreferences = VoiceGuidancePreferences.load() {
+        didSet { voicePreferences.save() }
+    }
+    var voiceEnabled: Bool {
+        get { voicePreferences.isEnabled }
+        set {
+            var updated = voicePreferences
+            updated.isEnabled = newValue
+            voicePreferences = updated
+        }
+    }
     var speedLimitKph: Int?
     var speedLimitSource: SpeedLimitSource?
     var speedLimitMessage: String?
@@ -173,14 +182,14 @@ private extension TransportMode {
     }
 }
 
-struct RouteProjection {
+nonisolated struct RouteProjection {
     let coordinate: Coordinate
     let distanceFromRoute: Double
     let alongRoute: Double
     let segment: Int
 }
 
-enum MapMatcher {
+nonisolated enum MapMatcher {
     static func project(_ location: Coordinate, onto route: [Coordinate]) -> RouteProjection? {
         guard route.count > 1 else { return nil }
         let metersPerLatitudeDegree = 110_574.0
@@ -275,7 +284,7 @@ enum MapMatcher {
     }
 }
 
-struct RouteMatch {
+nonisolated struct RouteMatch {
     let projection: RouteProjection
     let confidence: Double
 }
@@ -342,112 +351,16 @@ enum TransitRouteProgressCalculator {
 }
 
 @MainActor
-final class VoiceGuidanceEngine {
-    private let synthesizer = AVSpeechSynthesizer()
-    private var announced: Set<String> = []
-    private var audioSessionConfigured = false
-    private var speechGeneration = 0
-    private var audioSessionOperationGeneration = 0
-    private var audioSessionOperation: Task<Void, Never>?
-
-    func reset() {
-        speechGeneration &+= 1
-        synthesizer.stopSpeaking(at: .immediate)
-        announced.removeAll()
-#if os(iOS)
-        let audioSession = AVAudioSession.sharedInstance()
-        enqueueAudioSessionOperation {
-            _ = try? await audioSession.deactivate(options: .notifyOthersOnDeactivation)
-        }
-#endif
-    }
-    func announce(_ maneuver: Maneuver, distance: Double, speed: Double) {
-        let early = max(200, min(1200, speed * 24))
-        let stage: Int
-        if distance <= 35 { stage = 2 }
-        else if distance <= max(80, speed * 8) { stage = 1 }
-        else if distance <= early { stage = 0 }
-        else { return }
-        let key = "\(maneuver.id):\(stage)"
-        guard announced.insert(key).inserted else { return }
-        let prefix = stage == 2 ? "" : "Za \(Int(distance / 50) * 50) metrów "
-        let utterance = AVSpeechUtterance(string: prefix + maneuver.spokenInstruction)
-        utterance.voice = AVSpeechSynthesisVoice(language: "pl-PL")
-        if synthesizer.isSpeaking { synthesizer.stopSpeaking(at: .immediate) }
-        speak(utterance)
-    }
-
-    func announceTransit(_ instruction: String, key: String) {
-        guard announced.insert(key).inserted else { return }
-        let utterance = AVSpeechUtterance(string: instruction)
-        utterance.voice = AVSpeechSynthesisVoice(language: "pl-PL")
-        if synthesizer.isSpeaking { synthesizer.stopSpeaking(at: .immediate) }
-        speak(utterance)
-    }
-
-    func announce(_ alert: RoadSafetyAlert, distance: Double, routeID: UUID) {
-        guard alert.type.isEnforcement || alert.type == .speedLimitChange else { return }
-        let stage: Int
-        if distance <= 40 { stage = 2 }
-        else if distance <= 250 { stage = 1 }
-        else if distance <= 1_200 { stage = 0 }
-        else { return }
-        let key = "road-\(routeID)-\(alert.id)-\(stage)"
-        guard announced.insert(key).inserted else { return }
-        let prefix = stage == 2 ? "" : "Za \(Int(distance / 50) * 50) metrów "
-        let utterance = AVSpeechUtterance(string: prefix + alert.title)
-        utterance.voice = AVSpeechSynthesisVoice(language: "pl-PL")
-        speak(utterance)
-    }
-
-    private func speak(_ utterance: AVSpeechUtterance) {
-#if os(iOS)
-        speechGeneration &+= 1
-        let generation = speechGeneration
-        let audioSession = AVAudioSession.sharedInstance()
-        enqueueAudioSessionOperation { [weak self] in
-            guard let self else { return }
-            do {
-                if !self.audioSessionConfigured {
-                    try await Task.detached(priority: .userInitiated) {
-                        try AVAudioSession.sharedInstance().setCategory(
-                            .playback, mode: .spokenAudio, options: [.duckOthers])
-                    }.value
-                    self.audioSessionConfigured = true
-                }
-                let activated = try await audioSession.activate(options: [])
-                guard activated, generation == self.speechGeneration else {
-                    _ = try? await audioSession.deactivate(options: .notifyOthersOnDeactivation)
-                    return
-                }
-                self.synthesizer.speak(utterance)
-            } catch {
-                // Keep voice guidance best-effort when the system audio session is unavailable.
-            }
-        }
-#else
-        synthesizer.speak(utterance)
-#endif
-    }
-
-    private func enqueueAudioSessionOperation(_ operation: @escaping @MainActor () async -> Void) {
-        audioSessionOperationGeneration &+= 1
-        let operationGeneration = audioSessionOperationGeneration
-        let previousOperation = audioSessionOperation
-        audioSessionOperation = Task { @MainActor [weak self] in
-            await previousOperation?.value
-            await operation()
-            guard let self, self.audioSessionOperationGeneration == operationGeneration else { return }
-            self.audioSessionOperation = nil
-        }
-    }
-}
-
-@MainActor
 final class NavigationEngine {
     let state = NavigationState()
     private let locationManager = LocationManager()
     private let voice = VoiceGuidanceEngine()
+    private var usesJourneyVoiceGuidance: Bool {
+        state.transportMode == .transit || state.transportMode == .parkRide
+    }
+    private var usesRoadVoiceGuidance: Bool {
+        state.transportMode == .car || state.transportMode == .parkRide
+    }
     private var filter = LocationFilter()
     private var offRouteSince: Date?
     private var previousRouteMatch: (routeID: UUID, projection: RouteProjection, timestamp: Date)?
@@ -502,6 +415,7 @@ final class NavigationEngine {
 
     init(routeProvider: RouteProvider) {
         self.routeProvider = routeProvider
+        voice.updatePreferences(state.voicePreferences)
         let endpoint = (routeProvider as? ValhallaRouteProvider)?.endpoint ?? URL(string: "https://valhalla1.openstreetmap.de")!
         transitProvider = LodzTransitRouteProvider(walkingRoutingEndpoint: endpoint)
         speedLimitProvider = ValhallaSpeedLimitProvider(endpoint: endpoint)
@@ -520,14 +434,14 @@ final class NavigationEngine {
                 self.state.errorMessage = "Włącz dostęp do lokalizacji w ustawieniach urządzenia."
             } else {
 #if os(iOS)
-                if self.state.transportMode == .transit,
+                if self.usesJourneyVoiceGuidance,
                    self.state.status == .navigating,
                    !self.locationManager.backgroundLocationModeEnabled {
                     self.state.errorMessage = "Aplikacja nie ma skonfigurowanego śledzenia lokalizacji w tle."
-                } else if self.state.transportMode == .transit,
+                } else if self.usesJourneyVoiceGuidance,
                           self.state.status == .navigating,
                           authorization != .authorizedAlways {
-                    self.state.errorMessage = "Dostęp Zawsze pozwala prowadzić komunikacją i odtwarzać ostrzeżenia przy zablokowanym ekranie."
+                    self.state.errorMessage = "Dostęp Zawsze pozwala prowadzić w podróży z odcinkiem komunikacji i odtwarzać ostrzeżenia przy zablokowanym ekranie."
                 } else {
                     self.state.errorMessage = nil
                 }
@@ -554,7 +468,7 @@ final class NavigationEngine {
                 try? await Task.sleep(for: .seconds(1))
                 guard let self else { return }
                 self.checkGPS()
-                if self.state.transportMode == .transit,
+                if self.usesJourneyVoiceGuidance,
                    (self.state.status == .navigating || self.state.status == .rerouting),
                    Date().timeIntervalSince(self.lastTransitProgressRefresh) >= 10 {
                     self.lastTransitProgressRefresh = Date()
@@ -1160,9 +1074,14 @@ final class NavigationEngine {
             return
         }
         let current = state.location?.coordinate
-        let nearestSearch = !nearDestination && destination == nil
+        let isNavigating = state.status == .navigating || state.status == .rerouting
+        let nearestSearch = !nearDestination && !isNavigating
         var coordinates = state.route?.coordinates ?? []
-        if let current, let projection = MapMatcher.project(current, onto: coordinates) {
+        if isNavigating && !nearDestination {
+            guard let current, let projection = MapMatcher.project(current, onto: coordinates) else {
+                state.nearbyStatus = .unavailable("Czekam na pozycję GPS na aktywnej trasie.")
+                return
+            }
             coordinates = [projection.coordinate] + Array(coordinates.dropFirst(projection.segment + 1))
         }
         guard nearDestination || nearestSearch || coordinates.count > 1 else {
@@ -1276,6 +1195,14 @@ final class NavigationEngine {
         }
     }
 
+    func estimateNearbyTravel(for candidateID: String) async {
+        guard let origin = state.location?.coordinate,
+              let suggestion = state.nearbySuggestions.first(where: { $0.id == candidateID }),
+              (suggestion.travelTime == nil || suggestion.travelDistance == nil) else { return }
+        await estimateNearbyTravel(for: [suggestion.candidate], from: origin,
+                                   preferences: state.routingPreferences, searchID: nearbySearchID)
+    }
+
     private func estimateNearbyTravel(for candidates: [NearbyPlaceCandidate], from origin: Coordinate,
                                       preferences: RoutingPreferences, searchID: UUID) async {
         guard let provider = routeProvider as? AdvancedRouteProvider else {
@@ -1284,7 +1211,8 @@ final class NavigationEngine {
             }
             return
         }
-        for index in candidates.indices where index < state.nearbySuggestions.count {
+        for candidate in candidates {
+            guard let index = state.nearbySuggestions.firstIndex(where: { $0.id == candidate.id }) else { continue }
             state.nearbySuggestions[index].estimateStatus = .calculating
         }
         do {
@@ -1296,8 +1224,9 @@ final class NavigationEngine {
                 guard nearbySearchID == searchID else { return }
                 for index in candidates.indices {
                     let estimate = rows[0][index]
-                    state.nearbySuggestions[index].travelTime = estimate.time
-                    state.nearbySuggestions[index].travelDistance = estimate.distance.map { $0 * 1_000 }
+                    guard let suggestionIndex = state.nearbySuggestions.firstIndex(where: { $0.id == candidates[index].id }) else { continue }
+                    state.nearbySuggestions[suggestionIndex].travelTime = estimate.time
+                    state.nearbySuggestions[suggestionIndex].travelDistance = estimate.distance.map { $0 * 1_000 }
                 }
             } else {
                 for start in stride(from: 0, to: candidates.count, by: 3) {
@@ -1319,8 +1248,9 @@ final class NavigationEngine {
                         }
                         for await (index, travelTime, travelDistance) in group {
                             guard nearbySearchID == searchID, !Task.isCancelled else { continue }
-                            state.nearbySuggestions[index].travelTime = travelTime
-                            state.nearbySuggestions[index].travelDistance = travelDistance
+                            guard let suggestionIndex = state.nearbySuggestions.firstIndex(where: { $0.id == candidates[index].id }) else { continue }
+                            state.nearbySuggestions[suggestionIndex].travelTime = travelTime
+                            state.nearbySuggestions[suggestionIndex].travelDistance = travelDistance
                         }
                     }
                 }
@@ -1329,7 +1259,8 @@ final class NavigationEngine {
             guard nearbySearchID == searchID, !Task.isCancelled else { return }
         }
         guard nearbySearchID == searchID, !Task.isCancelled else { return }
-        for index in candidates.indices where index < state.nearbySuggestions.count {
+        for candidate in candidates {
+            guard let index = state.nearbySuggestions.firstIndex(where: { $0.id == candidate.id }) else { continue }
             let suggestion = state.nearbySuggestions[index]
             state.nearbySuggestions[index].estimateStatus = suggestion.travelTime != nil && suggestion.travelDistance != nil
                 ? .notRequested : .unavailable
@@ -1337,11 +1268,13 @@ final class NavigationEngine {
     }
 
     func selectNearbyPlace(_ destination: Destination, asFinalParking: Bool) async {
-        guard state.destination != nil else {
+        let active = state.status == .navigating || state.status == .rerouting
+        if !active && !asFinalParking {
+            state.waypoints = []
+            state.evChargingStops = []
             await preview(destination)
             return
         }
-        let active = state.status == .navigating || state.status == .rerouting
         if asFinalParking {
             state.destination = destination
             state.evChargingStops = []
@@ -1355,7 +1288,7 @@ final class NavigationEngine {
             tripSession?.waypoints.insert(destination, at: 0)
             await reroute(from: location)
         } else {
-            await addWaypoint(destination)
+            await preview(destination)
         }
     }
 
@@ -1400,7 +1333,7 @@ final class NavigationEngine {
 #endif
             invalidateTraffic()
             if state.transportMode == .car { refreshTraffic(force: true) }
-            if state.transportMode == .car { loadRoadData(for: firstRoute) }
+            if usesRoadVoiceGuidance { loadRoadData(for: firstRoute) }
         } catch {
             guard generation == requestGeneration else { return }
             state.status = .error
@@ -1413,7 +1346,7 @@ final class NavigationEngine {
               let selectedRoute = state.routeOptions.first(where: { $0.id == route.id }) else { return }
         state.route = selectedRoute
         state.evChargingStops = selectedRoute.chargingStops.map(\.destination)
-        if state.transportMode == .car { loadRoadData(for: selectedRoute) }
+        if usesRoadVoiceGuidance { loadRoadData(for: selectedRoute) }
         state.transitProgress = nil
         transitTripDetails = nil
         transitTripDetailsID = nil
@@ -1424,9 +1357,18 @@ final class NavigationEngine {
         updateProgress()
         if state.transportMode == .car { refreshTraffic(force: true) }
     }
+    func setVoiceEnabled(_ enabled: Bool) {
+        var preferences = state.voicePreferences
+        preferences.isEnabled = enabled
+        setVoicePreferences(preferences)
+    }
+    func setVoicePreferences(_ preferences: VoiceGuidancePreferences) {
+        state.voicePreferences = preferences
+        voice.updatePreferences(preferences)
+    }
     func begin() {
         guard let route = state.route,
-              state.transportMode != .transit || route.journey != nil else { return }
+              (!usesJourneyVoiceGuidance || route.journey != nil) else { return }
         revealTask?.cancel()
         state.routeRevealProgress = 1
         voice.reset()
@@ -1435,13 +1377,13 @@ final class NavigationEngine {
         maneuverTransitionTask?.cancel()
         state.status = .navigating
         state.cameraState = .startingNavigation
-        if state.transportMode == .transit {
+        if usesJourneyVoiceGuidance {
             state.transitBackgroundLocationAvailable = locationManager.requestTransitBackgroundAuthorization()
             if !locationManager.backgroundLocationModeEnabled {
                 state.errorMessage = "Aplikacja nie ma skonfigurowanego śledzenia lokalizacji w tle."
             }
         }
-        if state.transportMode == .transit { updateProgress() }
+        if usesJourneyVoiceGuidance { updateProgress() }
         updateCameraIntent()
         navigationTransitionTask?.cancel()
         navigationTransitionTask = Task { @MainActor [weak self] in
@@ -1503,42 +1445,19 @@ final class NavigationEngine {
         }
         if state.status == .navigating || state.status == .rerouting {
             if state.cameraState != .startingNavigation { updateNavigationCameraState() }
-            if state.transportMode == .car {
+            if state.transportMode == .car ||
+                (state.transportMode == .parkRide && state.transitProgress?.legIndex == 0) {
                 refreshSpeedLimit(for: state.location!)
             }
         }
         if state.transportMode == .car { refreshTraffic() }
     }
     private func updateProgress() {
+        let journeyProgress = updateJourneyVoiceProgress()
         if state.transportMode == .transit,
            let route = state.route, let journey = route.journey {
             let isActive = state.status == .navigating || state.status == .rerouting
-            let tracked = state.location.flatMap {
-                TransitRouteProgressCalculator.progress(route: route, at: $0.coordinate,
-                                                        accuracy: $0.accuracy,
-                                                        previousLegIndex: lastTransitProgressLegIndex)
-            }
-            if let tracked { lastTransitProgressLegIndex = tracked.legIndex }
-            var transitProgress = tracked
-            if var matched = transitProgress, journey.legs.indices.contains(matched.legIndex) {
-                let leg = journey.legs[matched.legIndex]
-                if leg.mode.uppercased() == "WALK" {
-                    resetTransitRideConfirmation()
-                } else if isActive, let location = state.location {
-                    let isOnVehicle = confirmTransitRide(progress: matched, leg: leg, location: location)
-                    if isOnVehicle, let tripID = leg.tripID,
-                       let vehicle = currentTransitVehicle(for: tripID),
-                       let vehicleProgress = TransitRouteProgressCalculator.progress(
-                        route: route, at: vehicle.coordinate, accuracy: 80,
-                        previousLegIndex: matched.legIndex),
-                       vehicleProgress.legIndex == matched.legIndex {
-                        matched = vehicleProgress
-                    }
-                    matched.isOnVehicle = isOnVehicle
-                    transitProgress = matched
-                }
-            }
-            state.transitProgress = transitProgress
+            let transitProgress = journeyProgress
 
             let progressFraction = transitProgress?.routeFraction ??
                 (isActive
@@ -1567,14 +1486,7 @@ final class NavigationEngine {
 
             if isActive, let location = state.location,
                location.coordinate.distance(to: state.destination?.coordinate ?? route.coordinates.last!) <= 45 {
-                state.status = .arrived
-                state.cameraState = .arrived
-                updateCameraIntent()
-                locationManager.stopBackgroundNavigationUpdates()
-                if state.voiceEnabled {
-                    voice.announceTransit("Dotarłeś do celu.", key: "arrival-\(route.id)")
-                }
-                finishTrip(arrived: true)
+                arriveAtDestination()
                 return
             }
             if isActive, let transitProgress {
@@ -1632,23 +1544,45 @@ final class NavigationEngine {
                                        distanceToNextManeuver: max(0, maneuverDistance), nextManeuver: next)
         state.estimatedArrival = Date().addingTimeInterval(max(0, remainingTime))
         guard state.status == .navigating || state.status == .rerouting else { return }
-        if location.speed >= 0, location.speed < 2,
-           state.progress!.remainingDistance < 35,
-           location.coordinate.distance(to: state.destination?.coordinate ?? coordinateFallback(route)) < 50 {
-            state.status = .arrived
-            state.cameraState = .arrived
-            updateCameraIntent()
-            voice.reset(); finishTrip(arrived: true); return
+        let destinationDistance = location.coordinate.distance(
+            to: state.destination?.coordinate ?? coordinateFallback(route))
+        if usesJourneyVoiceGuidance, destinationDistance <= 45 {
+            arriveAtDestination()
+            return
+        } else if location.speed >= 0, location.speed < 2,
+                  state.progress!.remainingDistance < 35, destinationDistance < 50 {
+            arriveAtDestination()
+            return
         }
-        if let next, state.voiceEnabled { voice.announce(next, distance: max(0, maneuverDistance), speed: max(0, location.speed)) }
-        if state.voiceEnabled {
+        let isOnParkRideCarLeg = state.transportMode != .parkRide || journeyProgress?.legIndex == 0
+        if let next, state.voiceEnabled, isOnParkRideCarLeg {
+            let maneuverCoordinate = route.coordinates.indices.contains(next.shapeIndex)
+                ? route.coordinates[next.shapeIndex] : nil
+            voice.announce(next, coordinate: maneuverCoordinate,
+                           distance: max(0, maneuverDistance), speed: max(0, location.speed))
+        }
+        if state.voiceEnabled, isOnParkRideCarLeg {
             for alert in state.roadSafetyAlerts {
                 guard let alongRoute = alert.distanceAlongRoute else { continue }
                 let distance = alongRoute - projection.alongRoute
                 if distance >= 0 && distance <= 1_200 {
-                    voice.announce(alert, distance: distance, routeID: route.id)
+                    voice.announce(alert, distance: distance)
                 }
             }
+            if let snapshot = state.traffic,
+               Date().timeIntervalSince(snapshot.updatedAt) <= 180 {
+                for incident in snapshot.incidents {
+                    guard let distance = distanceToTrafficIncident(incident, on: route,
+                                                                  after: projection.alongRoute),
+                          distance >= 0, distance <= 1_200 else { continue }
+                    voice.announce(incident, distance: distance)
+                }
+            }
+        }
+        if state.transportMode == .parkRide,
+           let journeyProgress,
+           let journey = route.journey {
+            updateTransitVoice(for: journeyProgress, journey: journey)
         }
         guard state.transportMode != .parkRide else { return }
         let sustainedDeparture = location.accuracy <= 45
@@ -1668,6 +1602,65 @@ final class NavigationEngine {
         } else {
             offRouteSince = nil
         }
+    }
+
+    private func updateJourneyVoiceProgress() -> TransitNavigationProgress? {
+        guard usesJourneyVoiceGuidance,
+              let route = state.route, let journey = route.journey else {
+            state.transitProgress = nil
+            return nil
+        }
+        let isActive = state.status == .navigating || state.status == .rerouting
+        let tracked = state.location.flatMap {
+            TransitRouteProgressCalculator.progress(route: route, at: $0.coordinate,
+                                                    accuracy: $0.accuracy,
+                                                    previousLegIndex: lastTransitProgressLegIndex)
+        }
+        if let tracked { lastTransitProgressLegIndex = tracked.legIndex }
+        var progress = tracked
+        if var matched = progress, journey.legs.indices.contains(matched.legIndex) {
+            let leg = journey.legs[matched.legIndex]
+            if leg.mode.uppercased() == "WALK" {
+                resetTransitRideConfirmation()
+            } else if isActive, let location = state.location {
+                let isOnVehicle = confirmTransitRide(progress: matched, leg: leg, location: location)
+                if isOnVehicle, let tripID = leg.tripID,
+                   let vehicle = currentTransitVehicle(for: tripID),
+                   let vehicleProgress = TransitRouteProgressCalculator.progress(
+                    route: route, at: vehicle.coordinate, accuracy: 80,
+                    previousLegIndex: matched.legIndex),
+                   vehicleProgress.legIndex == matched.legIndex {
+                    matched = vehicleProgress
+                }
+                matched.isOnVehicle = isOnVehicle
+                progress = matched
+            }
+        }
+        state.transitProgress = progress
+        return progress
+    }
+
+    private func arriveAtDestination() {
+        state.status = .arrived
+        state.cameraState = .arrived
+        updateCameraIntent()
+        locationManager.stopBackgroundNavigationUpdates()
+        if state.voiceEnabled { voice.announceArrival(destination: state.destination) }
+        finishTrip(arrived: true)
+    }
+
+    private func distanceToTrafficIncident(_ incident: TrafficIncident,
+                                           on route: NavigationRoute,
+                                           after traveledDistance: Double) -> Double? {
+        if let distanceAlongRoute = incident.distanceAlongRoute {
+            return distanceAlongRoute - traveledDistance
+        }
+        let geometry = incident.geometry.isEmpty ? [incident.coordinate] : incident.geometry
+        guard let projection = geometry.compactMap({
+            MapMatcher.project($0, onto: route.coordinates)
+        }).min(by: { $0.distanceFromRoute < $1.distanceFromRoute }),
+              projection.distanceFromRoute <= 120 else { return nil }
+        return projection.alongRoute - traveledDistance
     }
 
     private func upcomingTrafficDelay(on route: NavigationRoute, after distance: Double) -> Double {
@@ -1740,7 +1733,7 @@ final class NavigationEngine {
             } else {
                 instruction = "Idź pieszo do celu: \(leg.to)."
             }
-            voice.announceTransit(instruction, key: "walk-\(state.route?.id.uuidString ?? "route")-\(progress.legIndex)")
+            voice.announceTransit(instruction, key: "walk|\(journeyLegIdentity(leg))")
             return
         }
 
@@ -1754,13 +1747,22 @@ final class NavigationEngine {
             " Po wysiadaniu przesiądź się na linię \($0.line ?? "MPK") w kierunku \($0.to)."
         } ?? ""
         let tripID = leg.tripID ?? "leg-\(progress.legIndex)"
-        if remainingStops == 2 {
+        if remainingStops == 2, voice.shouldAnnounceAlighting(remainingStops: remainingStops) {
             voice.announceTransit("Za dwa przystanki wysiądź na \(alightingStop.name).\(transfer)",
                                   key: "alight-2-\(tripID)-\(alightingStop.stopID)")
         } else if remainingStops == 1 {
             voice.announceTransit("Następny przystanek: \(alightingStop.name). Przygotuj się do wysiadania.\(transfer)",
-                                  key: "alight-1-\(tripID)-\(alightingStop.stopID)")
+                                  key: "alight-1-\(tripID)-\(alightingStop.stopID)", urgent: true)
         }
+    }
+
+    private func journeyLegIdentity(_ leg: JourneyLeg) -> String {
+        let from = leg.from.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+        let to = leg.to.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+        let endpoint = leg.coordinates.last.map {
+            "\(Int(($0.latitude * 10_000).rounded()))-\(Int(($0.longitude * 10_000).rounded()))"
+        } ?? "unknown"
+        return "\(leg.mode.uppercased())|\(from)|\(to)|\(endpoint)"
     }
 
     private func resetTransitRideConfirmation() {
@@ -1877,7 +1879,14 @@ final class NavigationEngine {
     }
 
     private func loadRoadData(for route: NavigationRoute) {
-        guard route.coordinates.count > 1, state.transportMode == .car else { return }
+        guard usesRoadVoiceGuidance else { return }
+        let roadCoordinates: [Coordinate]
+        if state.transportMode == .parkRide {
+            roadCoordinates = route.journey?.legs.first(where: { $0.mode.uppercased() == "CAR" })?.coordinates ?? []
+        } else {
+            roadCoordinates = route.coordinates
+        }
+        guard roadCoordinates.count > 1 else { return }
         roadDataGeneration &+= 1
         let generation = roadDataGeneration
         let routeID = route.id
@@ -1889,22 +1898,25 @@ final class NavigationEngine {
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let snapshot = try await provider.load(for: route.coordinates)
+                let snapshot = try await provider.load(for: roadCoordinates)
                 guard generation == self.roadDataGeneration,
                       self.state.route?.id == routeID,
-                      self.state.transportMode == .car else { return }
+                      self.usesRoadVoiceGuidance else { return }
                 self.invalidateSpeedLimit()
                 self.roadDataSnapshot = snapshot
-                self.state.roadSafetyAlerts = snapshot.matchedAlerts(on: route.coordinates)
+                self.state.roadSafetyAlerts = snapshot.matchedAlerts(on: roadCoordinates)
                 self.state.roadSafetyStatus = .available
                 self.updateProgress()
                 if let location = self.state.location,
-                   self.state.status == .navigating || self.state.status == .rerouting {
+                   self.state.status == .navigating || self.state.status == .rerouting,
+                   self.state.transportMode == .car ||
+                    (self.state.transportMode == .parkRide && self.state.transitProgress?.legIndex == 0) {
                     self.refreshSpeedLimit(for: location, force: true)
                 }
             } catch {
                 guard generation == self.roadDataGeneration,
-                      self.state.route?.id == routeID else { return }
+                      self.state.route?.id == routeID,
+                      self.usesRoadVoiceGuidance else { return }
                 self.roadDataSnapshot = nil
                 self.state.roadSafetyAlerts = []
                 self.state.roadSafetyStatus = .unavailable(error.localizedDescription)
@@ -1941,11 +1953,14 @@ final class NavigationEngine {
             guard state.status == .rerouting else { return }
             guard let firstRoute = routes.first else { throw RoutingError.invalidResponse }
             state.route = firstRoute; state.routeOptions = routes
-            if state.transportMode == .car { loadRoadData(for: firstRoute) }
+            if usesRoadVoiceGuidance { loadRoadData(for: firstRoute) }
             tripSession?.rerouteCount += 1
             invalidateTraffic()
             invalidateSpeedLimit()
-            state.status = .navigating; voice.reset(); updateProgress()
+            state.status = .navigating
+            voice.reset(preservingSpokenAnnouncements: true)
+            updateProgress()
+            voice.announceReroute(number: tripSession?.rerouteCount ?? 0)
             updateNavigationCameraState()
             if state.transportMode == .car { refreshTraffic(force: true) }
         } catch {

@@ -34,7 +34,7 @@ struct QueryClassifier {
             let canonical = brand == "mcdonalds" ? "McDonald's" : brand == "zabka" ? "Żabka" : brand
             let pattern = NSRegularExpression.escapedPattern(for: canonical)
             return ClassifiedQuery(intent: .brand, text: canonical, location: location.isEmpty ? nil : location,
-                                   filter: "[~\"^(brand|name)$\"~\"^\(pattern)($|[ ;])\",i]",
+                                   filter: "[~\"^(brand|name|operator)$\"~\"^\(pattern)($|[ ;])\",i]",
                                    photonTag: "brand:\(canonical)", alongRoute: along)
         }
         let categories: [(String, String)] = [
@@ -100,28 +100,35 @@ struct SearchEngine {
             var unique: [SearchResult] = []
             for result in candidates {
                 if intent.intent == .brand {
-                    let name = QueryClassifier.normalize(result.destination.name)
-                    let brand = QueryClassifier.normalize(result.brand ?? "")
+                    let names = [result.destination.name, result.brand, result.operatorName]
+                        .compactMap { $0 }.map(QueryClassifier.normalize)
                     let query = QueryClassifier.normalize(intent.text)
-                    guard name.contains(query) || brand.contains(query) else { continue }
+                    guard names.contains(where: { $0.contains(query) }) else { continue }
                 }
                 if intent.alongRoute {
                     guard MapMatcher.project(result.destination.coordinate, onto: context.route)
                         .map({ $0.distanceFromRoute <= 1500 }) == true else { continue }
                 }
-                if unique.contains(where: { existing in
-                    (result.placeIdentity.provider == .openStreetMap
-                     && existing.placeIdentity.provider == .openStreetMap
-                     && result.placeIdentity.cacheKey == existing.placeIdentity.cacheKey) ||
-                    (QueryClassifier.normalize(existing.destination.name) == QueryClassifier.normalize(result.destination.name)
-                     && existing.destination.coordinate.distance(to: result.destination.coordinate) < 30)
-                }) { continue }
+                if let matchIndex = unique.firstIndex(where: { Self.samePlace($0, result) }) {
+                    unique[matchIndex] = unique[matchIndex].mergingMetadata(from: result)
+                    continue
+                }
                 var value = result
                 value.straightDistance = searchCenter.map { $0.distance(to: result.destination.coordinate) }
                 value.travelEstimateStatus = needsEstimates ? .calculating : .notRequested
                 unique.append(value)
             }
-            return unique.sorted { ($0.straightDistance ?? .infinity) < ($1.straightDistance ?? .infinity) }
+            return unique.sorted { a, b in
+                let aRelevance = Self.relevance(a, intent: intent)
+                let bRelevance = Self.relevance(b, intent: intent)
+                if aRelevance != bRelevance { return aRelevance > bRelevance }
+                if intent.alongRoute {
+                    let aOffset = MapMatcher.project(a.destination.coordinate, onto: context.route)?.distanceFromRoute ?? .infinity
+                    let bOffset = MapMatcher.project(b.destination.coordinate, onto: context.route)?.distanceFromRoute ?? .infinity
+                    if aOffset != bOffset { return aOffset < bOffset }
+                }
+                return (a.straightDistance ?? .infinity) < (b.straightDistance ?? .infinity)
+            }
         }
         func publish(_ candidates: [SearchResult]) {
             let results = Array(ranked(candidates).prefix(8))
@@ -182,20 +189,105 @@ struct SearchEngine {
         }
         try Task.checkCancellation()
         results.sort { a, b in
-            // Ordinary searches are nearest-first even when routing fails for a close POI.
-            // Only an explicit along-route search ranks by added journey time.
-            if !intent.alongRoute, a.straightDistance != b.straightDistance {
-                return (a.straightDistance ?? .infinity) < (b.straightDistance ?? .infinity)
-            }
+            // Along-route results minimize added journey time; other searches keep text relevance first.
             let aTime = intent.alongRoute ? a.detour : a.travelTime
             let bTime = intent.alongRoute ? b.detour : b.travelTime
-            if aTime != bTime { return (aTime ?? .infinity) < (bTime ?? .infinity) }
+            let aRelevance = Self.relevance(a, intent: intent)
+            let bRelevance = Self.relevance(b, intent: intent)
+            if intent.alongRoute, aTime != bTime { return (aTime ?? .infinity) < (bTime ?? .infinity) }
+            if aRelevance != bRelevance { return aRelevance > bRelevance }
+            if !intent.alongRoute, aTime != bTime { return (aTime ?? .infinity) < (bTime ?? .infinity) }
             let aLocal = context.localDestinations.contains { $0.coordinate.distance(to: a.destination.coordinate) < 20 }
             let bLocal = context.localDestinations.contains { $0.coordinate.distance(to: b.destination.coordinate) < 20 }
             if aLocal != bLocal { return aLocal }
             return (a.straightDistance ?? .infinity) < (b.straightDistance ?? .infinity)
         }
         return Array(results.prefix(8))
+    }
+
+    private static func samePlace(_ lhs: SearchResult, _ rhs: SearchResult) -> Bool {
+        let leftIdentity = lhs.placeIdentity
+        let rightIdentity = rhs.placeIdentity
+        if leftIdentity.cacheKey == rightIdentity.cacheKey,
+           (leftIdentity.externalID != nil || leftIdentity.providerID != nil) { return true }
+
+        let distance = lhs.destination.coordinate.distance(to: rhs.destination.coordinate)
+        guard distance <= 45 else { return false }
+        if hasConflictingHouseNumbers(lhs.destination.address, rhs.destination.address) { return false }
+
+        let leftNames = Set([lhs.destination.name, lhs.brand, lhs.operatorName]
+            .compactMap { $0 }.map(normalizedIdentity))
+        let rightNames = Set([rhs.destination.name, rhs.brand, rhs.operatorName]
+            .compactMap { $0 }.map(normalizedIdentity))
+        let sharedNames = leftNames.intersection(rightNames).filter { !$0.isEmpty }
+        guard !sharedNames.isEmpty else { return false }
+        let titleMatch = normalizedIdentity(lhs.destination.name) == normalizedIdentity(rhs.destination.name)
+        let categoriesAgree = categoriesCompatible(lhs.category, rhs.category)
+        return titleMatch ? (distance <= 25 || (distance <= 45 && categoriesAgree))
+            : distance <= 25 && categoriesAgree
+    }
+
+    private static func relevance(_ result: SearchResult, intent: ClassifiedQuery) -> Double {
+        let query = normalizedIdentity(intent.text)
+        let name = normalizedIdentity(result.destination.name)
+        let brand = normalizedIdentity(result.brand ?? "")
+        let operatorName = normalizedIdentity(result.operatorName ?? "")
+        let category = normalizedIdentity(result.category ?? "")
+        let address = normalizedIdentity(result.destination.address ?? "")
+        let categoryFilter = normalizedIdentity(intent.photonTag?.split(separator: ":").last.map(String.init) ?? "")
+        var score = 0.0
+        if !query.isEmpty {
+            if name == query { score += 1_000 }
+            else if name.hasPrefix(query) { score += 780 }
+            else if name.contains(query) { score += 600 }
+            if brand == query { score += 750 }
+            else if brand.contains(query), !query.isEmpty { score += 560 }
+            if operatorName == query { score += 620 }
+            else if operatorName.contains(query), !query.isEmpty { score += 440 }
+            if address.contains(query) { score += 180 }
+
+            let tokens = Set(query.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+            if !tokens.isEmpty {
+                let searchable = [name, brand, operatorName, address].joined(separator: " ")
+                let matched = tokens.filter { searchable.contains($0) }.count
+                score += Double(matched) / Double(tokens.count) * 220
+            }
+        }
+        if intent.intent == .category, !categoryFilter.isEmpty {
+            score += category.contains(categoryFilter) ? 240 : 0
+        }
+        if let importance = result.photonImportance {
+            score += min(1, max(0, importance)) * 80
+        }
+        if result.placeProvider == .openStreetMap, OpenStreetMapObjectID(result.osmID) != nil { score += 12 }
+        if result.category != nil { score += 5 }
+        return score
+    }
+
+    private static func normalizedIdentity(_ value: String) -> String {
+        QueryClassifier.normalize(value).filter { $0.isLetter || $0.isNumber }
+    }
+
+    private static func categoriesCompatible(_ lhs: String?, _ rhs: String?) -> Bool {
+        guard let lhs, let rhs else { return true }
+        let left = normalizedIdentity(lhs)
+        let right = normalizedIdentity(rhs)
+        return left == right || left.contains(right) || right.contains(left)
+    }
+
+    private static func hasConflictingHouseNumbers(_ lhs: String?, _ rhs: String?) -> Bool {
+        guard let lhs, let rhs else { return false }
+        func numbers(_ address: String) -> Set<String> {
+            guard let regex = try? NSRegularExpression(pattern: #"(?<![\p{L}\p{N}])\d+[a-zA-Z]?(?:/\d+)?(?![\p{L}\p{N}])"#) else { return [] }
+            let range = NSRange(address.startIndex..<address.endIndex, in: address)
+            return Set(regex.matches(in: address, range: range).compactMap { match in
+                guard let range = Range(match.range, in: address) else { return nil }
+                return PhotonSearchProvider.normalized(String(address[range]))
+            })
+        }
+        let leftNumbers = numbers(lhs)
+        let rightNumbers = numbers(rhs)
+        return !leftNumbers.isEmpty && !rightNumbers.isEmpty && leftNumbers.isDisjoint(with: rightNumbers)
     }
 
     private func resolve(_ location: String, near center: Coordinate?) async throws -> Coordinate {
@@ -274,7 +366,10 @@ struct POISearchProvider {
                                                               coordinate: coordinate, address: address.isEmpty ? nil : address),
                                     street: street, houseNumber: number, city: city, countryCode: tags["addr:country"],
                                     isPOI: true, osmID: "\(element.type):\(element.id)", category: tags["amenity"] ?? tags["shop"] ?? tags["tourism"],
-                                    brand: tags["brand"], openingHours: tags["opening_hours"], phone: tags["phone"], website: tags["website"])
+                                    brand: tags["brand"], operatorName: tags["operator"],
+                                    openingHours: tags["opening_hours"],
+                                    phone: tags["contact:phone"] ?? tags["phone"],
+                                    website: tags["contact:website"] ?? tags["website"])
             }
             let namesByID = Dictionary(uniqueKeysWithValues: results.compactMap { result in
                 result.osmID.map { ($0, result.destination.name) }

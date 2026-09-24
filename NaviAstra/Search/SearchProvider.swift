@@ -52,20 +52,24 @@ enum SearchError: LocalizedError, Equatable {
 }
 
 struct SearchResult: Identifiable {
-    let destination: Destination
-    let street: String?
-    let houseNumber: String?
-    let city: String?
-    let countryCode: String?
+    var destination: Destination
+    var street: String?
+    var houseNumber: String?
+    var city: String?
+    var countryCode: String?
 
     var isPOI = false
     var osmID: String? = nil
+    var providerID: String? = nil
     var placeProvider: PlaceProvider = .openStreetMap
     var category: String? = nil
     var brand: String? = nil
+    var operatorName: String? = nil
     var openingHours: String? = nil
     var phone: String? = nil
     var website: String? = nil
+    var timeZoneIdentifier: String? = nil
+    var photonImportance: Double? = nil
     var straightDistance: Double? = nil
     var travelTime: Double? = nil
     var travelDistance: Double? = nil
@@ -78,11 +82,45 @@ struct SearchResult: Identifiable {
         let osmObject = placeProvider == .openStreetMap ? OpenStreetMapObjectID(osmID) : nil
         return PlaceIdentity(provider: placeProvider,
                              externalID: osmObject?.value.description ?? osmID,
+                             providerID: providerID,
                              osmType: osmObject?.type,
                              coordinate: destination.coordinate,
                              name: destination.name,
                              category: category,
-                             address: destination.address)
+                             address: destination.address,
+                             brand: brand,
+                             operatorName: operatorName,
+                             timeZoneIdentifier: timeZoneIdentifier)
+    }
+
+    func mergingMetadata(from other: SearchResult) -> SearchResult {
+        var merged = self
+        merged.isPOI = merged.isPOI || other.isPOI
+        if merged.osmID == nil { merged.osmID = other.osmID }
+        if merged.providerID == nil { merged.providerID = other.providerID }
+        if merged.category == nil { merged.category = other.category }
+        if merged.brand == nil { merged.brand = other.brand }
+        if merged.operatorName == nil { merged.operatorName = other.operatorName }
+        if merged.openingHours == nil { merged.openingHours = other.openingHours }
+        if merged.phone == nil { merged.phone = other.phone }
+        if merged.website == nil { merged.website = other.website }
+        if merged.timeZoneIdentifier == nil { merged.timeZoneIdentifier = other.timeZoneIdentifier }
+        if merged.photonImportance == nil { merged.photonImportance = other.photonImportance }
+        return merged.replacingAddressFields(from: other)
+    }
+
+    private func replacingAddressFields(from other: SearchResult) -> SearchResult {
+        var merged = self
+        if merged.street == nil { merged.street = other.street }
+        if merged.houseNumber == nil { merged.houseNumber = other.houseNumber }
+        if merged.city == nil { merged.city = other.city }
+        if merged.countryCode == nil { merged.countryCode = other.countryCode }
+        if merged.destination.address == nil, let address = other.destination.address {
+            merged.destination = Destination(name: merged.destination.name,
+                                             coordinate: merged.destination.coordinate,
+                                             address: address)
+        }
+        return merged
     }
 
     var travelSummary: String? {
@@ -258,7 +296,11 @@ struct MapKitSearchProvider: SearchProvider {
                                                          address: isPOI ? address?.fullAddress : nil), street: nil,
                                 houseNumber: requestedNumber, city: addressRepresentations?.cityName,
                                 countryCode: addressRepresentations?.region?.identifier.lowercased(),
-                                isPOI: isPOI, placeProvider: .mapKit, category: category)
+                                isPOI: isPOI, providerID: item.identifier?.rawValue,
+                                placeProvider: .mapKit, category: category,
+                                phone: item.phoneNumber,
+                                website: item.url?.absoluteString,
+                                timeZoneIdentifier: item.timeZone?.identifier)
         })
     }
 
@@ -315,7 +357,8 @@ struct PhotonSearchProvider: SearchProvider {
             let title = !addressesOnly ? (p.name ?? name) : name
             return SearchResult(destination: Destination(name: title, coordinate: coordinate, address: !addressesOnly && name != title ? name : nil), street: p.street,
                                 houseNumber: p.housenumber, city: p.city ?? p.locality, countryCode: p.countrycode,
-                                isPOI: poi, osmID: p.osm_id.map { "\(p.osm_type ?? ""):\($0)" }, category: p.osm_value)
+                                isPOI: poi, osmID: p.osm_id.map { "\(p.osm_type ?? ""):\($0)" },
+                                category: p.osm_value, photonImportance: p.importance)
         }
         let sorted = found.sorted { a, b in
             let aExact = requestedNumber.map { Self.normalized(a.houseNumber) == $0 } ?? false
@@ -352,6 +395,7 @@ struct PhotonSearchProvider: SearchProvider {
         let osm_type: String?
         let osm_key: String?
         let osm_value: String?
+        let importance: Double?
     }
 }
 

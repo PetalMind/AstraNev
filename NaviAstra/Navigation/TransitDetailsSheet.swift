@@ -126,7 +126,7 @@ struct TransitDetailsSheet: View {
 
     private var selectedIsRail: Bool {
         switch selection {
-        case .stop(let stop): stop.id.hasPrefix("rail/")
+        case .stop(let stop): stop.mapModes.contains(.rail)
         case .vehicle(let vehicle): vehicle.mode == "RAIL"
         case .departure(let departure): departure.mode == "RAIL"
         case .line(let line): line.mode == "RAIL"
@@ -139,6 +139,15 @@ struct TransitDetailsSheet: View {
             Text(stop.name).font(.title2.weight(.bold))
             if let address = stop.address, !address.isEmpty {
                 Text(address).font(.subheadline).foregroundStyle(.secondary)
+            }
+            if stop.mapModes.count > 1 {
+                HStack(spacing: 10) {
+                    ForEach(stop.mapModes, id: \.self) { mode in
+                        Label(mode.title, systemImage: mode.symbolName)
+                            .font(.caption.weight(.medium))
+                    }
+                }
+                .foregroundStyle(.secondary)
             }
         }
         VStack(alignment: .leading, spacing: 8) {
@@ -262,8 +271,8 @@ struct TransitDetailsSheet: View {
     private func refreshDetails() async {
         switch selection {
         case .stop(let stop):
-            async let board = provider.departures(at: stop.id)
-            async let activeAlerts = provider.alerts(for: stop.id)
+            async let board = provider.departures(at: stop.detailStopIDs)
+            async let activeAlerts = provider.alerts(for: stop.detailStopIDs)
             let (loadedDepartures, loadedAlerts) = await (board, activeAlerts)
             departures = loadedDepartures
             alerts = loadedAlerts
@@ -335,7 +344,11 @@ private struct TransitLineBadge: View {
 private func eta(at departure: Date, now: Date) -> String {
     let minutes = Int(ceil(departure.timeIntervalSince(now) / 60))
     if minutes <= 0 { return "teraz" }
-    return "\(minutes) min"
+    let hours = minutes / 60
+    let remainingMinutes = minutes % 60
+    guard hours > 0 else { return "\(minutes) min" }
+    guard remainingMinutes > 0 else { return "\(hours) godz." }
+    return "\(hours) godz. \(remainingMinutes) min"
 }
 
 private func delayLabel(_ seconds: Int) -> String {

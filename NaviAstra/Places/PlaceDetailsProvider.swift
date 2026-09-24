@@ -9,11 +9,16 @@ enum PlaceProvider: String {
 struct PlaceIdentity {
     let provider: PlaceProvider
     let externalID: String?
+    var providerID: String? = nil
     let osmType: String?
     let coordinate: Coordinate
     let name: String
     let category: String?
     let address: String?
+    var brand: String? = nil
+    var operatorName: String? = nil
+    var countryCode: String? = nil
+    var timeZoneIdentifier: String? = nil
 
     var cacheKey: String {
         let normalizedName = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "pl_PL"))
@@ -23,6 +28,9 @@ struct PlaceIdentity {
         if provider == .openStreetMap, let osmType, let externalID,
            let object = OpenStreetMapObjectID("\(osmType):\(externalID)") {
             return object.cacheKey
+        }
+        if let providerID, !providerID.isEmpty {
+            return "mapkit/\(providerID)"
         }
         if provider == .openFreeMap, let externalID, Int64(externalID) != nil {
             return "openfreemap/osm/\(externalID)/\(normalizedName)/\(normalizedCategory)/\(Int((coordinate.latitude * 100_000).rounded()))/\(Int((coordinate.longitude * 100_000).rounded()))"
@@ -41,16 +49,25 @@ struct PlaceDetails: Codable, Identifiable {
     var openingHours: String?
     var phone: String?
     var website: String?
+    var coordinate: Coordinate? = nil
+    var countryCode: String? = nil
+    var timeZoneIdentifier: String? = nil
     var wheelchair: String?
     var parking: String?
     var osmParking: ParkingInformation?
     var driveThrough: String?
     var source: PlaceDetailsSource
     var fetchedAt: Date
+    var cacheGroupFetchedAt: [String: Date]? = nil
 
     @MainActor var openingHoursInfo: PlaceOpeningHours? {
         guard let openingHours else { return nil }
-        return PlaceOpeningHours(rawValue: openingHours)
+        // A POI's local time cannot be safely inferred from the device clock.
+        guard coordinate == nil || timeZoneIdentifier != nil else { return nil }
+        return PlaceOpeningHours(rawValue: openingHours,
+                                 coordinate: coordinate,
+                                 countryCode: countryCode,
+                                 timeZoneIdentifier: timeZoneIdentifier)
     }
 
     var websiteURL: URL? {
@@ -79,6 +96,9 @@ struct PlaceDetails: Codable, Identifiable {
                             openingHours: result.openingHours,
                             phone: result.phone,
                             website: result.website,
+                            coordinate: result.destination.coordinate,
+                            countryCode: result.countryCode,
+                            timeZoneIdentifier: result.timeZoneIdentifier,
                             wheelchair: nil,
                             parking: nil,
                             osmParking: isParkingCategory(result.category) ? .unknown : nil,
@@ -97,6 +117,9 @@ struct PlaceDetails: Codable, Identifiable {
                      openingHours: nil,
                      phone: nil,
                      website: nil,
+                     coordinate: identity.coordinate,
+                     countryCode: identity.countryCode,
+                     timeZoneIdentifier: identity.timeZoneIdentifier,
                      wheelchair: nil,
                      parking: nil,
                      osmParking: isParkingCategory(identity.category) ? .unknown : nil,
@@ -115,12 +138,40 @@ struct PlaceDetails: Codable, Identifiable {
                      openingHours: newer.openingHours ?? openingHours,
                      phone: newer.phone ?? phone,
                      website: newer.website ?? website,
+                     coordinate: newer.coordinate ?? coordinate,
+                     countryCode: newer.countryCode ?? countryCode,
+                     timeZoneIdentifier: newer.timeZoneIdentifier ?? timeZoneIdentifier,
                      wheelchair: newer.wheelchair ?? wheelchair,
                      parking: newer.parking ?? parking,
                      osmParking: newer.osmParking ?? osmParking,
                      driveThrough: newer.driveThrough ?? driveThrough,
                      source: newer.source,
-                     fetchedAt: newer.fetchedAt)
+                     fetchedAt: newer.fetchedAt,
+                     cacheGroupFetchedAt: newer.cacheGroupFetchedAt ?? cacheGroupFetchedAt)
+    }
+
+    nonisolated var needsCacheRefresh: Bool {
+        let groups = cacheGroupFetchedAt ?? Self.legacyCacheGroups(for: self)
+        let ttl: [String: TimeInterval] = [
+            "identity": 30 * 24 * 60 * 60,
+            "contact": 7 * 24 * 60 * 60,
+            "hours": 12 * 60 * 60,
+            "access": 3 * 24 * 60 * 60
+        ]
+        return groups.contains { entry in
+            guard let lifetime = ttl[entry.key] else { return true }
+            return Date().timeIntervalSince(entry.value) >= lifetime
+        }
+    }
+
+    nonisolated private static func legacyCacheGroups(for details: PlaceDetails) -> [String: Date] {
+        var groups = ["identity": details.fetchedAt]
+        if details.phone != nil || details.website != nil { groups["contact"] = details.fetchedAt }
+        if details.openingHours != nil { groups["hours"] = details.fetchedAt }
+        if details.wheelchair != nil || details.parking != nil || details.osmParking != nil || details.driveThrough != nil {
+            groups["access"] = details.fetchedAt
+        }
+        return groups
     }
 
     private static func isParkingCategory(_ category: String?) -> Bool {
@@ -215,26 +266,29 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         if let requestedID {
             element = reply.elements.first(where: { $0.type == requestedID.type && $0.id == requestedID.value })
         } else {
-            let expectedName = Self.normalized(identity.name)
-            let candidates = reply.elements.compactMap { candidate -> (element: Element, distance: Double, categoryMatch: Bool)? in
+            let candidates = reply.elements.compactMap { candidate -> (element: Element, score: Double)? in
                 guard let tags = candidate.tags,
                       let coordinate = candidate.coordinate else { return nil }
+                let distance = coordinate.distance(to: identity.coordinate)
                 if identity.provider == .openFreeMap, let externalID = identity.externalID {
                     guard let tileID = Int64(externalID), tileID != Int64.min,
                           (candidate.id == tileID || candidate.id == abs(tileID)),
-                          Self.matchesExactName(expectedName, tags: tags),
-                          coordinate.distance(to: identity.coordinate) <= 100 else { return nil }
-                } else {
-                    guard Self.matchesExactName(expectedName, tags: tags),
-                          coordinate.distance(to: identity.coordinate) <= 40 else { return nil }
+                          Self.matchesExactName(Self.normalized(identity.name), tags: tags),
+                          distance <= 100 else { return nil }
+                    let categoryScore = identity.category.map { Self.matchesCategory($0, tags: tags) ? 180.0 : 0 } ?? 0
+                    return (candidate, 1_500 + categoryScore - distance)
                 }
+
+                guard distance <= 40,
+                      !Self.hasConflictingAddress(identity.address, tags: tags),
+                      let nameScore = Self.nameMatchScore(identity, tags: tags),
+                      nameScore >= 400 else { return nil }
                 let categoryMatch = identity.category.map { Self.matchesCategory($0, tags: tags) } ?? false
-                return (candidate, coordinate.distance(to: identity.coordinate), categoryMatch)
+                let addressMatch = Self.addressMatchScore(identity.address, tags: tags)
+                let score = nameScore + (categoryMatch ? 180 : 0) + addressMatch - distance * 2
+                return (candidate, score)
             }
-            element = candidates.min {
-                if $0.categoryMatch != $1.categoryMatch { return $0.categoryMatch }
-                return $0.distance < $1.distance
-            }?.element
+            element = candidates.max { $0.score < $1.score }?.element
         }
         guard let element, let tags = element.tags,
               let resolvedID = OpenStreetMapObjectID("\(element.type):\(element.id)") else { return nil }
@@ -264,6 +318,55 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
             tags.values.contains(where: { normalized($0) == category })
     }
 
+    private static func nameMatchScore(_ identity: PlaceIdentity, tags: [String: String]) -> Double? {
+        let taggedNames = [tags["name"], tags["brand"], tags["operator"]].compactMap { $0 }.map(normalized)
+        guard !taggedNames.isEmpty else { return nil }
+        let expected = [identity.name, identity.brand, identity.operatorName]
+            .compactMap { $0 }.map(normalized).filter { !$0.isEmpty }
+        guard !expected.isEmpty else { return nil }
+
+        var best = 0.0
+        for (index, value) in expected.enumerated() {
+            for tagged in taggedNames where tagged == value {
+                let weight = index == 0 ? 1_000.0 : index == 1 ? 760.0 : 620.0
+                best = max(best, weight)
+            }
+        }
+        if best > 0 { return best }
+
+        // Small spelling or punctuation differences are acceptable only with enough shared name tokens.
+        let target = expected[0]
+        for tagged in taggedNames {
+            let shorter = min(target.count, tagged.count)
+            if shorter >= 6 && (target.contains(tagged) || tagged.contains(target)) {
+                best = max(best, 520)
+            }
+        }
+        return best > 0 ? best : nil
+    }
+
+    private static func addressMatchScore(_ expected: String?, tags: [String: String]) -> Double {
+        guard let expected else { return 0 }
+        let expectedValue = normalized(expected)
+        guard !expectedValue.isEmpty else { return 0 }
+        let taggedAddress = [tags["addr:street"], tags["addr:housenumber"], tags["addr:postcode"],
+                             tags["addr:city"], tags["addr:place"]]
+            .compactMap { $0 }.joined(separator: " ")
+        let actualValue = normalized(taggedAddress)
+        guard !actualValue.isEmpty else { return 0 }
+        if expectedValue.contains(actualValue) || actualValue.contains(expectedValue) { return 220 }
+        let expectedTokens = Set(expectedValue.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+        let actualTokens = Set(actualValue.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+        guard !expectedTokens.isEmpty else { return 0 }
+        return Double(expectedTokens.intersection(actualTokens).count) / Double(expectedTokens.count) * 120
+    }
+
+    private static func hasConflictingAddress(_ expected: String?, tags: [String: String]) -> Bool {
+        guard let expected, let expectedNumber = PhotonSearchProvider.houseNumber(in: expected),
+              let actualNumber = tags["addr:housenumber"].map(PhotonSearchProvider.normalized) else { return false }
+        return expectedNumber != actualNumber
+    }
+
     private static func makeDetails(id: String, fallbackName: String, tags: [String: String]) -> PlaceDetails {
         let streetLine = [tags["addr:street"], tags["addr:housenumber"]]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -283,21 +386,46 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
             .compactMap { tags[$0] }
             .first
 
+        let name = tags["name"] ?? tags["brand"] ?? fallbackName
+        let phone = tags["contact:phone"] ?? tags["phone"]
+        let website = tags["contact:website"] ?? tags["website"]
+        let wheelchair = tags["wheelchair"]
+        let parking = tags["parking"]
+        let driveThrough = tags["drive_through"]
+        let osmParking = ParkingInformation.fromOSMTags(tags)
+        let now = Date()
+        var cacheGroupFetchedAt = ["identity": now]
+        if phone != nil || website != nil { cacheGroupFetchedAt["contact"] = now }
+        if tags["opening_hours"] != nil { cacheGroupFetchedAt["hours"] = now }
+        if wheelchair != nil || parking != nil || osmParking != nil || driveThrough != nil {
+            cacheGroupFetchedAt["access"] = now
+        }
+
         return PlaceDetails(id: id,
-                            name: tags["name"] ?? tags["brand"] ?? fallbackName,
+                            name: name,
                             brand: tags["brand"],
                             operatorName: tags["operator"],
                             category: category,
                             address: address,
                             openingHours: tags["opening_hours"],
-                            phone: tags["contact:phone"] ?? tags["phone"],
-                            website: tags["contact:website"] ?? tags["website"],
-                            wheelchair: tags["wheelchair"],
-                            parking: tags["parking"],
-                            osmParking: ParkingInformation.fromOSMTags(tags),
-                            driveThrough: tags["drive_through"],
+                            phone: phone,
+                            website: website,
+                            coordinate: nil,
+                            countryCode: countryCode(from: tags),
+                            timeZoneIdentifier: nil,
+                            wheelchair: wheelchair,
+                            parking: parking,
+                            osmParking: osmParking,
+                            driveThrough: driveThrough,
                             source: .openStreetMap,
-                            fetchedAt: Date())
+                            fetchedAt: now,
+                            cacheGroupFetchedAt: cacheGroupFetchedAt)
+    }
+
+    private static func countryCode(from tags: [String: String]) -> String? {
+        guard let value = tags["addr:country"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              value.count == 2, value.allSatisfy(\.isLetter) else { return nil }
+        return value.lowercased()
     }
 
     private struct Reply: Decodable { let elements: [Element]; let remark: String? }
@@ -377,7 +505,6 @@ private enum PlaceDetailsRequests {
 private actor PlaceDetailsCache {
     static let shared = PlaceDetailsCache()
     private let fileURL: URL
-    private let lifetime: TimeInterval = 24 * 60 * 60
     private var entries: [String: PlaceDetails] = [:]
 
     private init() {
@@ -393,7 +520,7 @@ private actor PlaceDetailsCache {
     func value(for id: String, allowExpired: Bool = false) -> PlaceDetails? {
         guard let entry = entries[id] else { return nil }
         // Keep stale information available while the card refreshes it. Cache misses do no disk IO.
-        guard allowExpired || Date().timeIntervalSince(entry.fetchedAt) < lifetime else { return nil }
+        guard allowExpired || !entry.needsCacheRefresh else { return nil }
         return entry
     }
 
@@ -427,158 +554,5 @@ private actor PlaceDetailsCache {
         } catch {
             // A cache write failure must not hide details that were just fetched.
         }
-    }
-}
-
-struct PlaceOpeningHours {
-    let rawValue: String
-    private let schedule: [Int: [MinuteInterval]]?
-
-    init(rawValue: String) {
-        self.rawValue = rawValue
-        schedule = Self.parse(rawValue)
-    }
-
-    func isOpen(at date: Date = Date(), calendar: Calendar = .current) -> Bool? {
-        guard let schedule else { return nil }
-        let weekday = calendar.component(.weekday, from: date)
-        let day = (weekday + 5) % 7 // Foundation: Sunday=1; OSM: Monday=0.
-        let minutes = calendar.component(.hour, from: date) * 60 + calendar.component(.minute, from: date)
-        if schedule[day, default: []].contains(where: { $0.contains(minutes) }) { return true }
-        let previousDay = (day + 6) % 7
-        if schedule[previousDay, default: []].contains(where: { $0.continuesPastMidnight && $0.contains(minutes + 1_440) }) {
-            return true
-        }
-        return false
-    }
-
-    func statusText(at date: Date = Date(), calendar: Calendar = .current) -> String? {
-        guard let open = isOpen(at: date, calendar: calendar) else { return nil }
-        guard open else { return "Zamknięte teraz" }
-        guard let closingTime = closingTime(at: date, calendar: calendar) else { return "Otwarte teraz" }
-        return "Otwarte · zamyka o \(closingTime.formatted(date: .omitted, time: .shortened))"
-    }
-
-    func closingTime(at date: Date = Date(), calendar: Calendar = .current) -> Date? {
-        guard let schedule else { return nil }
-        let weekday = calendar.component(.weekday, from: date)
-        let day = (weekday + 5) % 7
-        let minutes = calendar.component(.hour, from: date) * 60 + calendar.component(.minute, from: date)
-        if let interval = schedule[day, default: []].first(where: { $0.contains(minutes) }) {
-            return endDate(for: interval, nextCalendarDay: interval.end >= 1_440, date: date, calendar: calendar)
-        }
-        let previousDay = (day + 6) % 7
-        if let interval = schedule[previousDay, default: []].first(where: {
-            $0.continuesPastMidnight && $0.contains(minutes + 1_440)
-        }) {
-            return endDate(for: interval, nextCalendarDay: false, date: date, calendar: calendar)
-        }
-        return nil
-    }
-
-    var weeklyRows: [(String, String)]? {
-        guard let schedule else { return nil }
-        let labels = ["Pon.", "Wt.", "Śr.", "Czw.", "Pt.", "Sob.", "Niedz."]
-        return labels.enumerated().map { day, label in
-            let intervals = schedule[day, default: []]
-            let value = intervals.isEmpty ? "Zamknięte" : intervals.map(\.description).joined(separator: ", ")
-            return (label, value)
-        }
-    }
-
-    private static func parse(_ rawValue: String) -> [Int: [MinuteInterval]]? {
-        let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if normalized == "24/7" {
-            guard let fullDay = MinuteInterval(start: 0, end: 1_440) else { return nil }
-            return Dictionary(uniqueKeysWithValues: (0..<7).map { ($0, [fullDay]) })
-        }
-        guard !normalized.isEmpty else { return nil }
-
-        var schedule = [Int: [MinuteInterval]]()
-        var assignedDays = Set<Int>()
-        for clause in normalized.split(separator: ";", omittingEmptySubsequences: false).map(String.init) {
-            let pieces = clause.split(maxSplits: 1, whereSeparator: \.isWhitespace)
-            guard pieces.count == 2, let days = parseDays(String(pieces[0])),
-                  !days.contains(where: { assignedDays.contains($0) }) else { return nil }
-            let hours = pieces[1].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            let intervals: [MinuteInterval]
-            if hours == "off" || hours == "closed" {
-                intervals = []
-            } else {
-                let parsed = hours.split(separator: ",", omittingEmptySubsequences: false).compactMap {
-                    MinuteInterval(String($0).trimmingCharacters(in: .whitespacesAndNewlines))
-                }
-                guard !parsed.isEmpty, parsed.count == hours.split(separator: ",", omittingEmptySubsequences: false).count else {
-                    return nil
-                }
-                intervals = parsed
-            }
-            for day in days {
-                assignedDays.insert(day)
-                schedule[day] = intervals
-            }
-        }
-        guard !assignedDays.isEmpty else { return nil }
-        return schedule
-    }
-
-    private static func parseDays(_ value: String) -> [Int]? {
-        let names = ["Mo": 0, "Tu": 1, "We": 2, "Th": 3, "Fr": 4, "Sa": 5, "Su": 6]
-        var result = Set<Int>()
-        for token in value.split(separator: ",", omittingEmptySubsequences: false).map(String.init) {
-            let ends = token.split(separator: "-", omittingEmptySubsequences: false).map(String.init)
-            guard ends.count == 1 || ends.count == 2,
-                  let start = names[ends[0]], let end = names[ends.last!] else { return nil }
-            var day = start
-            while true {
-                result.insert(day)
-                if day == end { break }
-                day = (day + 1) % 7
-            }
-        }
-        return result.isEmpty ? nil : result.sorted()
-    }
-
-    private func endDate(for interval: MinuteInterval, nextCalendarDay: Bool,
-                         date: Date, calendar: Calendar) -> Date? {
-        let startOfDay = calendar.startOfDay(for: date)
-        let targetDay = calendar.date(byAdding: .day, value: nextCalendarDay ? 1 : 0, to: startOfDay) ?? startOfDay
-        return calendar.date(byAdding: .minute, value: interval.end % 1_440, to: targetDay)
-    }
-}
-
-private struct MinuteInterval: CustomStringConvertible {
-    let start: Int
-    let end: Int
-
-    init?(start: Int, end: Int) {
-        guard (0..<1_440).contains(start), (1...1_440).contains(end), start != end else { return nil }
-        self.start = start
-        self.end = end < start ? end + 1_440 : end
-    }
-
-    init?(_ value: String) {
-        let parts = value.split(separator: "-", omittingEmptySubsequences: false)
-        guard parts.count == 2,
-              let start = Self.minutes(String(parts[0]), allowEndOfDay: false),
-              let end = Self.minutes(String(parts[1]), allowEndOfDay: true) else { return nil }
-        self.init(start: start, end: end)
-    }
-
-    var continuesPastMidnight: Bool { end > 1_440 }
-    func contains(_ minute: Int) -> Bool { minute >= start && minute < end }
-    var description: String { "\(Self.string(start % 1_440))–\(end == 1_440 ? "24:00" : Self.string(end % 1_440))" }
-
-    private static func minutes(_ value: String, allowEndOfDay: Bool) -> Int? {
-        let parts = value.split(separator: ":", omittingEmptySubsequences: false)
-        guard parts.count == 2, let hours = Int(parts[0]), let minutes = Int(parts[1]),
-              (0...59).contains(minutes) else { return nil }
-        if allowEndOfDay, hours == 24, minutes == 0 { return 1_440 }
-        guard (0...23).contains(hours) else { return nil }
-        return hours * 60 + minutes
-    }
-
-    private static func string(_ minutes: Int) -> String {
-        String(format: "%02d:%02d", minutes / 60, minutes % 60)
     }
 }

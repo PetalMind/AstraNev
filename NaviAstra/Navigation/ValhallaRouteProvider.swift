@@ -49,20 +49,33 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
             "sources": [["lat": source.latitude, "lon": source.longitude]],
             "targets": targets.map { ["lat": $0.latitude, "lon": $0.longitude] },
             "costing": "pedestrian",
-            "units": "kilometers"
+            "units": "kilometers",
+            "verbose": false,
+            "shape_format": "polyline6"
         ])
         try await ValhallaRequestGate.shared.waitUntilAllowed(for: endpoint)
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw RoutingError.invalidResponse }
         guard (200...299).contains(http.statusCode) else { throw RoutingError.server(http.statusCode) }
         let result = try JSONDecoder().decode(MatrixResponse.self, from: data)
-        guard let row = result.sourcesToTargets.first, row.count == targets.count else {
+        let matrix = result.sourcesToTargets
+        guard let durations = matrix.durations.first, durations.count == targets.count,
+              let distances = matrix.distances.first, distances.count == targets.count else {
             throw RoutingError.invalidResponse
         }
-        return row.map { cell in
-            guard let duration = cell.time, let distanceKilometers = cell.distance,
+        let shapes = matrix.shapes?.first
+        return targets.indices.map { index in
+            guard let duration = durations[index], let distanceKilometers = distances[index],
                   duration.isFinite, distanceKilometers.isFinite else { return nil }
-            return WalkingRouteCost(duration: duration, distance: distanceKilometers * 1_000)
+            let encodedShape: String?
+            if let shapes, shapes.indices.contains(index) { encodedShape = shapes[index] }
+            else { encodedShape = nil }
+            let coordinates = encodedShape.flatMap { shape in
+                let points = Polyline6.decode(shape)
+                return points.count > 1 ? points : nil
+            }
+            return WalkingRouteCost(duration: duration, distance: distanceKilometers * 1_000,
+                                    coordinates: coordinates)
         }
     }
 
@@ -175,12 +188,32 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
         let alternates: [Alternate]?
     }
     private struct MatrixResponse: Decodable {
-        let sourcesToTargets: [[WalkingMatrixCell]]
-        enum CodingKeys: String, CodingKey { case sourcesToTargets = "sources_to_targets" }
+        let sourcesToTargets: WalkingMatrix
+
+        private enum CodingKeys: String, CodingKey { case sourcesToTargets = "sources_to_targets" }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            if let concise = try? container.decode(WalkingMatrix.self, forKey: .sourcesToTargets) {
+                sourcesToTargets = concise
+            } else {
+                let rows = try container.decode([[WalkingMatrixCell]].self, forKey: .sourcesToTargets)
+                sourcesToTargets = WalkingMatrix(
+                    durations: rows.map { $0.map(\.time) },
+                    distances: rows.map { $0.map(\.distance) },
+                    shapes: rows.map { $0.map(\.shape) })
+            }
+        }
+    }
+    private struct WalkingMatrix: Decodable {
+        let durations: [[Double?]]
+        let distances: [[Double?]]
+        let shapes: [[String?]]?
     }
     private struct WalkingMatrixCell: Decodable {
         let time: Double?
         let distance: Double?
+        let shape: String?
     }
     private struct Alternate: Decodable { let trip: Trip }
     private struct Trip: Decodable { let summary: Summary; let legs: [Leg] }

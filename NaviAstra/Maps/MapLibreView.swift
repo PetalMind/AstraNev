@@ -1,6 +1,7 @@
 #if os(iOS)
 import Foundation
 import MapLibre
+import QuartzCore
 import SwiftUI
 import UIKit
 
@@ -14,6 +15,8 @@ private struct TransitStopRenderKey: Equatable {
     let center: Coordinate
     let zoom: Double
     let selectedStopID: String?
+    let activeStopID: String?
+    let alightingStopID: String?
     let selectedRouteID: String?
     let selectedTripStopIDs: Set<String>
     let transitStopCount: Int
@@ -28,6 +31,8 @@ struct MapLibreView: UIViewRepresentable {
     let selectedTransitRouteID: String?
     let selectedTransitTripID: String?
     let selectedTransitTripStopIDs: Set<String>
+    let activeTransitStopID: String?
+    let alightingTransitStopID: String?
     let transitLineCoordinates: [Coordinate]
     let transitLineColor: UInt32?
     let settings: MapSettings
@@ -97,6 +102,8 @@ struct MapLibreView: UIViewRepresentable {
         private var destinationMarkerIsArrived: Bool?
         private var transitVehiclePins: [String: MLNPointAnnotation] = [:]
         private var transitStopPins: [String: MLNPointAnnotation] = [:]
+        private var transitStopMapStops: [String: TransitStop] = [:]
+        private var transitStopMarkerStates: [String: TransitStopMapPresentation] = [:]
         private var lastTransitStopRenderKey: TransitStopRenderKey?
         private var transitLine: MLNPolyline?
         private var shownTransitRouteID: String?
@@ -139,7 +146,6 @@ struct MapLibreView: UIViewRepresentable {
         private var routeTransitionTimer: Timer?
         private var transitAnnotationUpdateWorkItem: DispatchWorkItem?
         private var searchMapCenterWorkItem: DispatchWorkItem?
-        private var lastSelectedTransitStopID: String?
 
         init(_ parent: MapLibreView) {
             self.parent = parent
@@ -209,6 +215,7 @@ struct MapLibreView: UIViewRepresentable {
 
         @objc func userGesture(_ gesture: UIGestureRecognizer) {
             if gesture.state == .began {
+                programmaticCamera = false
                 if gesture is UIPanGestureRecognizer { parent.onMapPan() }
                 parent.state.cameraState = .freeLook
                 parent.state.cameraIntent = nil
@@ -477,6 +484,8 @@ struct MapLibreView: UIViewRepresentable {
             let center = Coordinate(latitude: map.centerCoordinate.latitude, longitude: map.centerCoordinate.longitude)
             let renderKey = TransitStopRenderKey(center: center, zoom: zoom,
                                                   selectedStopID: parent.selectedTransitStopID,
+                                                  activeStopID: parent.activeTransitStopID,
+                                                  alightingStopID: parent.alightingTransitStopID,
                                                   selectedRouteID: parent.selectedTransitRouteID,
                                                   selectedTripStopIDs: parent.selectedTransitTripStopIDs,
                                                   transitStopCount: parent.transitStops.count,
@@ -485,25 +494,48 @@ struct MapLibreView: UIViewRepresentable {
             lastTransitStopRenderKey = renderKey
 
             let visibleRadius = max(500, 12_000 / pow(2, max(0, zoom - 12)))
-            let candidates = (showsOnlyRouteEndpoints ? [] : parent.transitStops).compactMap { stop -> (TransitStop, Double)? in
+            let candidates = parent.transitStops.compactMap { stop -> (TransitStop, Double)? in
                 let isSelected = stop.id == parent.selectedTransitStopID
+                let isActive = stop.id == parent.activeTransitStopID
+                let isAlighting = stop.id == parent.alightingTransitStopID
+                let isHighlighted = isSelected || isActive || isAlighting
+                guard !showsOnlyRouteEndpoints || isHighlighted else { return nil }
                 if !parent.selectedTransitTripStopIDs.isEmpty,
-                   !parent.selectedTransitTripStopIDs.contains(stop.id), !isSelected { return nil }
+                   !parent.selectedTransitTripStopIDs.contains(stop.id), !isHighlighted { return nil }
                 if parent.selectedTransitTripStopIDs.isEmpty,
                    let routeID = parent.selectedTransitRouteID,
-                   !stop.lineIDs.contains(routeID), !isSelected { return nil }
-                guard isSelected || zoom >= 12.2 && (zoom >= 14.2 || stop.isMajor) else { return nil }
-                guard !isSelected else { return (stop, 0) }
+                   !stop.lineIDs.contains(routeID), !isHighlighted { return nil }
+                guard isHighlighted || stop.shouldShowOnMap(zoom: zoom) else { return nil }
+                guard !isHighlighted else { return (stop, 0) }
                 let distance = center.distance(to: stop.coordinate)
                 guard distance <= visibleRadius else { return nil }
                 return (stop, distance)
             }
-            let stops = candidates.sorted { $0.1 < $1.1 }.prefix(500).map(\.0)
+            let groupedCandidates = TransitStop.mapGroups(from: candidates.map(\.0))
+            let stops = groupedCandidates.compactMap { group -> (TransitStop, Double)? in
+                guard let nearest = group.min(by: { center.distance(to: $0.coordinate) < center.distance(to: $1.coordinate) }) else {
+                    return nil
+                }
+                let highlighted = group.first { $0.id == parent.alightingTransitStopID }
+                    ?? group.first { $0.id == parent.activeTransitStopID }
+                    ?? group.first { $0.id == parent.selectedTransitStopID }
+                let representative = highlighted ?? nearest
+                let groupedStop = representative.mapGroup(members: group)
+                return (groupedStop, center.distance(to: groupedStop.coordinate))
+            }.sorted { $0.1 < $1.1 }.prefix(500).map(\.0)
             let byID = Dictionary(stops.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             let removedIDs = transitStopPins.keys.filter { byID[$0] == nil }
             let removedPins = removedIDs.compactMap { transitStopPins.removeValue(forKey: $0) }
+            removedIDs.forEach { transitStopMapStops.removeValue(forKey: $0) }
+            removedIDs.forEach { transitStopMarkerStates.removeValue(forKey: $0) }
             if !removedPins.isEmpty { map.removeAnnotations(removedPins) }
             for stop in byID.values {
+                transitStopMapStops[stop.id] = stop
+                let memberIDs = Set(stop.detailStopIDs)
+                let presentation = stop.mapPresentation(zoom: zoom,
+                                                        selected: parent.selectedTransitStopID.map(memberIDs.contains) ?? false,
+                                                        active: parent.activeTransitStopID.map(memberIDs.contains) ?? false,
+                                                        alighting: parent.alightingTransitStopID.map(memberIDs.contains) ?? false)
                 if let pin = transitStopPins[stop.id] {
                     if pin.coordinate.latitude != stop.coordinate.latitude || pin.coordinate.longitude != stop.coordinate.longitude {
                         pin.coordinate = stop.coordinate.cl
@@ -511,8 +543,8 @@ struct MapLibreView: UIViewRepresentable {
                     if pin.title != stop.name { pin.title = stop.name }
                     let subtitle = stop.lines.prefix(5).joined(separator: " · ")
                     if pin.subtitle != subtitle { pin.subtitle = subtitle }
-                    if let marker = map.view(for: pin), lastSelectedTransitStopID != parent.selectedTransitStopID {
-                        styleTransitStopMarker(marker, selected: stop.id == parent.selectedTransitStopID)
+                    if let marker = map.view(for: pin), transitStopMarkerStates[stop.id] != presentation {
+                        styleTransitStopMarker(marker, presentation: presentation)
                     }
                 } else {
                     let pin = MLNPointAnnotation()
@@ -520,10 +552,11 @@ struct MapLibreView: UIViewRepresentable {
                     pin.title = stop.name
                     pin.subtitle = stop.lines.prefix(5).joined(separator: " · ")
                     transitStopPins[stop.id] = pin
+                    transitStopMarkerStates[stop.id] = presentation
                     map.addAnnotation(pin)
                 }
+                transitStopMarkerStates[stop.id] = presentation
             }
-            lastSelectedTransitStopID = parent.selectedTransitStopID
         }
 
         private func scheduleTransitAnnotationUpdate(on map: MLNMapView) {
@@ -573,15 +606,99 @@ struct MapLibreView: UIViewRepresentable {
             return "\(mode) · aktualizacja \(vehicle.updatedAt.formatted(date: .omitted, time: .shortened))\(delay)"
         }
 
-        private func styleTransitStopMarker(_ marker: UIView, selected: Bool) {
-            marker.frame = CGRect(x: 0, y: 0, width: selected ? 26 : 20, height: selected ? 26 : 20)
-            marker.backgroundColor = selected ? .systemBlue : .white
-            marker.layer.cornerRadius = marker.frame.width / 2
-            marker.layer.borderWidth = 3
-            marker.layer.borderColor = UIColor.systemBlue.cgColor
-            marker.layer.shadowColor = UIColor.black.cgColor
-            marker.layer.shadowOpacity = 0.24
-            marker.layer.shadowRadius = 2
+        private func styleTransitStopMarker(_ marker: MLNAnnotationView, presentation: TransitStopMapPresentation) {
+            marker.subviews.forEach { $0.removeFromSuperview() }
+            let iconWidth: CGFloat = presentation.modes.count > 1
+                ? CGFloat(presentation.modes.count) * 15 + 12 : CGFloat(presentation.markerSize)
+            let iconHeight = CGFloat(presentation.markerSize)
+            let titleHeight: CGFloat = presentation.name == nil ? 0 : 16
+            let badgeHeight: CGFloat = presentation.showsAlightingBadge ? 17 : 0
+            let nameWidth = presentation.name.map { CGFloat(min(170, max(60, $0.count * 7))) } ?? 0
+            let contentWidth = max(iconWidth, nameWidth)
+            marker.frame = CGRect(x: 0, y: 0, width: contentWidth,
+                                  height: iconHeight + titleHeight + badgeHeight
+                                    + (titleHeight > 0 || badgeHeight > 0 ? 3 : 0))
+            marker.centerOffset = CGVector(dx: 0, dy: (titleHeight + badgeHeight) / 2)
+            marker.backgroundColor = .clear
+            marker.layer.cornerRadius = 0
+            marker.layer.borderWidth = 0
+            marker.layer.shadowOpacity = 0
+
+            let capsule = UIView(frame: CGRect(x: (contentWidth - iconWidth) / 2, y: 0,
+                                               width: iconWidth, height: iconHeight))
+            capsule.backgroundColor = .secondarySystemBackground
+            capsule.layer.cornerRadius = presentation.isMultimodal || presentation.modes.contains(.rail)
+                ? iconHeight / 2 : 8
+            capsule.layer.borderWidth = presentation.isActive || presentation.isAlighting ? 3
+                : presentation.isSelected ? 2.5 : 1.5
+            let accent = presentation.isAlighting ? UIColor.systemPurple
+                : presentation.isActive ? UIColor.systemOrange
+                : presentation.isSelected ? UIColor.systemBlue
+                : transitMarkerColor(for: presentation.modes.first)
+            capsule.layer.borderColor = accent.cgColor
+            capsule.layer.shadowColor = UIColor.black.cgColor
+            capsule.layer.shadowOpacity = 0.24
+            capsule.layer.shadowRadius = 3
+            if presentation.isActive && !presentation.isAlighting {
+                let pulse = CABasicAnimation(keyPath: "shadowRadius")
+                pulse.fromValue = 2.5
+                pulse.toValue = 5
+                pulse.duration = 1.8
+                pulse.autoreverses = true
+                pulse.repeatCount = .infinity
+                capsule.layer.add(pulse, forKey: "transit-active-stop-pulse")
+            }
+            marker.addSubview(capsule)
+
+            let imageSize: CGFloat = presentation.modes.count > 1 ? 13 : min(19, iconHeight * 0.58)
+            let spacing: CGFloat = 1
+            let symbolsWidth = CGFloat(presentation.modes.count) * imageSize
+                + CGFloat(max(0, presentation.modes.count - 1)) * spacing
+            var x = (iconWidth - symbolsWidth) / 2
+            for mode in presentation.modes {
+                let image = UIImageView(image: UIImage(systemName: mode.symbolName))
+                image.tintColor = transitMarkerColor(for: mode)
+                image.contentMode = .scaleAspectFit
+                image.frame = CGRect(x: x, y: (iconHeight - imageSize) / 2,
+                                     width: imageSize, height: imageSize)
+                capsule.addSubview(image)
+                x += imageSize + spacing
+            }
+
+            var nextY = iconHeight + 2
+            if presentation.showsAlightingBadge {
+                let badge = UILabel(frame: CGRect(x: (contentWidth - 64) / 2, y: nextY, width: 64, height: 14))
+                badge.text = "WYSIĄDŹ"
+                badge.font = .systemFont(ofSize: 8, weight: .bold)
+                badge.textAlignment = .center
+                badge.textColor = .white
+                badge.backgroundColor = .systemPurple
+                badge.layer.cornerRadius = 6
+                badge.clipsToBounds = true
+                marker.addSubview(badge)
+                nextY += badgeHeight
+            }
+            if let name = presentation.name {
+                let label = UILabel(frame: CGRect(x: 0, y: nextY, width: contentWidth, height: titleHeight))
+                label.text = name
+                label.font = .systemFont(ofSize: 10, weight: .semibold)
+                label.textColor = .label
+                label.backgroundColor = .secondarySystemBackground.withAlphaComponent(0.94)
+                label.textAlignment = .center
+                label.lineBreakMode = .byTruncatingTail
+                label.layer.cornerRadius = 5
+                label.clipsToBounds = true
+                marker.addSubview(label)
+            }
+            marker.isAccessibilityElement = true
+            marker.accessibilityLabel = presentation.accessibilityLabel
+        }
+
+        private func transitMarkerColor(for mode: TransitStopMode?) -> UIColor {
+            guard let mode else { return .systemBlue }
+            return UIColor(red: CGFloat((mode.accentHex >> 16) & 0xff) / 255,
+                           green: CGFloat((mode.accentHex >> 8) & 0xff) / 255,
+                           blue: CGFloat(mode.accentHex & 0xff) / 255, alpha: 1)
         }
 
         private func updatePOIDensity(on map: MLNMapView) {
@@ -649,7 +766,8 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MLNMapView, didSelect annotation: MLNAnnotation) {
-            if let stop = parent.transitStops.first(where: { transitStopPins[$0.id] === annotation }) {
+            if let (stopID, _) = transitStopPins.first(where: { $0.value === annotation }),
+               let stop = transitStopMapStops[stopID] {
                 parent.onTransitStopSelect(stop)
                 return
             }
@@ -695,7 +813,14 @@ struct MapLibreView: UIViewRepresentable {
 
             if let (stopID, _) = transitStopPins.first(where: { $0.value === annotation }) {
                 let marker = MLNAnnotationView(reuseIdentifier: "transit-stop-\(stopID)")
-                styleTransitStopMarker(marker, selected: parent.selectedTransitStopID == stopID)
+                guard let stop = transitStopMapStops[stopID] else { return marker }
+                let memberIDs = Set(stop.detailStopIDs)
+                let presentation = stop.mapPresentation(zoom: mapView.zoomLevel,
+                                                        selected: parent.selectedTransitStopID.map(memberIDs.contains) ?? false,
+                                                        active: parent.activeTransitStopID.map(memberIDs.contains) ?? false,
+                                                        alighting: parent.alightingTransitStopID.map(memberIDs.contains) ?? false)
+                styleTransitStopMarker(marker, presentation: presentation)
+                transitStopMarkerStates[stopID] = presentation
                 return marker
             }
 
@@ -843,7 +968,13 @@ struct MapLibreView: UIViewRepresentable {
             let center = Coordinate(latitude: mapView.centerCoordinate.latitude, longitude: mapView.centerCoordinate.longitude)
             scheduleSearchMapCenterUpdate(center)
 
-            if programmaticCamera { programmaticCamera = false }
+            let wasProgrammaticCamera = programmaticCamera
+            if wasProgrammaticCamera { programmaticCamera = false }
+            if !wasProgrammaticCamera, parent.state.status == .routePreview {
+                parent.state.cameraState = .freeLook
+                parent.state.cameraIntent = nil
+                parent.onMapPan()
+            }
             updatePOIDensity(on: mapView)
             scheduleTransitAnnotationUpdate(on: mapView)
         }
@@ -1383,6 +1514,16 @@ private final class NaviAstraMapStyle {
         lastKey = key
         style.transition = MLNTransition(duration: 0.4, delay: 0)
         let navigating = settings.context.isNavigating
+        let light = style.light
+        let lightPosition = MLNSphericalPositionMake(1.15, dark ? 220 : 225, dark ? 55 : 50)
+        light.anchor = NSExpression(forConstantValue: "map")
+        light.position = NSExpression(forConstantValue: NSValue(mlnSphericalPosition: lightPosition))
+        light.intensity = NSExpression(forConstantValue: dark ? 0.34 : 0.56)
+        light.color = NSExpression(forConstantValue: color(dark ? 0xC8D8E8 : 0xFFF9EF))
+        light.positionTransition = MLNTransition(duration: 0.4, delay: 0)
+        light.intensityTransition = MLNTransition(duration: 0.4, delay: 0)
+        light.colorTransition = MLNTransition(duration: 0.4, delay: 0)
+        style.light = light
         let background = color(dark ? 0x111D29 : 0xF2F4F1)
         let text = color(dark ? 0xD5E3EC : 0x344D5B)
         let muted = color(dark ? 0x8B9FAA : 0x788B93)
@@ -1412,21 +1553,29 @@ private final class NaviAstraMapStyle {
                     else if id.contains("ice") { fill = color(dark ? 0x30434B : 0xE6F0F1) }
                     else { fill = color(dark ? 0x294235 : 0xD9E8CE) }
                 case "landuse": fill = color(dark ? 0x23313B : 0xE8ECE5)
-                case "building": fill = color(dark ? 0x364B59 : 0xD5DEE0)
+                case "building": fill = color(dark ? 0x303E48 : 0xDAD5CD)
                 case "aeroway": fill = color(dark ? 0x2B3C48 : 0xDCE4E8)
                 default: continue
                 }
                 layer.fillColor = NSExpression(forConstantValue: fill)
                 if source == "building" {
+                    let neutralColor = dark ? "#303E48" : "#DAD5CD"
+                    layer.fillColor = buildingColorExpression(neutralColor: neutralColor)
                     layer.fillOpacity = NSExpression(forConstantValue: navigating ? 0.42 : 0.75)
                     layer.fillOutlineColor = NSExpression(forConstantValue: color(dark ? 0x4A606B : 0xC2CFD4))
                 }
             }
             if let layer = layer as? MLNFillExtrusionStyleLayer {
                 layer.isVisible = settings.overlays.buildings3D && settings.cameraMode == .threeD
-                layer.fillExtrusionColor = NSExpression(forConstantValue: color(dark ? 0x4A6271 : 0xC2D1D9))
-                layer.fillExtrusionOpacity = NSExpression(forConstantValue: navigating ? 0.42 : 0.72)
+                layer.fillExtrusionColor = buildingColorExpression(neutralColor: dark ? "#43515B" : "#D7D1C8")
+                layer.fillExtrusionOpacity = NSExpression(mglJSONObject: [
+                    "interpolate", ["linear"], ["zoom"],
+                    15, navigating ? 0.08 : 0.12,
+                    16, navigating ? 0.28 : 0.48,
+                    17, navigating ? 0.42 : 0.72
+                ])
                 layer.fillExtrusionHasVerticalGradient = NSExpression(forConstantValue: true)
+                layer.fillExtrusionRoundedCornerDistance = NSExpression(forConstantValue: 0.45)
             }
             if let layer = layer as? MLNLineStyleLayer {
                 let source = layer.sourceLayerIdentifier ?? ""
@@ -1534,6 +1683,15 @@ private final class NaviAstraMapStyle {
             numbers.textAllowsOverlap = NSExpression(forConstantValue: false)
             style.addLayer(numbers)
         }
+    }
+
+    private func buildingColorExpression(neutralColor: String) -> NSExpression {
+        // OpenMapTiles has an explicit `colour` tag but no building class; keep OSM color as a restrained 22% tint.
+        NSExpression(mglJSONObject: [
+            "interpolate", ["linear"], 0.22,
+            0, neutralColor,
+            1, ["to-color", ["get", "colour"], neutralColor]
+        ])
     }
 
     private func color(_ hex: UInt32) -> UIColor {

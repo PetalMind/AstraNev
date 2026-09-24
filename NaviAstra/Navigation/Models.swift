@@ -29,6 +29,7 @@ nonisolated struct Coordinate: Codable, Equatable, Sendable {
 struct WalkingRouteCost: Sendable {
     let duration: TimeInterval
     let distance: Double
+    let coordinates: [Coordinate]?
 }
 
 struct Destination: Identifiable, Codable, Equatable {
@@ -38,7 +39,7 @@ struct Destination: Identifiable, Codable, Equatable {
     var address: String? = nil
 }
 
-struct NavigationLocation {
+nonisolated struct NavigationLocation {
     var coordinate: Coordinate
     var speed: CLLocationSpeed
     var course: CLLocationDirection
@@ -323,6 +324,7 @@ struct JourneyLeg: Identifiable {
     var transitStops: [TransitJourneyStop] = []
     var isTransfer = false
     var minimumTransferTime: TimeInterval = 0
+    var hasResolvedWalkingGeometry = false
 }
 
 struct TransitJourneyStop: Identifiable, Equatable, Sendable {
@@ -350,6 +352,36 @@ struct TransitNavigationProgress: Equatable, Sendable {
     var isOnVehicle = false
 }
 
+nonisolated enum TransitStopMode: String, CaseIterable, Hashable, Sendable {
+    case rail
+    case tram
+    case bus
+
+    var symbolName: String {
+        switch self {
+        case .rail: "train.side.front.car"
+        case .tram: "tram.fill"
+        case .bus: "bus.fill"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .rail: "Kolej"
+        case .tram: "Tramwaj"
+        case .bus: "Autobus"
+        }
+    }
+
+    var accentHex: UInt32 {
+        switch self {
+        case .rail: 0x263B70
+        case .tram: 0xD83B43
+        case .bus: 0x2878D0
+        }
+    }
+}
+
 struct TransitStop: Identifiable, Equatable, Sendable {
     let id: String
     let name: String
@@ -358,6 +390,129 @@ struct TransitStop: Identifiable, Equatable, Sendable {
     let isMajor: Bool
     let lineIDs: [String]
     let lines: [String]
+    var modes: Set<TransitStopMode> = []
+    var stationID: String? = nil
+    var stationName: String? = nil
+    var stationCoordinate: Coordinate? = nil
+    var memberStopIDs: [String] = []
+
+    var mapGroupID: String {
+        guard let stationID else { return id }
+        if let stationCoordinate, coordinate.distance(to: stationCoordinate) > 350 { return id }
+        return stationID
+    }
+
+    var mapStationNameKey: String {
+        (stationName ?? name)
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pl_PL"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var detailStopIDs: [String] { memberStopIDs.isEmpty ? [id] : memberStopIDs }
+
+    var mapModes: [TransitStopMode] {
+        if !modes.isEmpty { return TransitStopMode.allCases.filter(modes.contains) }
+        return id.hasPrefix("rail/") ? [.rail] : [.bus]
+    }
+
+    var isRailway: Bool { mapModes.contains(.rail) }
+    var isMultimodal: Bool { mapModes.count > 1 }
+
+    static func mapGroups(from candidates: [TransitStop]) -> [[TransitStop]] {
+        var buckets: [String: [[TransitStop]]] = [:]
+        for stop in candidates {
+            let bucketID = stop.isMajor && !stop.mapStationNameKey.isEmpty
+                ? "named:\(stop.mapStationNameKey)" : "group:\(stop.mapGroupID)"
+            var groups = buckets[bucketID, default: []]
+            let stopModes = Set(stop.mapModes)
+            let coordinate = stop.stationCoordinate ?? stop.coordinate
+            let groupIndex = groups.indices.first { index in
+                let members = groups[index]
+                let existingModes = members.reduce(into: Set<TransitStopMode>()) {
+                    $0.formUnion($1.mapModes)
+                }
+                let sameStation = members.first { $0.mapGroupID == stop.mapGroupID }
+                if let sameStation {
+                    let distance = (sameStation.stationCoordinate ?? sameStation.coordinate).distance(to: coordinate)
+                    if distance <= 8 { return true }
+                    let combinedModes = existingModes.union(stopModes)
+                    let addsMode = combinedModes.count > max(existingModes.count, stopModes.count)
+                    if addsMode && distance <= 120 { return true }
+                }
+                let addsMode = !existingModes.isSuperset(of: stopModes)
+                    && !stopModes.isSuperset(of: existingModes)
+                guard addsMode else { return false }
+                return members.contains {
+                    $0.mapStationNameKey == stop.mapStationNameKey
+                        && ($0.stationCoordinate ?? $0.coordinate).distance(to: coordinate) <= 120
+                }
+            }
+            if let groupIndex {
+                groups[groupIndex].append(stop)
+            } else {
+                groups.append([stop])
+            }
+            buckets[bucketID] = groups
+        }
+        return buckets.values.flatMap { $0 }
+    }
+
+    func shouldShowOnMap(zoom: Double) -> Bool {
+        if zoom >= 14.2 { return true }
+        if zoom >= 11.5 { return isRailway || (isMajor && mapModes.contains(.tram)) }
+        if zoom >= 9.5 { return isRailway && isMajor }
+        return false
+    }
+
+    var mapMarkerSize: CGFloat {
+        if isRailway { return isMajor ? 36 : 32 }
+        if mapModes.count > 1 { return 34 }
+        if mapModes.contains(.tram) { return isMajor ? 30 : 27 }
+        return isMajor ? 26 : 22
+    }
+
+    func mapGroup(members: [TransitStop]) -> TransitStop {
+        let isStationGroup = stationID != nil && mapGroupID == stationID
+        return TransitStop(id: id,
+                           name: isStationGroup ? stationName ?? name : name,
+                           address: address,
+                           coordinate: isStationGroup ? stationCoordinate ?? coordinate : coordinate,
+                           isMajor: members.contains(where: \.isMajor),
+                           lineIDs: Array(Set(members.flatMap(\.lineIDs))).sorted(),
+                           lines: Array(Set(members.flatMap(\.lines))).sorted(),
+                           modes: members.reduce(into: Set<TransitStopMode>()) { $0.formUnion($1.mapModes) },
+                           stationID: stationID,
+                           stationName: isStationGroup ? stationName : nil,
+                           stationCoordinate: isStationGroup ? stationCoordinate : nil,
+                           memberStopIDs: Array(Set(members.flatMap(\.detailStopIDs))).sorted())
+    }
+
+    func mapPresentation(zoom: Double, selected: Bool, active: Bool, alighting: Bool) -> TransitStopMapPresentation {
+        TransitStopMapPresentation(modes: mapModes,
+                                   name: zoom >= 15.5 || selected || active || alighting ? name : nil,
+                                   markerSize: Double(mapMarkerSize),
+                                   isSelected: selected, isActive: active, isAlighting: alighting,
+                                   showsAlightingBadge: alighting && zoom >= 14.2)
+    }
+}
+
+struct TransitStopMapPresentation: Equatable, Sendable {
+    let modes: [TransitStopMode]
+    let name: String?
+    let markerSize: Double
+    let isSelected: Bool
+    let isActive: Bool
+    let isAlighting: Bool
+    let showsAlightingBadge: Bool
+
+    var isMultimodal: Bool { modes.count > 1 }
+    var accessibilityLabel: String {
+        let modeNames = modes.map(\.title).joined(separator: ", ")
+        let status = isAlighting ? ", przystanek wysiadania"
+            : isActive ? ", następny przystanek"
+            : isSelected ? ", wybrany przystanek" : ""
+        return "\(modeNames), \(name ?? "przystanek")\(status)"
+    }
 }
 
 struct TransitDeparture: Identifiable, Equatable, Sendable {
