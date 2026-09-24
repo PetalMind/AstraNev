@@ -1756,8 +1756,15 @@ final class NavigationEngine {
                   station.publicAccess != false,
                   let power = station.maximumPowerKW, power > 0,
                   !station.connectorTypes.isEmpty else { return false }
-            return preferences.evConnectorTypes.isEmpty
-                || !Set(station.connectorTypes).isDisjoint(with: preferences.evConnectorTypes)
+            guard !preferences.evConnectorTypes.isEmpty else { return true }
+            let stationConnectors = Set(station.connectorTypes)
+            return preferences.evConnectorTypes.contains { selected in
+                switch selected {
+                case "ccs": stationConnectors.contains("ccs") || stationConnectors.contains("type2_combo")
+                case "type2": stationConnectors.contains("type2") || stationConnectors.contains("type2_combo")
+                default: stationConnectors.contains(selected)
+                }
+            }
         }.sorted { $0.distanceFromRoute < $1.distanceFromRoute }
         var selected: [NearbyPlaceCandidate] = []
         var progress = 0.0
@@ -1765,9 +1772,16 @@ final class NavigationEngine {
         while baseLength - progress > segmentRange * 0.8 {
             let limit = progress + segmentRange * 0.68
             let selectedIDs = Set(selected.map(\.id))
-            guard let next = eligibleChargers.last(where: { candidate in
+            let reachable = eligibleChargers.filter { candidate in
                 candidate.distanceFromRoute > progress + 300 && candidate.distanceFromRoute <= limit &&
                     !selectedIDs.contains(candidate.id)
+            }
+            guard let furthestProgress = reachable.map(\.distanceFromRoute).max() else {
+                throw EVPlanningError.chargersUnavailable
+            }
+            let nearFurthest = reachable.filter { furthestProgress - $0.distanceFromRoute <= 1_000 }
+            guard let next = nearFurthest.max(by: {
+                ($0.chargingStation?.maximumPowerKW ?? 0) < ($1.chargingStation?.maximumPowerKW ?? 0)
             }) else { throw EVPlanningError.chargersUnavailable }
             selected.append(next)
             progress = next.distanceFromRoute

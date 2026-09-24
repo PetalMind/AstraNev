@@ -947,6 +947,23 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 15) {
                             routeEndpoints
                             waypointDetails
+                            if !route.chargingStops.isEmpty {
+                                VStack(alignment: .leading, spacing: 7) {
+                                    Text("Ładowanie po drodze")
+                                        .font(.subheadline.weight(.semibold))
+                                    Text("Szacowany czas postojów: \(Int((route.chargingDuration / 60).rounded())) min")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                    ForEach(route.chargingStops) { stop in
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(stop.destination.name).font(.caption.weight(.medium))
+                                            Text("\(stop.connectorTypes.joined(separator: ", ")) · do \(Int(stop.maximumPowerKW.rounded())) kW · postój \(Int((stop.estimatedChargingTime / 60).rounded())) min")
+                                                .font(.caption2).foregroundStyle(.secondary)
+                                            Text(stop.availabilityKnown ? "Status: działająca według OpenStreetMap" : "Dostępność ładowarki nieznana")
+                                                .font(.caption2).foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                            }
 
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("Opcje trasy")
@@ -2300,7 +2317,14 @@ struct ContentView: View {
                                   format: .number.precision(.fractionLength(0)))
                         Stepper("Poziom baterii: \(routingDraft.evBatteryPercent)%",
                                 value: $routingDraft.evBatteryPercent, in: 1...100, step: 5)
-                        Text("Dostępny zasięg: \(Int(routingDraft.availableEVRangeKilometers.rounded())) km. Punkty ładowania pochodzą z OpenStreetMap i mogą nie zawierać aktualnej dostępności ani złączy.")
+                        TextField("Zużycie (kWh/100 km)", value: $routingDraft.evConsumptionKWhPer100Km,
+                                  format: .number.precision(.fractionLength(1)))
+                        TextField("Maks. moc ładowania auta (kW)", value: $routingDraft.evMaximumChargingPowerKW,
+                                  format: .number.precision(.fractionLength(0)))
+                        evConnectorToggle("ccs", title: "CCS")
+                        evConnectorToggle("type2", title: "Type 2")
+                        evConnectorToggle("chademo", title: "CHAdeMO")
+                        Text("Dostępny zasięg: \(Int(routingDraft.availableEVRangeKilometers.rounded())) km. Czas ładowania szacujemy z zużycia auta i mocy opisanej w OpenStreetMap. Dostępność stacji na żywo nie jest sprawdzana.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     Button("Zastosuj preferencje trasy") {
@@ -2388,6 +2412,15 @@ struct ContentView: View {
                                   format: .number.precision(.fractionLength(0)))
                         Stepper("Poziom baterii: \(routingDraft.evBatteryPercent)%",
                                 value: $routingDraft.evBatteryPercent, in: 1...100, step: 5)
+                        TextField("Zużycie (kWh/100 km)", value: $routingDraft.evConsumptionKWhPer100Km,
+                                  format: .number.precision(.fractionLength(1)))
+                        TextField("Maks. moc ładowania auta (kW)", value: $routingDraft.evMaximumChargingPowerKW,
+                                  format: .number.precision(.fractionLength(0)))
+                        evConnectorToggle("ccs", title: "CCS")
+                        evConnectorToggle("type2", title: "Type 2")
+                        evConnectorToggle("chademo", title: "CHAdeMO")
+                        Text("Złącza, moc i status stacji pochodzą z OpenStreetMap. Brak wpisu o dostępności oznacza stan nieznany; aplikacja nie pobiera zajętości ładowarek.")
+                            .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
 
@@ -2413,6 +2446,15 @@ struct ContentView: View {
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
         }
+    }
+
+    private func evConnectorToggle(_ connector: String, title: String) -> some View {
+        Toggle(title, isOn: Binding(
+            get: { routingDraft.evConnectorTypes.contains(connector) },
+            set: { isEnabled in
+                if isEnabled { routingDraft.evConnectorTypes.insert(connector) }
+                else { routingDraft.evConnectorTypes.remove(connector) }
+            }))
     }
 
     private func unavailableReason(_ title: String, reason: String) -> some View {
