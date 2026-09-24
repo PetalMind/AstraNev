@@ -106,6 +106,9 @@ struct ContentView: View {
 
     private var navigationMapSettings: MapSettings {
         var settings = mapSettings
+        if engine.state.destination != nil && engine.state.status != .idle {
+            settings.overlays.poi = false
+        }
         if isNavigating || engine.state.status == .arrived {
             if engine.state.status == .arrived || (engine.state.progress?.remainingDistance ?? .infinity) < 500 {
                 settings.context = .approachingDestination
@@ -917,6 +920,9 @@ struct ContentView: View {
                 if engine.state.transportMode == .transit, let journey = route.journey {
                     let transitLegs = journey.legs.filter { $0.mode != "WALK" }
                     if let firstRide = transitLegs.first {
+                        let rideDuration = transitLegs.reduce(0.0) {
+                            $0 + $1.arrival.timeIntervalSince($1.departure)
+                        }
                         HStack(spacing: 8) {
                             Text(firstRide.line ?? "MPK")
                                 .font(.caption.weight(.bold).monospacedDigit())
@@ -936,9 +942,11 @@ struct ContentView: View {
                         HStack(spacing: 5) {
                             Text("Wsiadasz \(firstRide.departure.formatted(date: .omitted, time: .shortened))")
                             Text("·")
-                            Text("Przyjazd \(transitLegs.last?.arrival.formatted(date: .omitted, time: .shortened) ?? journey.arrival.formatted(date: .omitted, time: .shortened))")
+                            Text("Przyjazd \(journey.arrival.formatted(date: .omitted, time: .shortened))")
                         }
                         .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                        Text("Pojazdami \(transitMetricTime(rideDuration)) · pieszo \(transitMetricTime(journey.walkingDuration)) · czekanie \(transitMetricTime(journey.waitingDuration)) · przesiadki: \(journey.transferCount)")
+                            .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                     }
                 }
 
@@ -959,6 +967,8 @@ struct ContentView: View {
                                             Text("\(stop.connectorTypes.joined(separator: ", ")) · do \(Int(stop.maximumPowerKW.rounded())) kW · postój \(Int((stop.estimatedChargingTime / 60).rounded())) min")
                                                 .font(.caption2).foregroundStyle(.secondary)
                                             Text(stop.availabilityKnown ? "Status: działająca według OpenStreetMap" : "Dostępność ładowarki nieznana")
+                                                .font(.caption2).foregroundStyle(.secondary)
+                                            Text(stop.publicAccess == true ? "Dostęp publiczny według OpenStreetMap" : "Dostęp publiczny niepotwierdzony")
                                                 .font(.caption2).foregroundStyle(.secondary)
                                         }
                                     }
@@ -985,7 +995,11 @@ struct ContentView: View {
                                         Text("Brak aktywnych komunikatów dla tej trasy")
                                             .font(.caption2).foregroundStyle(.secondary)
                                     } else if !journey.alertsFeedAvailable {
-                                        Text("Komunikaty MPK niedostępne")
+                                        Text("Komunikaty na trasie niedostępne")
+                                            .font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                    if let attribution = journey.railwayScheduleAttribution {
+                                        Text(attribution)
                                             .font(.caption2).foregroundStyle(.secondary)
                                     }
                                     if journey.scheduleIsCached {
@@ -1001,7 +1015,10 @@ struct ContentView: View {
                                             Text(leg.departure.formatted(date: .omitted, time: .shortened))
                                                 .monospacedDigit()
                                             VStack(alignment: .leading, spacing: 2) {
-                                                Text("\(leg.line ?? leg.mode) · \(leg.from) → \(leg.to)")
+                                                let legTitle = leg.mode == "WALK"
+                                                    ? (leg.isTransfer ? "Przesiadka pieszo" : "Dojście pieszo")
+                                                    : (leg.line ?? leg.mode)
+                                                Text("\(legTitle) · \(leg.from) → \(leg.to)")
                                                 if let delay = displayedTransitDelay(for: leg), abs(delay) >= 30 {
                                                     Text(delayLabel(TimeInterval(delay)))
                                                         .font(.caption2).foregroundStyle(transitDelayColor(delay))
@@ -1188,7 +1205,7 @@ struct ContentView: View {
         case .car: "Auto"
         case .walking: "Pieszo"
         case .bicycle: "Rower"
-        case .transit: "Transport"
+        case .transit: "Kolej"
         case .parkRide: "P+R"
         }
     }
@@ -1331,6 +1348,10 @@ struct ContentView: View {
         let minutes = totalMinutes % 60
         guard hours > 0 else { return "\(totalMinutes) min" }
         return "\(hours):\(String(format: "%02d", minutes))"
+    }
+
+    private func transitMetricTime(_ seconds: TimeInterval) -> String {
+        seconds > 0 ? compactRouteTime(seconds) : "0 min"
     }
 
     private func discoveryPanel(compact: Bool = false) -> some View {
@@ -1977,7 +1998,9 @@ struct ContentView: View {
                 VStack(spacing: 10) {
                     ForEach(Array(journey.legs.enumerated()), id: \.element.id) { index, leg in
                         HStack(alignment: .top, spacing: 11) {
-                            Image(systemName: leg.mode == "WALK" ? "figure.walk" : leg.mode == "TRAM" ? "tram.fill" : "bus.fill")
+                            Image(systemName: leg.mode == "WALK" ? "figure.walk"
+                                : leg.mode == "RAIL" ? "train.side.front.car"
+                                : leg.mode == "TRAM" ? "tram.fill" : "bus.fill")
                                 .font(.system(size: 14, weight: .semibold)).foregroundStyle(Color.accentColor)
                                 .frame(width: 30, height: 30)
                                 .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 9))
@@ -2324,7 +2347,7 @@ struct ContentView: View {
                         evConnectorToggle("ccs", title: "CCS")
                         evConnectorToggle("type2", title: "Type 2")
                         evConnectorToggle("chademo", title: "CHAdeMO")
-                        Text("Dostępny zasięg: \(Int(routingDraft.availableEVRangeKilometers.rounded())) km. Czas ładowania szacujemy z zużycia auta i mocy opisanej w OpenStreetMap. Dostępność stacji na żywo nie jest sprawdzana.")
+                        Text("Dostępny zasięg: \(Int(routingDraft.availableEVRangeKilometers.rounded())) km. Zaznaczone złącza filtrują stacje; pusty wybór dopuszcza wszystkie znane typy. Czas szacujemy z zużycia auta i mocy w OpenStreetMap, bez sprawdzania zajętości na żywo.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     Button("Zastosuj preferencje trasy") {
@@ -2382,7 +2405,7 @@ struct ContentView: View {
                     Link("Rozkłady MPK Łódź", destination: URL(string: "https://www.mpk.lodz.pl/rozklady/linie.jsp")!)
                 }
 
-                Text("Mapa, wyszukiwanie, routing, limity i ruch na żywo wymagają internetu. Ruch i limity mogą być niedostępne; nie wpływają na ETA ani wybór trasy. Trasy i GPS są zapisywane tylko w lokalnej historii podróży. Tryb offline nie jest dostępny.")
+                Text("Mapa, wyszukiwanie, routing, limity i ruch na żywo wymagają internetu. TomTom może zmienić ETA i wybór spośród wariantów Valhalli; limity są informacyjne. Trasy i GPS są zapisywane tylko w lokalnej historii podróży. Tryb offline nie jest dostępny.")
                     .font(.footnote)
             }
             .navigationTitle("Ustawienia")
@@ -2787,24 +2810,63 @@ struct ContentView: View {
         let current = speed.flatMap { $0 >= 0 ? Int(($0 * 3.6).rounded()) : nil }
         let limit = fresh ? engine.state.speedLimitKph : nil
         let aboveLimit = speedWarningsEnabled && (current.map { value in limit.map { value > $0 + 5 } ?? false } ?? false)
+        let routeDistance = engine.state.progress?.traveledDistance ?? 0
+        let nextRoadAlert = engine.state.roadSafetyAlerts
+            .filter { alert in
+                guard alert.type.isEnforcement || alert.type == .speedLimitChange,
+                      let distance = alert.distanceAlongRoute else { return false }
+                return distance >= routeDistance && distance <= routeDistance + 2_000
+            }
+            .min { ($0.distanceAlongRoute ?? .infinity) < ($1.distanceAlongRoute ?? .infinity) }
 
         if let current {
-            HStack(spacing: 8) {
-                if let limit {
-                    Text(String(limit))
-                        .font(.system(size: 18, weight: .bold, design: .rounded).monospacedDigit())
-                        .frame(width: 38, height: 38)
-                        .background(.background, in: Circle())
-                        .overlay(Circle().strokeBorder(Color.primary.opacity(0.12), lineWidth: 2))
-                        .accessibilityLabel("Limit \(limit) kilometrów na godzinę")
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    if let limit {
+                        Text(String(limit))
+                            .font(.system(size: 18, weight: .bold, design: .rounded).monospacedDigit())
+                            .frame(width: 38, height: 38)
+                            .background(.background, in: Circle())
+                            .overlay(Circle().strokeBorder(Color.primary.opacity(0.12), lineWidth: 2))
+                            .accessibilityLabel("Limit \(limit) kilometrów na godzinę")
+                    }
+                    VStack(spacing: 0) {
+                        Text(String(current))
+                            .font(.system(size: 21, weight: .bold, design: .rounded).monospacedDigit())
+                            .foregroundStyle(aboveLimit ? .red : .primary)
+                            .contentTransition(.numericText())
+                        Text(engine.state.speedLimitSource.map { "\($0.shortTitle) · km/h" } ?? "km/h")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                VStack(spacing: 0) {
-                    Text(String(current))
-                        .font(.system(size: 21, weight: .bold, design: .rounded).monospacedDigit())
-                        .foregroundStyle(aboveLimit ? .red : .primary)
-                        .contentTransition(.numericText())
-                    Text("km/h")
-                        .font(.system(size: 9, weight: .medium))
+                if let alert = nextRoadAlert {
+                    HStack(spacing: 5) {
+                        Image(systemName: alert.type.symbolName)
+                        Text("\(alert.title) · \(alert.distanceText(from: routeDistance))")
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .accessibilityElement(children: .combine)
+                } else if let message = engine.state.speedLimitMessage {
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                } else if case .loading = engine.state.roadSafetyStatus {
+                    Label("Pobieranie ostrzeżeń drogowych…", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else if case .unavailable = engine.state.roadSafetyStatus {
+                    Label("Ostrzeżenia drogowe niedostępne", systemImage: "wifi.slash")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                if case .available = engine.state.roadSafetyStatus {
+                    Text("© OpenStreetMap contributors")
+                        .font(.system(size: 8, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -3151,7 +3213,7 @@ private struct NearbyPlacesSheet: View {
 
 private enum DestinationSearchScope: String, CaseIterable, Identifiable {
     case places = "Miejsca"
-    case transit = "Komunikacja"
+    case transit = "Kolej i MPK"
 
     var id: String { rawValue }
 }
@@ -3255,9 +3317,9 @@ private struct DestinationSearchSheet: View {
                             if searchScope == .places {
                                 savedDestinations
                             } else {
-                                ContentUnavailableView("Szukaj linii lub przystanku",
+                                ContentUnavailableView("Szukaj pociągu, stacji lub linii",
                                                        systemImage: "tram.fill",
-                                                       description: Text("Wpisz numer linii albo nazwę przystanku MPK Łódź."))
+                                                       description: Text("Wpisz numer pociągu lub linii albo nazwę stacji i przystanku w Polsce."))
                                     .frame(maxWidth: .infinity)
                                     .padding(.top, 28)
                             }
@@ -3551,7 +3613,7 @@ private struct DestinationSearchSheet: View {
                                     .foregroundStyle(.white).frame(minWidth: 36, minHeight: 30)
                                     .background(mapTransitColor(line.colorHex), in: RoundedRectangle(cornerRadius: 8))
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(line.mode == "TRAM" ? "Tramwaj" : "Autobus")
+                                    Text(line.mode == "RAIL" ? "Pociąg" : line.mode == "TRAM" ? "Tramwaj" : "Autobus")
                                         .font(.subheadline.weight(.medium)).foregroundStyle(.primary)
                                     if !line.directions.isEmpty {
                                         Text(line.directions).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -3566,7 +3628,7 @@ private struct DestinationSearchSheet: View {
                     }
                 }
                 if !transitResults.stops.isEmpty {
-                    Text("Przystanki").font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.top, 3)
+                    Text("Stacje i przystanki").font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.top, 3)
                     ForEach(transitResults.stops) { stop in
                         Button {
                             isSearchFocused = false

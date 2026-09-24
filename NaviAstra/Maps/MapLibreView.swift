@@ -92,6 +92,9 @@ struct MapLibreView: UIViewRepresentable {
         private var searchIDs: [UUID] = []
         private var incidentPins: [MLNPointAnnotation] = []
         private var shownIncidentIDs: [String] = []
+        private var roadAlertPins: [MLNPointAnnotation] = []
+        private var shownRoadAlertIDs: [String] = []
+        private var shownRoadAlerts: [RoadSafetyAlert] = []
         private var shownRouteIDs: [UUID]?
         private var shownActiveTargetID: UUID?
         private var shownRevealStep = 1_000
@@ -117,6 +120,9 @@ struct MapLibreView: UIViewRepresentable {
         private weak var vehicleMarker: UIView?
         private var programmaticCamera = false
         private var routeTransitionTimer: Timer?
+        private var transitAnnotationUpdateWorkItem: DispatchWorkItem?
+        private var searchMapCenterWorkItem: DispatchWorkItem?
+        private var lastSelectedTransitStopID: String?
 
         init(_ parent: MapLibreView) {
             self.parent = parent
@@ -143,7 +149,7 @@ struct MapLibreView: UIViewRepresentable {
             let tappedCoordinate = map.convert(point, toCoordinateFrom: map)
             let tappedLocation = CLLocation(latitude: tappedCoordinate.latitude, longitude: tappedCoordinate.longitude)
             let appAnnotations = searchPins + incidentPins + Array(transitVehiclePins.values)
-                + Array(transitStopPins.values) + [destinationPin, vehiclePin, closurePin].compactMap { $0 }
+                + roadAlertPins + Array(transitStopPins.values) + [destinationPin, vehiclePin, closurePin].compactMap { $0 }
             guard !appAnnotations.contains(where: { annotation in
                 let location = CLLocation(latitude: annotation.coordinate.latitude, longitude: annotation.coordinate.longitude)
                 return location.distance(from: tappedLocation) < 25
@@ -210,7 +216,7 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         func update(_ map: MLNMapView) {
-            let results = Array(parent.state.searchResults.prefix(8))
+            let results = showsOnlyRouteEndpoints ? [] : Array(parent.state.searchResults.prefix(8))
             if searchIDs != results.map(\.id) {
                 map.removeAnnotations(searchPins)
                 searchIDs = results.map(\.id)
@@ -281,7 +287,11 @@ struct MapLibreView: UIViewRepresentable {
 
             updateTraveledLine(on: map)
             updateTrafficLine(on: map)
-            updateClosurePin(on: map)
+            if showsOnlyRouteEndpoints {
+                removeClosurePin(from: map)
+            } else {
+                updateClosurePin(on: map)
+            }
             updateAccuracyHalo(on: map)
 
             if let destination = parent.state.destination, parent.state.status != .idle {
@@ -292,7 +302,8 @@ struct MapLibreView: UIViewRepresentable {
                 destinationPin?.coordinate = destination.coordinate.cl
             } else if let pin = destinationPin { map.removeAnnotation(pin); destinationPin = nil }
 
-            let incidents = parent.settings.overlays.traffic ? (parent.state.traffic?.incidents ?? []) : []
+            let incidents = !showsOnlyRouteEndpoints && parent.settings.overlays.traffic
+                ? (parent.state.traffic?.incidents ?? []) : []
             let incidentIDs = incidents.map(\.id)
             if incidentIDs != shownIncidentIDs {
                 map.removeAnnotations(incidentPins)
@@ -305,8 +316,32 @@ struct MapLibreView: UIViewRepresentable {
                 map.addAnnotations(incidentPins)
                 shownIncidentIDs = incidentIDs
             }
-            updateTransitVehiclePins(on: map)
-            updateTransitStopPins(on: map)
+            let routeDistance = parent.state.progress?.traveledDistance ?? 0
+            let roadAlerts = (!showsOnlyRouteEndpoints ? parent.state.roadSafetyAlerts : [])
+                .filter { alert in
+                    guard let distance = alert.distanceAlongRoute else { return false }
+                    return distance >= routeDistance - 60 && distance <= routeDistance + 20_000
+                }
+                .sorted { ($0.distanceAlongRoute ?? .infinity) < ($1.distanceAlongRoute ?? .infinity) }
+                .prefix(40)
+            let alertIDs = roadAlerts.map(\.id)
+            if alertIDs != shownRoadAlertIDs {
+                map.removeAnnotations(roadAlertPins)
+                roadAlertPins = roadAlerts.map { alert in
+                    let pin = MLNPointAnnotation()
+                    pin.coordinate = alert.coordinate.cl
+                    return pin
+                }
+                map.addAnnotations(roadAlertPins)
+                shownRoadAlertIDs = alertIDs
+            }
+            shownRoadAlerts = Array(roadAlerts)
+            for (alert, pin) in zip(roadAlerts, roadAlertPins) {
+                pin.coordinate = alert.coordinate.cl
+                pin.title = alert.title
+                pin.subtitle = roadAlertSubtitle(alert, routeDistance: routeDistance)
+            }
+            scheduleTransitAnnotationUpdate(on: map)
             updateSelectedTransitLine(on: map)
 
             if let location = (parent.state.weakGPS ? parent.state.cameraLocation : parent.state.location) {
@@ -346,7 +381,7 @@ struct MapLibreView: UIViewRepresentable {
 
         private func updateTransitVehiclePins(on map: MLNMapView) {
             let isZoomedIn = map.zoomLevel >= 14.7
-            let vehicles = Dictionary(parent.transitVehicles
+            let vehicles = Dictionary((showsOnlyRouteEndpoints ? [] : parent.transitVehicles)
                 .filter { vehicle in
                     if let tripID = parent.selectedTransitTripID { return vehicle.tripID == tripID }
                     return parent.selectedTransitRouteID.map { routeID in routeID == vehicle.routeID } ?? isZoomedIn
@@ -357,45 +392,65 @@ struct MapLibreView: UIViewRepresentable {
             let removedPins = removedIDs.compactMap { transitVehiclePins.removeValue(forKey: $0) }
             if !removedPins.isEmpty { map.removeAnnotations(removedPins) }
             for vehicle in vehicles.values {
+                let title = "Linia \(vehicle.line)"
+                let subtitle = transitVehicleSubtitle(vehicle)
                 if let pin = transitVehiclePins[vehicle.id] {
-                    pin.coordinate = vehicle.coordinate.cl
-                    pin.title = "Linia \(vehicle.line)"
-                    pin.subtitle = transitVehicleSubtitle(vehicle)
+                    if pin.coordinate.latitude != vehicle.coordinate.latitude || pin.coordinate.longitude != vehicle.coordinate.longitude {
+                        pin.coordinate = vehicle.coordinate.cl
+                    }
+                    if pin.title != title { pin.title = title }
+                    if pin.subtitle != subtitle { pin.subtitle = subtitle }
                 } else {
                     let pin = MLNPointAnnotation()
                     pin.coordinate = vehicle.coordinate.cl
-                    pin.title = "Linia \(vehicle.line)"
-                    pin.subtitle = transitVehicleSubtitle(vehicle)
+                    pin.title = title
+                    pin.subtitle = subtitle
                     transitVehiclePins[vehicle.id] = pin
                     map.addAnnotation(pin)
                 }
             }
         }
 
+        private func roadAlertSubtitle(_ alert: RoadSafetyAlert, routeDistance: Double) -> String {
+            guard let distance = alert.distanceAlongRoute else { return "© OpenStreetMap contributors" }
+            let remaining = max(0, distance - routeDistance)
+            let distanceText = remaining >= 1_000
+                ? String(format: "%.1f km", remaining / 1_000)
+                : "\(Int(remaining.rounded())) m"
+            return "\(distanceText) · © OpenStreetMap contributors"
+        }
+
         private func updateTransitStopPins(on map: MLNMapView) {
             let zoom = map.zoomLevel
             let visibleRadius = max(500, 12_000 / pow(2, max(0, zoom - 12)))
             let center = Coordinate(latitude: map.centerCoordinate.latitude, longitude: map.centerCoordinate.longitude)
-            let stops = parent.transitStops.filter { stop in
+            let candidates = (showsOnlyRouteEndpoints ? [] : parent.transitStops).compactMap { stop -> (TransitStop, Double)? in
                 let isSelected = stop.id == parent.selectedTransitStopID
                 if !parent.selectedTransitTripStopIDs.isEmpty,
-                   !parent.selectedTransitTripStopIDs.contains(stop.id), !isSelected { return false }
+                   !parent.selectedTransitTripStopIDs.contains(stop.id), !isSelected { return nil }
                 if parent.selectedTransitTripStopIDs.isEmpty,
                    let routeID = parent.selectedTransitRouteID,
-                   !stop.lineIDs.contains(routeID), !isSelected { return false }
-                guard isSelected || zoom >= 12.2 && (zoom >= 14.2 || stop.isMajor) else { return false }
-                return isSelected || center.distance(to: stop.coordinate) <= visibleRadius
-            }.sorted { center.distance(to: $0.coordinate) < center.distance(to: $1.coordinate) }.prefix(500)
+                   !stop.lineIDs.contains(routeID), !isSelected { return nil }
+                guard isSelected || zoom >= 12.2 && (zoom >= 14.2 || stop.isMajor) else { return nil }
+                guard !isSelected else { return (stop, 0) }
+                let distance = center.distance(to: stop.coordinate)
+                guard distance <= visibleRadius else { return nil }
+                return (stop, distance)
+            }
+            let stops = candidates.sorted { $0.1 < $1.1 }.prefix(500).map(\.0)
             let byID = Dictionary(stops.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             let removedIDs = transitStopPins.keys.filter { byID[$0] == nil }
             let removedPins = removedIDs.compactMap { transitStopPins.removeValue(forKey: $0) }
             if !removedPins.isEmpty { map.removeAnnotations(removedPins) }
             for stop in byID.values {
                 if let pin = transitStopPins[stop.id] {
-                    pin.coordinate = stop.coordinate.cl
-                    pin.title = stop.name
-                    pin.subtitle = stop.lines.prefix(5).joined(separator: " · ")
-                    if let marker = map.view(for: pin) {
+                    if pin.coordinate.latitude != stop.coordinate.latitude || pin.coordinate.longitude != stop.coordinate.longitude {
+                        pin.coordinate = stop.coordinate.cl
+                    }
+                    if pin.title != stop.name { pin.title = stop.name }
+                    let subtitle = stop.lines.prefix(5).joined(separator: " · ")
+                    if pin.subtitle != subtitle { pin.subtitle = subtitle }
+                    if let marker = map.view(for: pin), lastSelectedTransitStopID != parent.selectedTransitStopID {
                         styleTransitStopMarker(marker, selected: stop.id == parent.selectedTransitStopID)
                     }
                 } else {
@@ -407,6 +462,30 @@ struct MapLibreView: UIViewRepresentable {
                     map.addAnnotation(pin)
                 }
             }
+            lastSelectedTransitStopID = parent.selectedTransitStopID
+        }
+
+        private func scheduleTransitAnnotationUpdate(on map: MLNMapView) {
+            transitAnnotationUpdateWorkItem?.cancel()
+            let workItem = DispatchWorkItem { [weak self, weak map] in
+                guard let self, let map else { return }
+                self.updateTransitVehiclePins(on: map)
+                self.updateTransitStopPins(on: map)
+            }
+            transitAnnotationUpdateWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
+        }
+
+        private func scheduleSearchMapCenterUpdate(_ center: Coordinate) {
+            searchMapCenterWorkItem?.cancel()
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                if let current = self.parent.state.searchMapCenter,
+                   current.distance(to: center) < 35 { return }
+                self.parent.state.searchMapCenter = center
+            }
+            searchMapCenterWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: workItem)
         }
 
         private func updateSelectedTransitLine(on map: MLNMapView) {
@@ -477,7 +556,7 @@ struct MapLibreView: UIViewRepresentable {
             }
             if intent == lastIntent && !enteringOverview && !newOverview && !cameraCommandChanged &&
                 !routePreviewPaddingChanged && !cameraModeChanged && !cameraStateChanged { return }
-            if cameraMode == .flat {
+            if cameraMode == .flat && !cameraState.usesNavigationPerspective {
                 effectiveIntent.pitch = 0
             } else if cameraState == .browse || cameraState == .destinationPreview || cameraState == .routeOverview {
                 effectiveIntent.pitch = 40
@@ -540,6 +619,26 @@ struct MapLibreView: UIViewRepresentable {
             if let (stopID, _) = transitStopPins.first(where: { $0.value === annotation }) {
                 let marker = MLNAnnotationView(reuseIdentifier: "transit-stop-\(stopID)")
                 styleTransitStopMarker(marker, selected: parent.selectedTransitStopID == stopID)
+                return marker
+            }
+
+            if let alertIndex = roadAlertPins.firstIndex(where: { $0 === annotation }),
+               shownRoadAlerts.indices.contains(alertIndex) {
+                let alert = shownRoadAlerts[alertIndex]
+                let marker = MLNAnnotationView(reuseIdentifier: "road-alert-\(alert.type.rawValue)")
+                marker.frame = CGRect(x: 0, y: 0, width: 30, height: 30)
+                marker.backgroundColor = .systemOrange
+                marker.layer.cornerRadius = 15
+                marker.layer.borderWidth = 1.5
+                marker.layer.borderColor = UIColor.white.cgColor
+                marker.layer.shadowColor = UIColor.black.cgColor
+                marker.layer.shadowOpacity = 0.22
+                marker.layer.shadowRadius = 3
+                let image = UIImageView(image: UIImage(systemName: alert.type.symbolName))
+                image.tintColor = .white
+                image.contentMode = .scaleAspectFit
+                image.frame = CGRect(x: 7, y: 7, width: 16, height: 16)
+                marker.addSubview(image)
                 return marker
             }
 
@@ -611,16 +710,16 @@ struct MapLibreView: UIViewRepresentable {
         func mapView(_ mapView: MLNMapView, annotationCanShowCallout annotation: MLNAnnotation) -> Bool {
             transitVehiclePins.values.contains { $0 === annotation }
                 || transitStopPins.values.contains { $0 === annotation }
+                || roadAlertPins.contains { $0 === annotation }
         }
 
         func mapView(_ mapView: MLNMapView, regionDidChangeAnimated animated: Bool) {
             let center = Coordinate(latitude: mapView.centerCoordinate.latitude, longitude: mapView.centerCoordinate.longitude)
-            DispatchQueue.main.async { [weak self] in self?.parent.state.searchMapCenter = center }
+            scheduleSearchMapCenterUpdate(center)
 
             if programmaticCamera { programmaticCamera = false }
             updatePOIDensity(on: mapView)
-            updateTransitStopPins(on: mapView)
-            updateTransitVehiclePins(on: mapView)
+            scheduleTransitAnnotationUpdate(on: mapView)
         }
 
         func mapView(_ mapView: MLNMapView, strokeColorForShapeAnnotation annotation: MLNShape) -> UIColor {
@@ -903,7 +1002,7 @@ struct MapLibreView: UIViewRepresentable {
 
         private func updateClosurePin(on map: MLNMapView) {
             guard parent.settings.overlays.traffic, let flow = parent.state.traffic?.flow, flow.roadClosure, !flow.coordinates.isEmpty else {
-                if let closurePin { map.removeAnnotation(closurePin); self.closurePin = nil }
+                removeClosurePin(from: map)
                 return
             }
             if closurePin == nil {
@@ -913,6 +1012,14 @@ struct MapLibreView: UIViewRepresentable {
                 map.addAnnotation(pin)
             }
             closurePin?.coordinate = flow.coordinates[flow.coordinates.count / 2].cl
+        }
+
+        private func removeClosurePin(from map: MLNMapView) {
+            if let closurePin { map.removeAnnotation(closurePin); self.closurePin = nil }
+        }
+
+        private var showsOnlyRouteEndpoints: Bool {
+            parent.state.destination != nil && parent.state.status != .idle
         }
 
         private func styledLine(for polyline: MLNPolyline) -> StyledLine? {

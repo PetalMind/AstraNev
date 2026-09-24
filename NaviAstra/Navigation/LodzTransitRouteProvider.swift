@@ -5,21 +5,33 @@ nonisolated enum TransitRoutingError: LocalizedError {
     case invalidResponse
     case noJourney
     case noParkRide
+    case walkingUnavailable
+    case walkingServerError(Int)
+    case walkingRateLimited
     case feedUnavailable
+    case railwayFeedUnavailable
     case outsideCoverage
 
     var errorDescription: String? {
         switch self {
         case .invalidResponse:
-            "Miasto Łódź zwróciło nieprawidłowe dane komunikacji."
+            "Źródło rozkładów zwróciło nieprawidłowe dane."
         case .noJourney:
-            "Nie znaleziono połączenia MPK dla tej trasy i aktualnej godziny."
+            "Nie znaleziono połączenia kolejowego ani komunikacji publicznej dla wybranej godziny."
         case .noParkRide:
             "Nie udało się znaleźć działającego połączenia z parkingu P+R."
+        case .walkingUnavailable:
+            "Nie udało się wyznaczyć dojścia pieszo do przystanków przez serwer Valhalla."
+        case .walkingServerError(let statusCode):
+            "Serwer tras odrzucił wyznaczenie dojścia (HTTP \(statusCode))."
+        case .walkingRateLimited:
+            "Serwer tras ograniczył liczbę żądań. Poczekaj chwilę i spróbuj ponownie."
         case .feedUnavailable:
-            "Nie udało się pobrać rozkładu jazdy MPK Łódź."
+            "Nie udało się pobrać rozkładu jazdy komunikacji publicznej."
+        case .railwayFeedUnavailable:
+            "Krajowy rozkład kolejowy jest chwilowo niedostępny. Spróbuj ponownie za chwilę."
         case .outsideCoverage:
-            "Planowanie komunikacji MPK obejmuje Łódź i okolice. Wybierz początek oraz cel bliżej przystanków."
+            "Wybierz początek i cel, z których można dojść do stacji lub przystanku w 30 minut pieszo."
         }
     }
 }
@@ -52,6 +64,10 @@ struct LodzTransitRouteProvider {
         await LodzTransitRepository.shared.alerts(for: stopID)
     }
 
+    func railwayScheduleAttribution() async -> String? {
+        await LodzTransitRepository.shared.railwayScheduleAttribution()
+    }
+
     func search(_ query: String, near coordinate: Coordinate?) async -> TransitSearchResults {
         await LodzTransitRepository.shared.search(query, near: coordinate)
     }
@@ -77,12 +93,20 @@ struct LodzTransitRouteProvider {
 private actor LodzTransitRepository {
     static let shared = LodzTransitRepository()
     private static let maximumSearchWindow: TimeInterval = 18 * 60 * 60
-    private static let maximumAccessWalkTime: TimeInterval = 15 * 60
+    private static let maximumAccessWalkTime: TimeInterval = 30 * 60
+    private static let walkingMatrixBatchSize = 40
+    private static let maximumLocalWalkingCandidates = walkingMatrixBatchSize * 2
+    private static let maximumRailWalkingCandidates = walkingMatrixBatchSize
+    private static let maximumAccessWalkDistance: Double = 10_000
+    private static let fallbackWalkingCandidateCountPerNetwork = 8
+    private static let fallbackWalkingResultsPerNetwork = 4
 
     private let staticFeedURL = URL(string: "https://otwarte.miasto.lodz.pl/wp-content/uploads/2025/06/GTFS.zip")!
     private let tripUpdatesURL = URL(string: "https://otwarte.miasto.lodz.pl/wp-content/uploads/2025/06/trip_updates.bin")!
     private let alertsURL = URL(string: "https://otwarte.miasto.lodz.pl/wp-content/uploads/2025/06/alerts.bin")!
     private let vehiclePositionsURL = URL(string: "https://otwarte.miasto.lodz.pl/wp-content/uploads/2025/06/vehicle_positions.bin")!
+    private let railwayFeedURL = URL(string: "https://mkuran.pl/gtfs/polish_trains.zip")!
+    private let railwayTripUpdatesURL = URL(string: "https://mkuran.pl/gtfs/polish_trains/updates.pb")!
     private let cacheDirectory: URL = {
         let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
@@ -105,10 +129,15 @@ private actor LodzTransitRepository {
         let realtime = await loadRealtime()
         guard walkingRoutingEndpoint.scheme == "https" else { throw RoutingError.invalidEndpoint }
         let boardingStops = database.stops.filter { database.servedStopIDs.contains($0.id) }
-        let originWalks = await walkingOptions(from: from, stops: boardingStops,
-                                               endpoint: walkingRoutingEndpoint)
-        let destinationWalks = await walkingOptions(from: to, stops: boardingStops,
-                                                    endpoint: walkingRoutingEndpoint)
+        async let originWalksRequest = walkingOptions(from: from, stops: boardingStops,
+                                                       endpoint: walkingRoutingEndpoint)
+        async let destinationWalksRequest = walkingOptions(from: to, stops: boardingStops,
+                                                            endpoint: walkingRoutingEndpoint)
+        let (originWalks, destinationApproaches) = try await (originWalksRequest, destinationWalksRequest)
+        let destinationWalks = destinationApproaches.map { option in
+            TransitWalkOption(stop: option.stop, distance: option.distance, duration: option.duration,
+                              coordinates: Array(option.coordinates.reversed()))
+        }
         let planned = try Self.plan(database: database, realtime: realtime, from: from, to: to,
                                     departingAt: departingAt, originWalks: originWalks,
                                     destinationWalks: destinationWalks,
@@ -117,49 +146,82 @@ private actor LodzTransitRepository {
     }
 
     private func walkingOptions(from coordinate: Coordinate, stops: [GTFSStop],
-                                endpoint: URL) async -> [TransitWalkOption] {
-        let candidates = Self.nearestStops(to: coordinate, in: stops, maximumDistance: 3_000, limit: 16)
-        return await withTaskGroup(of: TransitWalkOption?.self, returning: [TransitWalkOption].self) { group in
-            var nextCandidate = 0
-            for _ in 0..<min(4, candidates.count) {
-                let (stop, distance) = candidates[nextCandidate]
-                nextCandidate += 1
-                group.addTask {
-                    if distance <= 15 {
-                        return TransitWalkOption(stop: stop, distance: distance, duration: 0,
-                                                 coordinates: [coordinate, stop.coordinate])
-                    }
-                    let provider = ValhallaRouteProvider(endpoint: endpoint)
-                    guard let route = try? await provider.calculateRoutes(from: coordinate, to: stop.coordinate,
-                                                                          mode: .walking).first,
-                          route.expectedTravelTime <= Self.maximumAccessWalkTime else { return nil }
-                    return TransitWalkOption(stop: stop, distance: route.distance,
-                                             duration: route.expectedTravelTime,
-                                             coordinates: route.coordinates)
-                }
+                                endpoint: URL) async throws -> [TransitWalkOption] {
+        let candidates = Self.nearestStops(to: coordinate, in: stops,
+                                           maximumDistance: Self.maximumAccessWalkDistance,
+                                           localLimit: Self.maximumLocalWalkingCandidates,
+                                           railwayLimit: Self.maximumRailWalkingCandidates)
+        let provider = ValhallaRouteProvider(endpoint: endpoint)
+        var results: [TransitWalkOption] = []
+        var start = 0
+        var matrixUnavailable = false
+        while start < candidates.count {
+            let end = min(start + Self.walkingMatrixBatchSize, candidates.count)
+            let batch = Array(candidates[start..<end])
+            let costs: [WalkingRouteCost?]
+            do {
+                costs = try await provider.walkingCosts(from: coordinate, to: batch.map { $0.0.coordinate })
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                matrixUnavailable = true
+                break
             }
-            var results: [TransitWalkOption] = []
-            for await result in group {
-                if let result { results.append(result) }
-                guard nextCandidate < candidates.count else { continue }
-                let (stop, distance) = candidates[nextCandidate]
-                nextCandidate += 1
-                group.addTask {
-                    if distance <= 15 {
-                        return TransitWalkOption(stop: stop, distance: distance, duration: 0,
-                                                 coordinates: [coordinate, stop.coordinate])
-                    }
-                    let provider = ValhallaRouteProvider(endpoint: endpoint)
-                    guard let route = try? await provider.calculateRoutes(from: coordinate, to: stop.coordinate,
-                                                                          mode: .walking).first,
-                          route.expectedTravelTime <= Self.maximumAccessWalkTime else { return nil }
-                    return TransitWalkOption(stop: stop, distance: route.distance,
-                                             duration: route.expectedTravelTime,
-                                             coordinates: route.coordinates)
-                }
+            for index in batch.indices {
+                guard let cost = costs[index], cost.duration <= Self.maximumAccessWalkTime else { continue }
+                let stop = batch[index].0
+                results.append(TransitWalkOption(stop: stop, distance: cost.distance,
+                                                 duration: cost.duration,
+                                                 coordinates: [coordinate, stop.coordinate]))
             }
-            return results.sorted { $0.duration < $1.duration }
+            start = end
         }
+        if matrixUnavailable, results.isEmpty {
+            return try await fallbackWalkingOptions(from: coordinate, candidates: candidates,
+                                                    endpoint: endpoint)
+        }
+        return results
+    }
+
+    private func fallbackWalkingOptions(from coordinate: Coordinate,
+                                       candidates: [(GTFSStop, Double)],
+                                       endpoint: URL) async throws -> [TransitWalkOption] {
+        let provider = ValhallaRouteProvider(endpoint: endpoint)
+        var results: [TransitWalkOption] = []
+        let candidateGroups = [
+            candidates.filter { !$0.0.id.hasPrefix("rail/") }
+                .prefix(Self.fallbackWalkingCandidateCountPerNetwork),
+            candidates.filter { $0.0.id.hasPrefix("rail/") }
+                .prefix(Self.fallbackWalkingCandidateCountPerNetwork)
+        ]
+        for group in candidateGroups {
+            var networkResults = 0
+            for (stop, _) in group {
+                do {
+                    guard let route = try await provider.calculateRoutes(from: coordinate, to: stop.coordinate,
+                                                                         mode: .walking).first,
+                          route.expectedTravelTime <= Self.maximumAccessWalkTime else { continue }
+                    results.append(TransitWalkOption(stop: stop, distance: route.distance,
+                                                     duration: route.expectedTravelTime,
+                                                     coordinates: route.coordinates))
+                    networkResults += 1
+                    if networkResults >= Self.fallbackWalkingResultsPerNetwork { break }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch RoutingError.server(429) {
+                    throw TransitRoutingError.walkingRateLimited
+                } catch RoutingError.server(400) {
+                    continue
+                } catch RoutingError.invalidResponse {
+                    continue
+                } catch RoutingError.server(let statusCode) {
+                    throw TransitRoutingError.walkingServerError(statusCode)
+                } catch {
+                    throw TransitRoutingError.walkingUnavailable
+                }
+            }
+        }
+        return results.sorted { $0.duration < $1.duration }
     }
 
     private func resolveTransferWalks(in routes: [NavigationRoute], endpoint: URL) async -> [NavigationRoute] {
@@ -170,20 +232,40 @@ private actor LodzTransitRepository {
                     var resolved = route
                     var changed = false
                     let provider = ValhallaRouteProvider(endpoint: endpoint)
-                    for index in journey.legs.indices where journey.legs[index].isTransfer {
+                    for index in journey.legs.indices where journey.legs[index].mode == "WALK" {
                         let leg = journey.legs[index]
-                        let transferDeparture = index > 0 && journey.legs[index - 1].isTransfer
-                            ? journey.legs[index - 1].arrival : leg.departure
-                        guard let from = leg.coordinates.first, let to = leg.coordinates.last,
-                              let walkingRoute = try? await provider.calculateRoutes(from: from, to: to,
-                                                                                     mode: .walking).first else {
+                        if !leg.isTransfer && leg.coordinates.count > 2 { continue }
+                        let transferDeparture: Date
+                        if leg.isTransfer, index > 0, journey.legs[index - 1].mode == "WALK" {
+                            transferDeparture = journey.legs[index - 1].arrival
+                        } else if leg.from == "Punkt początkowy" {
+                            transferDeparture = journey.departure
+                        } else if leg.to == "Cel", index > 0 {
+                            transferDeparture = journey.legs[index - 1].arrival
+                        } else {
+                            transferDeparture = leg.departure
+                        }
+                        guard let from = leg.coordinates.first, let to = leg.coordinates.last else { return nil }
+                        let walkingCoordinates: [Coordinate]
+                        let walkingDuration: TimeInterval
+                        if from.distance(to: to) <= 1 {
+                            walkingCoordinates = [from, to]
+                            walkingDuration = 0
+                        } else if let walkingRoute = try? await provider.calculateRoutes(
+                            from: from, to: to, mode: .walking).first {
+                            walkingCoordinates = walkingRoute.coordinates
+                            walkingDuration = walkingRoute.expectedTravelTime
+                        } else {
+                            return nil
+                        }
+                        if !leg.isTransfer && walkingDuration > Self.maximumAccessWalkTime {
                             return nil
                         }
                         let nextRide = journey.legs.suffix(from: index + 1).first(where: { $0.mode != "WALK" })
-                        journey.legs[index].coordinates = walkingRoute.coordinates
+                        journey.legs[index].coordinates = walkingCoordinates
                         journey.legs[index].departure = transferDeparture
                         journey.legs[index].arrival = transferDeparture
-                            .addingTimeInterval(walkingRoute.expectedTravelTime + leg.minimumTransferTime)
+                            .addingTimeInterval(walkingDuration + (leg.isTransfer ? leg.minimumTransferTime : 0))
                         if nextRide == nil,
                            journey.legs.indices.contains(index + 1),
                            journey.legs[index + 1].mode == "WALK" {
@@ -201,12 +283,12 @@ private actor LodzTransitRepository {
                     guard changed else { return resolved }
                     for nextRideIndex in journey.legs.indices where journey.legs[nextRideIndex].mode != "WALK" {
                         let previousRideIndex = journey.legs[..<nextRideIndex].lastIndex(where: { $0.mode != "WALK" })
-                        let transferStartIndex = (previousRideIndex.map { $0 + 1 } ?? 0)..<nextRideIndex
-                        let transfers = transferStartIndex.map { journey.legs[$0] }.filter(\.isTransfer)
-                        guard !transfers.isEmpty else { continue }
+                        let walkingStartIndex = (previousRideIndex.map { $0 + 1 } ?? 0)..<nextRideIndex
+                        let walkLegs = walkingStartIndex.map { journey.legs[$0] }.filter { $0.mode == "WALK" }
+                        guard !walkLegs.isEmpty else { continue }
                         let startTime = previousRideIndex.map { journey.legs[$0].arrival }
-                            ?? transfers[0].departure
-                        let required = transfers.reduce(0.0) {
+                            ?? journey.departure
+                        let required = walkLegs.reduce(0.0) {
                             $0 + $1.arrival.timeIntervalSince($1.departure)
                         }
                         guard required <= journey.legs[nextRideIndex].departure.timeIntervalSince(startTime) else {
@@ -266,6 +348,7 @@ private actor LodzTransitRepository {
     }
 
     func alerts(for stopID: String) async -> [String] {
+        guard !stopID.hasPrefix("rail/") else { return [] }
         guard let database = try? await loadDatabase() else { return [] }
         let realtime = await loadRealtime()
         let routeIDs = database.routeIDsByStop[stopID] ?? []
@@ -273,6 +356,11 @@ private actor LodzTransitRepository {
             $0.isActive(at: Date()) && (($0.routeIDs.isEmpty && $0.stopIDs.isEmpty)
                 || $0.stopIDs.contains(stopID) || !$0.routeIDs.isDisjoint(with: routeIDs))
         }.map(\.message).filter { !$0.isEmpty }.prefix(3))
+    }
+
+    func railwayScheduleAttribution() async -> String? {
+        guard let database = try? await loadDatabase(), database.railwayFeedAvailable else { return nil }
+        return Self.railwayAttribution(for: database)
     }
 
     func search(_ query: String, near coordinate: Coordinate?) async -> TransitSearchResults {
@@ -403,12 +491,12 @@ private actor LodzTransitRepository {
         let pastStops = Array(predicted.prefix(currentIndex).suffix(8))
         let nextStops = Array(predicted.dropFirst(min(currentIndex + 1, predicted.count)))
         let stopIDs = Set(trip.stopTimes.dropFirst(min(currentIndex, trip.stopTimes.count)).map(\.stopID))
-        let alert = realtime.alerts.first {
+        let alert = route.mode == "RAIL" ? nil : realtime.alerts.first {
             $0.isActive(at: Date()) && (($0.routeIDs.isEmpty && $0.stopIDs.isEmpty)
                 || $0.routeIDs.contains(route.id) || !$0.stopIDs.isDisjoint(with: stopIDs))
         }?.message
         let vehicle: TransitVehicle? = rawVehicle.map { raw in
-            TransitVehicle(id: raw.id, line: route.displayName, mode: route.mode,
+            TransitVehicle(id: raw.id, line: trip.displayLine(for: route), mode: route.mode,
                            routeID: route.id, tripID: trip.id, destination: trip.headsign,
                            coordinate: raw.coordinate, bearing: raw.bearing,
                            updatedAt: raw.updatedAt ?? Date(), delaySeconds: startSequence.flatMap { sequence in
@@ -418,7 +506,7 @@ private actor LodzTransitRepository {
         }
         let coordinates = database.shapes[trip.shapeID].flatMap { $0.count > 1 ? $0 : nil }
             ?? trip.stopTimes.compactMap { database.stopByID[$0.stopID]?.coordinate }
-        return TransitTripDetails(tripID: trip.id, line: route.displayName, mode: route.mode,
+        return TransitTripDetails(tripID: trip.id, line: trip.displayLine(for: route), mode: route.mode,
                                   destination: trip.headsign, currentStopName: current, currentStopID: currentStopID,
                                   pastStops: pastStops, nextStops: nextStops, vehicle: vehicle,
                                   activeAlert: alert, colorHex: route.colorHex, coordinates: coordinates)
@@ -508,8 +596,10 @@ private actor LodzTransitRepository {
         } else {
             let directory = cacheDirectory
             let feedURL = staticFeedURL
+            let railwayURL = railwayFeedURL
             loadTask = Task.detached(priority: .utility) {
-                try await TransitGTFSLoader.load(cacheDirectory: directory, feedURL: feedURL)
+                try await TransitGTFSLoader.load(cacheDirectory: directory, feedURL: feedURL,
+                                                 railwayFeedURL: railwayURL)
             }
             databaseLoadTask = loadTask
         }
@@ -528,7 +618,7 @@ private actor LodzTransitRepository {
 
     private func loadRealtime() async -> GTFSRealtimeSnapshot {
         if let realtimeSnapshot, let realtimeLoadedAt,
-           Date().timeIntervalSince(realtimeLoadedAt) < 15 {
+           Date().timeIntervalSince(realtimeLoadedAt) < 45 {
             return realtimeSnapshot
         }
         let loadTask: Task<GTFSRealtimeSnapshot, Never>
@@ -537,24 +627,53 @@ private actor LodzTransitRepository {
         } else {
             let updatesURL = tripUpdatesURL
             let alertsURL = alertsURL
+            let railwayUpdatesURL = railwayTripUpdatesURL
             loadTask = Task {
                 async let updates = try? Self.download(updatesURL)
                 async let alerts = try? Self.download(alertsURL)
-                let (updatesData, alertsData) = await (updates, alerts)
+                async let railwayUpdates = try? Self.download(railwayUpdatesURL)
+                let (updatesData, alertsData, railwayUpdatesData) = await (updates, alerts, railwayUpdates)
                 let receivedAt = Date()
                 let parsedUpdates = updatesData.flatMap { try? GTFSRealtimeSnapshot.tripUpdates(from: $0) }
+                let parsedRailwayUpdates = railwayUpdatesData.flatMap {
+                    try? GTFSRealtimeSnapshot.tripUpdates(from: $0, prefix: "rail/")
+                }
                 let parsedAlerts = alertsData.flatMap { try? GTFSRealtimeSnapshot.alerts(from: $0) }
-                let freshness = self.realtimeFreshness(parsedUpdates?.updatedAt, relativeTo: receivedAt)
-                let updatesAreFresh = freshness == .live || freshness == .degraded
+                let cityFreshness = self.realtimeFreshness(parsedUpdates?.updatedAt, relativeTo: receivedAt)
+                let railwayFreshness = self.realtimeFreshness(parsedRailwayUpdates?.updatedAt,
+                                                               relativeTo: receivedAt)
+                let cityUpdatesAreFresh = cityFreshness == .live || cityFreshness == .degraded
+                let railwayUpdatesAreFresh = railwayFreshness == .live || railwayFreshness == .degraded
+                let freshness = Self.combinedFreshness([
+                    cityFreshness,
+                    railwayFreshness
+                ].filter { $0 != .unavailable })
+                let updatesAreFresh = cityUpdatesAreFresh || railwayUpdatesAreFresh
                 let alertsAreFresh = self.isFresh(parsedAlerts?.updatedAt, relativeTo: receivedAt)
+                var mergedUpdates: [String: [String: [String: GTFSStopTimeUpdate]]] = [:]
+                var canceledTrips: Set<String> = []
+                if cityUpdatesAreFresh {
+                    mergedUpdates.merge(parsedUpdates?.updates ?? [:], uniquingKeysWith: { _, newer in newer })
+                    canceledTrips.formUnion(parsedUpdates?.canceledTrips ?? [])
+                }
+                if railwayUpdatesAreFresh {
+                    mergedUpdates.merge(parsedRailwayUpdates?.updates ?? [:], uniquingKeysWith: { _, newer in newer })
+                    canceledTrips.formUnion(parsedRailwayUpdates?.canceledTrips ?? [])
+                }
+                let sourceUpdatedAt = [
+                    "lodz": parsedUpdates?.updatedAt,
+                    "rail": parsedRailwayUpdates?.updatedAt
+                ].compactMapValues { $0 }
                 return GTFSRealtimeSnapshot(
-                    updates: updatesAreFresh ? (parsedUpdates?.updates ?? [:]) : [:],
-                    canceledTrips: updatesAreFresh ? (parsedUpdates?.canceledTrips ?? []) : [],
-                    updatedAt: parsedUpdates?.updatedAt,
+                    updates: mergedUpdates,
+                    canceledTrips: canceledTrips,
+                    updatedAt: sourceUpdatedAt.values.max(),
                     isAvailable: updatesAreFresh,
                     alertsAvailable: alertsAreFresh,
                     alerts: alertsAreFresh ? (parsedAlerts?.alerts ?? []) : [],
-                    freshness: freshness
+                    freshness: freshness,
+                    sourceFreshness: ["lodz": cityFreshness, "rail": railwayFreshness],
+                    sourceUpdatedAt: sourceUpdatedAt
                 )
             }
             realtimeLoadTask = loadTask
@@ -578,6 +697,14 @@ private actor LodzTransitRepository {
         return age <= 90 ? .live : .degraded
     }
 
+    private static func combinedFreshness(_ values: [TransitRealtimeFreshness]) -> TransitRealtimeFreshness {
+        guard !values.isEmpty else { return .unavailable }
+        if values.contains(.stale) { return .stale }
+        if values.contains(.unavailable) { return .unavailable }
+        if values.contains(.degraded) { return .degraded }
+        return .live
+    }
+
     private static func download(_ url: URL) async throws -> Data {
         var request = URLRequest(url: url)
         request.timeoutInterval = 15
@@ -597,11 +724,15 @@ private actor LodzTransitRepository {
                              destinationWalks: [TransitWalkOption],
                              usingCachedSchedule: Bool) throws -> [NavigationRoute] {
         guard !originWalks.isEmpty, !destinationWalks.isEmpty else {
+            if !database.railwayFeedAvailable { throw TransitRoutingError.railwayFeedUnavailable }
             throw TransitRoutingError.outsideCoverage
         }
 
         let instances = activeTripInstances(database: database, realtime: realtime, after: departingAt)
-        guard !instances.isEmpty else { throw TransitRoutingError.noJourney }
+        guard !instances.isEmpty else {
+            if !database.railwayFeedAvailable { throw TransitRoutingError.railwayFeedUnavailable }
+            throw TransitRoutingError.noJourney
+        }
         var departuresByStop: [String: [TransitBoardingDeparture]] = [:]
         for (instanceIndex, instance) in instances.enumerated() {
             for stopIndex in instance.times.indices {
@@ -676,7 +807,8 @@ private actor LodzTransitRepository {
         }
 
         let rankedCandidates = candidates.sorted {
-            candidateCost($0, departingAt: departingAt) < candidateCost($1, departingAt: departingAt)
+            candidateCost($0, departingAt: departingAt, instances: instances)
+                < candidateCost($1, departingAt: departingAt, instances: instances)
         }
         var routes: [NavigationRoute] = []
         for candidate in rankedCandidates {
@@ -698,7 +830,10 @@ private actor LodzTransitRepository {
             guard !signature.isEmpty, seen.insert(signature).inserted else { continue }
             unique.append(route)
         }
-        guard !unique.isEmpty else { throw TransitRoutingError.noJourney }
+        guard !unique.isEmpty else {
+            if !database.railwayFeedAvailable { throw TransitRoutingError.railwayFeedUnavailable }
+            throw TransitRoutingError.noJourney
+        }
 
         let fastest = unique.min { $0.expectedTravelTime < $1.expectedTravelTime }
         let fewestTransfers = unique.min {
@@ -745,7 +880,7 @@ private actor LodzTransitRepository {
         while cursor < queue.count {
             let label = queue[cursor]
             cursor += 1
-            guard label.transferDepth < 3, label.walkingSeconds < 1_800 else { continue }
+            guard label.transferDepth < 12, label.walkingSeconds < 1_800 else { continue }
             for transfer in database.footpathsByStopID[label.currentStopID] ?? [] {
                 let walkingSeconds = label.walkingSeconds + transfer.walkingDuration
                 guard walkingSeconds <= 1_800 else { continue }
@@ -765,8 +900,9 @@ private actor LodzTransitRepository {
         return reachable
     }
 
-    private static func candidateCost(_ candidate: TransitPlanCandidate, departingAt: Date) -> Double {
-        let rideSeconds = pathRideSeconds(candidate.label)
+    private static func candidateCost(_ candidate: TransitPlanCandidate, departingAt: Date,
+                                      instances: [GTFSTripInstance]) -> Double {
+        let rideSeconds = pathRideSeconds(candidate.label, instances: instances)
         let walking = candidate.label.walkingSeconds + candidate.destinationWalk.duration
         let total = candidate.arrival.timeIntervalSince(departingAt)
         let waiting = max(0, total - rideSeconds - walking)
@@ -782,12 +918,18 @@ private actor LodzTransitRepository {
             + Double(journey.transferCount) * 240
     }
 
-    private static func pathRideSeconds(_ label: TransitPathLabel) -> Double {
+    private static func pathRideSeconds(_ label: TransitPathLabel,
+                                        instances: [GTFSTripInstance]) -> Double {
         var total = 0.0
         var current: TransitPathLabel? = label
         while let node = current {
-            if node.ride != nil, let parent = node.parent {
-                total += node.arrival.timeIntervalSince(parent.arrival)
+            if let ride = node.ride,
+               instances.indices.contains(ride.instanceIndex) {
+                let times = instances[ride.instanceIndex].times
+                if times.indices.contains(ride.boardIndex), times.indices.contains(ride.alightIndex) {
+                    total += max(0, times[ride.alightIndex].arrival
+                        .timeIntervalSince(times[ride.boardIndex].departure))
+                }
             }
             current = node.parent
         }
@@ -801,11 +943,15 @@ private actor LodzTransitRepository {
     }
 
     private static func nearestStops(to coordinate: Coordinate, in stops: [GTFSStop],
-                                     maximumDistance: Double, limit: Int) -> [(GTFSStop, Double)] {
-        stops.compactMap { stop -> (GTFSStop, Double)? in
+                                     maximumDistance: Double, localLimit: Int,
+                                     railwayLimit: Int) -> [(GTFSStop, Double)] {
+        let nearby = stops.compactMap { stop -> (GTFSStop, Double)? in
             let distance = coordinate.distance(to: stop.coordinate)
             return distance <= maximumDistance ? (stop, distance) : nil
-        }.sorted { $0.1 < $1.1 }.prefix(limit).map { $0 }
+        }.sorted { $0.1 < $1.1 }
+        let local = nearby.filter { !$0.0.id.hasPrefix("rail/") }.prefix(localLimit)
+        let railway = nearby.filter { $0.0.id.hasPrefix("rail/") }.prefix(railwayLimit)
+        return (Array(local) + Array(railway)).sorted { $0.1 < $1.1 }
     }
 
     private static func publicStop(_ stop: GTFSStop, database: GTFSDatabase) -> TransitStop {
@@ -816,6 +962,21 @@ private actor LodzTransitRepository {
                            isMajor: stop.parentStation?.isEmpty == false || stop.locationType == 1
                                || Set(lineNames).count >= 4,
                            lineIDs: Array(routes).sorted(), lines: Array(Set(lineNames)).sorted())
+    }
+
+    private static func railwayAttribution(for database: GTFSDatabase) -> String {
+        let parts = database.railwayAttributions.isEmpty
+            ? ["PKP Polskie Linie Kolejowe S.A.", "Koleje Mazowieckie – KM sp. z o.o.",
+               "GTFS: Mikołaj Kuranowski (mkuran.pl)"]
+            : database.railwayAttributions
+        var text = parts.joined(separator: ", ")
+        if let version = database.railwayFeedVersion, !version.isEmpty {
+            text += " · wydanie \(version)"
+        }
+        if let retrievedAt = database.railwayFeedRetrievedAt {
+            text += " · pobrano \(retrievedAt.formatted(date: .abbreviated, time: .shortened))"
+        }
+        return text + " · dane przetworzone przez NaviAstra"
     }
 
     private static func departures(database: GTFSDatabase, realtime: GTFSRealtimeSnapshot,
@@ -830,7 +991,7 @@ private actor LodzTransitRepository {
             let prediction = instance.times[index]
             result.append(TransitDeparture(id: "\(instance.trip.id)|\(instance.serviceDate)|\(instance.trip.stopTimes[index].sequence)",
                                            stopID: stopID, routeID: instance.route.id, tripID: instance.trip.id,
-                                           line: instance.route.displayName, mode: instance.route.mode,
+                                           line: instance.trip.displayLine(for: instance.route), mode: instance.route.mode,
                                            destination: instance.trip.headsign.isEmpty
                                                ? instance.trip.stopTimes.last.flatMap { database.stopByID[$0.stopID]?.name } ?? "Kierunek nieznany"
                                                : instance.trip.headsign,
@@ -949,7 +1110,7 @@ private actor LodzTransitRepository {
         path.reverse()
 
         var legs: [JourneyLeg] = []
-        if origin.distance(to: firstStop.coordinate) > 15 {
+        if originWalk.duration > 0.1 {
             legs.append(JourneyLeg(mode: "WALK", from: "Punkt początkowy", to: firstStop.name,
                                     departure: departingAt, arrival: departingAt.addingTimeInterval(originWalk.duration),
                                     realTime: false, coordinates: originWalk.coordinates))
@@ -996,7 +1157,8 @@ private actor LodzTransitRepository {
             relevantRoutes.insert(instance.route.id)
             relevantStops.insert(board.id)
             relevantStops.insert(alight.id)
-            legs.append(JourneyLeg(mode: instance.route.mode, line: instance.route.displayName,
+            legs.append(JourneyLeg(mode: instance.route.mode,
+                                   line: instance.trip.displayLine(for: instance.route),
                                    from: board.name, to: alight.name,
                                    departure: boardTime.departure, arrival: alightTime.arrival,
                                    realTime: boardTime.hasRealtime || alightTime.hasRealtime,
@@ -1006,7 +1168,7 @@ private actor LodzTransitRepository {
                                    lineColorHex: instance.route.colorHex,
                                    transitStops: transitStops))
         }
-        if candidate.destinationWalk.stop.coordinate.distance(to: destination) > 15 {
+        if candidate.destinationWalk.duration > 0.1 {
             legs.append(JourneyLeg(mode: "WALK", from: candidate.destinationWalk.stop.name, to: "Cel",
                                    departure: candidate.label.arrival,
                                    arrival: candidate.arrival, realTime: false,
@@ -1019,7 +1181,10 @@ private actor LodzTransitRepository {
             else { coordinates.append(contentsOf: leg.coordinates.dropFirst()) }
         }
         guard coordinates.count > 1 else { return nil }
-        let alerts = realtime.alerts.filter { alert in
+        let journeyHasLocalTransit = legs.contains { leg in
+            leg.mode != "WALK" && !(leg.tripID?.hasPrefix("rail/") ?? false)
+        }
+        let alerts = (journeyHasLocalTransit ? realtime.alerts : []).filter { alert in
             alert.isActive(at: departingAt)
                 && ((alert.routeIDs.isEmpty && alert.stopIDs.isEmpty)
                 || !alert.routeIDs.isDisjoint(with: relevantRoutes)
@@ -1030,15 +1195,30 @@ private actor LodzTransitRepository {
         let walkingDuration = legs.filter { $0.mode == "WALK" }
             .reduce(0.0) { $0 + max(0, $1.arrival.timeIntervalSince($1.departure) - $1.minimumTransferTime) }
         let waitingDuration = max(0, candidate.arrival.timeIntervalSince(departingAt) - rideDuration - walkingDuration)
+        let journeyHasRail = legs.contains { $0.mode == "RAIL" }
+        let journeySources = Set(legs.compactMap { leg -> String? in
+            guard leg.mode != "WALK", let tripID = leg.tripID else { return nil }
+            return tripID.hasPrefix("rail/") ? "rail" : "lodz"
+        })
+        let journeyFreshness = Self.combinedFreshness(journeySources.compactMap {
+            realtime.sourceFreshness[$0]
+        })
+        let journeyRealtimeUpdatedAt = journeySources.compactMap { realtime.sourceUpdatedAt[$0] }.min()
+        let journeyRealtimeAvailable = !journeySources.isEmpty && journeySources.allSatisfy { source in
+            let freshness = realtime.sourceFreshness[source]
+            return freshness == .live || freshness == .degraded
+        }
         let journey = Journey(departure: departingAt, arrival: candidate.arrival, legs: legs,
                               scheduleIsCached: usingCachedSchedule,
-                              realtimeFeedAvailable: realtime.isAvailable,
-                              realtimeFeedUpdatedAt: realtime.updatedAt,
-                              alertsFeedAvailable: realtime.alertsAvailable,
+                              realtimeFeedAvailable: journeyRealtimeAvailable,
+                              realtimeFeedUpdatedAt: journeyRealtimeUpdatedAt,
+                              alertsFeedAvailable: journeyHasLocalTransit && realtime.alertsAvailable,
                               alerts: Array(alerts), walkingDuration: walkingDuration,
                               waitingDuration: waitingDuration,
                               transferCount: candidate.label.transferCount,
-                              realtimeFreshness: realtime.freshness)
+                              realtimeFreshness: journeyFreshness,
+                              railwayScheduleAttribution: journeyHasRail
+                                  ? Self.railwayAttribution(for: database) : nil)
         let distance = zip(coordinates, coordinates.dropFirst())
             .reduce(0.0) { $0 + $1.0.distance(to: $1.1) }
         return NavigationRoute(coordinates: coordinates, distance: distance,
@@ -1160,10 +1340,25 @@ private nonisolated struct GTFSRoute: Sendable {
     let id: String
     let shortName: String
     let longName: String
+    let agencyName: String
     let type: Int
     let colorHex: UInt32
     var displayName: String { shortName.isEmpty ? (longName.isEmpty ? "MPK" : longName) : shortName }
     var mode: String { type == 0 ? "TRAM" : type == 2 ? "RAIL" : "BUS" }
+
+    var carrierLabel: String {
+        let normalized = TransitSearchText.normalize(agencyName)
+        if normalized.contains("lodzka kolej aglomeracyjna") { return "ŁKA" }
+        if normalized.contains("pkp intercity") { return "IC" }
+        if normalized.contains("polregio") { return "POLREGIO" }
+        if normalized.contains("koleje mazowieckie") { return "KM" }
+        if normalized.contains("koleje dolnoslaskie") { return "KD" }
+        if normalized.contains("koleje slaskie") { return "KŚ" }
+        if normalized.contains("koleje wielkopolskie") { return "KW" }
+        if normalized.contains("koleje malopolskie") { return "KMŁ" }
+        if normalized.contains("skm") { return "SKM" }
+        return agencyName.isEmpty ? displayName : agencyName
+    }
 }
 
 private nonisolated struct GTFSTrip: Sendable {
@@ -1172,9 +1367,18 @@ private nonisolated struct GTFSTrip: Sendable {
     let serviceID: String
     let directionID: String
     let headsign: String
+    let trainNumber: String
     let shapeID: String
     let stopTimes: [GTFSTripStop]
     var patternKey: String { routeID + ":" + directionID + ":" + stopTimes.map(\.stopID).joined(separator: ",") }
+
+    func displayLine(for route: GTFSRoute) -> String {
+        guard route.mode == "RAIL" else { return route.displayName }
+        let number = trainNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !number.isEmpty else { return route.carrierLabel }
+        return number.lowercased().hasPrefix(route.carrierLabel.lowercased())
+            ? number : "\(route.carrierLabel) \(number)"
+    }
 }
 
 private nonisolated struct GTFSTripStop: Sendable {
@@ -1208,10 +1412,48 @@ private nonisolated struct GTFSDatabase: Sendable {
     let tripIDsByStop: [String: [String]]
     let routeIDsByStop: [String: Set<String>]
     let footpathsByStopID: [String: [TransitFootpath]]
+    let railwayFeedAvailable: Bool
+    let railwayFeedVersion: String?
+    let railwayFeedRetrievedAt: Date?
+    let railwayAttributions: [String]
 
-    init(data: Data) throws {
-        let files = try GTFSZipArchive.extract(data)
-        let stopRows = try GTFSCSV.rows(named: "stops.txt", in: files)
+    init(feeds: [GTFSInputFeed]) throws {
+        let feedFiles = try feeds.map { try GTFSZipArchive.extract($0.data) }
+        func rows(named filename: String, namespacedColumns: [String] = []) throws -> [[String: String]] {
+            var result: [[String: String]] = []
+            for index in feeds.indices {
+                let prefix = feeds[index].prefix
+                let parsed = try GTFSCSV.rows(named: filename, in: feedFiles[index])
+                result.reserveCapacity(result.count + parsed.count)
+                for sourceRow in parsed {
+                    guard !prefix.isEmpty, !namespacedColumns.isEmpty else {
+                        result.append(sourceRow)
+                        continue
+                    }
+                    var row = sourceRow
+                    for column in namespacedColumns {
+                        if let value = row[column], !value.isEmpty { row[column] = prefix + value }
+                    }
+                    result.append(row)
+                }
+            }
+            return result
+        }
+        let railwayIndex = feeds.firstIndex { $0.prefix == "rail/" }
+        railwayFeedAvailable = railwayIndex != nil
+        railwayFeedRetrievedAt = railwayIndex.flatMap { feeds[$0].retrievedAt }
+        railwayFeedVersion = try railwayIndex.flatMap { index in
+            try GTFSCSV.rows(named: "feed_info.txt", in: feedFiles[index]).first?["feed_version"]
+        }
+        railwayAttributions = try railwayIndex.map { index in
+            try GTFSCSV.rows(named: "attributions.txt", in: feedFiles[index]).compactMap { row in
+                guard let name = row["organization_name"], !name.isEmpty else { return nil }
+                guard let url = row["attribution_url"], !url.isEmpty else { return name }
+                return "\(name) (\(url))"
+            }
+        } ?? []
+
+        let stopRows = try rows(named: "stops.txt", namespacedColumns: ["stop_id", "parent_station"])
         var parsedStops: [GTFSStop] = []
         for row in stopRows {
             guard let id = row["stop_id"], let name = row["stop_name"],
@@ -1224,11 +1466,19 @@ private nonisolated struct GTFSDatabase: Sendable {
                                         coordinate: Coordinate(latitude: latitude, longitude: longitude)))
         }
         stops = parsedStops
-        let routeRows = try GTFSCSV.rows(named: "routes.txt", in: files)
+        let agencyNames = Dictionary(try rows(named: "agency.txt", namespacedColumns: ["agency_id"])
+            .compactMap { row -> (String, String)? in
+                guard let id = row["agency_id"], let name = row["agency_name"], !name.isEmpty else { return nil }
+                return (id, name)
+            }, uniquingKeysWith: { first, _ in first })
+        let routeRows = try rows(named: "routes.txt", namespacedColumns: ["route_id", "agency_id"])
         routes = Dictionary(routeRows.compactMap { row -> (String, GTFSRoute)? in
             guard let id = row["route_id"] else { return nil }
+            let agencyName = row["agency_id"].flatMap { agencyNames[$0] }
+                ?? (agencyNames.count == 1 ? agencyNames.values.first : nil) ?? ""
             return (id, GTFSRoute(id: id, shortName: row["route_short_name"] ?? "",
                                   longName: row["route_long_name"] ?? "",
+                                  agencyName: agencyName,
                                   type: Int(row["route_type"] ?? "") ?? 3,
                                   colorHex: Self.parseColor(row["route_color"]) ?? Self.color(for: row["route_short_name"] ?? id)))
         }, uniquingKeysWith: { first, _ in first })
@@ -1236,7 +1486,7 @@ private nonisolated struct GTFSDatabase: Sendable {
                                           uniquingKeysWith: { first, _ in first })
 
         var groupedStops: [String: [GTFSTripStop]] = [:]
-        for row in try GTFSCSV.rows(named: "stop_times.txt", in: files) {
+        for row in try rows(named: "stop_times.txt", namespacedColumns: ["trip_id", "stop_id"]) {
             guard let tripID = row["trip_id"], let stopID = row["stop_id"],
                   let sequence = Int(row["stop_sequence"] ?? "") else { continue }
             let arrivalText = row["arrival_time"] ?? ""
@@ -1252,9 +1502,14 @@ private nonisolated struct GTFSDatabase: Sendable {
         stopsForSearch = parsedStops.filter { tripServedStopIDs.contains($0.id) }
 
         var footpaths: [String: [TransitFootpath]] = [:]
+        var prohibitedTransferPairs: Set<String> = []
+        func transferPairKey(from: String, to: String) -> String {
+            from + "\u{0}" + to
+        }
         func addFootpath(from: GTFSStop, to: GTFSStop, distance: Double,
                          walkingDuration: TimeInterval, minimumTransferTime: TimeInterval) {
-            guard from.id != to.id else { return }
+            guard from.id != to.id,
+                  !prohibitedTransferPairs.contains(transferPairKey(from: from.id, to: to.id)) else { return }
             let candidate = TransitFootpath(fromStopID: from.id, toStopID: to.id,
                                             walkingDistance: distance,
                                             walkingDuration: walkingDuration,
@@ -1270,11 +1525,16 @@ private nonisolated struct GTFSDatabase: Sendable {
             }
         }
 
-        for row in try GTFSCSV.rows(named: "transfers.txt", in: files) {
+        for row in try rows(named: "transfers.txt", namespacedColumns: ["from_stop_id", "to_stop_id"]) {
             guard let fromID = row["from_stop_id"], let toID = row["to_stop_id"],
                   let from = parsedStops.first(where: { $0.id == fromID }),
                   let to = parsedStops.first(where: { $0.id == toID }) else { continue }
             let type = Int(row["transfer_type"] ?? "0") ?? 0
+            if type == 3 {
+                prohibitedTransferPairs.insert(transferPairKey(from: fromID, to: toID))
+                footpaths[fromID]?.removeAll { $0.toStopID == toID }
+                continue
+            }
             guard type == 0 || type == 1 || type == 2 else { continue }
             let distance = from.coordinate.distance(to: to.coordinate)
             let minimum = type == 2 ? max(0, Double(row["min_transfer_time"] ?? "0") ?? 0) : 0
@@ -1282,7 +1542,7 @@ private nonisolated struct GTFSDatabase: Sendable {
             addFootpath(from: from, to: to, distance: distance,
                         walkingDuration: estimatedWalk, minimumTransferTime: minimum)
         }
-        for row in try GTFSCSV.rows(named: "pathways.txt", in: files) {
+        for row in try rows(named: "pathways.txt", namespacedColumns: ["from_stop_id", "to_stop_id"]) {
             guard let fromID = row["from_stop_id"], let toID = row["to_stop_id"],
                   let from = parsedStops.first(where: { $0.id == fromID }),
                   let to = parsedStops.first(where: { $0.id == toID }) else { continue }
@@ -1344,12 +1604,14 @@ private nonisolated struct GTFSDatabase: Sendable {
         for id in groupedStops.keys {
             groupedStops[id]?.sort { $0.sequence < $1.sequence }
         }
-        trips = try GTFSCSV.rows(named: "trips.txt", in: files).compactMap { row in
+        trips = try rows(named: "trips.txt", namespacedColumns: ["trip_id", "route_id", "service_id", "shape_id"]).compactMap { row in
             guard let id = row["trip_id"], let routeID = row["route_id"], let serviceID = row["service_id"],
                   let stops = groupedStops[id], stops.count > 1 else { return nil }
             return GTFSTrip(id: id, routeID: routeID, serviceID: serviceID,
                             directionID: row["direction_id"] ?? "",
-                            headsign: row["trip_headsign"] ?? "", shapeID: row["shape_id"] ?? "",
+                            headsign: row["trip_headsign"] ?? "",
+                            trainNumber: row["plk_train_number"] ?? row["trip_short_name"] ?? "",
+                            shapeID: row["shape_id"] ?? "",
                             stopTimes: stops)
         }
         var headsignsByRoute: [String: Set<String>] = [:]
@@ -1370,7 +1632,7 @@ private nonisolated struct GTFSDatabase: Sendable {
         }
         routeIDsByStop = routesByStop
 
-        calendars = Dictionary(try GTFSCSV.rows(named: "calendar.txt", in: files).compactMap { row in
+        calendars = Dictionary(try rows(named: "calendar.txt", namespacedColumns: ["service_id"]).compactMap { row in
             guard let id = row["service_id"], let start = row["start_date"], let end = row["end_date"] else { return nil }
             let flags = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
                 .reduce(into: [String: Bool]()) { $0[$1] = row[$1] == "1" }
@@ -1378,7 +1640,7 @@ private nonisolated struct GTFSDatabase: Sendable {
         }, uniquingKeysWith: { first, _ in first })
 
         var serviceExceptions: [String: [String: Int]] = [:]
-        for row in try GTFSCSV.rows(named: "calendar_dates.txt", in: files) {
+        for row in try rows(named: "calendar_dates.txt", namespacedColumns: ["service_id"]) {
             guard let id = row["service_id"], let date = row["date"],
                   let type = Int(row["exception_type"] ?? "") else { continue }
             serviceExceptions[id, default: [:]][date] = type
@@ -1386,7 +1648,7 @@ private nonisolated struct GTFSDatabase: Sendable {
         exceptions = serviceExceptions
 
         var shapeRows: [String: [(Int, Coordinate)]] = [:]
-        for row in try GTFSCSV.rows(named: "shapes.txt", in: files) {
+        for row in try rows(named: "shapes.txt", namespacedColumns: ["shape_id"]) {
             guard let id = row["shape_id"], let sequence = Int(row["shape_pt_sequence"] ?? ""),
                   let latitude = row["shape_pt_lat"].flatMap(Double.init),
                   let longitude = row["shape_pt_lon"].flatMap(Double.init) else { continue }
@@ -1418,28 +1680,71 @@ private nonisolated struct LoadedTransitDatabase: Sendable {
     let wasCached: Bool
 }
 
+private nonisolated struct GTFSInputFeed: Sendable {
+    let data: Data
+    let prefix: String
+    let retrievedAt: Date?
+}
+
+private nonisolated struct LoadedGTFSArchive: Sendable {
+    let data: Data
+    let wasCached: Bool
+    let retrievedAt: Date?
+}
+
 private nonisolated enum TransitGTFSLoader {
-    static func load(cacheDirectory: URL, feedURL: URL) async throws -> LoadedTransitDatabase {
-        let archiveURL = cacheDirectory.appendingPathComponent("lodz-gtfs.zip")
+    static func load(cacheDirectory: URL, feedURL: URL,
+                     railwayFeedURL: URL) async throws -> LoadedTransitDatabase {
+        try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        async let cityArchiveRequest = loadArchive(cacheDirectory: cacheDirectory,
+                                                   filename: "lodz-gtfs.zip", feedURL: feedURL)
+        async let railwayArchiveRequest = try? loadArchive(cacheDirectory: cacheDirectory,
+                                                           filename: "polish-trains-gtfs.zip",
+                                                           feedURL: railwayFeedURL)
+        let cityArchive = try await cityArchiveRequest
+        let railwayArchive = await railwayArchiveRequest
+        if Task.isCancelled { throw CancellationError() }
+        var feeds = [GTFSInputFeed(data: cityArchive.data, prefix: "", retrievedAt: cityArchive.retrievedAt)]
+        if let railwayArchive {
+            feeds.append(GTFSInputFeed(data: railwayArchive.data, prefix: "rail/",
+                                       retrievedAt: railwayArchive.retrievedAt))
+        }
+        let database: GTFSDatabase
+        do {
+            database = try GTFSDatabase(feeds: feeds)
+        } catch {
+            guard railwayArchive != nil else { throw error }
+            database = try GTFSDatabase(feeds: [feeds[0]])
+        }
+        return LoadedTransitDatabase(database: database,
+                                     wasCached: cityArchive.wasCached && (railwayArchive?.wasCached ?? true))
+    }
+
+    private static func loadArchive(cacheDirectory: URL, filename: String,
+                                    feedURL: URL) async throws -> LoadedGTFSArchive {
+        let archiveURL = cacheDirectory.appendingPathComponent(filename)
         let cachedData = try? Data(contentsOf: archiveURL)
         let isFresh = (try? archiveURL.resourceValues(forKeys: [.contentModificationDateKey])
             .contentModificationDate).map { Date().timeIntervalSince($0) < 86_400 } ?? false
 
-        if let cachedData, isFresh, let database = try? GTFSDatabase(data: cachedData) {
-            return LoadedTransitDatabase(database: database, wasCached: true)
+        if let cachedData, isFresh, cachedData.count > 22 {
+            let retrievedAt = try? archiveURL.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate
+            return LoadedGTFSArchive(data: cachedData, wasCached: true, retrievedAt: retrievedAt ?? nil)
         }
 
         do {
             let data = try await download(feedURL)
-            let database = try GTFSDatabase(data: data)
-            try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+            guard data.count > 22 else { throw TransitRoutingError.invalidResponse }
             try data.write(to: archiveURL, options: .atomic)
-            return LoadedTransitDatabase(database: database, wasCached: false)
+            return LoadedGTFSArchive(data: data, wasCached: false, retrievedAt: Date())
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            if let cachedData, let database = try? GTFSDatabase(data: cachedData) {
-                return LoadedTransitDatabase(database: database, wasCached: true)
+            if let cachedData, cachedData.count > 22 {
+                let retrievedAt = try? archiveURL.resourceValues(forKeys: [.contentModificationDateKey])
+                    .contentModificationDate
+                return LoadedGTFSArchive(data: cachedData, wasCached: true, retrievedAt: retrievedAt ?? nil)
             }
             throw TransitRoutingError.feedUnavailable
         }
@@ -1447,7 +1752,7 @@ private nonisolated enum TransitGTFSLoader {
 
     private static func download(_ url: URL) async throws -> Data {
         var request = URLRequest(url: url)
-        request.timeoutInterval = 15
+        request.timeoutInterval = 45
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -1568,7 +1873,8 @@ private nonisolated enum GTFSZipArchive {
 private nonisolated enum GTFSCSV {
     static func rows(named filename: String, in files: [String: Data]) throws -> [[String: String]] {
         guard let data = files[filename] else {
-            if ["calendar.txt", "calendar_dates.txt", "shapes.txt", "transfers.txt", "pathways.txt"].contains(filename) { return [] }
+            if ["agency.txt", "attributions.txt", "calendar.txt", "calendar_dates.txt", "feed_info.txt",
+                "shapes.txt", "transfers.txt", "pathways.txt"].contains(filename) { return [] }
             throw TransitRoutingError.invalidResponse
         }
         var rawRows: [[String]] = []
@@ -1668,10 +1974,14 @@ private nonisolated struct GTFSRealtimeSnapshot {
     let alertsAvailable: Bool
     let alerts: [GTFSAlert]
     let freshness: TransitRealtimeFreshness
+    let sourceFreshness: [String: TransitRealtimeFreshness]
+    let sourceUpdatedAt: [String: Date]
 
     static let empty = GTFSRealtimeSnapshot(updates: [:], canceledTrips: [], updatedAt: nil,
                                              isAvailable: false, alertsAvailable: false, alerts: [],
-                                             freshness: .unavailable)
+                                             freshness: .unavailable,
+                                             sourceFreshness: ["lodz": .unavailable, "rail": .unavailable],
+                                             sourceUpdatedAt: [:])
 
     func update(tripID: String, serviceDate: String, stopID: String,
                 stopSequence: Int? = nil) -> GTFSStopTimeUpdate? {
@@ -1687,7 +1997,7 @@ private nonisolated struct GTFSRealtimeSnapshot {
         canceledTrips.contains("\(tripID)|\(serviceDate)") || canceledTrips.contains("\(tripID)|")
     }
 
-    static func tripUpdates(from data: Data) throws -> GTFSRealtimeSnapshot {
+    static func tripUpdates(from data: Data, prefix: String = "") throws -> GTFSRealtimeSnapshot {
         var reader = ProtoReader(data: data)
         var updates: [String: [String: [String: GTFSStopTimeUpdate]]] = [:]
         var canceled: Set<String> = []
@@ -1700,10 +2010,11 @@ private nonisolated struct GTFSRealtimeSnapshot {
                 guard let entity = try parseTripUpdateEntity(bytes) else { continue }
                 let dateKey = entity.serviceDate ?? ""
                 if entity.canceled {
-                    canceled.insert("\(entity.tripID)|\(dateKey)")
+                    canceled.insert("\(prefix)\(entity.tripID)|\(dateKey)")
                 } else {
                     for (stopID, update) in entity.stopUpdates {
-                        updates[entity.tripID, default: [:]][dateKey, default: [:]][stopID] = update
+                        let namespacedStopID = stopID.hasPrefix("sequence:") ? stopID : prefix + stopID
+                        updates[prefix + entity.tripID, default: [:]][dateKey, default: [:]][namespacedStopID] = update
                     }
                 }
             default:
@@ -1712,7 +2023,8 @@ private nonisolated struct GTFSRealtimeSnapshot {
         }
         return GTFSRealtimeSnapshot(updates: updates, canceledTrips: canceled,
                                     updatedAt: timestamp, isAvailable: true,
-                                    alertsAvailable: false, alerts: [], freshness: .unavailable)
+                                    alertsAvailable: false, alerts: [], freshness: .unavailable,
+                                    sourceFreshness: [:], sourceUpdatedAt: [:])
     }
 
     static func alerts(from data: Data) throws -> (alerts: [GTFSAlert], updatedAt: Date?) {

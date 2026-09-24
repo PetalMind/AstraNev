@@ -5,6 +5,16 @@ enum NavigationCameraState: Equatable {
     case browse, destinationPreview, routeOverview, startingNavigation
     case followNavigation, approachingManeuver, maneuverNow, leavingManeuver, freeLook, rerouting
     case weakGPS, approachingDestination, arrived
+
+    var usesNavigationPerspective: Bool {
+        switch self {
+        case .startingNavigation, .followNavigation, .approachingManeuver, .maneuverNow,
+             .leavingManeuver, .rerouting, .weakGPS, .approachingDestination:
+            return true
+        case .browse, .destinationPreview, .routeOverview, .freeLook, .arrived:
+            return false
+        }
+    }
 }
 
 struct CameraPadding: Equatable {
@@ -119,6 +129,7 @@ enum CameraPlanner {
             return nil
         case .startingNavigation, .followNavigation, .approachingManeuver, .maneuverNow,
              .leavingManeuver, .rerouting, .weakGPS, .approachingDestination:
+            let isTransitRoute = route?.journey != nil
             let routeProjection = route.flatMap { MapMatcher.project(position, onto: $0.coordinates) }
             let roadHeading: Double? = route.flatMap { route in
                 guard let projection = routeProjection,
@@ -153,16 +164,20 @@ enum CameraPlanner {
             } ?? position
             let zoom: Double
             switch camera {
-            case .approachingDestination: zoom = 16.3
-            case .maneuverNow: zoom = 16.0
-            case .leavingManeuver: zoom = 15.2
+            case .approachingDestination: zoom = isTransitRoute ? 16.7 : 16.3
+            case .maneuverNow: zoom = isTransitRoute ? 16.4 : 16.0
+            case .leavingManeuver: zoom = isTransitRoute ? 15.9 : 15.2
             case .approachingManeuver:
-                if isRoundabout { zoom = 15.0 }
-                else if isExit && maneuverDistance > 300 { zoom = 14.6 }
-                else if maneuverDistance <= 100 { zoom = 15.8 }
-                else { zoom = 15.2 }
+                if isRoundabout { zoom = isTransitRoute ? 15.6 : 15.0 }
+                else if isExit && maneuverDistance > 300 { zoom = isTransitRoute ? 15.8 : 14.6 }
+                else if maneuverDistance <= 100 { zoom = isTransitRoute ? 16.2 : 15.8 }
+                else { zoom = isTransitRoute ? 15.9 : 15.2 }
             case .startingNavigation, .followNavigation, .rerouting, .weakGPS:
-                zoom = isExit && maneuverDistance < 1_600 ? 14.6 : (speed > 25 ? 14.2 : 15.6)
+                if isTransitRoute {
+                    zoom = isExit && maneuverDistance < 1_600 ? 15.8 : (speed > 25 ? 15.9 : 16.3)
+                } else {
+                    zoom = isExit && maneuverDistance < 1_600 ? 14.6 : (speed > 25 ? 14.2 : 15.6)
+                }
             default: zoom = 15.2
             }
             let pitch: Double

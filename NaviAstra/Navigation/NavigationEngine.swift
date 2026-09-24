@@ -34,7 +34,10 @@ final class NavigationState {
     var errorMessage: String?
     var voiceEnabled = true
     var speedLimitKph: Int?
+    var speedLimitSource: SpeedLimitSource?
     var speedLimitMessage: String?
+    var roadSafetyAlerts: [RoadSafetyAlert] = []
+    var roadSafetyStatus: RoadSafetyStatus = .idle
     var traffic: TrafficSnapshot?
     var trafficStatus: TrafficStatus = .notConfigured
     var nearbySuggestions: [RouteStopSuggestion] = []
@@ -338,11 +341,20 @@ enum TransitRouteProgressCalculator {
 final class VoiceGuidanceEngine {
     private let synthesizer = AVSpeechSynthesizer()
     private var announced: Set<String> = []
+    private var audioSessionConfigured = false
+    private var speechGeneration = 0
+    private var audioSessionOperationGeneration = 0
+    private var audioSessionOperation: Task<Void, Never>?
+
     func reset() {
+        speechGeneration &+= 1
         synthesizer.stopSpeaking(at: .immediate)
         announced.removeAll()
 #if os(iOS)
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        let audioSession = AVAudioSession.sharedInstance()
+        enqueueAudioSessionOperation {
+            _ = try? await audioSession.deactivate(options: .notifyOthersOnDeactivation)
+        }
 #endif
     }
     func announce(_ maneuver: Maneuver, distance: Double, speed: Double) {
@@ -369,13 +381,61 @@ final class VoiceGuidanceEngine {
         speak(utterance)
     }
 
+    func announce(_ alert: RoadSafetyAlert, distance: Double, routeID: UUID) {
+        guard alert.type.isEnforcement || alert.type == .speedLimitChange else { return }
+        let stage: Int
+        if distance <= 40 { stage = 2 }
+        else if distance <= 250 { stage = 1 }
+        else if distance <= 1_200 { stage = 0 }
+        else { return }
+        let key = "road-\(routeID)-\(alert.id)-\(stage)"
+        guard announced.insert(key).inserted else { return }
+        let prefix = stage == 2 ? "" : "Za \(Int(distance / 50) * 50) metrów "
+        let utterance = AVSpeechUtterance(string: prefix + alert.title)
+        utterance.voice = AVSpeechSynthesisVoice(language: "pl-PL")
+        speak(utterance)
+    }
+
     private func speak(_ utterance: AVSpeechUtterance) {
 #if os(iOS)
+        speechGeneration &+= 1
+        let generation = speechGeneration
         let audioSession = AVAudioSession.sharedInstance()
-        try? audioSession.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
-        try? audioSession.setActive(true)
-#endif
+        enqueueAudioSessionOperation { [weak self] in
+            guard let self else { return }
+            do {
+                if !self.audioSessionConfigured {
+                    try await Task.detached(priority: .userInitiated) {
+                        try AVAudioSession.sharedInstance().setCategory(
+                            .playback, mode: .spokenAudio, options: [.duckOthers])
+                    }.value
+                    self.audioSessionConfigured = true
+                }
+                let activated = try await audioSession.activate(options: [])
+                guard activated, generation == self.speechGeneration else {
+                    _ = try? await audioSession.deactivate(options: .notifyOthersOnDeactivation)
+                    return
+                }
+                self.synthesizer.speak(utterance)
+            } catch {
+                // Keep voice guidance best-effort when the system audio session is unavailable.
+            }
+        }
+#else
         synthesizer.speak(utterance)
+#endif
+    }
+
+    private func enqueueAudioSessionOperation(_ operation: @escaping @MainActor () async -> Void) {
+        audioSessionOperationGeneration &+= 1
+        let operationGeneration = audioSessionOperationGeneration
+        let previousOperation = audioSessionOperation
+        audioSessionOperation = Task { @MainActor [weak self] in
+            await previousOperation?.value
+            await operation()
+            guard let self, self.audioSessionOperationGeneration == operationGeneration else { return }
+            self.audioSessionOperation = nil
+        }
     }
 }
 
@@ -400,6 +460,7 @@ final class NavigationEngine {
     private var requestGeneration = 0
     private var trafficGeneration = 0
     private var speedLimitGeneration = 0
+    private var roadDataGeneration = 0
     private var lastTrafficFetch = Date.distantPast
     private var lastSpeedLimitFetch = Date.distantPast
     private var lastTransitVehiclesFetch = Date.distantPast
@@ -417,6 +478,8 @@ final class NavigationEngine {
     private var trafficRequestInFlight = false
     private var speedLimitRequestInFlight = false
     private var speedLimitProvider: SpeedLimitProvider
+    private let roadDataProvider: RoadDataProvider
+    private var roadDataSnapshot: RoadDataSnapshot?
     private var trafficProvider: TrafficProvider?
     private var transitTripDetails: TransitTripDetails?
     private var transitTripDetailsID: String?
@@ -432,6 +495,7 @@ final class NavigationEngine {
         let endpoint = (routeProvider as? ValhallaRouteProvider)?.endpoint ?? URL(string: "https://valhalla1.openstreetmap.de")!
         transitProvider = LodzTransitRouteProvider(walkingRoutingEndpoint: endpoint)
         speedLimitProvider = ValhallaSpeedLimitProvider(endpoint: endpoint)
+        roadDataProvider = OpenStreetMapRoadDataProvider()
         if let key = TrafficCredential.read() {
             trafficProvider = TomTomTrafficProvider(apiKey: key)
             state.trafficStatus = .updating
@@ -638,6 +702,7 @@ final class NavigationEngine {
     func selectTransportMode(_ mode: TransportMode) async {
         guard state.status != .navigating && state.status != .rerouting else { return }
         state.transportMode = mode
+        if mode != .car { resetRoadSafetyData() }
         state.transitProgress = nil
         transitTripDetails = nil
         transitTripDetailsID = nil
@@ -802,6 +867,8 @@ final class NavigationEngine {
               currentScore - best.1 >= max(120, currentScore * 0.15) else { return }
         state.route = best.0
         state.routeOptions = scores.sorted { $0.1 < $1.1 }.map(\.0)
+        state.evChargingStops = best.0.chargingStops.map(\.destination)
+        loadRoadData(for: best.0)
         trafficProjectionRouteID = nil
         updateProgress()
         invalidateSpeedLimit()
@@ -810,14 +877,21 @@ final class NavigationEngine {
 
     private func trafficAdjustedETA(for route: NavigationRoute, snapshot: TrafficSnapshot,
                                     at location: Coordinate) -> Double {
-        guard let projection = MapMatcher.project(location, onto: route.coordinates) else {
+        guard let projection = MapMatcher.project(location, onto: route.coordinates),
+              projection.distanceFromRoute <= max(150, (state.location?.accuracy ?? 70) * 2) else {
             return .infinity
         }
         let geometryDistance = zip(route.coordinates, route.coordinates.dropFirst())
             .reduce(0.0) { $0 + $1.0.distance(to: $1.1) }
         guard geometryDistance > 0 else { return .infinity }
         let fraction = min(1, max(0, projection.alongRoute / geometryDistance))
-        var eta = route.expectedTravelTime * (1 - fraction)
+        let plannedDrivingTime = max(0, route.expectedTravelTime - route.chargingDuration)
+        var eta = plannedDrivingTime * (1 - fraction)
+        eta += route.chargingStops.reduce(0.0) { total, stop in
+            guard let chargeProjection = MapMatcher.project(stop.destination.coordinate, onto: route.coordinates),
+                  chargeProjection.alongRoute > projection.alongRoute + 40 else { return total }
+            return total + stop.estimatedChargingTime
+        }
         let closures = snapshot.incidents.compactMap { incident -> Double? in
             guard incident.isRoadClosure,
                   let incidentProjection = MapMatcher.project(incident.coordinate, onto: route.coordinates),
@@ -871,6 +945,7 @@ final class NavigationEngine {
         updateCameraIntent()
         state.route = nil
         state.routeOptions = []
+        resetRoadSafetyData()
         state.progress = nil
         state.transitProgress = nil
         transitTripDetails = nil
@@ -1117,6 +1192,7 @@ final class NavigationEngine {
 #endif
             invalidateTraffic()
             if state.transportMode == .car { refreshTraffic(force: true) }
+            if state.transportMode == .car { loadRoadData(for: firstRoute) }
         } catch {
             guard generation == requestGeneration else { return }
             state.status = .error
@@ -1128,6 +1204,8 @@ final class NavigationEngine {
               state.route?.id != route.id,
               let selectedRoute = state.routeOptions.first(where: { $0.id == route.id }) else { return }
         state.route = selectedRoute
+        state.evChargingStops = selectedRoute.chargingStops.map(\.destination)
+        if state.transportMode == .car { loadRoadData(for: selectedRoute) }
         state.transitProgress = nil
         transitTripDetails = nil
         transitTripDetailsID = nil
@@ -1178,6 +1256,7 @@ final class NavigationEngine {
         invalidateSpeedLimit()
         voice.reset()
         state.route = nil; state.routeOptions = []; state.progress = nil; state.destination = nil
+        resetRoadSafetyData()
         state.transitProgress = nil
         transitTripDetails = nil
         transitTripDetailsID = nil
@@ -1314,21 +1393,31 @@ final class NavigationEngine {
                 route.coordinates[projection.segment].distance(to: projection.coordinate)
         } else { maneuverDistance = 0 }
         let remainingDistance = route.distance * (1 - fraction)
-        var remainingTime = route.expectedTravelTime * (1 - fraction)
+        let plannedDrivingTime = max(0, route.expectedTravelTime - route.chargingDuration)
+        var drivingTimeRemaining = plannedDrivingTime * (1 - fraction)
         if let session = tripSession, session.movingSeconds >= 45, session.distanceMeters > 25,
-           route.expectedTravelTime > 0 {
-            let plannedSpeed = route.distance / route.expectedTravelTime
+           plannedDrivingTime > 0 {
+            let plannedSpeed = route.distance / plannedDrivingTime
             let observedSpeed = session.distanceMeters / session.movingSeconds
             let paceFactor = max(0.65, min(1.8, plannedSpeed / max(1, observedSpeed)))
-            remainingTime *= 1 + (paceFactor - 1) * 0.55
+            drivingTimeRemaining *= 1 + (paceFactor - 1) * 0.55
         }
         if let flow = state.traffic?.flow, flow.coordinates.count > 1,
            let flowProjection = MapMatcher.project(location.coordinate, onto: flow.coordinates),
            flowProjection.distanceFromRoute < 80 {
-            let speedRatio = Double(flow.currentSpeedKph) / Double(max(1, flow.freeFlowSpeedKph))
-            remainingTime *= max(0.7, min(2.1, 1 / max(0.45, speedRatio)))
+            let flowDistance = zip(flow.coordinates, flow.coordinates.dropFirst())
+                .reduce(0.0) { $0 + $1.0.distance(to: $1.1) }
+            let currentSpeed = max(5, Double(flow.currentSpeedKph)) / 3.6
+            let freeFlowSpeed = Double(max(1, flow.freeFlowSpeedKph)) / 3.6
+            drivingTimeRemaining += max(0, flowDistance / currentSpeed - flowDistance / freeFlowSpeed)
         }
-        remainingTime += upcomingTrafficDelay(on: route, after: projection.alongRoute)
+        let chargingTimeRemaining = route.chargingStops.reduce(0.0) { total, stop in
+            guard let chargeProjection = MapMatcher.project(stop.destination.coordinate, onto: route.coordinates),
+                  chargeProjection.alongRoute > projection.alongRoute + 40 else { return total }
+            return total + stop.estimatedChargingTime
+        }
+        let remainingTime = drivingTimeRemaining + chargingTimeRemaining
+            + upcomingTrafficDelay(on: route, after: projection.alongRoute)
         state.progress = RouteProgress(traveledDistance: route.distance * fraction,
                                        remainingDistance: remainingDistance,
                                        remainingTime: max(0, remainingTime),
@@ -1344,6 +1433,15 @@ final class NavigationEngine {
             voice.reset(); finishTrip(arrived: true); return
         }
         if let next, state.voiceEnabled { voice.announce(next, distance: max(0, maneuverDistance), speed: max(0, location.speed)) }
+        if state.voiceEnabled {
+            for alert in state.roadSafetyAlerts {
+                guard let alongRoute = alert.distanceAlongRoute else { continue }
+                let distance = alongRoute - projection.alongRoute
+                if distance >= 0 && distance <= 1_200 {
+                    voice.announce(alert, distance: distance, routeID: route.id)
+                }
+            }
+        }
         guard state.transportMode != .parkRide else { return }
         let sustainedDeparture = location.accuracy <= 45
             && projection.distanceFromRoute > max(40, location.accuracy * 1.5)
@@ -1515,10 +1613,29 @@ final class NavigationEngine {
         speedLimitRequestInFlight = false
         lastSpeedLimitFetch = .distantPast
         state.speedLimitKph = nil
+        state.speedLimitSource = nil
         state.speedLimitMessage = nil
     }
-    private func refreshSpeedLimit(for location: NavigationLocation) {
-        guard !speedLimitRequestInFlight, Date().timeIntervalSince(lastSpeedLimitFetch) >= 10 else { return }
+    private func refreshSpeedLimit(for location: NavigationLocation, force: Bool = false) {
+        if let snapshot = roadDataSnapshot {
+            if let result = snapshot.speedLimit(at: location) {
+                state.speedLimitKph = result.speedKph
+                state.speedLimitSource = result.source
+                state.speedLimitMessage = nil
+                return
+            }
+            if snapshot.shouldSuppressRoutingFallback(at: location) {
+                state.speedLimitKph = nil
+                state.speedLimitSource = nil
+                state.speedLimitMessage = "Nie można ustalić aktywnego limitu z danych warunkowych."
+                return
+            }
+            state.speedLimitKph = nil
+            state.speedLimitSource = nil
+            state.speedLimitMessage = "Limit OSM nie pasuje do bieżącej drogi; sprawdzam dane trasy."
+        }
+        guard !speedLimitRequestInFlight,
+              force || Date().timeIntervalSince(lastSpeedLimitFetch) >= 10 else { return }
         speedLimitRequestInFlight = true
         lastSpeedLimitFetch = Date()
         let generation = speedLimitGeneration
@@ -1528,14 +1645,65 @@ final class NavigationEngine {
             do {
                 let value = try await provider.limit(at: location.coordinate, heading: location.course)
                 guard generation == speedLimitGeneration, state.status == .navigating || state.status == .rerouting else { return }
+                guard let currentLocation = state.location,
+                      currentLocation.coordinate.distance(to: location.coordinate) <= max(30, min(80, currentLocation.accuracy)) else {
+                    lastSpeedLimitFetch = .distantPast
+                    return
+                }
                 state.speedLimitKph = value
+                state.speedLimitSource = value == nil ? nil : .routingProvider
                 state.speedLimitMessage = value == nil ? "Brak limitu w danych drogi." : nil
             } catch {
                 guard generation == speedLimitGeneration else { return }
                 state.speedLimitKph = nil
+                state.speedLimitSource = nil
                 state.speedLimitMessage = "Limit niedostępny: \(error.localizedDescription)"
             }
         }
+    }
+
+    private func loadRoadData(for route: NavigationRoute) {
+        guard route.coordinates.count > 1, state.transportMode == .car else { return }
+        roadDataGeneration &+= 1
+        let generation = roadDataGeneration
+        let routeID = route.id
+        let provider = roadDataProvider
+        roadDataSnapshot = nil
+        state.roadSafetyAlerts = []
+        state.roadSafetyStatus = .loading
+        invalidateSpeedLimit()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let snapshot = try await provider.load(for: route.coordinates)
+                guard generation == self.roadDataGeneration,
+                      self.state.route?.id == routeID,
+                      self.state.transportMode == .car else { return }
+                self.invalidateSpeedLimit()
+                self.roadDataSnapshot = snapshot
+                self.state.roadSafetyAlerts = snapshot.matchedAlerts(on: route.coordinates)
+                self.state.roadSafetyStatus = .available
+                self.updateProgress()
+                if let location = self.state.location,
+                   self.state.status == .navigating || self.state.status == .rerouting {
+                    self.refreshSpeedLimit(for: location, force: true)
+                }
+            } catch {
+                guard generation == self.roadDataGeneration,
+                      self.state.route?.id == routeID else { return }
+                self.roadDataSnapshot = nil
+                self.state.roadSafetyAlerts = []
+                self.state.roadSafetyStatus = .unavailable(error.localizedDescription)
+            }
+        }
+    }
+
+    private func resetRoadSafetyData() {
+        roadDataGeneration &+= 1
+        roadDataSnapshot = nil
+        state.roadSafetyAlerts = []
+        state.roadSafetyStatus = .idle
+        invalidateSpeedLimit()
     }
     private func finishTrip(arrived: Bool) {
         guard let session = tripSession else { return }
@@ -1559,6 +1727,7 @@ final class NavigationEngine {
             guard state.status == .rerouting else { return }
             guard let firstRoute = routes.first else { throw RoutingError.invalidResponse }
             state.route = firstRoute; state.routeOptions = routes
+            if state.transportMode == .car { loadRoadData(for: firstRoute) }
             tripSession?.rerouteCount += 1
             invalidateTraffic()
             invalidateSpeedLimit()
@@ -1593,9 +1762,14 @@ final class NavigationEngine {
         }
         let stops = through ?? state.waypoints.map(\.coordinate)
         if let provider = routeProvider as? AdvancedRouteProvider {
-            if state.transportMode == .car, state.routingPreferences.evPlanningEnabled, through == nil {
-                return try await calculateEVRoutes(from: from, to: to, explicitStops: state.waypoints,
-                                                   provider: provider)
+            if state.transportMode == .car, state.routingPreferences.evPlanningEnabled {
+                let mandatoryStops = through.map { coordinates in
+                    state.waypoints.filter { waypoint in
+                        coordinates.contains { $0.distance(to: waypoint.coordinate) <= 10 }
+                    }
+                } ?? state.waypoints
+                return try await calculateEVRoutes(from: from, to: to, explicitStops: mandatoryStops,
+                                                   provider: provider, avoiding: [])
             }
             return try await provider.calculateRoutes(from: from, to: to, through: stops,
                                                       mode: state.transportMode,
@@ -1707,12 +1881,12 @@ final class NavigationEngine {
                 reversed.append(Coordinate(
                     latitude: start.latitude + (end.latitude - start.latitude) * fraction,
                     longitude: start.longitude + (end.longitude - start.longitude) * fraction))
-                return reversed.reversed()
+                return Array(reversed.reversed())
             }
             reversed.append(start)
             remaining -= segmentLength
         }
-        return reversed.reversed()
+        return Array(reversed.reversed())
     }
 
     private func parkRideCost(_ route: NavigationRoute) -> Double {
@@ -1726,7 +1900,8 @@ final class NavigationEngine {
     }
 
     private func calculateEVRoutes(from: Coordinate, to: Coordinate, explicitStops: [Destination],
-                                   provider: AdvancedRouteProvider) async throws -> [NavigationRoute] {
+                                   provider: AdvancedRouteProvider,
+                                   avoiding: [Coordinate] = []) async throws -> [NavigationRoute] {
         let preferences = state.routingPreferences
         guard preferences.evRangeKilometers > 0 else { throw EVPlanningError.rangeNotConfigured }
         guard preferences.evConsumptionKWhPer100Km > 0,
@@ -1735,7 +1910,7 @@ final class NavigationEngine {
         }
         let baseRoutes = try await provider.calculateRoutes(from: from, to: to,
                                                             through: explicitStops.map(\.coordinate), mode: .car,
-                                                            preferences: preferences, avoiding: [])
+                                                            preferences: preferences, avoiding: avoiding)
         guard let baseRoute = baseRoutes.first else { throw RoutingError.invalidResponse }
         let availableRange = preferences.availableEVRangeKilometers * 1_000
         let fullRange = preferences.evRangeKilometers * 1_000
@@ -1796,7 +1971,7 @@ final class NavigationEngine {
             .map(\.0)
         let routes = try await provider.calculateRoutes(from: from, to: to,
                                                         through: orderedStops.map(\.coordinate),
-                                                        mode: .car, preferences: preferences, avoiding: [])
+                                                        mode: .car, preferences: preferences, avoiding: avoiding)
         var energyFeasible: [NavigationRoute] = []
         for var route in routes {
             guard let chargePlan = evChargePlan(on: route, chargingCandidates: selected,
@@ -1811,8 +1986,9 @@ final class NavigationEngine {
             energyFeasible.append(route)
         }
         guard !energyFeasible.isEmpty else { throw EVPlanningError.chargersUnavailable }
-        state.evChargingStops = energyFeasible[0].chargingStops.map(\.destination)
-        return energyFeasible.sorted { $0.expectedTravelTime < $1.expectedTravelTime }
+        let rankedRoutes = energyFeasible.sorted { $0.expectedTravelTime < $1.expectedTravelTime }
+        state.evChargingStops = rankedRoutes[0].chargingStops.map(\.destination)
+        return rankedRoutes
     }
 
     private func evChargePlan(on route: NavigationRoute, chargingCandidates: [NearbyPlaceCandidate],
@@ -1875,14 +2051,26 @@ final class NavigationEngine {
         Task {
             do {
                 let stops = unvisitedStops(from: location)
-                let routes = try await provider.calculateRoutes(from: location, to: state.destination?.coordinate ?? route.coordinates.last!,
-                                                               through: stops.map(\.coordinate), mode: .car,
-                                                               preferences: state.routingPreferences,
-                                                               avoiding: [closureIncident.coordinate])
+                let routes: [NavigationRoute]
+                if state.routingPreferences.evPlanningEnabled {
+                    let mandatoryStops = stops.filter { stop in
+                        state.waypoints.contains(where: { $0.id == stop.id })
+                    }
+                    routes = try await calculateEVRoutes(
+                        from: location, to: state.destination?.coordinate ?? route.coordinates.last!,
+                        explicitStops: mandatoryStops, provider: provider,
+                        avoiding: [closureIncident.coordinate])
+                } else {
+                    routes = try await provider.calculateRoutes(
+                        from: location, to: state.destination?.coordinate ?? route.coordinates.last!,
+                        through: stops.map(\.coordinate), mode: .car,
+                        preferences: state.routingPreferences, avoiding: [closureIncident.coordinate])
+                }
                 guard state.status == .navigating || state.status == .rerouting,
                       let alternative = routes.first else { return }
                 state.route = alternative
                 state.routeOptions = routes
+                if state.transportMode == .car { loadRoadData(for: alternative) }
                 tripSession?.rerouteCount += 1
                 invalidateTraffic()
                 updateProgress()

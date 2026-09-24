@@ -16,6 +16,7 @@ struct ValhallaSpeedLimitProvider: SpeedLimitProvider {
         request.timeoutInterval = 12
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: ["locations": [location], "costing": "auto", "verbose": true])
+        try await ValhallaRequestGate.shared.waitUntilAllowed(for: endpoint)
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw RoutingError.invalidResponse }
         guard (200...299).contains(http.statusCode) else { throw RoutingError.server(http.statusCode) }

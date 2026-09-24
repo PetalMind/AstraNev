@@ -1,5 +1,25 @@
 import Foundation
 
+actor ValhallaRequestGate {
+    static let shared = ValhallaRequestGate()
+    // The public OpenStreetMap.de service documents a one-request-per-second limit.
+    private let publicServerHost = "valhalla1.openstreetmap.de"
+    private let publicServerMinimumInterval: TimeInterval = 1.1
+    private var nextRequestDateByHost: [String: Date] = [:]
+
+    func waitUntilAllowed(for endpoint: URL) async throws {
+        let host = endpoint.host?.lowercased() ?? endpoint.absoluteString
+        let now = Date()
+        let interval = host == publicServerHost ? publicServerMinimumInterval : 0
+        let requestDate = max(now, nextRequestDateByHost[host] ?? .distantPast)
+        nextRequestDateByHost[host] = requestDate.addingTimeInterval(interval)
+        let delay = requestDate.timeIntervalSince(now)
+        if delay > 0 {
+            try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+        }
+    }
+}
+
 enum RoutingError: LocalizedError {
     case invalidEndpoint, server(Int), invalidResponse
     var errorDescription: String? {
@@ -19,12 +39,40 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
                                   preferences: RoutingPreferences(), avoiding: [])
     }
 
+    func walkingCosts(from source: Coordinate, to targets: [Coordinate]) async throws -> [WalkingRouteCost?] {
+        guard endpoint.scheme == "https", !targets.isEmpty else { throw RoutingError.invalidEndpoint }
+        var request = URLRequest(url: endpoint.appendingPathComponent("sources_to_targets"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "sources": [["lat": source.latitude, "lon": source.longitude]],
+            "targets": targets.map { ["lat": $0.latitude, "lon": $0.longitude] },
+            "costing": "pedestrian",
+            "units": "kilometers"
+        ])
+        try await ValhallaRequestGate.shared.waitUntilAllowed(for: endpoint)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw RoutingError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else { throw RoutingError.server(http.statusCode) }
+        let result = try JSONDecoder().decode(MatrixResponse.self, from: data)
+        guard let row = result.sourcesToTargets.first, row.count == targets.count else {
+            throw RoutingError.invalidResponse
+        }
+        return row.map { cell in
+            guard let duration = cell.time, let distanceKilometers = cell.distance,
+                  duration.isFinite, distanceKilometers.isFinite else { return nil }
+            return WalkingRouteCost(duration: duration, distance: distanceKilometers * 1_000)
+        }
+    }
+
     func calculateRoutes(from: Coordinate, to: Coordinate, through: [Coordinate], mode: TransportMode,
                          preferences: RoutingPreferences, avoiding: [Coordinate]) async throws -> [NavigationRoute] {
         guard endpoint.scheme == "https" else { throw RoutingError.invalidEndpoint }
         guard mode != .transit && mode != .parkRide else { throw RoutingError.invalidEndpoint }
         var request = URLRequest(url: endpoint.appendingPathComponent("route"))
         request.httpMethod = "POST"
+        request.timeoutInterval = 15
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var payload: [String: Any] = [
             "locations": ([from] + through + [to]).map { ["lat": $0.latitude, "lon": $0.longitude] },
@@ -45,6 +93,7 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
             if !carOptions.isEmpty { payload["costing_options"] = ["auto": carOptions] }
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        try await ValhallaRequestGate.shared.waitUntilAllowed(for: endpoint)
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw RoutingError.invalidResponse }
         guard (200...299).contains(http.statusCode) else { throw RoutingError.server(http.statusCode) }
@@ -103,6 +152,7 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
             if !carOptions.isEmpty { payload["costing_options"] = ["auto": carOptions] }
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        try await ValhallaRequestGate.shared.waitUntilAllowed(for: endpoint)
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw RoutingError.invalidResponse }
         guard (200...299).contains(http.statusCode) else { throw RoutingError.server(http.statusCode) }
@@ -123,6 +173,14 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
     private struct Response: Decodable {
         let trip: Trip
         let alternates: [Alternate]?
+    }
+    private struct MatrixResponse: Decodable {
+        let sourcesToTargets: [[WalkingMatrixCell]]
+        enum CodingKeys: String, CodingKey { case sourcesToTargets = "sources_to_targets" }
+    }
+    private struct WalkingMatrixCell: Decodable {
+        let time: Double?
+        let distance: Double?
     }
     private struct Alternate: Decodable { let trip: Trip }
     private struct Trip: Decodable { let summary: Summary; let legs: [Leg] }

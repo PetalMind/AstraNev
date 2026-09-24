@@ -24,6 +24,7 @@ struct TransitDetailsSheet: View {
     @State private var departures: [TransitDeparture] = []
     @State private var alerts: [String] = []
     @State private var tripDetails: TransitTripDetails?
+    @State private var railwayAttribution: String?
     @State private var isLoading = true
 
     private let provider = LodzTransitRouteProvider()
@@ -37,6 +38,10 @@ struct TransitDetailsSheet: View {
                     case .vehicle(let vehicle): tripContents(vehicle: vehicle)
                     case .departure: tripContents(vehicle: nil)
                     case .line(let line): lineContents(line)
+                    }
+                    if let railwayAttribution {
+                        Text(railwayAttribution)
+                            .font(.caption2).foregroundStyle(.secondary)
                     }
                 }
                 .padding(18)
@@ -66,15 +71,32 @@ struct TransitDetailsSheet: View {
     private var title: String {
         switch selection {
         case .stop(let stop): stop.name
-        case .vehicle(let vehicle): "Linia \(vehicle.line)"
+        case .vehicle(let vehicle): "\(modeLabel(vehicle.mode)) \(vehicle.line)"
         case .departure(let departure): "\(departure.line) → \(departure.destination)"
-        case .line(let line): "Linia \(line.name)"
+        case .line(let line): "\(line.mode == "RAIL" ? "Pociąg" : "Linia") \(line.name)"
+        }
+    }
+
+    private func modeLabel(_ mode: String) -> String {
+        switch mode {
+        case "RAIL": "Pociąg"
+        case "TRAM": "Tramwaj"
+        default: "Autobus"
         }
     }
 
     private var currentStopStatus: String {
         guard case .departure(let departure) = selection else { return "teraz" }
         return eta(at: departure.estimatedDeparture, now: Date())
+    }
+
+    private var selectedIsRail: Bool {
+        switch selection {
+        case .stop(let stop): stop.id.hasPrefix("rail/")
+        case .vehicle(let vehicle): vehicle.mode == "RAIL"
+        case .departure(let departure): departure.mode == "RAIL"
+        case .line(let line): line.mode == "RAIL"
+        }
     }
 
     @ViewBuilder
@@ -106,7 +128,7 @@ struct TransitDetailsSheet: View {
             ForEach(Array(alerts.enumerated()), id: \.offset) { _, detail in alertCard(detail) }
         } else if !isLoading {
             Label(departures.contains(where: \.hasRealtime)
-                  ? "Czasy z aktualizacji MPK"
+                  ? "Czasy z aktualizacji na żywo"
                   : "Brak danych live · pokazano rozkład",
                   systemImage: departures.contains(where: \.hasRealtime) ? "dot.radiowaves.left.and.right" : "clock")
                 .font(.footnote).foregroundStyle(.secondary)
@@ -121,7 +143,7 @@ struct TransitDetailsSheet: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(tripDetails.destination.isEmpty ? "Kierunek nieznany" : tripDetails.destination)
                         .font(.title3.weight(.semibold))
-                    Text(tripDetails.mode == "TRAM" ? "Tramwaj" : "Autobus")
+                    Text(modeLabel(tripDetails.mode))
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
@@ -184,7 +206,7 @@ struct TransitDetailsSheet: View {
         } else if isLoading {
             ProgressView("Pobieram przebieg kursu…").frame(maxWidth: .infinity).padding(.top, 30)
         } else {
-            ContentUnavailableView("Brak szczegółów kursu", systemImage: "tram", description: Text("Nie udało się pobrać kolejnych przystanków."))
+            ContentUnavailableView("Brak szczegółów kursu", systemImage: "train.side.front.car", description: Text("Nie udało się pobrać kolejnych przystanków."))
         }
     }
 
@@ -193,7 +215,7 @@ struct TransitDetailsSheet: View {
             HStack(spacing: 12) {
                 TransitLineBadge(title: line.name, color: line.colorHex)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(line.mode == "TRAM" ? "Tramwaj" : "Autobus")
+                    Text(modeLabel(line.mode))
                         .font(.headline)
                     if !line.directions.isEmpty {
                         Text(line.directions).font(.subheadline).foregroundStyle(.secondary)
@@ -223,6 +245,7 @@ struct TransitDetailsSheet: View {
 
     private func loadDetails() async {
         isLoading = true
+        railwayAttribution = selectedIsRail ? await provider.railwayScheduleAttribution() : nil
         await refreshDetails()
         isLoading = false
     }

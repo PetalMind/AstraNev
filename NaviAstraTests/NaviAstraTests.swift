@@ -10,6 +10,73 @@ import Testing
 
 struct NaviAstraTests {
 
+    @Test func speedLimitParserNormalizesUnitsAndRejectsUnresolvedValues() {
+        #expect(SpeedLimitParser.parse("50 km/h") == 50)
+        #expect(SpeedLimitParser.parse("50 mph") == 80)
+        #expect(SpeedLimitParser.parse("PL:urban") == 50)
+        #expect(SpeedLimitParser.parse("signals") == nil)
+    }
+
+    @Test func PolishLegalDefaultsUseMappedRoadClassAndLaneContext() {
+        #expect(SpeedLimitParser.parse(nil, tags: ["source:maxspeed": "PL:urban"]) == 50)
+        #expect(SpeedLimitParser.parse(nil, tags: ["source:maxspeed": "PL:rural",
+                                                     "highway": "primary", "dual_carriageway": "yes",
+                                                     "lanes": "4"]) == 100)
+        #expect(SpeedLimitParser.parse(nil, tags: ["source:maxspeed": "PL:expressway",
+                                                     "dual_carriageway": "yes"]) == 120)
+        #expect(SpeedLimitParser.parse(nil, tags: ["source:maxspeed": "PL:expressway",
+                                                     "dual_carriageway": "no"]) == 100)
+        #expect(SpeedLimitParser.parse(nil, tags: ["source:maxspeed": "PL:rural",
+                                                     "highway": "primary", "lanes": "4"]) == nil)
+    }
+
+    @Test func conditionalSpeedLimitAppliesWeekdayAndTimeWindow() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        let timeZone = try #require(TimeZone(identifier: "Europe/Warsaw"))
+        calendar.timeZone = timeZone
+        var components = DateComponents()
+        components.year = 2026
+        components.month = 9
+        components.day = 21 // Monday
+        components.hour = 8
+        let activeDate = try #require(calendar.date(from: components))
+        let inactiveDate = try #require(calendar.date(byAdding: .hour, value: 15, to: activeDate))
+        let segment = OSMRoadSpeedSegment(id: 1,
+                                          coordinates: [Coordinate(latitude: 52, longitude: 21),
+                                                        Coordinate(latitude: 52.001, longitude: 21)],
+                                          tags: ["maxspeed": "50",
+                                                 "maxspeed:conditional": "30 @ (Mo-Fr 06:00-22:00)"])
+        let projection = RouteProjection(coordinate: Coordinate(latitude: 52, longitude: 21),
+                                         distanceFromRoute: 0, alongRoute: 0, segment: 0)
+
+        #expect(ConditionalSpeedLimitResolver.speedLimit(tags: segment.tags, heading: 0,
+                                                         segment: segment, projection: projection,
+                                                         date: activeDate, timeZone: timeZone) == 30)
+        #expect(ConditionalSpeedLimitResolver.speedLimit(tags: segment.tags, heading: 0,
+                                                         segment: segment, projection: projection,
+                                                         date: inactiveDate, timeZone: timeZone) == 50)
+    }
+
+    @Test func directionalSpeedLimitNeedsAUsableHeading() {
+        let segment = OSMRoadSpeedSegment(id: 2,
+                                          coordinates: [Coordinate(latitude: 52, longitude: 21),
+                                                        Coordinate(latitude: 52.001, longitude: 21)],
+                                          tags: ["maxspeed:forward": "50", "maxspeed:backward": "80"])
+        let projection = RouteProjection(coordinate: Coordinate(latitude: 52, longitude: 21),
+                                         distanceFromRoute: 0, alongRoute: 0, segment: 0)
+        let timeZone = TimeZone(secondsFromGMT: 0)!
+
+        #expect(ConditionalSpeedLimitResolver.speedLimit(tags: segment.tags, heading: -1,
+                                                         segment: segment, projection: projection,
+                                                         date: .now, timeZone: timeZone) == nil)
+        #expect(ConditionalSpeedLimitResolver.speedLimit(tags: segment.tags, heading: 0,
+                                                         segment: segment, projection: projection,
+                                                         date: .now, timeZone: timeZone) == 50)
+        #expect(ConditionalSpeedLimitResolver.speedLimit(tags: segment.tags, heading: 180,
+                                                         segment: segment, projection: projection,
+                                                         date: .now, timeZone: timeZone) == 80)
+    }
+
     @Test @MainActor func transitProgressFindsUpcomingStopsFromGPSPosition() {
         let route = sampleTransitRoute()
         let progress = TransitRouteProgressCalculator.progress(

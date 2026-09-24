@@ -320,6 +320,7 @@ extension ValhallaRouteProvider {
             payload["costing_options"] = ["auto": options]
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        try await ValhallaRequestGate.shared.waitUntilAllowed(for: endpoint)
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { throw RoutingError.invalidResponse }
         let rows = try JSONDecoder().decode(MatrixReply.self, from: data).sources_to_targets

@@ -26,6 +26,11 @@ nonisolated struct Coordinate: Codable, Equatable, Sendable {
     }
 }
 
+struct WalkingRouteCost: Sendable {
+    let duration: TimeInterval
+    let distance: Double
+}
+
 struct Destination: Identifiable, Codable, Equatable {
     var id = UUID()
     var name: String
@@ -196,7 +201,7 @@ enum TransportMode: String, CaseIterable, Identifiable {
         case .car: "Samochód"
         case .walking: "Pieszo"
         case .bicycle: "Rower"
-        case .transit: "Komunikacja"
+        case .transit: "Pociągi i komunikacja"
         case .parkRide: "P+R"
         }
     }
@@ -280,7 +285,7 @@ enum GPSQuality: Equatable {
     }
 }
 
-enum TransitRealtimeFreshness: String, Sendable {
+enum TransitRealtimeFreshness: String, Equatable, Sendable {
     case live, degraded, stale, unavailable
 }
 
@@ -297,6 +302,7 @@ struct Journey {
     var waitingDuration: TimeInterval = 0
     var transferCount: Int = 0
     var realtimeFreshness: TransitRealtimeFreshness = .unavailable
+    var railwayScheduleAttribution: String? = nil
 }
 
 struct JourneyLeg: Identifiable {

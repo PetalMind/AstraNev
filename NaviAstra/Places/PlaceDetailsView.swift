@@ -146,7 +146,7 @@ struct PlaceDetailsView: View {
                 .textSelection(.enabled)
         }
 
-        if let rawHours = details.openingHours, !rawHours.isEmpty {
+        if let rawHours = details.openingHours, !rawHours.isEmpty, details.osmParking?.openingHours == nil {
             openingHours(rawHours, details: details)
         }
 
@@ -160,13 +160,179 @@ struct PlaceDetailsView: View {
             Label(wheelchairTitle(wheelchair), systemImage: "figure.roll")
                 .font(.subheadline)
         }
-        if let parking = details.parking {
+        if let parking = details.parking, details.osmParking == nil {
             Label("Parking: \(parking)", systemImage: "parkingsign.circle").font(.subheadline)
+        }
+        if let parking = details.osmParking {
+            parkingInformation(parking)
         }
         if let driveThrough = details.driveThrough {
             Label(driveThrough.lowercased() == "yes" ? "Drive-through" : "Drive-through: \(driveThrough)", systemImage: "car.side")
                 .font(.subheadline)
         }
+    }
+
+    private func parkingInformation(_ parking: ParkingInformation) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Warunki parkowania", systemImage: "parkingsign.circle.fill")
+                .font(.subheadline.weight(.semibold))
+
+            parkingRow("Opłaty", parking.tariff.status.title)
+            if let freeMinutes = parking.tariff.freeMinutes {
+                parkingRow("Bezpłatnie", "pierwsze \(durationText(minutes: freeMinutes))")
+            }
+            if let hourlyRate = parking.tariff.hourlyRate {
+                parkingRow("Stawka godzinowa", parkingPriceText(hourlyRate))
+            } else if let charge = parking.tariff.chargeDescription {
+                parkingRow("Taryfa", charge)
+            }
+            if let firstHourRate = parking.tariff.firstHourRate {
+                parkingRow("Pierwsza godzina", parkingPriceText(firstHourRate))
+            }
+            if let subsequentHourRate = parking.tariff.subsequentHourRate {
+                parkingRow("Kolejna godzina", parkingPriceText(subsequentHourRate))
+            }
+            if let dailyRate = parking.tariff.dailyRate {
+                parkingRow("Stawka dzienna", parkingPriceText(dailyRate))
+            }
+            if let feeCondition = parking.tariff.feeCondition {
+                parkingRow("Warunkowa opłata", feeCondition)
+            }
+            if let conditionalCharge = parking.tariff.conditionalCharge {
+                parkingRow("Warunkowa taryfa", conditionalCharge)
+            }
+            if let capacity = parking.capacity {
+                parkingRow("Pojemność", "\(capacity) miejsc")
+            }
+            if let availableSpaces = parking.availableSpaces {
+                parkingRow("Wolne miejsca", parking.capacity.map { "\(availableSpaces) / \($0)" } ?? "\(availableSpaces)")
+            } else {
+                parkingRow("Wolne miejsca", "brak danych na żywo")
+            }
+            if let maxStay = parking.maxStay {
+                parkingRow("Maksymalny postój", parking.maxStayMinutes.map { durationText(minutes: $0) } ?? maxStay)
+            }
+            if let maxStay = parking.maxStayConditional {
+                parkingRow("Warunkowy limit postoju", maxStay)
+            }
+            if let access = parking.access {
+                parkingRow("Dostęp", parkingAccessTitle(access))
+            }
+            if let access = parking.accessConditional {
+                parkingRow("Warunkowy dostęp", access)
+            }
+            if let parkingType = parking.parkingType {
+                parkingRow("Rodzaj", parkingType.replacingOccurrences(of: "_", with: " "))
+            }
+            if let openingHours = parking.openingHours, !openingHours.isEmpty {
+                openingHoursDisclosure(openingHours)
+            }
+
+            ForEach(parking.streetSides, id: \.side) { side in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(side.side.title + (side.parkingType.map { " · \($0.replacingOccurrences(of: "_", with: " "))" } ?? ""))
+                        .font(.caption.weight(.semibold))
+                    if let condition = side.parkingCondition { parkingRow("Zasada", condition) }
+                    if let condition = side.parkingConditionConditional { parkingRow("Zasada warunkowa", condition) }
+                    if let fee = side.fee { parkingRow("Opłaty", fee) }
+                    if let charge = side.charge { parkingRow("Taryfa", charge) }
+                    if let charge = side.chargeConditional { parkingRow("Warunkowa taryfa", charge) }
+                    if let condition = side.feeCondition { parkingRow("Warunkowa opłata", condition) }
+                    if let maxStay = side.maxStay { parkingRow("Maksymalny postój", maxStay) }
+                    if let maxStay = side.maxStayConditional { parkingRow("Limit warunkowy", maxStay) }
+                    if let access = side.access { parkingRow("Dostęp", parkingAccessTitle(access)) }
+                    if let hours = side.openingHours { parkingRow("Godziny", hours) }
+                    if let restriction = side.restriction { parkingRow("Ograniczenie", restriction) }
+                    if let restriction = side.restrictionConditional { parkingRow("Ograniczenie warunkowe", restriction) }
+                }
+                .padding(.top, 3)
+            }
+
+            if parking.tariff.status == .unknown {
+                Text("Brak informacji o opłacie w OSM nie oznacza, że parking jest bezpłatny.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Text(parking.dataSources.isEmpty
+                 ? "Źródło taryfy: brak danych"
+                 : "Źródło: " + parking.dataSources.map(\.title).joined(separator: ", "))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func parkingRow(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Text(title).foregroundStyle(.secondary)
+            Text(value).textSelection(.enabled)
+            Spacer(minLength: 0)
+        }
+        .font(.caption)
+    }
+
+    private func parkingPriceText(_ price: ParkingPrice) -> String {
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "pl_PL")
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 2
+        let amount = formatter.string(from: NSDecimalNumber(decimal: price.amount)) ?? price.amount.description
+        let currency = switch price.currencyCode?.uppercased() {
+        case "PLN": "zł"
+        case "EUR": "€"
+        case "USD": "$"
+        case "GBP": "£"
+        case "CZK": "Kč"
+        case let code?: code
+        case nil: ""
+        }
+        let unit = price.unit == "day" ? "/ dzień" : price.unit == "hour" ? "/ godz." : ""
+        return [amount, currency].filter { !$0.isEmpty }.joined(separator: " ") + unit
+    }
+
+    private func durationText(minutes: Int) -> String {
+        if minutes % 1_440 == 0 {
+            let days = minutes / 1_440
+            return days == 1 ? "1 dzień" : "\(days) dni"
+        }
+        if minutes % 60 == 0 { return "\(minutes / 60) godz." }
+        return "\(minutes) min"
+    }
+
+    private func parkingAccessTitle(_ value: String) -> String {
+        switch value.lowercased() {
+        case "yes", "public", "permissive": "publiczny"
+        case "customers": "dla klientów"
+        case "private": "prywatny"
+        case "no": "brak dostępu publicznego"
+        case "permit": "na zezwolenie"
+        case "residents": "dla mieszkańców"
+        default: value
+        }
+    }
+
+    private func openingHoursDisclosure(_ rawHours: String) -> some View {
+        DisclosureGroup("Godziny parkowania", isExpanded: $showHours) {
+            if let rows = PlaceOpeningHours(rawValue: rawHours).weeklyRows {
+                ForEach(Array(rows.enumerated()), id: \.offset) { item in
+                    HStack {
+                        Text(item.element.0).frame(width: 46, alignment: .leading)
+                        Text(item.element.1)
+                        Spacer(minLength: 0)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            } else {
+                Text(rawHours).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+            Text("Godziny mogą się różnić w święta.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        .font(.caption)
     }
 
     @ViewBuilder
@@ -235,7 +401,7 @@ struct PlaceDetailsView: View {
 private extension PlaceDetails {
     var hasAdditionalInformation: Bool {
         address != nil || openingHours != nil || phone != nil || website != nil ||
-            wheelchair != nil || parking != nil || driveThrough != nil
+            wheelchair != nil || parking != nil || osmParking != nil || driveThrough != nil
     }
 }
 

@@ -20,7 +20,7 @@ struct TrafficFlow {
     }
 }
 
-enum TrafficIncidentCategory: String {
+enum TrafficIncidentCategory: String, Equatable {
     case unknown, accident, fog, dangerousConditions, rain, ice, jam, laneClosed
     case roadClosed, roadWorks, wind, flooding, detour, cluster
 
@@ -44,7 +44,7 @@ enum TrafficIncidentCategory: String {
     }
 }
 
-enum TrafficIncidentSeverity: String {
+enum TrafficIncidentSeverity: String, Equatable {
     case unknown, minor, moderate, major, indefinite
 
     init(tomTomValue: Int?) {
@@ -143,7 +143,7 @@ struct TomTomTrafficProvider: TrafficProvider {
         url.queryItems = [
             URLQueryItem(name: "key", value: apiKey),
             URLQueryItem(name: "bbox", value: "\(point.longitude - lonDelta),\(point.latitude - latDelta),\(point.longitude + lonDelta),\(point.latitude + latDelta)"),
-            URLQueryItem(name: "fields", value: "{incidents{type,geometry{type,coordinates},properties{id,events{description},delay,iconCategory}}}"),
+            URLQueryItem(name: "fields", value: "{incidents{type,geometry{type,coordinates},properties{id,events{description},delay,iconCategory,magnitudeOfDelay}}}"),
             URLQueryItem(name: "language", value: "pl-PL"),
             URLQueryItem(name: "timeValidityFilter", value: "present")
         ]

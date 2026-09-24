@@ -43,6 +43,7 @@ struct PlaceDetails: Codable, Identifiable {
     var website: String?
     var wheelchair: String?
     var parking: String?
+    var osmParking: ParkingInformation?
     var driveThrough: String?
     var source: PlaceDetailsSource
     var fetchedAt: Date
@@ -80,6 +81,7 @@ struct PlaceDetails: Codable, Identifiable {
                             website: result.website,
                             wheelchair: nil,
                             parking: nil,
+                            osmParking: isParkingCategory(result.category) ? .unknown : nil,
                             driveThrough: nil,
                             source: result.placeProvider == .mapKit ? .mapKit : result.placeProvider == .openFreeMap ? .openFreeMap : .openStreetMap,
                             fetchedAt: Date())
@@ -97,6 +99,7 @@ struct PlaceDetails: Codable, Identifiable {
                      website: nil,
                      wheelchair: nil,
                      parking: nil,
+                     osmParking: isParkingCategory(identity.category) ? .unknown : nil,
                      driveThrough: nil,
                      source: identity.provider == .mapKit ? .mapKit : identity.provider == .openFreeMap ? .openFreeMap : .openStreetMap,
                      fetchedAt: Date())
@@ -114,9 +117,15 @@ struct PlaceDetails: Codable, Identifiable {
                      website: newer.website ?? website,
                      wheelchair: newer.wheelchair ?? wheelchair,
                      parking: newer.parking ?? parking,
+                     osmParking: newer.osmParking ?? osmParking,
                      driveThrough: newer.driveThrough ?? driveThrough,
                      source: newer.source,
                      fetchedAt: newer.fetchedAt)
+    }
+
+    private static func isParkingCategory(_ category: String?) -> Bool {
+        guard let category else { return false }
+        return category.lowercased().split(separator: "=").last.map(String.init) == "parking"
     }
 }
 
@@ -285,6 +294,7 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
                             website: tags["contact:website"] ?? tags["website"],
                             wheelchair: tags["wheelchair"],
                             parking: tags["parking"],
+                            osmParking: ParkingInformation.fromOSMTags(tags),
                             driveThrough: tags["drive_through"],
                             source: .openStreetMap,
                             fetchedAt: Date())
