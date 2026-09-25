@@ -983,8 +983,10 @@ final class NavigationEngine {
         lastRouteTrafficFetch = Date()
         let generation = trafficGeneration
         let routeID = route.id
+        let routeCoordinates = route.coordinates
         let boxesTask = Task.detached(priority: .utility) {
-            RouteTrafficMonitor.queryBoxes(for: route, from: startDistance, through: endDistance)
+            RouteTrafficMonitor.queryBoxes(for: routeCoordinates, from: startDistance,
+                                           through: endDistance)
         }
         Task { @MainActor [weak self] in
             let boxes = await boxesTask.value

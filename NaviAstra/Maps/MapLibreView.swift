@@ -97,6 +97,7 @@ struct MapLibreView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> MLNMapView {
         let map = MLNMapView(frame: .zero, styleURL: styleURL)
+        map.automaticallyAdjustsContentInset = false
         map.delegate = context.coordinator
         map.setCenter(CLLocationCoordinate2D(latitude: 52.2297, longitude: 21.0122), zoomLevel: 10, animated: false)
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tappedPOI(_:)))
@@ -1150,9 +1151,15 @@ struct MapLibreView: UIViewRepresentable {
 
         private func updateTrafficEventPins(on map: MLNMapView, routeDistance: Double) {
             let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
-            let events = MainActor.assumeIsolated {
-                shownIncidents.map(TrafficMapEvent.init)
-                    + shownRoadAlerts.map { TrafficMapEvent($0, routeDistance: routeDistance) }
+            let events = MainActor.assumeIsolated { () -> [TrafficMapEvent] in
+                var events: [TrafficMapEvent] = []
+                for incident in shownIncidents {
+                    events.append(TrafficMapEvent(incident))
+                }
+                for alert in shownRoadAlerts {
+                    events.append(TrafficMapEvent(alert, routeDistance: routeDistance))
+                }
+                return events
             }
             let groups = clusteredTrafficEvents(events, on: map, isNavigating: isNavigating)
             let groupIDs = groups.map {
@@ -1833,10 +1840,6 @@ private final class NaviAstraMapStyle {
                     layer.fillPattern = NSExpression(forConstantValue: forestPatternName(dark: dark, dense: true))
                     continue
                 }
-                if id == "naviastra-park-tree-pattern" {
-                    layer.fillPattern = NSExpression(forConstantValue: forestPatternName(dark: dark, dense: false))
-                    continue
-                }
                 if id == "naviastra-water-wave-pattern" {
                     layer.fillPattern = NSExpression(forConstantValue: waterPatternName(dark: dark, dense: false))
                     continue
@@ -2002,7 +2005,6 @@ private final class NaviAstraMapStyle {
             }
         }
         installForestTreePatternLayers(in: style)
-        installParkTreePatternLayer(in: style)
         installWaterWavePatternLayers(in: style)
         if style.layer(withIdentifier: "naviastra-house-numbers") == nil,
            let source = style.source(withIdentifier: "openmaptiles") {
@@ -2023,7 +2025,7 @@ private final class NaviAstraMapStyle {
                 .last(where: { $0.sourceLayerIdentifier == "landcover" }) else { return }
 
         let forestFilter = NSPredicate(format: "subclass IN %@", ["forest", "wood"])
-        let layers: [(String, Double, Double, Bool)] = [
+        let layers: [(String, Float, Float, Bool)] = [
             ("naviastra-forest-tree-pattern", 13, 15, false),
             ("naviastra-forest-tree-pattern-dense", 15, 24, true)
         ]
@@ -2046,7 +2048,7 @@ private final class NaviAstraMapStyle {
                 .last(where: { $0.sourceLayerIdentifier == "water" }) else { return }
 
         let waterFilter = NSPredicate(format: "class IN %@", ["ocean", "lake", "river", "pond", "dock"])
-        let layers: [(String, Double, Double, Bool)] = [
+        let layers: [(String, Float, Float, Bool)] = [
             ("naviastra-water-wave-pattern", 12, 15, false),
             ("naviastra-water-wave-pattern-dense", 15, 24, true)
         ]
@@ -2061,20 +2063,6 @@ private final class NaviAstraMapStyle {
             layer.fillOpacity = NSExpression(forConstantValue: dense ? 0.2 : 0.12)
             style.insertLayer(layer, above: lastWaterFill)
         }
-    }
-
-    private func installParkTreePatternLayer(in style: MLNStyle) {
-        guard style.layer(withIdentifier: "naviastra-park-tree-pattern") == nil,
-              let source = style.source(withIdentifier: "openmaptiles"),
-              let lastParkFill = style.layers.compactMap({ $0 as? MLNFillStyleLayer })
-                .last(where: { $0.sourceLayerIdentifier == "park" }) else { return }
-
-        let layer = MLNFillStyleLayer(identifier: "naviastra-park-tree-pattern", source: source)
-        layer.sourceLayerIdentifier = "park"
-        layer.minimumZoomLevel = 14
-        layer.fillPattern = NSExpression(forConstantValue: forestPatternName(dark: false, dense: false))
-        layer.fillOpacity = NSExpression(forConstantValue: 0.48)
-        style.insertLayer(layer, above: lastParkFill)
     }
 
     private func landcoverColorExpression(dark: Bool) -> NSExpression {

@@ -3,9 +3,9 @@ import Foundation
 /// Selects a useful traffic horizon and queries small boxes along the active route corridor.
 struct RouteTrafficMonitor {
     static let lookAheadSeconds: TimeInterval = 25 * 60
-    static let corridorHalfWidthMeters = 900.0
-    static let querySegmentLengthMeters = 8_000.0
-    static let queryOverlapMeters = 1_000.0
+    nonisolated static let corridorHalfWidthMeters = 900.0
+    nonisolated static let querySegmentLengthMeters = 8_000.0
+    nonisolated static let queryOverlapMeters = 1_000.0
     static let routeMatchToleranceMeters = 140.0
 
     static func lookAheadDistance(for route: NavigationRoute, progress: RouteProgress?) -> Double {
@@ -27,19 +27,19 @@ struct RouteTrafficMonitor {
         return min(remainingDistance, min(timeHorizonDistance, distanceCap))
     }
 
-    static func queryBoxes(for route: NavigationRoute, from startDistance: Double,
+    nonisolated static func queryBoxes(for routeCoordinates: [Coordinate], from startDistance: Double,
                            through endDistance: Double,
                            corridorHalfWidthMeters: Double = corridorHalfWidthMeters) -> [TrafficBoundingBox] {
-        guard route.coordinates.count > 1, endDistance > startDistance else { return [] }
+        guard routeCoordinates.count > 1, endDistance > startDistance else { return [] }
         let start = max(0, startDistance)
-        let end = min(routeGeometryLength(route), endDistance)
+        let end = min(routeGeometryLength(routeCoordinates), endDistance)
         guard end > start else { return [] }
 
         var boxes: [TrafficBoundingBox] = []
         var segmentStart = start
         while segmentStart < end {
             let segmentEnd = min(end, segmentStart + querySegmentLengthMeters)
-            let coordinates = coordinates(in: route, from: segmentStart, through: segmentEnd)
+            let coordinates = coordinates(in: routeCoordinates, from: segmentStart, through: segmentEnd)
             if !coordinates.isEmpty {
                 boxes.append(boundingBox(around: coordinates, halfWidthMeters: corridorHalfWidthMeters))
             }
@@ -87,17 +87,17 @@ struct RouteTrafficMonitor {
         return matched.values.sorted { ($0.distanceAlongRoute ?? .infinity) < ($1.distanceAlongRoute ?? .infinity) }
     }
 
-    private static func routeGeometryLength(_ route: NavigationRoute) -> Double {
-        zip(route.coordinates, route.coordinates.dropFirst())
+    private nonisolated static func routeGeometryLength(_ routeCoordinates: [Coordinate]) -> Double {
+        zip(routeCoordinates, routeCoordinates.dropFirst())
             .reduce(0) { $0 + $1.0.distance(to: $1.1) }
     }
 
-    private static func coordinates(in route: NavigationRoute, from start: Double,
+    private nonisolated static func coordinates(in routeCoordinates: [Coordinate], from start: Double,
                                     through end: Double) -> [Coordinate] {
-        guard route.coordinates.count > 1, end > start else { return [] }
+        guard routeCoordinates.count > 1, end > start else { return [] }
         var result: [Coordinate] = []
         var segmentStart = 0.0
-        for (first, second) in zip(route.coordinates, route.coordinates.dropFirst()) {
+        for (first, second) in zip(routeCoordinates, routeCoordinates.dropFirst()) {
             let segmentLength = first.distance(to: second)
             let segmentEnd = segmentStart + segmentLength
             if segmentLength > 0, segmentEnd >= start, segmentStart <= end {
@@ -116,16 +116,18 @@ struct RouteTrafficMonitor {
         return result
     }
 
-    private static func append(_ coordinate: Coordinate, to coordinates: inout [Coordinate]) {
+    private nonisolated static func append(_ coordinate: Coordinate, to coordinates: inout [Coordinate]) {
         if coordinates.last != coordinate { coordinates.append(coordinate) }
     }
 
-    private static func interpolate(_ first: Coordinate, _ second: Coordinate, fraction: Double) -> Coordinate {
+    private nonisolated static func interpolate(_ first: Coordinate, _ second: Coordinate,
+                                                fraction: Double) -> Coordinate {
         Coordinate(latitude: first.latitude + (second.latitude - first.latitude) * fraction,
                    longitude: first.longitude + (second.longitude - first.longitude) * fraction)
     }
 
-    private static func boundingBox(around coordinates: [Coordinate], halfWidthMeters: Double) -> TrafficBoundingBox {
+    private nonisolated static func boundingBox(around coordinates: [Coordinate],
+                                               halfWidthMeters: Double) -> TrafficBoundingBox {
         let minimumLatitude = coordinates.map(\.latitude).min() ?? 0
         let maximumLatitude = coordinates.map(\.latitude).max() ?? 0
         let minimumLongitude = coordinates.map(\.longitude).min() ?? 0

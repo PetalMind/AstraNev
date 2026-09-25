@@ -1,6 +1,6 @@
 # NaviAstra
 
-Natywna aplikacja nawigacyjna dla iOS i macOS w SwiftUI. Na iOS mapa używa MapLibre Native i kafli OpenFreeMap; na macOS rolę renderera pełni MapKit, ponieważ oficjalny pakiet MapLibre 6.31 nie zawiera biblioteki macOS. Silnik nawigacji, routing i dane pozostają wspólne.
+Natywna aplikacja nawigacyjna dla iOS i macOS w SwiftUI. Na iOS mapa używa MapLibre Native i kafli OpenFreeMap; na macOS rolę renderera pełni MapKit, ponieważ oficjalny pakiet MapLibre nie zawiera biblioteki macOS. Silnik nawigacji, routing i dane pozostają wspólne.
 
 ## Dostępne funkcje
 
@@ -32,7 +32,7 @@ Do kompilacji iOS wymagany jest pełny Xcode z obsługą iOS 27. Cel `NaviAstraM
 - Kamera uwzględnia zmierzone wysokości nagłówka i panelu. Pierwszy zaakceptowany pomiar GPS centruje użytkownika w odsłoniętej części mapy; ręczne przesunięcie mapy włącza swobodne przeglądanie. Przycisk lokalizacji przywraca centrowanie. Bez zgody na lokalizację lub poprawnego pomiaru aplikacja nie udaje znajomości pozycji.
 - Zaznaczone kategorie POI są zapisywane lokalnie. Podczas prowadzenia są dodatkowo filtrowane według sposobu podróży; przy dojeździe priorytet mają parkingi, ładowarki i przystanki. MapKit na macOS stosuje odpowiadające kategorie swojego dostawcy.
 - iOS / MapLibre: budynki 3D wymagają włączenia budynków i perspektywy 3D. Wysokość interpoluje się od zoomu 15 do 17 na podstawie `render_height` i `render_min_height`. Brak wysokości nie tworzy fikcyjnej bryły. Podczas prowadzenia wszystkie budynki mają mniejszą nieprzezroczystość, bez klasyfikowania ich położenia względem trasy.
-- iOS / MapLibre: gęstość POI rośnie przy zoomach 12, 15 i 17 z wykorzystaniem rankingu oraz kolizji etykiet. Numery adresowe pojawiają się od zoomu 17, jeśli są w kaflach. Paleta rozróżnia klasy i podklasy pokrycia terenu OpenMapTiles oraz typy wody; od zoomu 12 woda dostaje delikatny wzór fal, a szerokości cieków, dróg i wielkości opisów POI zależą od zoomu. Od zoomu 13 lasy dostają subtelny, powtarzalny wzór koron, gęstszy od zoomu 15; od zoomu 14 podobne oznaczenia pojawiają się w parkach. To tekstura kartograficzna, nie punkty rzeczywistych drzew. Prowadzenie wycisza drogi i etykiety poboczne.
+- iOS / MapLibre: gęstość POI rośnie przy zoomach 12, 15 i 17 z wykorzystaniem rankingu oraz kolizji etykiet. Numery adresowe pojawiają się od zoomu 17, jeśli są w kaflach. Paleta rozróżnia klasy i podklasy pokrycia terenu OpenMapTiles oraz typy wody; szerokości cieków, dróg i wielkości opisów POI zależą od zoomu. Od zoomu 13 lasy dostają subtelny, powtarzalny wzór koron, gęstszy od zoomu 15. To tekstura kartograficzna, nie punkty rzeczywistych drzew. Prowadzenie wycisza drogi i etykiety poboczne.
 - Warstwa transportu na iOS wyróżnia istniejącą geometrię kolejową w danych OSM. Rozkłady komunikacji miejskiej w planowaniu dotyczą autobusów i tramwajów MPK Łódź.
 - Własne kolory i warstwy wektorowe dotyczą iOS. MapKit na macOS zachowuje kartografię Apple; wspólne są ustawienia kategorii, kontekst podróży i zachowanie panelu.
 

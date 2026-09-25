@@ -292,7 +292,7 @@ struct TrafficSnapshot {
     let incidentDataAvailable: Bool
 }
 
-struct TrafficBoundingBox: Equatable, Sendable {
+nonisolated struct TrafficBoundingBox: Equatable, Sendable {
     let minLongitude: Double
     let minLatitude: Double
     let maxLongitude: Double
