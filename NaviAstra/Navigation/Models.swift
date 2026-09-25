@@ -32,7 +32,7 @@ struct WalkingRouteCost: Sendable {
     let coordinates: [Coordinate]?
 }
 
-struct Destination: Identifiable, Codable, Equatable {
+struct Destination: Identifiable, Codable, Equatable, Sendable {
     var id = UUID()
     var name: String
     var coordinate: Coordinate
@@ -47,7 +47,7 @@ nonisolated struct NavigationLocation {
     var timestamp: Date
 }
 
-enum ManeuverKind: Int {
+enum ManeuverKind: Int, Sendable {
     case none = 0
     case start = 1
     case startRight = 2
@@ -142,7 +142,7 @@ enum ManeuverKind: Int {
     var isRoundabout: Bool { self == .roundaboutEnter || self == .roundaboutExit }
 }
 
-struct Maneuver: Identifiable {
+struct Maneuver: Identifiable, Sendable {
     var id: Int { shapeIndex }
     var shapeIndex: Int
     var instruction: String
@@ -167,13 +167,13 @@ struct Maneuver: Identifiable {
     }
 }
 
-struct TurnLaneGuidance: Identifiable {
+struct TurnLaneGuidance: Identifiable, Sendable {
     var id: Int
     var indications: [String]
     var valid: Bool
 }
 
-struct NavigationRoute: Identifiable {
+struct NavigationRoute: Identifiable, Sendable {
     var id = UUID()
     var coordinates: [Coordinate]
     var distance: Double
@@ -184,7 +184,7 @@ struct NavigationRoute: Identifiable {
     var chargingStops: [EVChargingStop] = []
 }
 
-struct EVChargingStop: Identifiable {
+struct EVChargingStop: Identifiable, Sendable {
     let id: String
     let destination: Destination
     let connectorTypes: [String]
@@ -290,7 +290,7 @@ enum TransitRealtimeFreshness: String, Equatable, Sendable {
     case live, degraded, stale, unavailable
 }
 
-struct Journey {
+struct Journey: Sendable {
     var departure: Date
     var arrival: Date
     var legs: [JourneyLeg]
@@ -306,7 +306,7 @@ struct Journey {
     var railwayScheduleAttribution: String? = nil
 }
 
-struct JourneyLeg: Identifiable {
+struct JourneyLeg: Identifiable, Sendable {
     var id = UUID()
     var mode: String
     var line: String?
@@ -325,6 +325,7 @@ struct JourneyLeg: Identifiable {
     var isTransfer = false
     var minimumTransferTime: TimeInterval = 0
     var hasResolvedWalkingGeometry = false
+    var walkingTimeIsApproximate = false
 }
 
 struct TransitJourneyStop: Identifiable, Equatable, Sendable {
@@ -382,6 +383,21 @@ nonisolated enum TransitStopMode: String, CaseIterable, Hashable, Sendable {
     }
 }
 
+nonisolated enum TransitStopImportance: Int, Comparable, Sendable {
+    case bus
+    case tram
+    case busMajor
+    case tramMajor
+    case railStation
+    case interchange
+    case regionalHub
+    case nationalHub
+
+    static func < (lhs: TransitStopImportance, rhs: TransitStopImportance) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+}
+
 struct TransitStop: Identifiable, Equatable, Sendable {
     let id: String
     let name: String
@@ -417,6 +433,25 @@ struct TransitStop: Identifiable, Equatable, Sendable {
 
     var isRailway: Bool { mapModes.contains(.rail) }
     var isMultimodal: Bool { mapModes.count > 1 }
+
+    // Loaded GTFS feeds expose station type, served modes and route count, but no national hub rank.
+    var mapImportance: TransitStopImportance {
+        if isMultimodal { return isMajor ? .regionalHub : .interchange }
+        if isRailway { return isMajor ? .regionalHub : .railStation }
+        if mapModes.contains(.tram) { return isMajor ? .tramMajor : .tram }
+        return isMajor ? .busMajor : .bus
+    }
+
+    var isMajorRailStation: Bool { isRailway && isMajor }
+    var isTransitHub: Bool {
+        mapImportance == .nationalHub || mapImportance == .regionalHub || mapImportance == .interchange
+    }
+    var isLargeTransitNode: Bool {
+        isTransitHub || isMajorRailStation || mapImportance == .tramMajor || mapImportance == .busMajor
+    }
+    var isImportantNearbyAlternative: Bool {
+        isLargeTransitNode || isRailway
+    }
 
     static func mapGroups(from candidates: [TransitStop]) -> [[TransitStop]] {
         var buckets: [String: [[TransitStop]]] = [:]
@@ -458,10 +493,15 @@ struct TransitStop: Identifiable, Equatable, Sendable {
     }
 
     func shouldShowOnMap(zoom: Double) -> Bool {
-        if zoom >= 14.2 { return true }
-        if zoom >= 11.5 { return isRailway || (isMajor && mapModes.contains(.tram)) }
-        if zoom >= 9.5 { return isRailway && isMajor }
-        return false
+        if zoom < 11 { return isMajorRailStation || mapImportance == .nationalHub }
+        if zoom < 13 {
+            return isMajorRailStation || isTransitHub || mapImportance == .busMajor
+        }
+        if zoom < 14.5 {
+            return isRailway || isTransitHub || mapImportance == .tramMajor || mapImportance == .busMajor
+        }
+        if zoom < 16 { return isRailway || isTransitHub || mapModes.contains(.tram) || mapImportance == .busMajor }
+        return true
     }
 
     var mapMarkerSize: CGFloat {
@@ -487,12 +527,99 @@ struct TransitStop: Identifiable, Equatable, Sendable {
                            memberStopIDs: Array(Set(members.flatMap(\.detailStopIDs))).sorted())
     }
 
-    func mapPresentation(zoom: Double, selected: Bool, active: Bool, alighting: Bool) -> TransitStopMapPresentation {
+    func mapPresentation(zoom: Double, selected: Bool, active: Bool, alighting: Bool,
+                         onRoute: Bool = false, opacity: Double = 1) -> TransitStopMapPresentation {
         TransitStopMapPresentation(modes: mapModes,
-                                   name: zoom >= 15.5 || selected || active || alighting ? name : nil,
+                                   name: zoom > 17 || selected || active || alighting ? name : nil,
                                    markerSize: Double(mapMarkerSize),
                                    isSelected: selected, isActive: active, isAlighting: alighting,
-                                   showsAlightingBadge: alighting && zoom >= 14.2)
+                                   isOnRoute: onRoute, opacity: opacity,
+                                   showsAlightingBadge: alighting)
+    }
+}
+
+struct TransitStopMapVisibilityDecision: Equatable {
+    let isOnRoute: Bool
+    let opacity: Double
+}
+
+struct TransitStopMapVisibilityPolicy {
+    let zoom: Double
+    let transportMode: TransportMode
+    let isNavigating: Bool
+    let isTransitRoutePreview: Bool
+    let visibleStopCount: Int
+    let visibleRadius: Double
+    let mapCenter: Coordinate
+    let userCoordinate: Coordinate?
+    let routeEndpointCoordinates: [Coordinate]
+    let routeStopIDs: Set<String>
+
+    func decision(for stop: TransitStop, selectedStopID: String?, activeStopID: String?,
+                  alightingStopID: String?) -> TransitStopMapVisibilityDecision? {
+        let memberIDs = Set(stop.detailStopIDs)
+        let isSelected = selectedStopID.map(memberIDs.contains) ?? false
+        let isActive = activeStopID.map(memberIDs.contains) ?? false
+        let isAlighting = alightingStopID.map(memberIDs.contains) ?? false
+        let isOnRoute = !memberIDs.isDisjoint(with: routeStopIDs)
+        if isSelected || isActive || isAlighting {
+            return TransitStopMapVisibilityDecision(isOnRoute: isOnRoute, opacity: 1)
+        }
+
+        let centerDistance = mapCenter.distance(to: stop.coordinate)
+        let nearbyDistance = (userCoordinate ?? mapCenter).distance(to: stop.coordinate)
+        let nearTransitEndpoint = routeEndpointCoordinates.contains { $0.distance(to: stop.coordinate) <= 600 }
+        let hasContextualReach = isNavigating && (transportMode == .walking || transportMode == .transit)
+            && nearbyDistance <= 600
+        guard centerDistance <= visibleRadius || hasContextualReach
+                || (isTransitRoutePreview && nearTransitEndpoint) else { return nil }
+
+        if isNavigating {
+            switch transportMode {
+            case .car, .parkRide:
+                guard stop.isLargeTransitNode else { return nil }
+                return TransitStopMapVisibilityDecision(isOnRoute: false, opacity: 1)
+            case .walking:
+                guard nearbyDistance <= 600 else { return nil }
+                return densityAllows(stop)
+                    ? TransitStopMapVisibilityDecision(isOnRoute: false, opacity: 1) : nil
+            case .transit:
+                if isOnRoute { return TransitStopMapVisibilityDecision(isOnRoute: true, opacity: 1) }
+                guard nearbyDistance <= 600, stop.isImportantNearbyAlternative else { return nil }
+                return TransitStopMapVisibilityDecision(isOnRoute: false, opacity: 0.35)
+            case .bicycle:
+                return browseDecision(for: stop)
+                    ? TransitStopMapVisibilityDecision(isOnRoute: false, opacity: 1) : nil
+            }
+        }
+
+        if isTransitRoutePreview {
+            if isOnRoute { return TransitStopMapVisibilityDecision(isOnRoute: true, opacity: 1) }
+            if nearTransitEndpoint {
+                guard visibleStopCount <= 80 || stop.isImportantNearbyAlternative else { return nil }
+                return TransitStopMapVisibilityDecision(isOnRoute: false, opacity: 1)
+            }
+        }
+
+        guard browseDecision(for: stop) else { return nil }
+        return TransitStopMapVisibilityDecision(isOnRoute: isOnRoute, opacity: 1)
+    }
+
+    private func browseDecision(for stop: TransitStop) -> Bool {
+        guard stop.shouldShowOnMap(zoom: zoom) else { return false }
+        return densityAllows(stop)
+    }
+
+    private func densityAllows(_ stop: TransitStop) -> Bool {
+        if visibleStopCount >= 120 { return stop.isTransitHub || stop.isMajorRailStation }
+        if visibleStopCount >= 80 {
+            return stop.isTransitHub || stop.isMajorRailStation || stop.mapImportance == .tramMajor
+        }
+        if visibleStopCount >= 50 {
+            return stop.isTransitHub || stop.isRailway || stop.mapImportance == .tramMajor
+                || stop.mapImportance == .busMajor
+        }
+        return true
     }
 }
 
@@ -503,6 +630,8 @@ struct TransitStopMapPresentation: Equatable, Sendable {
     let isSelected: Bool
     let isActive: Bool
     let isAlighting: Bool
+    let isOnRoute: Bool
+    let opacity: Double
     let showsAlightingBadge: Bool
 
     var isMultimodal: Bool { modes.count > 1 }
@@ -510,7 +639,8 @@ struct TransitStopMapPresentation: Equatable, Sendable {
         let modeNames = modes.map(\.title).joined(separator: ", ")
         let status = isAlighting ? ", przystanek wysiadania"
             : isActive ? ", następny przystanek"
-            : isSelected ? ", wybrany przystanek" : ""
+            : isSelected ? ", wybrany przystanek"
+            : isOnRoute ? ", na bieżącej trasie" : ""
         return "\(modeNames), \(name ?? "przystanek")\(status)"
     }
 }

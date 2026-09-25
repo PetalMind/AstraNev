@@ -30,6 +30,8 @@ Pozycje GPS przechodzą przez `LocationFilter`. Akceptowane są pomiary z dokła
 
 Odpowiedź może więc zawierać trasę podstawową i do dwóch alternatyw. Dostawca dekoduje geometrię polyline6, instrukcje manewrów, dystans i czas z podsumowania Valhalli. W podglądzie `NavigationEngine` domyślnie wybiera `routes.first`, zachowując kolejność serwera; użytkownik może wybrać inny zwrócony wariant. W trakcie jazdy TomTom może zmienić wybrany wariant po porównaniu opóźnień i zamknięć na tych trasach.
 
+Domyślny publiczny host `valhalla1.openstreetmap.de` jest objęty lokalną bramką, która przepuszcza najwyżej jedno żądanie co 1,1 sekundy; równoległe zadania aplikacji nadal czekają w tej bramce. Własny adres HTTPS można ustawić w sekcji „Serwer Valhalla” w ustawieniach. Dla innego hosta klient nie dodaje tego odstępu, więc jego wydajność zależy od zasobów i limitów skonfigurowanej instancji.
+
 ### Preferencje samochodowe
 
 Dla profilu samochodowego ustawienia są przesyłane jako opcje kosztowania Valhalli:
@@ -49,14 +51,15 @@ Można dodać do ośmiu przystanków. Zwykłe wyznaczanie trasy zachowuje ich bi
 
 ## Komunikacja: kolej i MPK Łódź
 
-`LodzTransitRouteProvider` łączy miejski rozkład MPK i jego feedy GTFS-Realtime z krajowym rozkładem pociągów PKP PLK/ŁKA i feedem aktualizacji czasu przejazdu. Te publiczne źródła pobierane są bez klucza API. Identyfikatory krajowego feedu dostają prefiks `rail/`, aby nie kolidowały z identyfikatorami MPK. Baza GTFS jest przechowywana w cache; jej ponowne załadowanie z cache jest oznaczane w wyniku. Obowiązywanie kursów jest liczone według kalendarza `Europe/Warsaw`, z uwzględnieniem wyjątków kalendarza GTFS. Dane realtime mają stan `live` do 90 sekund, `degraded` do 180 sekund, `stale` powyżej 180 sekund albo `unavailable`, gdy feed nie ma poprawnego znacznika czasu. Nieświeże aktualizacje nie zmieniają czasów kursów.
+`LodzTransitRouteProvider` łączy miejski rozkład MPK i jego feedy GTFS-Realtime z krajowym rozkładem pociągów PKP PLK/ŁKA i feedem aktualizacji czasu przejazdu. Te publiczne źródła pobierane są bez klucza API. Identyfikatory krajowego feedu dostają prefiks `rail/`, aby nie kolidowały z identyfikatorami MPK. Surowe archiwa GTFS i skompilowana baza indeksów są cache'owane przez 24 godziny; skompilowany indeks jest zapisany jako binarny plist ze znacznikiem wersji schematu, a jego zapis nie blokuje pierwszego wyniku. Obowiązywanie kursów jest liczone według kalendarza `Europe/Warsaw`, z uwzględnieniem wyjątków kalendarza GTFS. Dane realtime mają stan `live` do 90 sekund, `degraded` do 180 sekund, `stale` powyżej 180 sekund albo `unavailable`, gdy feed nie ma poprawnego znacznika czasu. Nieświeże aktualizacje nie zmieniają czasów kursów; odświeżenie realtime działa w tle, gdy nie ma świeżej migawki.
 
 ### Wybór połączeń
 
 Planer używa rund w stylu RAPTOR i stosuje następujące ograniczenia i kryteria:
 
-- Dla każdego końca wyszukuje obsługiwane stacje i przystanki w promieniu 10 km, niezależnie od tego, czy należą do krajowego feedu kolejowego, czy do miejskiego feedu MPK. Pyta Valhallę `/sources_to_targets` o czasy dojścia pieszo; do planu trafiają dojścia do 30 minut. Kandydaci kolei i MPK są wybierani osobno, żeby gęsta sieć miejskich przystanków nie wyparła pobliskiej stacji. Macierz jest dzielona na porcje po 40 celów.
-- Geometria dojścia, dojścia końcowego i transferów jest pobierana przez Valhallę `/route` dla pieszych. Jeśli routing macierzowy lub wyznaczenie geometrii nie powiedzie się, planer zgłasza błąd zamiast rysować dojście po prostej.
+- Dla każdego końca wyszukuje obsługiwane stacje i przystanki w promieniu 10 km, niezależnie od tego, czy należą do krajowego feedu kolejowego, czy do miejskiego feedu MPK. Pyta Valhallę `/sources_to_targets` o czasy dojścia pieszo; do planu trafiają dojścia do 30 minut. Kandydaci kolei i MPK są wybierani osobno, żeby gęsta sieć miejskich przystanków nie wyparła pobliskiej stacji. Najpierw sprawdzane są najbliższe 20 celów, a kolejne porcje po 20 są pobierane tylko wtedy, gdy brakuje osiągalnych dojść danego rodzaju.
+- Wynik macierzy pieszej może zawierać od razu geometrię. Planer zachowuje takie odcinki w pamięci podręcznej geometrii. Gdy macierz nie odpowiada, nie wysyła osobnego `/route` dla każdego przystanku: używa dostępnych wyników i cache, a brakujące dojścia szacuje z odległości w linii prostej, mnożąc ją przez 1,5 i przyjmując 0,9 m/s. Takie czasy i odcinki są oznaczone jako przybliżone w podsumowaniu trasy.
+- Po znalezieniu kandydatów interfejs pokazuje wstępną trasę, zanim skończy się pobieranie brakujących geometrii pieszych. W czasie weryfikacji geometria jest uzupełniana dla maksymalnie trzech kandydatów; wybór wariantu i rozpoczęcie nawigacji pozostają zablokowane do zakończenia walidacji przesiadek. Gdy pobranie geometrii nie powiedzie się, zachowywany jest orientacyjny przebieg; jeśli dokładna geometria wykaże, że transfer nie mieści się w czasie, ten wariant jest odrzucany.
 - Rozpatruje kursy w oknie do 18 godzin i szuka podróży składających się z jednego do czterech przejazdów pojazdem. Planowanie obejmuje stacje z krajowego feedu, więc cel podróży może leżeć poza województwem łódzkim.
 - Przy standardowym planowaniu żądany czas odjazdu to bieżąca chwila. Interfejs silnika przyjmuje też inny czas, ale `NavigationEngine` przekazuje `Date()`.
 - Przy przesiadce na tym samym przystanku wymaga co najmniej 60 sekund. Dane `transfers.txt` (w tym zakaz transferu typu 3), przejścia z `pathways.txt`, wspólna `parent_station` oraz osobne przystanki do 350 m budują skierowany graf dojść. Bufory z GTFS są zachowywane, a wybrane dojścia muszą zmieścić się w rzeczywistym czasie między kursami.
@@ -69,9 +72,9 @@ Warianty ocenia koszt uogólniony:
 czas jazdy + 1,6 × chodzenie + 1,25 × oczekiwanie + 4 min × liczba przesiadek
 ```
 
-Planer zachowuje do trzech różnych wariantów: najniższy koszt uogólniony, najszybszy, z najmniejszą liczbą przesiadek lub z najmniejszą ilością chodzenia. Wyniki przechodzą dodatkową walidację pieszych geometrii i czasu przesiadek. Geometria kursu pochodzi z kształtu GTFS, jeśli jest dostępny; w przeciwnym razie jest odtwarzana z pozycji przystanków.
+Planer zachowuje do trzech różnych wariantów: najniższy koszt uogólniony, najszybszy, z najmniejszą liczbą przesiadek lub z najmniejszą ilością chodzenia. Planowanie rejestruje osobno czas do pierwszego kandydata i czas do zakończenia walidacji geometrii. Geometria kursu pochodzi z kształtu GTFS, jeśli jest dostępny; w przeciwnym razie jest odtwarzana z pozycji przystanków.
 
-Graf transferów może przejść przez maksymalnie 12 krawędzi, z limitem 30 minut samego chodzenia. Planer działa w zakresie przystanków MPK Łódź i najbliższych okolic. Brak przystanków w zasięgu, brak osiągalnego połączenia albo niedostępny routing pieszy kończy się błędem, a nie trasą zastępczą.
+Graf transferów może przejść przez maksymalnie 12 krawędzi, z limitem 30 minut samego chodzenia. Planer działa w zakresie przystanków MPK Łódź i najbliższych okolic. Brak przystanków w zasięgu albo brak osiągalnego połączenia kończy się błędem. Przy awarii macierzy pieszej planer może zwrócić wariant z jawnie oznaczonym przybliżeniem dojścia; nie gwarantuje wtedy dokładnej trasy pieszego dojścia.
 
 ## P+R
 

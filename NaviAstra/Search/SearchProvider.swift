@@ -369,7 +369,7 @@ struct PhotonSearchProvider: SearchProvider {
         }
         return sorted
     }
-    static func normalized(_ value: String?) -> String {
+    nonisolated static func normalized(_ value: String?) -> String {
         (value ?? "").lowercased().filter { $0.isLetter || $0.isNumber || $0 == "/" }
     }
     static func houseNumber(in query: String) -> String? {

@@ -21,6 +21,7 @@ final class NavigationState {
     var routingPreferences = RoutingPreferences()
     var progress: RouteProgress?
     var transitProgress: TransitNavigationProgress?
+    var transitPlanningPhase: TransitPlanningPhase?
     var status: NavigationStatus = .idle
     var cameraState: NavigationCameraState = .browse
     var cameraIntent: CameraIntent?
@@ -190,7 +191,7 @@ nonisolated struct RouteProjection {
 }
 
 nonisolated enum MapMatcher {
-    static func project(_ location: Coordinate, onto route: [Coordinate]) -> RouteProjection? {
+    nonisolated static func project(_ location: Coordinate, onto route: [Coordinate]) -> RouteProjection? {
         guard route.count > 1 else { return nil }
         let metersPerLatitudeDegree = 110_574.0
         let metersPerLongitudeDegreeAtLocation = 111_320.0 * cos(location.latitude * .pi / 180)
@@ -273,7 +274,7 @@ nonisolated enum MapMatcher {
                 let headingDifference = min(difference, 360 - difference)
                 score += pow(headingDifference / 55, 2)
             }
-            if let previous, let expectedProgress {
+            if let expectedProgress {
                 let continuityScale = max(35, max(0, location.speed) * elapsed + accuracy * 2)
                 score += pow((candidate.projection.alongRoute - expectedProgress) / continuityScale, 2) * 0.35
             }
@@ -627,6 +628,7 @@ final class NavigationEngine {
     func selectTransportMode(_ mode: TransportMode) async {
         guard state.status != .navigating && state.status != .rerouting else { return }
         state.transportMode = mode
+        if mode != .transit { state.transitPlanningPhase = nil }
         if mode != .car { resetRoadSafetyData() }
         state.transitProgress = nil
         transitTripDetails = nil
@@ -647,6 +649,7 @@ final class NavigationEngine {
     func refreshTransitRouteIfNeeded() async {
         guard state.transportMode == .transit,
               (state.status == .routePreview || state.status == .navigating),
+              state.transitPlanningPhase == nil,
               !transitPlanRefreshInFlight,
               Date().timeIntervalSince(lastTransitPlanRefresh) >= 45,
               let destination = state.destination,
@@ -984,6 +987,7 @@ final class NavigationEngine {
         updateCameraIntent()
         state.route = nil
         state.routeOptions = []
+        state.transitPlanningPhase = nil
         resetRoadSafetyData()
         state.progress = nil
         state.transitProgress = nil
@@ -1305,6 +1309,7 @@ final class NavigationEngine {
         state.status = .routeCalculating
         state.route = nil
         state.routeOptions = []
+        state.transitPlanningPhase = nil
         state.progress = nil
         state.transitProgress = nil
         transitTripDetails = nil
@@ -1314,13 +1319,42 @@ final class NavigationEngine {
         state.errorMessage = nil
         // The destination camera stays in place until route geometry is available.
         do {
-            let routes = try await calculateRoutes(from: origin, to: destination.coordinate)
+            let routes: [NavigationRoute]
+            if state.transportMode == .transit {
+                routes = try await transitProvider.calculateRoutes(
+                    from: origin, to: destination.coordinate, departingAt: Date(),
+                    onProgress: { [weak self] phase in
+                        guard let self, self.requestGeneration == generation else { return }
+                        self.state.transitPlanningPhase = phase
+                    },
+                    onProvisionalRoutes: { [weak self] routes in
+                        guard let self, self.requestGeneration == generation,
+                              let firstRoute = routes.first else { return }
+                        self.state.route = firstRoute
+                        self.state.routeOptions = routes
+                        self.state.status = .routePreview
+                        self.state.transitPlanningPhase = .enrichingGeometry
+                        self.state.cameraState = .routeOverview
+                        self.lastTransitPlanRefresh = Date()
+                        self.updateProgress()
+                        self.updateCameraIntent()
+#if os(macOS)
+                        self.revealRoute()
+#else
+                        self.state.routeRevealProgress = 1
+#endif
+                    }
+                )
+            } else {
+                routes = try await calculateRoutes(from: origin, to: destination.coordinate)
+            }
             guard generation == requestGeneration else { return }
             guard let firstRoute = routes.first else { throw RoutingError.invalidResponse }
             state.route = firstRoute
             state.routeOptions = routes
             state.status = .routePreview
             state.cameraState = .routeOverview
+            state.transitPlanningPhase = nil
             if state.transportMode == .transit { lastTransitPlanRefresh = Date() }
             updateProgress()
             updateCameraIntent()
@@ -1336,12 +1370,16 @@ final class NavigationEngine {
             if usesRoadVoiceGuidance { loadRoadData(for: firstRoute) }
         } catch {
             guard generation == requestGeneration else { return }
+            state.route = nil
+            state.routeOptions = []
+            state.transitPlanningPhase = nil
             state.status = .error
             state.errorMessage = error.localizedDescription
         }
     }
     func select(_ route: NavigationRoute) {
         guard state.status == .routePreview,
+              state.transitPlanningPhase != .enrichingGeometry,
               state.route?.id != route.id,
               let selectedRoute = state.routeOptions.first(where: { $0.id == route.id }) else { return }
         state.route = selectedRoute
@@ -1367,7 +1405,8 @@ final class NavigationEngine {
         voice.updatePreferences(preferences)
     }
     func begin() {
-        guard let route = state.route,
+        guard state.transitPlanningPhase != .enrichingGeometry,
+              let route = state.route,
               (!usesJourneyVoiceGuidance || route.journey != nil) else { return }
         revealTask?.cancel()
         state.routeRevealProgress = 1
@@ -1406,6 +1445,7 @@ final class NavigationEngine {
         invalidateSpeedLimit()
         voice.reset()
         state.route = nil; state.routeOptions = []; state.progress = nil; state.destination = nil
+        state.transitPlanningPhase = nil
         resetRoadSafetyData()
         state.transitProgress = nil
         transitTripDetails = nil

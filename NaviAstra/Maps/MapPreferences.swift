@@ -102,7 +102,7 @@ enum MapPOICategory: Int, CaseIterable, Identifiable {
     var tileValues: [String] {
         switch self {
         case .fuel: ["fuel"]
-        case .parking: ["parking"]
+        case .parking: ["parking", "park_ride", "park_and_ride"]
         case .charging: ["charging_station"]
         case .food: ["food", "restaurant", "cafe", "fast_food", "bar", "pub", "bakery"]
         case .shopping: ["shop", "grocery", "supermarket", "mall", "clothes", "convenience"]
@@ -114,7 +114,7 @@ enum MapPOICategory: Int, CaseIterable, Identifiable {
     }
 }
 
-enum MapDisplayContext: String {
+enum MapDisplayContext: String, Equatable, Sendable {
     case browse, driving, walking, cycling, transit, approachingDestination
     var isNavigating: Bool { self != .browse }
     var relevantCategories: Set<MapPOICategory> {

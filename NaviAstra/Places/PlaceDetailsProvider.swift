@@ -298,7 +298,7 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         return partial.merging(downloaded)
     }
 
-    private static func normalized(_ value: String) -> String {
+    nonisolated private static func normalized(_ value: String) -> String {
         value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "pl_PL"))
             .filter { $0.isLetter || $0.isNumber }
     }

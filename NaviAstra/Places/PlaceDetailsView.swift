@@ -16,7 +16,11 @@ struct PlaceDetailsView: View {
     @State private var retry = 0
     @State private var showHours = false
     @State private var loadedAt: Date?
+    @State private var fuelPriceLookup: FuelPriceLookupResult?
+    @State private var fuelPriceError: String?
+    @State private var isLoadingFuelPrices = false
     private let provider = OpenStreetMapPlaceDetailsProvider()
+    private let fuelPriceProvider: any FuelPriceProvider = BenzynaMapaFuelPriceProvider.shared
 
     init(result: SearchResult, isSaved: Bool, onSave: @escaping () -> Bool,
          isNavigating: Bool = false, primaryActionTitle: String = "Wyznacz trasę",
@@ -80,6 +84,7 @@ struct PlaceDetailsView: View {
                     .font(.subheadline)
             }
             if let details { detailsContent(details) }
+            if isFuelStation { fuelPricesSection }
 
             if isLoading {
                 ProgressView("Uzupełnianie informacji…")
@@ -134,6 +139,114 @@ struct PlaceDetailsView: View {
                 var updated = current
                 updated.timeZoneIdentifier = timeZoneIdentifier
                 details = updated
+            }
+        }
+        .task(id: fuelPriceTaskID) {
+            isLoadingFuelPrices = false
+            fuelPriceLookup = nil
+            fuelPriceError = nil
+            guard isFuelStation else { return }
+
+            isLoadingFuelPrices = true
+            defer {
+                if !Task.isCancelled { isLoadingFuelPrices = false }
+            }
+            do {
+                let lookup = try await fuelPriceProvider.prices(for: FuelStationLookup(identity: result.placeIdentity))
+                guard !Task.isCancelled else { return }
+                fuelPriceLookup = lookup
+            } catch {
+                guard !Task.isCancelled else { return }
+                fuelPriceError = "Nie udało się pobrać cen paliw."
+            }
+        }
+    }
+
+    private var fuelPriceTaskID: String {
+        "\(result.placeIdentity.cacheKey)/\(details?.category ?? result.category ?? "")/\(retry)"
+    }
+
+    private var isFuelStation: Bool {
+        (details?.category ?? result.category)?.lowercased().split(separator: "=").last == "fuel"
+    }
+
+    private var fuelPricesSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Ceny paliw", systemImage: "fuelpump.fill")
+                .font(.subheadline.weight(.semibold))
+
+            if isLoadingFuelPrices {
+                ProgressView("Pobieranie cen…")
+                    .font(.caption)
+            } else if let fuelPriceError {
+                Text(fuelPriceError)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Spróbuj ponownie", systemImage: "arrow.clockwise") { retry += 1 }
+                    .font(.caption.weight(.semibold))
+            } else if let fuelPriceLookup {
+                fuelPriceLookupContent(fuelPriceLookup)
+            }
+
+            Link("Źródło: BenzynaMAPA.pl + OpenStreetMap",
+                 destination: URL(string: "https://benzynamapa.pl")!)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder
+    private func fuelPriceLookupContent(_ lookup: FuelPriceLookupResult) -> some View {
+        switch lookup {
+        case .outsideCoverage:
+            Text("Ceny BenzynaMAPA są dostępne dla stacji w Polsce.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .stationNotFound:
+            Text("Brak dopasowanych cen dla tej stacji.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .noPrices:
+            Text("Dostawca nie podał cen paliw dla tej stacji.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .prices(let report):
+            if report.prices.isEmpty {
+                Text("Dostawca nie podał cen paliw dla tej stacji.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading),
+                                    GridItem(.flexible(), alignment: .leading)],
+                          alignment: .leading, spacing: 8) {
+                    ForEach(report.prices) { price in
+                        HStack(spacing: 5) {
+                            Text(price.title)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 3)
+                            Text("\(price.isEstimated ? "~" : "")\(price.amount.formatted(.number.precision(.fractionLength(2)))) zł/l")
+                                .font(.subheadline.weight(.semibold).monospacedDigit())
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                        }
+                    }
+                }
+            }
+
+            if let source = report.source, !source.isEmpty {
+                Text("Dane: \(source)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if let reportedAt = report.reportedAt, !reportedAt.isEmpty {
+                Text("Aktualizacja: \(reportedAt)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
             }
         }
     }

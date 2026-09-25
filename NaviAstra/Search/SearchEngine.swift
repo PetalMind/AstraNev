@@ -13,7 +13,7 @@ struct ClassifiedQuery {
 }
 
 struct QueryClassifier {
-    static func normalize(_ text: String) -> String {
+    nonisolated static func normalize(_ text: String) -> String {
         text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "pl_PL"))
             .replacingOccurrences(of: "’", with: "'").trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -216,9 +216,9 @@ struct SearchEngine {
         if hasConflictingHouseNumbers(lhs.destination.address, rhs.destination.address) { return false }
 
         let leftNames = Set([lhs.destination.name, lhs.brand, lhs.operatorName]
-            .compactMap { $0 }.map(normalizedIdentity))
+            .compactMap { $0 }.map { Self.normalizedIdentity($0) })
         let rightNames = Set([rhs.destination.name, rhs.brand, rhs.operatorName]
-            .compactMap { $0 }.map(normalizedIdentity))
+            .compactMap { $0 }.map { Self.normalizedIdentity($0) })
         let sharedNames = leftNames.intersection(rightNames).filter { !$0.isEmpty }
         guard !sharedNames.isEmpty else { return false }
         let titleMatch = normalizedIdentity(lhs.destination.name) == normalizedIdentity(rhs.destination.name)
@@ -264,7 +264,7 @@ struct SearchEngine {
         return score
     }
 
-    private static func normalizedIdentity(_ value: String) -> String {
+    nonisolated private static func normalizedIdentity(_ value: String) -> String {
         QueryClassifier.normalize(value).filter { $0.isLetter || $0.isNumber }
     }
 

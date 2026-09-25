@@ -75,7 +75,7 @@ enum RoadAlertType: String, Codable, Equatable, Sendable {
         }
     }
 
-    var isEnforcement: Bool {
+    nonisolated var isEnforcement: Bool {
         switch self {
         case .speedCamera, .averageSpeedStart, .averageSpeedEnd, .redLightCamera: true
         default: false
@@ -513,7 +513,7 @@ private struct OverpassMember: Decodable {
 }
 
 nonisolated enum SpeedLimitParser {
-    static func parse(_ rawValue: String?, tags: [String: String] = [:]) -> Int? {
+    nonisolated static func parse(_ rawValue: String?, tags: [String: String] = [:]) -> Int? {
         guard let rawValue else { return polishLegalDefault(tags) }
         let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if value.hasPrefix("pl:") { return polishDefault(for: String(value.dropFirst(3)), tags: tags) }
@@ -524,21 +524,21 @@ nonisolated enum SpeedLimitParser {
         return Int(kmh.rounded())
     }
 
-    static func hasPolishLegalDefault(_ tags: [String: String]) -> Bool {
+    nonisolated static func hasPolishLegalDefault(_ tags: [String: String]) -> Bool {
         let contexts = [tags["source:maxspeed"], tags["maxspeed:type"], tags["zone:traffic"]]
             .compactMap { $0 }
         return contexts.contains { $0.lowercased().hasPrefix("pl:") }
             || tags["maxspeed"]?.lowercased().hasPrefix("pl:") == true
     }
 
-    private static func polishLegalDefault(_ tags: [String: String]) -> Int? {
+    nonisolated private static func polishLegalDefault(_ tags: [String: String]) -> Int? {
         let context = [tags["source:maxspeed"], tags["maxspeed:type"], tags["zone:traffic"]]
             .compactMap { $0 }.first { $0.lowercased().hasPrefix("pl:") }
         guard let context else { return nil }
         return polishDefault(for: String(context.dropFirst(3)).lowercased(), tags: tags)
     }
 
-    private static func polishDefault(for context: String, tags: [String: String]) -> Int? {
+    nonisolated private static func polishDefault(for context: String, tags: [String: String]) -> Int? {
         switch context {
         case "urban": return 50
         case "living_street": return 20
@@ -560,7 +560,7 @@ nonisolated enum SpeedLimitParser {
         }
     }
 
-    private static func isDualCarriageway(_ tags: [String: String]) -> Bool? {
+    nonisolated private static func isDualCarriageway(_ tags: [String: String]) -> Bool? {
         if tags["dual_carriageway"] == "yes" { return true }
         if tags["dual_carriageway"] == "no" { return false }
         guard ["yes", "-1"].contains(tags["oneway"] ?? ""),
@@ -570,7 +570,7 @@ nonisolated enum SpeedLimitParser {
         return true
     }
 
-    private static func hasTwoLanesEachDirection(_ tags: [String: String]) -> Bool? {
+    nonisolated private static func hasTwoLanesEachDirection(_ tags: [String: String]) -> Bool? {
         if let forward = Int(tags["lanes:forward"] ?? ""),
            let backward = Int(tags["lanes:backward"] ?? "") {
             return forward >= 2 && backward >= 2
@@ -588,9 +588,9 @@ nonisolated enum SpeedLimitParser {
 }
 
 nonisolated enum ConditionalSpeedLimitResolver {
-    static func speedLimit(tags: [String: String], heading: Double,
-                           segment: OSMRoadSpeedSegment, projection: RouteProjection,
-                           date: Date, timeZone: TimeZone) -> Int? {
+    nonisolated static func speedLimit(tags: [String: String], heading: Double,
+                                      segment: OSMRoadSpeedSegment, projection: RouteProjection,
+                                      date: Date, timeZone: TimeZone) -> Int? {
         let forward: Bool
         if let direction = isForward(heading: heading, segment: segment, projection: projection) {
             forward = direction
@@ -625,8 +625,8 @@ nonisolated enum ConditionalSpeedLimitResolver {
         return matchedLimit ?? SpeedLimitParser.parse(baseValue, tags: tags)
     }
 
-    fileprivate static func isForward(heading: Double, segment: OSMRoadSpeedSegment,
-                                      projection: RouteProjection) -> Bool? {
+    nonisolated fileprivate static func isForward(heading: Double, segment: OSMRoadSpeedSegment,
+                                                  projection: RouteProjection) -> Bool? {
         guard heading >= 0, heading <= 360,
               segment.coordinates.indices.contains(projection.segment + 1) else { return nil }
         let start = segment.coordinates[projection.segment]
@@ -638,7 +638,7 @@ nonisolated enum ConditionalSpeedLimitResolver {
         return min(difference, 360 - difference) <= 90
     }
 
-    fileprivate static func hasDirectionalRules(_ tags: [String: String]) -> Bool {
+    nonisolated fileprivate static func hasDirectionalRules(_ tags: [String: String]) -> Bool {
         let forwardBase = tags["maxspeed:forward"] ?? tags["maxspeed"]
         let backwardBase = tags["maxspeed:backward"] ?? tags["maxspeed"]
         let forwardConditional = tags["maxspeed:forward:conditional"] ?? tags["maxspeed:conditional"]
@@ -646,8 +646,8 @@ nonisolated enum ConditionalSpeedLimitResolver {
         return forwardBase != backwardBase || forwardConditional != backwardConditional
     }
 
-    private static func conditionApplies(_ rawCondition: String, date: Date,
-                                         timeZone: TimeZone) -> Bool? {
+    nonisolated private static func conditionApplies(_ rawCondition: String, date: Date,
+                                                     timeZone: TimeZone) -> Bool? {
         let condition = rawCondition.trimmingCharacters(in: .whitespacesAndNewlines)
         let dayNames = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
         let tokens = condition.split(whereSeparator: \.isWhitespace).map(String.init)
@@ -690,7 +690,7 @@ nonisolated enum ConditionalSpeedLimitResolver {
         return false
     }
 
-    private static func parseTimeRange(_ value: String) -> (Int, Int)? {
+    nonisolated private static func parseTimeRange(_ value: String) -> (Int, Int)? {
         let parts = value.split(separator: "-", omittingEmptySubsequences: false)
         guard parts.count == 2,
               let start = parseMinute(String(parts[0])),
@@ -698,7 +698,7 @@ nonisolated enum ConditionalSpeedLimitResolver {
         return (start, end)
     }
 
-    private static func parseMinute(_ value: String) -> Int? {
+    nonisolated private static func parseMinute(_ value: String) -> Int? {
         let parts = value.split(separator: ":", omittingEmptySubsequences: false)
         guard parts.count == 2, let hour = Int(parts[0]), let minute = Int(parts[1]),
               (0...24).contains(hour), (0...59).contains(minute),
@@ -706,7 +706,7 @@ nonisolated enum ConditionalSpeedLimitResolver {
         return hour * 60 + minute
     }
 
-    private static func parseDays(_ value: String, dayNames: [String]) -> Set<Int>? {
+    nonisolated private static func parseDays(_ value: String, dayNames: [String]) -> Set<Int>? {
         var days: Set<Int> = []
         for part in value.split(separator: ",") {
             let bounds = part.split(separator: "-", omittingEmptySubsequences: false).map(String.init)

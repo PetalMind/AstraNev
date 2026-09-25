@@ -1064,6 +1064,23 @@ struct ContentView: View {
                         Text("Pojazdami \(transitMetricTime(rideDuration)) · pieszo \(transitMetricTime(journey.walkingDuration)) · czekanie \(transitMetricTime(journey.waitingDuration)) · przesiadki: \(journey.transferCount)")
                             .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                     }
+                    if engine.state.transitPlanningPhase == .enrichingGeometry {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Znaleziono połączenia. Uzupełniam przebieg dojść pieszych…")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    } else if journey.legs.contains(where: {
+                        $0.mode == "WALK" && $0.walkingTimeIsApproximate
+                    }) {
+                        Label("Czasy dojść są szacunkowe.", systemImage: "info.circle")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    } else if journey.legs.contains(where: {
+                        $0.mode == "WALK" && !$0.hasResolvedWalkingGeometry
+                    }) {
+                        Label("Przebieg dojść jest pokazany orientacyjnie.", systemImage: "info.circle")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                 }
 
                 if routePreviewExpanded {
@@ -1232,7 +1249,10 @@ struct ContentView: View {
             } else if engine.state.status == .routeCalculating {
                 HStack(spacing: 10) {
                     ProgressView()
-                    Text("Wyznaczanie trasy…")
+                    Text(engine.state.transportMode == .transit
+                         ? (engine.state.transitPlanningPhase == .loadingSchedule
+                            ? "Aktualizuję rozkłady…" : "Szukam połączeń…")
+                         : "Wyznaczanie trasy…")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -1275,8 +1295,10 @@ struct ContentView: View {
                 .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(engine.state.status != .routePreview)
-        .opacity(engine.state.status == .routePreview ? 1 : 0.55)
+        .disabled(engine.state.status != .routePreview
+                  || engine.state.transitPlanningPhase == .enrichingGeometry)
+        .opacity(engine.state.status == .routePreview
+                 && engine.state.transitPlanningPhase != .enrichingGeometry ? 1 : 0.55)
     }
 
     private var transportSelector: some View {
@@ -1455,6 +1477,7 @@ struct ContentView: View {
             }
         }
         .buttonStyle(.plain)
+        .disabled(engine.state.transitPlanningPhase == .enrichingGeometry)
         .accessibilityLabel("Trasa \(index), \(time(route.expectedTravelTime)), \(distance(route.distance))")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
