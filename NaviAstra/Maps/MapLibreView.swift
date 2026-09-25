@@ -7,8 +7,42 @@ import UIKit
 
 private nonisolated enum RouteLineKind: Equatable {
     case activeCasing, active, activeHighlight, future, alternative, traveled, traffic, departed, accuracy
+    case incidentCasing, incident(color: UInt32)
     case journeyCasing(walking: Bool, cycling: Bool)
     case journeyLeg(color: UInt32, walking: Bool, cycling: Bool)
+}
+
+private struct IncidentLineRenderItem: Equatable {
+    let id: String
+    let coordinates: [Coordinate]
+    let colorHex: UInt32
+}
+
+private struct TrafficMapEvent {
+    let id: String
+    let coordinate: Coordinate
+    let title: String
+    let subtitle: String
+    let categoryLabel: String
+    let presentation: TrafficMapPresentation
+
+    init(_ incident: TrafficIncident) {
+        id = "incident:\(incident.id)"
+        coordinate = incident.coordinate
+        title = incident.mapTitle
+        subtitle = incident.mapSubtitle
+        categoryLabel = incident.category.mapLabel
+        presentation = TrafficMapPresentation(incident)
+    }
+
+    init(_ alert: RoadSafetyAlert, routeDistance: Double) {
+        id = "alert:\(alert.id)"
+        coordinate = alert.coordinate
+        title = alert.title
+        subtitle = "\(alert.distanceText(from: routeDistance)) · © OpenStreetMap contributors"
+        categoryLabel = alert.type.title
+        presentation = TrafficMapPresentation(alert)
+    }
 }
 
 private struct TransitStopRenderKey: Equatable {
@@ -94,6 +128,8 @@ struct MapLibreView: UIViewRepresentable {
         var parent: MapLibreView
         weak var map: MLNMapView?
         private var routeLines: [StyledLine] = []
+        private var incidentLinesByID: [String: [StyledLine]] = [:]
+        private var incidentLineRenderItems: [IncidentLineRenderItem] = []
         private var activeRouteSource: MLNShapeSource?
         private var revealGeometry: RouteRevealGeometry?
         private var revealRouteID: UUID?
@@ -119,11 +155,10 @@ struct MapLibreView: UIViewRepresentable {
         private var closurePin: MLNPointAnnotation?
         private var searchPins: [MLNPointAnnotation] = []
         private var searchIDs: [UUID] = []
-        private var incidentPins: [MLNPointAnnotation] = []
-        private var shownIncidentIDs: [String] = []
+        private var trafficEventPins: [MLNPointAnnotation] = []
+        private var shownTrafficEventGroupIDs: [String] = []
+        private var shownTrafficEventGroups: [[TrafficMapEvent]] = []
         private var shownIncidents: [TrafficIncident] = []
-        private var roadAlertPins: [MLNPointAnnotation] = []
-        private var shownRoadAlertIDs: [String] = []
         private var shownRoadAlerts: [RoadSafetyAlert] = []
         private var shownRouteIDs: [UUID]?
         private var shownActiveTargetID: UUID?
@@ -139,6 +174,7 @@ struct MapLibreView: UIViewRepresentable {
         private var trafficRasterVisible: Bool?
         private var lastStatus: NavigationStatus?
         private var lastColorScheme: ColorScheme?
+        private var lastPOIMarkerDark: Bool?
         private var lastStyleURL: URL?
         private var lastViewportPadding: CameraPadding?
         private var lastMapSize: CGSize = .zero
@@ -179,8 +215,8 @@ struct MapLibreView: UIViewRepresentable {
             let touchRect = CGRect(origin: point, size: .zero).insetBy(dx: -22, dy: -22)
             let tappedCoordinate = map.convert(point, toCoordinateFrom: map)
             let tappedLocation = CLLocation(latitude: tappedCoordinate.latitude, longitude: tappedCoordinate.longitude)
-            let appAnnotations = searchPins + incidentPins + Array(transitVehiclePins.values)
-                + roadAlertPins + Array(transitStopPins.values) + [destinationPin, vehiclePin, closurePin].compactMap { $0 }
+            let appAnnotations = searchPins + trafficEventPins + Array(transitVehiclePins.values)
+                + Array(transitStopPins.values) + [destinationPin, vehiclePin, closurePin].compactMap { $0 }
             guard !appAnnotations.contains(where: { annotation in
                 let location = CLLocation(latitude: annotation.coordinate.latitude, longitude: annotation.coordinate.longitude)
                 return location.distance(from: tappedLocation) < 25
@@ -272,6 +308,7 @@ struct MapLibreView: UIViewRepresentable {
                 navigationStyle.reset()
             }
             updatePOIDensity(on: map)
+            updatePOIMarkerAppearance(on: map)
             let routes = parent.state.alternatives + (parent.state.route.map { [$0] } ?? [])
             let routeIDs = routes.map(\.id)
             let revealStep = Int((parent.state.routeRevealProgress * 1_000).rounded())
@@ -344,58 +381,20 @@ struct MapLibreView: UIViewRepresentable {
                 destinationPin?.coordinate = destination.coordinate.cl
             } else if let pin = destinationPin { map.removeAnnotation(pin); destinationPin = nil }
 
+            updateIncidentPins(on: map)
+            updateIncidentLines(on: map)
             let routeDistance = parent.state.progress?.traveledDistance ?? 0
             let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
-            let incidents = parent.settings.overlays.traffic
-                ? (parent.state.traffic?.incidents ?? []).filter { incident in
-                    guard isNavigating else { return true }
-                    guard let distance = incident.distanceAlongRoute else { return false }
-                    return distance > routeDistance && distance <= routeDistance + 12_000
-                }
-                : []
-            let incidentIDs = incidents.map(\.id)
-            if incidentIDs != shownIncidentIDs {
-                map.removeAnnotations(incidentPins)
-                incidentPins = incidents.map { incident in
-                    let pin = MLNPointAnnotation()
-                    pin.coordinate = incident.coordinate.cl
-                    pin.title = incident.mapTitle
-                    pin.subtitle = incident.mapSubtitle
-                    return pin
-                }
-                map.addAnnotations(incidentPins)
-                shownIncidentIDs = incidentIDs
-            }
-            shownIncidents = Array(incidents)
-            for (incident, pin) in zip(incidents, incidentPins) {
-                pin.coordinate = incident.coordinate.cl
-                pin.title = incident.mapTitle
-                pin.subtitle = incident.mapSubtitle
-            }
-            let roadAlerts = (!showsOnlyRouteEndpoints ? parent.state.roadSafetyAlerts : [])
+            let roadAlerts = ((!showsOnlyRouteEndpoints || isNavigating) ? parent.state.roadSafetyAlerts : [])
                 .filter { alert in
                     guard let distance = alert.distanceAlongRoute else { return false }
                     return distance >= routeDistance - 60 && distance <= routeDistance + 20_000
+                        && (!isNavigating || alert.type.isImportantDuringNavigation)
                 }
                 .sorted { ($0.distanceAlongRoute ?? .infinity) < ($1.distanceAlongRoute ?? .infinity) }
                 .prefix(40)
-            let alertIDs = roadAlerts.map(\.id)
-            if alertIDs != shownRoadAlertIDs {
-                map.removeAnnotations(roadAlertPins)
-                roadAlertPins = roadAlerts.map { alert in
-                    let pin = MLNPointAnnotation()
-                    pin.coordinate = alert.coordinate.cl
-                    return pin
-                }
-                map.addAnnotations(roadAlertPins)
-                shownRoadAlertIDs = alertIDs
-            }
             shownRoadAlerts = Array(roadAlerts)
-            for (alert, pin) in zip(roadAlerts, roadAlertPins) {
-                pin.coordinate = alert.coordinate.cl
-                pin.title = alert.title
-                pin.subtitle = roadAlertSubtitle(alert, routeDistance: routeDistance)
-            }
+            updateTrafficEventPins(on: map, routeDistance: routeDistance)
             scheduleTransitAnnotationUpdate(on: map)
             updateSelectedTransitLine(on: map)
 
@@ -771,9 +770,25 @@ struct MapLibreView: UIViewRepresentable {
 
         private func updatePOIDensity(on map: MLNMapView) {
             guard let style = map.style else { return }
-            let dark = parent.settings.appearance == .night ||
+            navigationStyle.apply(to: style, settings: parent.settings, dark: usesDarkMapAppearance, zoom: map.zoomLevel)
+        }
+
+        private var usesDarkMapAppearance: Bool {
+            parent.settings.appearance == .night ||
                 (parent.settings.appearance == .auto && parent.colorScheme == .dark)
-            navigationStyle.apply(to: style, settings: parent.settings, dark: dark, zoom: map.zoomLevel)
+        }
+
+        private func updatePOIMarkerAppearance(on map: MLNMapView) {
+            let dark = usesDarkMapAppearance
+            guard lastPOIMarkerDark != dark else { return }
+            lastPOIMarkerDark = dark
+            for (index, pin) in searchPins.enumerated()
+                where parent.state.searchResults.indices.contains(index) {
+                guard parent.state.searchResults[index].isPOI,
+                      let kind = PlacePOIMapMarkerKind(category: parent.state.searchResults[index].category),
+                      let marker = map.view(for: pin) else { continue }
+                stylePlacePOIMarker(marker, annotation: pin, kind: kind, dark: dark)
+            }
         }
 
         private func applyCameraIntent(to map: MLNMapView) {
@@ -849,13 +864,16 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MLNMapView, viewFor annotation: MLNAnnotation) -> MLNAnnotationView? {
-            if let index = incidentPins.firstIndex(where: { $0 === annotation }),
-               shownIncidents.indices.contains(index) {
-                let incident = shownIncidents[index]
+            if let index = trafficEventPins.firstIndex(where: { $0 === annotation }),
+               shownTrafficEventGroups.indices.contains(index),
+               let event = shownTrafficEventGroups[index].max(by: {
+                   $0.presentation.clusterPriority < $1.presentation.clusterPriority
+               }) {
                 return trafficMarkerView(for: annotation,
-                                         reuseIdentifier: "traffic-incident-\(incident.category.rawValue)",
-                                         symbolName: incident.isRoadClosure ? "xmark.octagon.fill" : "exclamationmark.triangle.fill",
-                                         color: incident.isRoadClosure ? .systemRed : .systemOrange)
+                                         reuseIdentifier: "traffic-event-\(event.id)",
+                                         presentation: event.presentation,
+                                         clusterCount: shownTrafficEventGroups[index].count > 1
+                                            ? shownTrafficEventGroups[index].count : nil)
             }
 
             if let closurePin, annotation === closurePin {
@@ -869,7 +887,7 @@ struct MapLibreView: UIViewRepresentable {
                 if parent.state.searchResults.indices.contains(index),
                    parent.state.searchResults[index].isPOI,
                    let kind = PlacePOIMapMarkerKind(category: parent.state.searchResults[index].category) {
-                    return placePOIMarkerView(for: annotation, kind: kind)
+                    return placePOIMarkerView(for: annotation, kind: kind, dark: usesDarkMapAppearance)
                 }
                 let marker = MLNAnnotationView(reuseIdentifier: nil)
                 marker.frame = CGRect(x: 0, y: 0, width: 32, height: 32)
@@ -891,26 +909,6 @@ struct MapLibreView: UIViewRepresentable {
                     zoom: mapView.zoomLevel, selected: false, active: false, alighting: false)
                 styleTransitStopMarker(marker, presentation: presentation)
                 transitStopMarkerStates[stopID] = presentation
-                return marker
-            }
-
-            if let alertIndex = roadAlertPins.firstIndex(where: { $0 === annotation }),
-               shownRoadAlerts.indices.contains(alertIndex) {
-                let alert = shownRoadAlerts[alertIndex]
-                let marker = MLNAnnotationView(reuseIdentifier: "road-alert-\(alert.type.rawValue)")
-                marker.frame = CGRect(x: 0, y: 0, width: 30, height: 30)
-                marker.backgroundColor = .systemOrange
-                marker.layer.cornerRadius = 15
-                marker.layer.borderWidth = 1.5
-                marker.layer.borderColor = UIColor.white.cgColor
-                marker.layer.shadowColor = UIColor.black.cgColor
-                marker.layer.shadowOpacity = 0.22
-                marker.layer.shadowRadius = 3
-                let image = UIImageView(image: UIImage(systemName: alert.type.symbolName))
-                image.tintColor = .white
-                image.contentMode = .scaleAspectFit
-                image.frame = CGRect(x: 7, y: 7, width: 16, height: 16)
-                marker.addSubview(image)
                 return marker
             }
 
@@ -1026,34 +1024,95 @@ struct MapLibreView: UIViewRepresentable {
             return marker
         }
 
+        private func trafficMarkerView(for annotation: MLNAnnotation,
+                                       reuseIdentifier: String,
+                                       presentation: TrafficMapPresentation,
+                                       clusterCount: Int? = nil) -> MLNAnnotationView {
+            let marker = MLNAnnotationView(reuseIdentifier: reuseIdentifier)
+            let size = CGFloat(clusterCount == nil ? presentation.markerSize : 38)
+            marker.frame = CGRect(x: 0, y: 0, width: size, height: size)
+            marker.backgroundColor = UIColor(
+                red: CGFloat((presentation.colorHex >> 16) & 0xff) / 255,
+                green: CGFloat((presentation.colorHex >> 8) & 0xff) / 255,
+                blue: CGFloat(presentation.colorHex & 0xff) / 255, alpha: 1)
+            marker.layer.cornerRadius = size / 2
+            marker.layer.borderWidth = presentation.isCritical ? 2.5 : 1.5
+            marker.layer.borderColor = (presentation.isCritical ? UIColor.systemRed : UIColor.white).cgColor
+            marker.layer.shadowColor = (presentation.isCritical ? UIColor.systemRed : marker.backgroundColor)?.cgColor
+            marker.layer.shadowOpacity = presentation.isCritical ? 0.48 : 0.24
+            marker.layer.shadowRadius = presentation.isCritical ? 5 : 3
+            marker.isAccessibilityElement = true
+            marker.accessibilityLabel = annotation.title ?? "Informacja o ruchu"
+            marker.accessibilityHint = annotation.subtitle.flatMap { $0 }
+            if let clusterCount {
+                let label = UILabel(frame: marker.bounds)
+                label.text = String(clusterCount)
+                label.textAlignment = .center
+                label.textColor = .white
+                label.font = .boldSystemFont(ofSize: 15)
+                marker.addSubview(label)
+            } else {
+                let glyphSize = size * 0.54
+                let image = UIImageView(image: UIImage(systemName: presentation.symbolName))
+                image.tintColor = .white
+                image.contentMode = .scaleAspectFit
+                image.frame = CGRect(x: (size - glyphSize) / 2, y: (size - glyphSize) / 2,
+                                     width: glyphSize, height: glyphSize)
+                marker.addSubview(image)
+            }
+            return marker
+        }
+
+        func mapView(_ mapView: MLNMapView, didSelect view: MLNAnnotationView) {
+            guard let annotation = view.annotation,
+                  trafficEventPins.contains(where: { $0 === annotation }) else { return }
+            let scale = 42 / max(1, view.bounds.width)
+            UIView.animate(withDuration: 0.16) { view.transform = CGAffineTransform(scaleX: scale, y: scale) }
+        }
+
+        func mapView(_ mapView: MLNMapView, didDeselect view: MLNAnnotationView) {
+            UIView.animate(withDuration: 0.14) { view.transform = .identity }
+        }
+
         private func placePOIMarkerView(for annotation: MLNAnnotation,
-                                        kind: PlacePOIMapMarkerKind) -> MLNAnnotationView {
+                                        kind: PlacePOIMapMarkerKind, dark: Bool) -> MLNAnnotationView {
             let marker = MLNAnnotationView(reuseIdentifier: "poi-\(kind.rawValue)")
+            stylePlacePOIMarker(marker, annotation: annotation, kind: kind, dark: dark)
+            return marker
+        }
+
+        private func stylePlacePOIMarker(_ marker: MLNAnnotationView, annotation: MLNAnnotation,
+                                         kind: PlacePOIMapMarkerKind, dark: Bool) {
+            marker.subviews.forEach { $0.removeFromSuperview() }
             marker.frame = CGRect(x: 0, y: 0, width: 36, height: 36)
-            marker.backgroundColor = UIColor.secondarySystemBackground
-            marker.layer.cornerRadius = 10
-            marker.layer.borderWidth = 2
-            let color = UIColor(red: CGFloat((kind.accentHex >> 16) & 0xff) / 255,
-                                green: CGFloat((kind.accentHex >> 8) & 0xff) / 255,
-                                blue: CGFloat(kind.accentHex & 0xff) / 255, alpha: 1)
+            let background = PlacePOIMapPalette.backgroundHex(dark: dark)
+            marker.backgroundColor = UIColor(red: CGFloat((background >> 16) & 0xff) / 255,
+                                              green: CGFloat((background >> 8) & 0xff) / 255,
+                                              blue: CGFloat(background & 0xff) / 255, alpha: 1)
+            marker.layer.cornerRadius = 11
+            marker.layer.borderWidth = 1.8
+            let color = PlacePOIMapPalette.accentColor(dark: dark)
             marker.layer.borderColor = color.cgColor
             marker.layer.shadowColor = UIColor.black.cgColor
             marker.layer.shadowOpacity = 0.18
             marker.layer.shadowRadius = 3
             marker.layer.shadowOffset = CGSize(width: 0, height: 1)
-            marker.addSubview(PlacePOIMapGlyphView(frame: marker.bounds.insetBy(dx: 7, dy: 7),
-                                                   kind: kind, tint: color))
+            let glyph = UIImageView(image: UIImage(systemName: kind.symbolName,
+                                                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 18,
+                                                                                                   weight: .semibold)))
+            glyph.tintColor = color
+            glyph.contentMode = .scaleAspectFit
+            glyph.frame = marker.bounds.insetBy(dx: 8, dy: 8)
+            marker.addSubview(glyph)
             marker.isAccessibilityElement = true
             marker.accessibilityLabel = "\(kind.accessibilityName): \(annotation.title.flatMap { $0 } ?? "")"
             marker.accessibilityHint = annotation.subtitle.flatMap { $0 }
-            return marker
         }
 
         func mapView(_ mapView: MLNMapView, annotationCanShowCallout annotation: MLNAnnotation) -> Bool {
             transitVehiclePins.values.contains { $0 === annotation }
                 || transitStopPins.values.contains { $0 === annotation }
-                || roadAlertPins.contains { $0 === annotation }
-                || incidentPins.contains { $0 === annotation }
+                || trafficEventPins.contains { $0 === annotation }
                 || (closurePin.map { $0 === annotation } ?? false)
         }
 
@@ -1069,7 +1128,129 @@ struct MapLibreView: UIViewRepresentable {
                 parent.onMapPan()
             }
             updatePOIDensity(on: mapView)
+            updateIncidentPins(on: mapView)
+            updateTrafficEventPins(on: mapView,
+                                   routeDistance: parent.state.progress?.traveledDistance ?? 0)
             scheduleTransitAnnotationUpdate(on: mapView)
+        }
+
+        private func updateIncidentPins(on map: MLNMapView) {
+            let routeDistance = parent.state.progress?.traveledDistance ?? 0
+            let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
+            let incidents = parent.settings.overlays.traffic
+                ? (parent.state.traffic?.incidents ?? []).filter { incident in
+                    guard isNavigating else { return true }
+                    guard incident.isImportantDuringNavigation,
+                          let distance = incident.distanceAlongRoute else { return false }
+                    return distance > routeDistance && distance <= routeDistance + 12_000
+                }
+                : []
+            shownIncidents = incidents
+        }
+
+        private func updateTrafficEventPins(on map: MLNMapView, routeDistance: Double) {
+            let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
+            let events = MainActor.assumeIsolated {
+                shownIncidents.map(TrafficMapEvent.init)
+                    + shownRoadAlerts.map { TrafficMapEvent($0, routeDistance: routeDistance) }
+            }
+            let groups = clusteredTrafficEvents(events, on: map, isNavigating: isNavigating)
+            let groupIDs = groups.map {
+                $0.map { "\($0.id):\($0.presentation.colorHex):\($0.presentation.priority)" }
+                    .sorted().joined(separator: ",")
+            }
+            if groupIDs != shownTrafficEventGroupIDs {
+                map.removeAnnotations(trafficEventPins)
+                trafficEventPins = groups.map { group in
+                    let pin = MLNPointAnnotation()
+                    pin.coordinate = trafficEventCenter(group).cl
+                    if group.count == 1, let event = group.first {
+                        pin.title = event.title
+                        pin.subtitle = event.subtitle
+                    } else {
+                        pin.title = "\(group.count) zdarzenia drogowe"
+                        pin.subtitle = trafficEventClusterSubtitle(group)
+                    }
+                    return pin
+                }
+                map.addAnnotations(trafficEventPins)
+                shownTrafficEventGroupIDs = groupIDs
+            }
+            shownTrafficEventGroups = groups
+            for (group, pin) in zip(groups, trafficEventPins) {
+                pin.coordinate = trafficEventCenter(group).cl
+                if group.count == 1, let event = group.first {
+                    pin.title = event.title
+                    pin.subtitle = event.subtitle
+                } else {
+                    pin.title = "\(group.count) zdarzenia drogowe"
+                    pin.subtitle = trafficEventClusterSubtitle(group)
+                }
+            }
+        }
+
+        private func clusteredTrafficEvents(_ events: [TrafficMapEvent], on map: MLNMapView,
+                                            isNavigating: Bool) -> [[TrafficMapEvent]] {
+            guard map.zoomLevel < 13.2, !isNavigating, events.count > 1 else {
+                return events.map { [$0] }
+            }
+            let points = events.map { map.convert($0.coordinate.cl, toPointTo: map) }
+            var remaining = Set(events.indices)
+            var groups: [[TrafficMapEvent]] = []
+            while let first = remaining.min() {
+                remaining.remove(first)
+                var component = [first]
+                var frontier = [first]
+                while let current = frontier.popLast() {
+                    let matches = remaining.filter { candidate in
+                        hypot(points[current].x - points[candidate].x,
+                              points[current].y - points[candidate].y) < 44
+                    }
+                    for match in matches {
+                        remaining.remove(match)
+                        frontier.append(match)
+                        component.append(match)
+                    }
+                }
+                groups.append(component.map { events[$0] })
+            }
+            return groups
+        }
+
+        private func trafficEventCenter(_ group: [TrafficMapEvent]) -> Coordinate {
+            guard group.count > 1 else { return group.first?.coordinate ?? Coordinate(latitude: 0, longitude: 0) }
+            return Coordinate(latitude: group.map(\.coordinate.latitude).reduce(0, +) / Double(group.count),
+                              longitude: group.map(\.coordinate.longitude).reduce(0, +) / Double(group.count))
+        }
+
+        private func trafficEventClusterSubtitle(_ group: [TrafficMapEvent]) -> String {
+            Array(Set(group.map(\.categoryLabel))).sorted().prefix(3).joined(separator: " · ")
+        }
+
+        private func updateIncidentLines(on map: MLNMapView) {
+            let renderItems = shownIncidents.filter { $0.geometry.count > 1 }.map {
+                IncidentLineRenderItem(id: $0.id, coordinates: $0.geometry,
+                                       colorHex: TrafficMapPresentation($0).colorHex)
+            }.sorted { $0.id < $1.id }
+            guard renderItems != incidentLineRenderItems else { return }
+            map.removeAnnotations(incidentLinesByID.values.flatMap { $0.map(\.polyline) })
+            incidentLinesByID.removeAll()
+            incidentLineRenderItems = renderItems
+            for item in renderItems {
+                let casing = makeIncidentLine(item.coordinates, kind: .incidentCasing, on: map)
+                let line = makeIncidentLine(item.coordinates, kind: .incident(color: item.colorHex), on: map)
+                incidentLinesByID[item.id] = [casing, line]
+            }
+        }
+
+        private func makeIncidentLine(_ coordinates: [Coordinate], kind: RouteLineKind,
+                                      on map: MLNMapView) -> StyledLine {
+            var points = coordinates.map(\.cl)
+            let polyline = MLNPolyline(coordinates: &points, count: UInt(points.count))
+            let line = StyledLine(polyline: polyline, coordinates: coordinates, kind: kind,
+                                  routeID: nil, transitionFrom: nil, transitionStartedAt: nil)
+            map.addAnnotation(polyline)
+            return line
         }
 
         func mapView(_ mapView: MLNMapView, strokeColorForShapeAnnotation annotation: MLNShape) -> UIColor {
@@ -1372,10 +1553,11 @@ struct MapLibreView: UIViewRepresentable {
                 ? parent.state.trafficDarkTileURLTemplate
                 : parent.state.trafficLightTileURLTemplate
             let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
-            let isVisible = parent.settings.overlays.traffic && !isNavigating
-            let incidentTemplate = parent.colorScheme == .dark
+            let isVisible = parent.settings.overlays.traffic
+            let requestedIncidentTemplate = parent.colorScheme == .dark
                 ? parent.state.trafficDarkIncidentTileURLTemplate
                 : parent.state.trafficLightIncidentTileURLTemplate
+            let incidentTemplate = isNavigating ? nil : requestedIncidentTemplate
             let templateKey = "\(flowTemplate ?? "")|\(incidentTemplate ?? "")"
             guard templateKey != trafficRasterTemplate || isVisible != trafficRasterVisible else { return }
             guard let style = map.style else { return }
@@ -1434,6 +1616,7 @@ struct MapLibreView: UIViewRepresentable {
 
         private func styledLine(for polyline: MLNPolyline) -> StyledLine? {
             if let line = routeLines.first(where: { $0.polyline === polyline }) { return line }
+            if let line = incidentLinesByID.values.joined().first(where: { $0.polyline === polyline }) { return line }
             if accuracyHaloLine?.polyline === polyline { return accuracyHaloLine }
             if traveledLine?.polyline === polyline { return traveledLine }
             if trafficLine?.polyline === polyline { return trafficLine }
@@ -1470,6 +1653,10 @@ struct MapLibreView: UIViewRepresentable {
                                  opacity: navigating ? 0 : 0.52, width: 5)
             case .accuracy:
                 return LineStyle(hex: 0x26A69A, opacity: 0.14, width: 6)
+            case .incidentCasing:
+                return LineStyle(hex: 0xFFFFFF, opacity: 0.9, width: navigating ? 10 : 8)
+            case .incident(let color):
+                return LineStyle(hex: color, opacity: 0.96, width: navigating ? 7 : 5)
             case .traveled:
                 return LineStyle(hex: RouteColorPalette.traveled, opacity: 0.44,
                                  width: max(1, activeRouteWidth(navigating: navigating) - 1))
@@ -1638,16 +1825,40 @@ private final class NaviAstraMapStyle {
             // The low-zoom raster would otherwise retain its daytime colors at night.
             if id == "natural_earth" { layer.isVisible = !dark }
             if let layer = layer as? MLNFillStyleLayer {
+                if id == "naviastra-forest-tree-pattern" {
+                    layer.fillPattern = NSExpression(forConstantValue: forestPatternName(dark: dark, dense: false))
+                    continue
+                }
+                if id == "naviastra-forest-tree-pattern-dense" {
+                    layer.fillPattern = NSExpression(forConstantValue: forestPatternName(dark: dark, dense: true))
+                    continue
+                }
+                if id == "naviastra-park-tree-pattern" {
+                    layer.fillPattern = NSExpression(forConstantValue: forestPatternName(dark: dark, dense: false))
+                    continue
+                }
+                if id == "naviastra-water-wave-pattern" {
+                    layer.fillPattern = NSExpression(forConstantValue: waterPatternName(dark: dark, dense: false))
+                    continue
+                }
+                if id == "naviastra-water-wave-pattern-dense" {
+                    layer.fillPattern = NSExpression(forConstantValue: waterPatternName(dark: dark, dense: true))
+                    continue
+                }
                 let source = layer.sourceLayerIdentifier ?? ""
                 let fill: UIColor
                 switch source {
-                case "water", "waterway": fill = water
+                case "water":
+                    layer.fillColor = waterColorExpression(dark: dark)
+                    layer.fillOpacity = NSExpression(mglJSONObject: [
+                        "case", ["==", ["get", "intermittent"], 1], 0.82, 1
+                    ])
+                    continue
+                case "waterway": fill = water
                 case "park": fill = color(dark ? 0x203F37 : 0xCCE3C9)
                 case "landcover":
-                    if id.contains("wood") { fill = color(dark ? 0x1D3931 : 0xBAD7BF) }
-                    else if id.contains("sand") { fill = color(dark ? 0x3D3B30 : 0xEDE4C7) }
-                    else if id.contains("ice") { fill = color(dark ? 0x30434B : 0xE6F0F1) }
-                    else { fill = color(dark ? 0x294235 : 0xD9E8CE) }
+                    layer.fillColor = landcoverColorExpression(dark: dark)
+                    continue
                 case "landuse": fill = color(dark ? 0x23313B : 0xE8ECE5)
                 case "building": fill = color(dark ? 0x303E48 : 0xDAD5CD)
                 case "aeroway": fill = color(dark ? 0x2B3C48 : 0xDCE4E8)
@@ -1692,6 +1903,11 @@ private final class NaviAstraMapStyle {
                     }
                 } else if source == "waterway" {
                     layer.lineColor = NSExpression(forConstantValue: water)
+                    layer.lineWidth = NSExpression(mglJSONObject: [
+                        "interpolate", ["linear"], ["zoom"],
+                        9, ["match", ["get", "class"], "river", 1.0, "canal", 0.8, 0.55],
+                        16, ["match", ["get", "class"], "river", 3.0, "canal", 2.2, 1.25]
+                    ])
                 } else if source == "boundary" {
                     layer.lineColor = NSExpression(forConstantValue: muted)
                     layer.lineOpacity = NSExpression(forConstantValue: navigating ? 0.2 : 0.5)
@@ -1707,6 +1923,7 @@ private final class NaviAstraMapStyle {
                 layer.textHaloColor = NSExpression(forConstantValue: background)
                 layer.textHaloWidth = NSExpression(forConstantValue: 1.2)
                 if source == "poi" {
+                    layer.iconImageName = poiIconExpression(dark: dark)
                     let rank = NSPredicate(format: "rank <= %d", density == 0 ? 3 : (density == 1 ? 19 : 1000))
                     let original = originalPredicates[id] ?? NSPredicate(value: true)
                     layer.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
@@ -1726,9 +1943,19 @@ private final class NaviAstraMapStyle {
 
     private func configure(_ style: MLNStyle) {
         for kind in PlacePOIMapMarkerKind.allCases {
-            style.setImage(kind.makeMapStyleImage(), forName: "naviastra-poi-\(kind.rawValue)")
+            style.setImage(kind.makeMapStyleImage(dark: false), forName: poiImageName(kind, dark: false))
+            style.setImage(kind.makeMapStyleImage(dark: true), forName: poiImageName(kind, dark: true))
         }
-        let poiIconImageExpression = poiIconExpression()
+        for dark in [false, true] {
+            style.setImage(forestTreePattern(dark: dark, dense: false),
+                           forName: forestPatternName(dark: dark, dense: false))
+            style.setImage(forestTreePattern(dark: dark, dense: true),
+                           forName: forestPatternName(dark: dark, dense: true))
+            style.setImage(waterWavePattern(dark: dark, dense: false),
+                           forName: waterPatternName(dark: dark, dense: false))
+            style.setImage(waterWavePattern(dark: dark, dense: true),
+                           forName: waterPatternName(dark: dark, dense: true))
+        }
         for layer in style.layers {
             if let layer = layer as? MLNSymbolStyleLayer, layer.sourceLayerIdentifier == "poi" {
                 if let predicate = layer.predicate { originalPredicates[layer.identifier] = predicate }
@@ -1741,7 +1968,6 @@ private final class NaviAstraMapStyle {
                 }
                 layer.textFontNames = NSExpression(forConstantValue: ["Noto Sans Regular"])
                 layer.textFontSize = NSExpression(mglJSONObject: ["interpolate", ["linear"], ["zoom"], 12, 11, 17, 13])
-                layer.iconImageName = poiIconImageExpression
                 // Preserve collision detection: more available features must not mean overlapping labels.
                 layer.textAllowsOverlap = NSExpression(forConstantValue: false)
                 layer.iconAllowsOverlap = NSExpression(forConstantValue: false)
@@ -1775,6 +2001,9 @@ private final class NaviAstraMapStyle {
                     10, (major ? 1.5 : 0.4) + casing * 0.3, 15, width * 0.45 + casing, 18, width + casing])
             }
         }
+        installForestTreePatternLayers(in: style)
+        installParkTreePatternLayer(in: style)
+        installWaterWavePatternLayers(in: style)
         if style.layer(withIdentifier: "naviastra-house-numbers") == nil,
            let source = style.source(withIdentifier: "openmaptiles") {
             let numbers = MLNSymbolStyleLayer(identifier: "naviastra-house-numbers", source: source)
@@ -1788,18 +2017,200 @@ private final class NaviAstraMapStyle {
         }
     }
 
-    private func poiIconExpression() -> NSExpression {
+    private func installForestTreePatternLayers(in style: MLNStyle) {
+        guard let source = style.source(withIdentifier: "openmaptiles"),
+              let lastLandcoverFill = style.layers.compactMap({ $0 as? MLNFillStyleLayer })
+                .last(where: { $0.sourceLayerIdentifier == "landcover" }) else { return }
+
+        let forestFilter = NSPredicate(format: "subclass IN %@", ["forest", "wood"])
+        let layers: [(String, Double, Double, Bool)] = [
+            ("naviastra-forest-tree-pattern", 13, 15, false),
+            ("naviastra-forest-tree-pattern-dense", 15, 24, true)
+        ]
+        for (identifier, minimumZoom, maximumZoom, dense) in layers
+            where style.layer(withIdentifier: identifier) == nil {
+            let layer = MLNFillStyleLayer(identifier: identifier, source: source)
+            layer.sourceLayerIdentifier = "landcover"
+            layer.predicate = forestFilter
+            layer.minimumZoomLevel = minimumZoom
+            layer.maximumZoomLevel = maximumZoom
+            layer.fillPattern = NSExpression(forConstantValue: forestPatternName(dark: false, dense: dense))
+            layer.fillOpacity = NSExpression(forConstantValue: 0.78)
+            style.insertLayer(layer, above: lastLandcoverFill)
+        }
+    }
+
+    private func installWaterWavePatternLayers(in style: MLNStyle) {
+        guard let source = style.source(withIdentifier: "openmaptiles"),
+              let lastWaterFill = style.layers.compactMap({ $0 as? MLNFillStyleLayer })
+                .last(where: { $0.sourceLayerIdentifier == "water" }) else { return }
+
+        let waterFilter = NSPredicate(format: "class IN %@", ["ocean", "lake", "river", "pond", "dock"])
+        let layers: [(String, Double, Double, Bool)] = [
+            ("naviastra-water-wave-pattern", 12, 15, false),
+            ("naviastra-water-wave-pattern-dense", 15, 24, true)
+        ]
+        for (identifier, minimumZoom, maximumZoom, dense) in layers
+            where style.layer(withIdentifier: identifier) == nil {
+            let layer = MLNFillStyleLayer(identifier: identifier, source: source)
+            layer.sourceLayerIdentifier = "water"
+            layer.predicate = waterFilter
+            layer.minimumZoomLevel = minimumZoom
+            layer.maximumZoomLevel = maximumZoom
+            layer.fillPattern = NSExpression(forConstantValue: waterPatternName(dark: false, dense: dense))
+            layer.fillOpacity = NSExpression(forConstantValue: dense ? 0.2 : 0.12)
+            style.insertLayer(layer, above: lastWaterFill)
+        }
+    }
+
+    private func installParkTreePatternLayer(in style: MLNStyle) {
+        guard style.layer(withIdentifier: "naviastra-park-tree-pattern") == nil,
+              let source = style.source(withIdentifier: "openmaptiles"),
+              let lastParkFill = style.layers.compactMap({ $0 as? MLNFillStyleLayer })
+                .last(where: { $0.sourceLayerIdentifier == "park" }) else { return }
+
+        let layer = MLNFillStyleLayer(identifier: "naviastra-park-tree-pattern", source: source)
+        layer.sourceLayerIdentifier = "park"
+        layer.minimumZoomLevel = 14
+        layer.fillPattern = NSExpression(forConstantValue: forestPatternName(dark: false, dense: false))
+        layer.fillOpacity = NSExpression(forConstantValue: 0.48)
+        style.insertLayer(layer, above: lastParkFill)
+    }
+
+    private func landcoverColorExpression(dark: Bool) -> NSExpression {
+        let forest = hexColor(dark ? 0x1D3931 : 0xBAD7BF)
+        let scrub = hexColor(dark ? 0x263D34 : 0xCADCC6)
+        let grass = hexColor(dark ? 0x294235 : 0xDDEBD3)
+        let meadow = hexColor(dark ? 0x2B4035 : 0xE5EED7)
+        let cultivated = hexColor(dark ? 0x303E34 : 0xD9E7CD)
+        let garden = hexColor(dark ? 0x29483A : 0xD9ECD5)
+        let wetland = hexColor(dark ? 0x263F40 : 0xD1E3D8)
+        let sand = hexColor(dark ? 0x3D3B30 : 0xEDE4C7)
+        let rock = hexColor(dark ? 0x3D4142 : 0xDFDDD3)
+        let ice = hexColor(dark ? 0x30434B : 0xE6F0F1)
+        let byClass: [Any] = [
+            "match", ["get", "class"],
+            "wood", forest, "grass", grass, "farmland", cultivated,
+            "wetland", wetland, "sand", sand, "rock", rock, "ice", ice, forest
+        ]
+        let expression: [Any] = [
+            "match", ["get", "subclass"],
+            ["forest", "wood"], forest,
+            ["scrub", "shrubbery", "heath", "fell", "mangrove"], scrub,
+            ["grass", "grassland", "golf_course", "wet_meadow"], grass,
+            ["meadow"], meadow,
+            ["orchard", "vineyard", "farm", "farmland", "plant_nursery"], cultivated,
+            ["garden", "flowerbed", "allotments", "recreation_ground", "village_green"], garden,
+            ["marsh", "reedbed", "swamp", "bog", "wetland", "saltmarsh", "tidalflat"], wetland,
+            ["sand", "beach", "dune"], sand,
+            ["bare_rock", "scree"], rock,
+            ["glacier"], ice,
+            byClass
+        ]
+        return NSExpression(mglJSONObject: expression)
+    }
+
+    private func waterColorExpression(dark: Bool) -> NSExpression {
+        let expression: [Any] = [
+            "match", ["get", "class"],
+            "ocean", hexColor(dark ? 0x16384A : 0xB5DDEB),
+            "lake", hexColor(dark ? 0x194052 : 0xB9E0ED),
+            "river", hexColor(dark ? 0x1B465A : 0xADD9EA),
+            "pond", hexColor(dark ? 0x1E4858 : 0xB1DCEB),
+            "dock", hexColor(dark ? 0x1D4354 : 0xA9D7E8),
+            "swimming_pool", hexColor(dark ? 0x23566A : 0x83CDE5),
+            hexColor(dark ? 0x194052 : 0xB9E0ED)
+        ]
+        return NSExpression(mglJSONObject: expression)
+    }
+
+    private func forestPatternName(dark: Bool, dense: Bool) -> String {
+        "naviastra-forest-\(dense ? "dense-" : "")\(dark ? "dark" : "light")"
+    }
+
+    private func waterPatternName(dark: Bool, dense: Bool) -> String {
+        "naviastra-water-\(dense ? "dense-" : "")\(dark ? "dark" : "light")"
+    }
+
+    private func forestTreePattern(dark: Bool, dense: Bool) -> UIImage {
+        let tileSize: CGFloat = 64
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: tileSize, height: tileSize), format: format)
+        return renderer.image { rendererContext in
+            let context = rendererContext.cgContext
+            let positions: [(CGFloat, CGFloat, CGFloat)] = dense
+                ? [(7, 8, 8), (23, 6, 9), (42, 9, 8), (56, 17, 9), (13, 26, 8),
+                   (34, 25, 9), (52, 36, 8), (4, 47, 8), (24, 48, 9), (43, 53, 8)]
+                : [(12, 12, 10), (43, 17, 11), (28, 36, 10), (54, 48, 10), (5, 53, 9)]
+            let canopy = color(dark ? 0x5C846D : 0x729A7C).withAlphaComponent(0.78).cgColor
+            let highlight = color(dark ? 0x426B56 : 0x91B398).withAlphaComponent(0.74).cgColor
+            let trunk = color(dark ? 0xB4A27D : 0x897653).withAlphaComponent(0.62).cgColor
+
+            for (index, tree) in positions.enumerated() {
+                let (x, y, size) = tree
+                let half = size / 2
+                let path = CGMutablePath()
+                path.move(to: CGPoint(x: x, y: y - half))
+                path.addLine(to: CGPoint(x: x - half * 0.85, y: y + half * 0.62))
+                path.addLine(to: CGPoint(x: x + half * 0.85, y: y + half * 0.62))
+                path.closeSubpath()
+                context.addPath(path)
+                context.setFillColor(index.isMultiple(of: 2) ? canopy : highlight)
+                context.fillPath()
+
+                let trunkRect = CGRect(x: x - 0.55, y: y + half * 0.48, width: 1.1, height: 1.7)
+                context.setFillColor(trunk)
+                context.fill(trunkRect)
+            }
+        }
+    }
+
+    private func waterWavePattern(dark: Bool, dense: Bool) -> UIImage {
+        let tileSize: CGFloat = 64
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: tileSize, height: tileSize), format: format)
+        return renderer.image { rendererContext in
+            let context = rendererContext.cgContext
+            let rows: [CGFloat] = dense ? [8, 24, 40, 56] : [16, 48]
+            context.setStrokeColor(color(dark ? 0x74AFC3 : 0x4B98B0).withAlphaComponent(0.72).cgColor)
+            context.setLineWidth(dense ? 0.9 : 0.75)
+            for (index, y) in rows.enumerated() {
+                let offset = index.isMultiple(of: 2) ? CGFloat(0) : CGFloat(5)
+                let path = CGMutablePath()
+                path.move(to: CGPoint(x: -4, y: y + offset))
+                path.addCurve(to: CGPoint(x: 68, y: y + offset),
+                              control1: CGPoint(x: 18, y: y - 5 + offset),
+                              control2: CGPoint(x: 46, y: y + 5 + offset))
+                context.addPath(path)
+                context.strokePath()
+            }
+        }
+    }
+
+    private func hexColor(_ hex: UInt32) -> String {
+        String(format: "#%06X", hex)
+    }
+
+    private func poiImageName(_ kind: PlacePOIMapMarkerKind, dark: Bool) -> String {
+        "naviastra-poi-\(kind.rawValue)-\(dark ? "dark" : "light")"
+    }
+
+    private func poiIconExpression(dark: Bool) -> NSExpression {
         let kinds = PlacePOIMapMarkerKind.allCases.filter { $0 != .generic }
         func matchExpression(for property: String, fallback: Any) -> [Any] {
             var expression: [Any] = ["match", ["get", property]]
             for kind in kinds where !kind.tileValues.isEmpty {
                 expression.append(kind.tileValues)
-                expression.append("naviastra-poi-\(kind.rawValue)")
+                expression.append(poiImageName(kind, dark: dark))
             }
             expression.append(fallback)
             return expression
         }
-        let subclassMatch = matchExpression(for: "subclass", fallback: "naviastra-poi-generic")
+        let subclassMatch = matchExpression(for: "subclass", fallback: poiImageName(.generic, dark: dark))
         return NSExpression(mglJSONObject: matchExpression(for: "class", fallback: subclassMatch))
     }
 

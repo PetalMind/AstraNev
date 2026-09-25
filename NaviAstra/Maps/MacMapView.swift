@@ -106,10 +106,62 @@ private final class TransitStopMapAnnotationView: MKAnnotationView {
     }
 }
 
+private final class TrafficMapAnnotationView: MKAnnotationView {
+    func render(presentation: TrafficMapPresentation, clusterCount: Int? = nil) {
+        subviews.forEach { $0.removeFromSuperview() }
+        let size = CGFloat(clusterCount == nil ? presentation.markerSize : 38)
+        frame = NSRect(x: 0, y: 0, width: size, height: size)
+        wantsLayer = true
+        let color = NSColor(calibratedRed: CGFloat((presentation.colorHex >> 16) & 0xff) / 255,
+                            green: CGFloat((presentation.colorHex >> 8) & 0xff) / 255,
+                            blue: CGFloat(presentation.colorHex & 0xff) / 255, alpha: 1)
+        layer?.backgroundColor = color.cgColor
+        layer?.cornerRadius = size / 2
+        layer?.borderWidth = presentation.isCritical ? 2.5 : 1.5
+        layer?.borderColor = (presentation.isCritical ? NSColor.systemRed : NSColor.white).cgColor
+        layer?.shadowColor = (presentation.isCritical ? NSColor.systemRed : color).cgColor
+        layer?.shadowOpacity = presentation.isCritical ? 0.48 : 0.24
+        layer?.shadowRadius = presentation.isCritical ? 5 : 3
+
+        if let clusterCount {
+            let label = NSTextField(labelWithString: String(clusterCount))
+            label.frame = NSRect(x: 0, y: 0, width: size, height: size)
+            label.alignment = .center
+            label.font = .boldSystemFont(ofSize: 15)
+            label.textColor = .white
+            addSubview(label)
+            setAccessibilityLabel("\(clusterCount) zdarzeń drogowych")
+        } else {
+            let glyphSize = size * 0.54
+            let image = NSImageView(frame: NSRect(x: (size - glyphSize) / 2,
+                                                  y: (size - glyphSize) / 2,
+                                                  width: glyphSize, height: glyphSize))
+            image.image = NSImage(systemSymbolName: presentation.symbolName,
+                                  accessibilityDescription: "Zdarzenie drogowe")?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: glyphSize * 0.78,
+                                                                     weight: .semibold))
+            image.contentTintColor = .white
+            image.imageScaling = .scaleProportionallyUpOrDown
+            addSubview(image)
+        }
+        canShowCallout = true
+        clusteringIdentifier = clusterCount == nil ? "traffic-events" : nil
+        displayPriority = .defaultHigh
+        setAccessibilityRole(.button)
+    }
+}
+
 private nonisolated enum MacRouteLineKind: Equatable {
     case activeCasing, active, activeHighlight, future, alternative, traveled, traffic, departed, accuracy
+    case incidentCasing, incident(color: UInt32)
     case journeyCasing(walking: Bool, cycling: Bool)
     case journeyLeg(color: UInt32, walking: Bool, cycling: Bool)
+}
+
+private struct MacIncidentLineRenderItem: Equatable {
+    let id: String
+    let coordinates: [Coordinate]
+    let colorHex: UInt32
 }
 
 private struct TransitStopRenderKey: Equatable {
@@ -192,6 +244,8 @@ struct MapLibreView: NSViewRepresentable {
         var parent: MapLibreView
         weak var map: MKMapView?
         private var routeOverlays: [StyledOverlay] = []
+        private var incidentOverlays: [String: [StyledOverlay]] = [:]
+        private var incidentOverlayRenderItems: [MacIncidentLineRenderItem] = []
         private var traveledOverlay: StyledOverlay?
         private var trafficOverlay: StyledOverlay?
         private var accuracyHaloOverlay: StyledOverlay?
@@ -245,6 +299,7 @@ struct MapLibreView: NSViewRepresentable {
         private var lastDimension: MapDimension?
         private var lastCameraMode: MapDimension?
         private var lastPOICategories: Set<MapPOICategory>?
+        private var lastPOIMarkerDark: Bool?
         private var lastBuildingVisibility: Bool?
         private var routeTransitionTimer: Timer?
         private var placeSearch: MKLocalSearch?
@@ -343,6 +398,7 @@ struct MapLibreView: NSViewRepresentable {
                 }
                 map.addAnnotations(searchPins)
             }
+            updatePOIMarkerAppearance(on: map)
 
             if lastBaseMap != parent.settings.baseMap || lastDimension != parent.settings.cameraMode {
                 switch parent.settings.baseMap {
@@ -369,8 +425,8 @@ struct MapLibreView: NSViewRepresentable {
                 trafficTemplate == nil && incidentTemplate == nil
             if map.showsTraffic != showsNativeTraffic { map.showsTraffic = showsNativeTraffic }
             updateTrafficRasterOverlays(on: map, flowTemplate: trafficTemplate,
-                                        incidentTemplate: incidentTemplate,
-                                        visible: parent.settings.overlays.traffic && !isNavigating)
+                                        incidentTemplate: isNavigating ? nil : incidentTemplate,
+                                        visible: parent.settings.overlays.traffic)
             if lastPOICategories != parent.settings.visiblePOICategories {
                 let categories = parent.settings.visiblePOICategories.flatMap { category -> [MKPointOfInterestCategory] in
                     switch category {
@@ -464,11 +520,12 @@ struct MapLibreView: NSViewRepresentable {
             let incidents = parent.settings.overlays.traffic
                 ? (parent.state.traffic?.incidents ?? []).filter { incident in
                     guard isNavigating else { return true }
+                    guard incident.isImportantDuringNavigation else { return false }
                     guard let distance = incident.distanceAlongRoute else { return false }
                     return distance > routeDistance && distance <= routeDistance + 12_000
                 }
                 : []
-            let incidentIDs = incidents.map(\.id)
+            let incidentIDs = incidents.map { "\($0.id):\($0.category.rawValue):\($0.severity.rawValue)" }
             if incidentIDs != shownIncidentIDs {
                 map.removeAnnotations(incidentPins)
                 incidentPins = incidents.map { incident in
@@ -487,14 +544,16 @@ struct MapLibreView: NSViewRepresentable {
                 pin.title = incident.mapTitle
                 pin.subtitle = incident.mapSubtitle
             }
-            let roadAlerts = (!showsOnlyRouteEndpoints ? parent.state.roadSafetyAlerts : [])
+            updateIncidentOverlays(on: map, incidents: incidents)
+            let roadAlerts = ((!showsOnlyRouteEndpoints || isNavigating) ? parent.state.roadSafetyAlerts : [])
                 .filter { alert in
                     guard let distance = alert.distanceAlongRoute else { return false }
                     return distance >= routeDistance - 60 && distance <= routeDistance + 20_000
+                        && (!isNavigating || alert.type.isImportantDuringNavigation)
                 }
                 .sorted { ($0.distanceAlongRoute ?? .infinity) < ($1.distanceAlongRoute ?? .infinity) }
                 .prefix(40)
-            let alertIDs = roadAlerts.map(\.id)
+            let alertIDs = roadAlerts.map { "\($0.id):\($0.type.rawValue)" }
             if alertIDs != shownRoadAlertIDs {
                 map.removeAnnotations(roadAlertPins)
                 roadAlertPins = roadAlerts.map { alert in
@@ -841,8 +900,65 @@ struct MapLibreView: NSViewRepresentable {
             return Double(sampled.filter { safe.contains(map.convert($0.cl, toPointTo: map)) }.count) / Double(sampled.count) >= 0.9
         }
 
+        private var usesDarkMapAppearance: Bool {
+            parent.settings.appearance == .night ||
+                (parent.settings.appearance == .auto && parent.colorScheme == .dark)
+        }
+
+        private func updatePOIMarkerAppearance(on map: MKMapView) {
+            let dark = usesDarkMapAppearance
+            guard lastPOIMarkerDark != dark else { return }
+            lastPOIMarkerDark = dark
+            for (index, pin) in searchPins.enumerated()
+                where parent.state.searchResults.indices.contains(index) {
+                guard parent.state.searchResults[index].isPOI,
+                      let kind = PlacePOIMapMarkerKind(category: parent.state.searchResults[index].category),
+                      let marker = map.view(for: pin) else { continue }
+                stylePOIMarker(marker, annotation: pin, kind: kind, dark: dark)
+            }
+        }
+
+        private func stylePOIMarker(_ marker: MKAnnotationView, annotation: MKAnnotation,
+                                    kind: PlacePOIMapMarkerKind, dark: Bool) {
+            marker.subviews.forEach { $0.removeFromSuperview() }
+            let size: CGFloat = 36
+            marker.frame = NSRect(x: 0, y: 0, width: size, height: size)
+            marker.wantsLayer = true
+            let background = PlacePOIMapPalette.backgroundHex(dark: dark)
+            marker.layer?.backgroundColor = NSColor(
+                calibratedRed: CGFloat((background >> 16) & 0xff) / 255,
+                green: CGFloat((background >> 8) & 0xff) / 255,
+                blue: CGFloat(background & 0xff) / 255, alpha: 1).cgColor
+            marker.layer?.cornerRadius = 11
+            marker.layer?.borderWidth = 1.8
+            let color = PlacePOIMapPalette.accentColor(dark: dark)
+            marker.layer?.borderColor = color.cgColor
+            marker.layer?.shadowColor = NSColor.black.cgColor
+            marker.layer?.shadowOpacity = 0.18
+            marker.layer?.shadowRadius = 3
+            marker.layer?.shadowOffset = CGSize(width: 0, height: -1)
+            let image = NSImageView(frame: NSRect(x: 8, y: 8, width: 20, height: 20))
+            image.image = NSImage(systemSymbolName: kind.symbolName,
+                                  accessibilityDescription: kind.accessibilityName)?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 18, weight: .semibold))
+            image.contentTintColor = color
+            image.imageScaling = .scaleProportionallyUpOrDown
+            marker.addSubview(image)
+            marker.canShowCallout = true
+            marker.displayPriority = .defaultHigh
+            marker.setAccessibilityLabel("\(kind.accessibilityName): \(annotation.title ?? "")")
+            marker.setAccessibilityRole(.button)
+        }
+
         func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
             guard let annotation = view.annotation else { return }
+            if annotation is MKClusterAnnotation || incidentPins.contains(where: { $0 === annotation })
+                || roadAlertPins.contains(where: { $0 === annotation }) {
+                view.wantsLayer = true
+                let scale = 42 / max(1, view.frame.width)
+                view.layer?.setAffineTransform(CGAffineTransform(scaleX: scale, y: scale))
+                return
+            }
             if let (stopID, _) = transitStopPins.first(where: { $0.value === annotation }),
                let stop = transitStopMapStops[stopID] {
                 mapView.deselectAnnotation(annotation, animated: false)
@@ -862,17 +978,31 @@ struct MapLibreView: NSViewRepresentable {
             }
         }
 
+        func mapView(_ mapView: MKMapView, didDeselect view: MKAnnotationView) {
+            guard let annotation = view.annotation,
+                  annotation is MKClusterAnnotation || incidentPins.contains(where: { $0 === annotation })
+                    || roadAlertPins.contains(where: { $0 === annotation }) else { return }
+            view.layer?.setAffineTransform(.identity)
+        }
+
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            if let cluster = annotation as? MKClusterAnnotation {
+                let presentation = cluster.memberAnnotations.compactMap { trafficPresentation(for: $0) }
+                    .max { $0.clusterPriority < $1.clusterPriority } ?? TrafficMapPresentation(
+                        TrafficIncident(id: "cluster", description: "Zdarzenia drogowe",
+                                        coordinate: Coordinate(latitude: cluster.coordinate.latitude,
+                                                              longitude: cluster.coordinate.longitude),
+                                        delaySeconds: nil, category: .unknown, severity: .unknown))
+                let marker = TrafficMapAnnotationView(annotation: annotation, reuseIdentifier: "traffic-cluster")
+                marker.render(presentation: presentation, clusterCount: cluster.memberAnnotations.count)
+                return marker
+            }
             if let index = incidentPins.firstIndex(where: { $0 === annotation }),
                shownIncidents.indices.contains(index) {
                 let incident = shownIncidents[index]
-                let marker = MKMarkerAnnotationView(annotation: annotation,
-                                                    reuseIdentifier: "traffic-incident-\(incident.category.rawValue)")
-                marker.glyphImage = NSImage(systemSymbolName: incident.isRoadClosure ? "xmark.octagon.fill" : "exclamationmark.triangle.fill",
-                                            accessibilityDescription: incident.mapTitle)
-                marker.markerTintColor = incident.isRoadClosure ? .systemRed : .systemOrange
-                marker.canShowCallout = true
-                marker.displayPriority = .defaultHigh
+                let marker = TrafficMapAnnotationView(annotation: annotation,
+                                                      reuseIdentifier: "traffic-incident-\(incident.category.rawValue)")
+                marker.render(presentation: TrafficMapPresentation(incident))
                 return marker
             }
 
@@ -892,25 +1022,7 @@ struct MapLibreView: NSViewRepresentable {
                    let kind = PlacePOIMapMarkerKind(category: parent.state.searchResults[index].category) {
                     let marker = MKAnnotationView(annotation: annotation,
                                                   reuseIdentifier: "poi-\(kind.rawValue)")
-                    let size: CGFloat = 36
-                    marker.frame = NSRect(x: 0, y: 0, width: size, height: size)
-                    marker.wantsLayer = true
-                    marker.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-                    marker.layer?.cornerRadius = 10
-                    marker.layer?.borderWidth = 2
-                    let color = NSColor(calibratedRed: CGFloat((kind.accentHex >> 16) & 0xff) / 255,
-                                        green: CGFloat((kind.accentHex >> 8) & 0xff) / 255,
-                                        blue: CGFloat(kind.accentHex & 0xff) / 255, alpha: 1)
-                    marker.layer?.borderColor = color.cgColor
-                    marker.layer?.shadowColor = NSColor.black.cgColor
-                    marker.layer?.shadowOpacity = 0.18
-                    marker.layer?.shadowRadius = 3
-                    marker.layer?.shadowOffset = CGSize(width: 0, height: -1)
-                    marker.addSubview(PlacePOIMapGlyphView(frame: NSRect(x: 7, y: 7, width: 22, height: 22),
-                                                           kind: kind, tint: color))
-                    marker.canShowCallout = true
-                    marker.displayPriority = .defaultHigh
-                    marker.setAccessibilityLabel("\(kind.accessibilityName): \(annotation.title ?? "")")
+                    stylePOIMarker(marker, annotation: annotation, kind: kind, dark: usesDarkMapAppearance)
                     return marker
                 }
                 let marker = MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: nil)
@@ -947,13 +1059,9 @@ struct MapLibreView: NSViewRepresentable {
             if let alertIndex = roadAlertPins.firstIndex(where: { $0 === annotation }),
                shownRoadAlerts.indices.contains(alertIndex) {
                 let alert = shownRoadAlerts[alertIndex]
-                let marker = MKMarkerAnnotationView(annotation: annotation,
-                                                    reuseIdentifier: "road-alert-\(alert.type.rawValue)")
-                marker.glyphImage = NSImage(systemSymbolName: alert.type.symbolName,
-                                            accessibilityDescription: alert.type.title)
-                marker.markerTintColor = .systemOrange
-                marker.canShowCallout = true
-                marker.displayPriority = .defaultHigh
+                let marker = TrafficMapAnnotationView(annotation: annotation,
+                                                      reuseIdentifier: "road-alert-\(alert.type.rawValue)")
+                marker.render(presentation: TrafficMapPresentation(alert))
                 return marker
             }
 
@@ -982,6 +1090,16 @@ struct MapLibreView: NSViewRepresentable {
             lastDestinationMarkerIsArrived = parent.state.status == .arrived
             view.displayPriority = .required
             return view
+        }
+
+        private func trafficPresentation(for annotation: MKAnnotation) -> TrafficMapPresentation? {
+            if let index = incidentPins.firstIndex(where: { $0 === annotation }), shownIncidents.indices.contains(index) {
+                return TrafficMapPresentation(shownIncidents[index])
+            }
+            if let index = roadAlertPins.firstIndex(where: { $0 === annotation }), shownRoadAlerts.indices.contains(index) {
+                return TrafficMapPresentation(shownRoadAlerts[index])
+            }
+            return nil
         }
 
         private func positionMarkerImage(navigating: Bool, relativeBearing: CLLocationDirection?) -> NSImage {
@@ -1315,6 +1433,32 @@ struct MapLibreView: NSViewRepresentable {
             }
         }
 
+        private func updateIncidentOverlays(on map: MKMapView, incidents: [TrafficIncident]) {
+            let renderItems = incidents.filter { $0.geometry.count > 1 }.map {
+                MacIncidentLineRenderItem(id: $0.id, coordinates: $0.geometry,
+                                          colorHex: TrafficMapPresentation($0).colorHex)
+            }.sorted { $0.id < $1.id }
+            guard renderItems != incidentOverlayRenderItems else { return }
+            map.removeOverlays(incidentOverlays.values.flatMap { $0.map(\.polyline) })
+            incidentOverlays.removeAll()
+            incidentOverlayRenderItems = renderItems
+            for item in renderItems {
+                func makeOverlay(kind: MacRouteLineKind) -> StyledOverlay {
+                    var points = item.coordinates.map(\.cl)
+                    let polyline = MKPolyline(coordinates: &points, count: points.count)
+                    let overlay = StyledOverlay(polyline: polyline, coordinates: item.coordinates,
+                                                kind: kind, routeID: nil,
+                                                transitionFrom: nil, transitionStartedAt: nil)
+                    map.addOverlay(polyline, level: .aboveRoads)
+                    return overlay
+                }
+                incidentOverlays[item.id] = [
+                    makeOverlay(kind: .incidentCasing),
+                    makeOverlay(kind: .incident(color: item.colorHex))
+                ]
+            }
+        }
+
         private func updateClosurePin(on map: MKMapView) {
             guard parent.settings.overlays.traffic, let flow = parent.state.traffic?.flow, flow.roadClosure, !flow.coordinates.isEmpty else {
                 removeClosurePin(from: map)
@@ -1339,7 +1483,8 @@ struct MapLibreView: NSViewRepresentable {
         }
 
         private var allStyledOverlays: [StyledOverlay] {
-            routeOverlays + [traveledOverlay, trafficOverlay, accuracyHaloOverlay].compactMap { $0 }
+            routeOverlays + incidentOverlays.values.flatMap { $0 }
+                + [traveledOverlay, trafficOverlay, accuracyHaloOverlay].compactMap { $0 }
         }
 
         private func styledOverlay(for polyline: MKPolyline) -> StyledOverlay? {
@@ -1387,6 +1532,10 @@ struct MapLibreView: NSViewRepresentable {
                                  opacity: navigating ? 0 : 0.52, width: 5)
             case .accuracy:
                 return LineStyle(hex: 0x26A69A, opacity: 0.14, width: 6)
+            case .incidentCasing:
+                return LineStyle(hex: 0xFFFFFF, opacity: 0.9, width: navigating ? 10 : 8)
+            case .incident(let color):
+                return LineStyle(hex: color, opacity: 0.96, width: navigating ? 7 : 5)
             case .traveled:
                 return LineStyle(hex: RouteColorPalette.traveled, opacity: 0.44,
                                  width: max(1, activeRouteWidth(navigating: navigating) - 1))

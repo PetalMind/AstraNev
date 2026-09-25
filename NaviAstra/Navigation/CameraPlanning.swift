@@ -108,7 +108,8 @@ enum CameraPlanner {
     static func intent(for camera: NavigationCameraState, location: NavigationLocation?,
                        destination: Destination?, route: NavigationRoute?,
                        alternatives: [NavigationRoute], progress: RouteProgress?,
-                       previousBearing: Double = 0) -> CameraIntent? {
+                       previousBearing: Double = 0,
+                       precomputedRouteProjection: RouteProjection? = nil) -> CameraIntent? {
         guard let position = location?.coordinate ?? destination?.coordinate else { return nil }
         let speed = max(0, location?.speed ?? 0)
         switch camera {
@@ -130,7 +131,9 @@ enum CameraPlanner {
         case .startingNavigation, .followNavigation, .approachingManeuver, .maneuverNow,
              .leavingManeuver, .rerouting, .weakGPS, .approachingDestination:
             let isTransitRoute = route?.journey != nil
-            let routeProjection = route.flatMap { MapMatcher.project(position, onto: $0.coordinates) }
+            let routeProjection = route.flatMap {
+                precomputedRouteProjection ?? MapMatcher.project(position, onto: $0.coordinates)
+            }
             let roadHeading: Double? = route.flatMap { route in
                 guard let projection = routeProjection,
                       projection.segment + 1 < route.coordinates.count else { return nil }

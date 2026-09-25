@@ -302,6 +302,7 @@
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = NaviAstra;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.travel";
 				INFOPLIST_KEY_NSLocationUsageDescription = "Pozycja jest potrzebna do wyznaczania trasy i prowadzenia nawigacji.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Pozycja jest potrzebna do wyznaczania trasy i prowadzenia nawigacji.";
@@ -328,6 +329,7 @@
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = NaviAstra;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.travel";
 				INFOPLIST_KEY_NSLocationUsageDescription = "Pozycja jest potrzebna do wyznaczania trasy i prowadzenia nawigacji.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Pozycja jest potrzebna do wyznaczania trasy i prowadzenia nawigacji.";
@@ -472,6 +474,7 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Config/NaviAstra-iOS-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = NaviAstra;
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Dostęp Zawsze pozwala śledzić aktywną podróż komunikacją i głosowo ostrzec przed przystankiem, także przy zablokowanym ekranie.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Pozycja jest potrzebna do wyznaczania trasy i prowadzenia nawigacji.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
@@ -519,6 +522,7 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Config/NaviAstra-iOS-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = NaviAstra;
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Dostęp Zawsze pozwala śledzić aktywną podróż komunikacją i głosowo ostrzec przed przystankiem, także przy zablokowanym ekranie.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Pozycja jest potrzebna do wyznaczania trasy i prowadzenia nawigacji.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;

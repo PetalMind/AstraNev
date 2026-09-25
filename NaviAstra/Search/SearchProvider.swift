@@ -157,8 +157,14 @@ struct SearchResult: Identifiable {
         }
         return nil
     }
-    var isAddress: Bool { !isPOI && houseNumber != nil && (street != nil || city != nil) }
-    var subtitle: String { destination.address ?? (isAddress ? "Adres · punkt budynku" : isPOI ? "Miejsce · \(placeProvider == .mapKit ? "Apple Maps" : "OpenStreetMap")" : "Miejsce lub obszar") }
+    var isAddress: Bool {
+        !isPOI && ((houseNumber != nil && (street != nil || city != nil)) || street != nil)
+    }
+    var subtitle: String {
+        if let address = destination.address { return address }
+        if isAddress { return houseNumber == nil ? "Ulica lub obszar adresowy" : "Adres · punkt budynku" }
+        return isPOI ? "Miejsce · \(placeProvider == .mapKit ? "Apple Maps" : "OpenStreetMap")" : "Miejsce lub obszar"
+    }
 }
 
 enum TravelEstimateStatus: Equatable {
@@ -232,17 +238,23 @@ struct AddressSearchProvider: SearchProvider {
         try await search(query, near: near, onUpdate: { _ in })
     }
 
-    func search(_ query: String, near: Coordinate?,
+    func search(_ query: String, near: Coordinate?, includeUUGFallback: Bool = false,
                 onUpdate: ([SearchResult]) -> Void) async throws -> [SearchResult] {
         var requests: [SearchProviderBatch.Request] = [
             .init { try await PhotonSearchProvider().search(query, near: near) },
             .init { try await MapKitSearchProvider().search(query, near: near) }
         ]
-        if PhotonSearchProvider.houseNumber(in: query) != nil {
+        if includeUUGFallback, PhotonSearchProvider.houseNumber(in: query) != nil {
             requests.append(.init(authoritative: true) {
                 if let exact = await GUGiKAddressProvider().searchExact(query) { return [exact] }
                 // GUGiK is optional: a miss must not turn failures of other services into success.
                 throw SearchError.unavailable
+            })
+        } else if includeUUGFallback {
+            requests.append(.init {
+                let results = await GUGiKAddressProvider().search(query)
+                guard !results.isEmpty else { throw SearchError.unavailable }
+                return results
             })
         }
         return try await SearchProviderBatch.search(requests, onUpdate: onUpdate)
@@ -400,47 +412,92 @@ struct PhotonSearchProvider: SearchProvider {
 }
 
 struct GUGiKAddressProvider {
+    func search(_ query: String) async -> [SearchResult] {
+        guard let reply = await request(address: query, exactNumber: false),
+              let addresses = reply.results?.values else { return [] }
+
+        return addresses.compactMap { address -> (SearchResult, Double)? in
+            guard let result = searchResult(for: address) else { return nil }
+            return (result, Double(address.distance ?? "") ?? .infinity)
+        }
+        .sorted { lhs, rhs in
+            if lhs.1 != rhs.1 { return lhs.1 < rhs.1 }
+            return lhs.0.destination.name.localizedStandardCompare(rhs.0.destination.name) == .orderedAscending
+        }
+        .map { $0.0 }
+    }
+
     func searchExact(_ query: String) async -> SearchResult? {
         guard let requestedNumber = PhotonSearchProvider.houseNumber(in: query),
-              let reply = await request(query) else { return nil }
+              let reply = await request(address: query, exactNumber: true) else { return nil }
         let normalizedQuery = normalized(query)
-        guard let address = reply.results?.values.first(where: { candidate in
-            guard normalized(candidate.number) == requestedNumber else { return false }
-            let city = normalized(candidate.city)
-            let street = normalized(candidate.street ?? "")
-            return normalizedQuery.contains(city) && (street.isEmpty || normalizedQuery.contains(street))
-        }), let coordinate = coordinate(for: address) else { return nil }
-        let streetLine = [address.street, address.number].compactMap { $0 }.joined(separator: " ")
-        let name = streetLine.isEmpty || address.street == nil
-            ? "\(address.city) \(address.number)"
-            : "\(streetLine), \(address.code.map { "\($0) " } ?? "")\(address.city)"
-        return SearchResult(destination: Destination(name: name, coordinate: coordinate),
-                            street: address.street, houseNumber: address.number,
-                            city: address.city, countryCode: "pl")
+        let matches = reply.results?.values.filter { candidate in
+            guard normalized(candidate.number) == requestedNumber,
+                  let city = candidate.city else { return false }
+            let cityKey = normalized(city)
+            guard !cityKey.isEmpty else { return false }
+            let cityMatches = normalizedQuery.contains(cityKey)
+            let street = normalizedStreet(candidate.street)
+            let streetMatches = street.isEmpty || normalizedStreet(query).contains(street)
+            return cityMatches && streetMatches
+        } ?? []
+        // Duplicate locality/street names must never select an arbitrary UUG record.
+        guard matches.count == 1, let address = matches.first else { return nil }
+        return searchResult(for: address)
     }
 
     func preciseDestination(for result: SearchResult) async -> Destination? {
-        guard result.isAddress, result.countryCode?.lowercased() == "pl",
+        guard result.providerID?.hasPrefix("gugik:") != true,
+              result.isAddress, result.countryCode?.lowercased() == "pl",
               let city = result.city, let street = result.street, let number = result.houseNumber else { return nil }
-        guard let reply = await request("\(city), \(street) \(number)") else { return nil }
-        guard let address = reply.results?.values.first(where: {
-            let expectedStreet = normalized(street)
-            let returnedStreet = normalized($0.street ?? "")
+        guard let reply = await request(address: "\(city), \(street) \(number)", exactNumber: true) else { return nil }
+        let expectedStreet = normalizedStreet(street)
+        let matches = reply.results?.values.filter {
+            let returnedStreet = normalizedStreet($0.street)
             return normalized($0.number) == normalized(number)
                 && normalized($0.city) == normalized(city)
                 && !returnedStreet.isEmpty
                 && (returnedStreet == expectedStreet
                     || returnedStreet.contains(expectedStreet) || expectedStreet.contains(returnedStreet))
-        }), let coordinate = coordinate(for: address) else { return nil }
+        } ?? []
+        guard matches.count == 1, let address = matches.first,
+              let coordinate = coordinate(for: address) else { return nil }
         return Destination(name: result.destination.name, coordinate: coordinate)
     }
 
-    private func request(_ address: String) async -> Reply? {
+    func reverseGeocode(_ coordinate: Coordinate) async -> String? {
+        guard isWithinPolandEnvelope(coordinate) else { return nil }
+        var components = URLComponents(string: "https://services.gugik.gov.pl/uug/")!
+        components.queryItems = [
+            URLQueryItem(name: "request", value: "GetAddressReverse"),
+            URLQueryItem(name: "location", value: "POINT(\(coordinate.longitude) \(coordinate.latitude))"),
+            URLQueryItem(name: "srid", value: "4326")
+        ]
+        guard let reply = await request(components),
+              let nearest = reply.results?.values.compactMap({ address -> (String, Double?)? in
+                  guard let formatted = formattedAddress(for: address) else { return nil }
+                  return (formatted, Double(address.distance ?? ""))
+              }).min(by: { ($0.1 ?? .infinity) < ($1.1 ?? .infinity) }) else { return nil }
+
+        if let distance = nearest.1, distance.isFinite, distance >= 0 {
+            let meters = Int(min(distance.rounded(), 100_000))
+            return "Najbliższy adres: \(nearest.0) (\(meters) m od punktu)"
+        }
+        return "Adres w pobliżu: \(nearest.0)"
+    }
+
+    private func request(address: String, exactNumber: Bool) async -> Reply? {
         var components = URLComponents(string: "https://services.gugik.gov.pl/uug/")!
         components.queryItems = [URLQueryItem(name: "request", value: "GetAddress"),
                                  URLQueryItem(name: "address", value: address),
-                                 URLQueryItem(name: "srid", value: "4326"),
-                                 URLQueryItem(name: "exact_number", value: "1")]
+                                 URLQueryItem(name: "srid", value: "4326")]
+        if exactNumber {
+            components.queryItems?.append(URLQueryItem(name: "exact_number", value: "1"))
+        }
+        return await request(components)
+    }
+
+    private func request(_ components: URLComponents) async -> Reply? {
         guard let url = components.url else { return nil }
         var request = URLRequest(url: url)
         request.timeoutInterval = 5
@@ -449,22 +506,62 @@ struct GUGiKAddressProvider {
         return try? JSONDecoder().decode(Reply.self, from: data)
     }
 
+    private func searchResult(for address: Address) -> SearchResult? {
+        guard let coordinate = coordinate(for: address),
+              let name = formattedAddress(for: address) else { return nil }
+        let identity = [address.idiip, address.teryt, address.simc, address.ulic, address.number]
+            .compactMap { $0 }.joined(separator: ":")
+        return SearchResult(destination: Destination(name: name, coordinate: coordinate),
+                            street: address.street, houseNumber: address.number,
+                            city: address.city, countryCode: "pl",
+                            providerID: "gugik:\(identity.isEmpty ? name : identity)")
+    }
+
+    private func formattedAddress(for address: Address) -> String? {
+        let streetLine = [address.street, address.number]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        let locality = [address.code, address.city]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        let formatted = [streetLine, locality].filter { !$0.isEmpty }.joined(separator: ", ")
+        return formatted.isEmpty ? nil : formatted
+    }
+
     private func coordinate(for address: Address) -> Coordinate? {
-        guard let longitude = Double(address.x), let latitude = Double(address.y),
+        guard let longitude = Double(address.x ?? ""), let latitude = Double(address.y ?? ""),
               (48...56).contains(latitude), (13...25).contains(longitude) else { return nil }
         return Coordinate(latitude: latitude, longitude: longitude)
     }
-    private func normalized(_ value: String) -> String {
-        value.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pl_PL"))
+    private func normalized(_ value: String?) -> String {
+        (value ?? "").folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pl_PL"))
             .filter { $0.isLetter || $0.isNumber || $0 == "/" }
+    }
+    private func normalizedStreet(_ value: String?) -> String {
+        var result = normalized(value)
+        for prefix in ["ulica", "ul"] where result.hasPrefix(prefix) {
+            result.removeFirst(prefix.count)
+            break
+        }
+        return result
+    }
+    private func isWithinPolandEnvelope(_ coordinate: Coordinate) -> Bool {
+        (48...56).contains(coordinate.latitude) && (13...25).contains(coordinate.longitude)
     }
     private struct Reply: Decodable { let results: [String: Address]? }
     private struct Address: Decodable {
-        let city: String
+        let city: String?
         let street: String?
-        let number: String
+        let number: String?
         let code: String?
-        let x: String
-        let y: String
+        let x: String?
+        let y: String?
+        let teryt: String?
+        let simc: String?
+        let ulic: String?
+        let idiip: String?
+        let distance: String?
     }
 }

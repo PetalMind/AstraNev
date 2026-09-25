@@ -196,6 +196,14 @@ struct EVChargingStop: Identifiable, Sendable {
 
 enum TransportMode: String, CaseIterable, Identifiable {
     case car, walking, bicycle, transit, parkRide
+
+    static var configuredDefault: Self {
+        guard let rawValue = UserDefaults.standard.string(forKey: "defaultTransportMode") else {
+            return .car
+        }
+        return Self(rawValue: rawValue) ?? .car
+    }
+
     var id: Self { self }
     var title: String {
         switch self {

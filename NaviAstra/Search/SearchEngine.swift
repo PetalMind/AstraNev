@@ -82,7 +82,7 @@ struct SearchEngine {
     var poi = POISearchProvider()
     var matrix: ValhallaRouteProvider
 
-    func search(_ query: String, context: SearchContext,
+    func search(_ query: String, context: SearchContext, includeUUGFallback: Bool = false,
                 onUpdate: ([SearchResult]) -> Void = { _ in }) async throws -> [SearchResult] {
         let intent = QueryClassifier().classify(query)
         if let coordinate = intent.coordinate {
@@ -134,9 +134,11 @@ struct SearchEngine {
             let results = Array(ranked(candidates).prefix(8))
             if !results.isEmpty { onUpdate(results) }
         }
-        let candidates: [SearchResult]
+        var candidates: [SearchResult]
         if intent.intent == .address {
-            candidates = try await AddressSearchProvider().search(intent.text, near: searchCenter, onUpdate: publish)
+            candidates = try await AddressSearchProvider().search(intent.text, near: searchCenter,
+                                                                  includeUUGFallback: includeUUGFallback,
+                                                                  onUpdate: publish)
         } else {
             let photonTag = intent.intent == .category ? intent.photonTag : nil
             var requests: [SearchProviderBatch.Request] = []
@@ -153,7 +155,20 @@ struct SearchEngine {
             requests.append(.init {
                 try await MapKitSearchProvider().search(intent.text, near: searchCenter)
             })
-            candidates = try await SearchProviderBatch.search(requests, onUpdate: publish)
+            do {
+                candidates = try await SearchProviderBatch.search(requests, onUpdate: publish)
+            } catch {
+                try Task.checkCancellation()
+                guard includeUUGFallback, intent.intent == .place else { throw error }
+                let fallback = await GUGiKAddressProvider().search(intent.text)
+                guard !fallback.isEmpty else { throw error }
+                candidates = fallback
+                publish(candidates)
+            }
+            if includeUUGFallback, intent.intent == .place, candidates.isEmpty {
+                candidates = await GUGiKAddressProvider().search(intent.text)
+                if !candidates.isEmpty { publish(candidates) }
+            }
         }
         try Task.checkCancellation()
         // Ordinary searches only need estimates for the eight visible places.

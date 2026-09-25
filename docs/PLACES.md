@@ -11,6 +11,14 @@ Ten dokument opisuje, skąd NaviAstra bierze informacje o POI (punktach zaintere
 | Wybór POI na mapie macOS | Apple MapKit wyszukuje punkty zainteresowania wokół wskazanego obszaru mapy. Wynik może zawierać adres, telefon i stronę. | Karta zachowuje dostępne dane Apple i próbuje uzupełnić je danymi OSM. |
 | Wyszukiwanie przystanku lub punktu po trasie | OpenStreetMap przez Overpass. Dotyczy m.in. stacji paliw, jedzenia, parkingów, parkingów P+R i ładowarek EV. | Dane tagów z odpowiedzi służą do filtrowania i opisu kandydatów; pełne szczegóły POI trafiają również do cache. |
 
+## Adresy, geokodowanie i wskazanie punktu
+
+Photon i Apple MapKit obsługują bieżące podpowiedzi podczas wpisywania. [GUGiK UUG](https://services.gugik.gov.pl/uug/opis.html) nie jest odpytywany przy każdym znaku: zapytanie do UUG uruchamia się po zatwierdzeniu wyszukiwania z klawiatury. Dla polskiego adresu z numerem budynku UUG ma pierwszeństwo tylko wtedy, gdy zwróci jeden jednoznaczny rekord ze zgodnym numerem, miejscowością i — jeśli podano — ulicą. Dla ulicy lub miejscowości jest źródłem uzupełniającym; w zwykłym wyszukiwaniu jest używany, gdy Photon i MapKit nic nie zwrócą. Żądania jawnie przekazują `srid=4326`, a `exact_number=1` tylko dla adresu z numerem; aplikacja nie ustawia domyślnej dokładności dopasowania ani limitu wyników.
+
+Po wybraniu polskiego punktu adresowego z numerem budynku z wyniku Photon lub MapKit aplikacja może jeszcze pobrać dokładniejszą współrzędną z UUG. Dłuższe dotknięcie mapy na iOS, podwójne kliknięcie na macOS oraz wyszukanie współrzędnych może wywołać `GetAddressReverse`. Żądanie wysyłane jest tylko dla współrzędnych w przybliżonym prostokącie obejmującym Polskę (48–56°N, 13–25°E). Karta celu pokazuje wtedy najbliższy adres i odległość od wskazanego punktu; współrzędna celu pozostaje dokładnie tam, gdzie użytkownik ją wskazał.
+
+Aplikacja korzysta obecnie bezpośrednio z UUG. Nie ma lokalnego indeksu PRG ani backendu PostGIS; UUG nie zastępuje podpowiedzi adresowych podczas pisania.
+
 Domyślne adresy usług Overpass i Photon można zastąpić wartościami `UserDefaults` pod kluczami `overpassServer` i `photonServer`. Jeśli wartość nie jest ustawiona, kod używa domyślnego adresu podanego wyżej dla Photona oraz `https://overpass-api.de/api/interpreter` dla Overpass.
 
 ## Wyszukiwanie sklepów i innych POI

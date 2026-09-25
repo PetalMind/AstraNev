@@ -188,7 +188,7 @@ private extension TransportMode {
     }
 }
 
-nonisolated struct RouteProjection {
+nonisolated struct RouteProjection: Sendable {
     let coordinate: Coordinate
     let distanceFromRoute: Double
     let alongRoute: Double
@@ -375,6 +375,8 @@ final class NavigationEngine {
     private var gpsWatchdog: Task<Void, Never>?
     private var revealTask: Task<Void, Never>?
     private var navigationTransitionTask: Task<Void, Never>?
+    private var navigationCameraProjectionTask: Task<RouteProjection?, Never>?
+    private var navigationCameraUpdateTask: Task<Void, Never>?
     private var maneuverTransitionTask: Task<Void, Never>?
     private var cameraManeuverID: Int?
     private var lastReroute = Date.distantPast
@@ -422,6 +424,7 @@ final class NavigationEngine {
 
     init(routeProvider: RouteProvider) {
         self.routeProvider = routeProvider
+        state.transportMode = TransportMode.configuredDefault
         voice.updatePreferences(state.voicePreferences)
         let endpoint = (routeProvider as? ValhallaRouteProvider)?.endpoint ?? URL(string: "https://valhalla1.openstreetmap.de")!
         transitProvider = LodzTransitRouteProvider(walkingRoutingEndpoint: endpoint)
@@ -540,11 +543,62 @@ final class NavigationEngine {
                                           bearing: 0, padding: .navigation)
     }
 
-    private func updateCameraIntent() {
+    private func updateCameraIntent(using precomputedRouteProjection: RouteProjection? = nil) {
+        let routeProjection = precomputedRouteProjection ?? cameraRouteProjection
         state.cameraIntent = CameraPlanner.intent(for: state.cameraState, location: state.cameraLocation ?? state.location,
                                                   destination: state.destination, route: state.route,
                                                   alternatives: state.alternatives, progress: state.progress,
-                                                  previousBearing: state.cameraIntent?.bearing ?? 0)
+                                                  previousBearing: state.cameraIntent?.bearing ?? 0,
+                                                  precomputedRouteProjection: routeProjection)
+    }
+
+    private var cameraRouteProjection: RouteProjection? {
+        guard !state.weakGPS, let route = state.route, let location = state.location,
+              let previousRouteMatch,
+              previousRouteMatch.routeID == route.id,
+              previousRouteMatch.timestamp == location.timestamp else { return nil }
+        return previousRouteMatch.projection
+    }
+
+    private func prepareNavigationCamera(for route: NavigationRoute) {
+        navigationCameraProjectionTask?.cancel()
+        navigationCameraUpdateTask?.cancel()
+        if let projection = cameraRouteProjection {
+            updateCameraIntent(using: projection)
+            return
+        }
+
+        // Set a responsive location-centered camera immediately. When no fresh route
+        // match is available, prepare the full route projection off the main actor.
+        state.cameraIntent = CameraPlanner.intent(
+            for: .startingNavigation, location: state.cameraLocation ?? state.location,
+            destination: state.destination, route: nil, alternatives: [], progress: state.progress,
+            previousBearing: state.cameraIntent?.bearing ?? 0)
+
+        guard let location = state.cameraLocation ?? state.location else { return }
+        let routeID = route.id
+        let locationTimestamp = location.timestamp
+        let coordinate = location.coordinate
+        let routeCoordinates = route.coordinates
+        let projectionTask = Task.detached(priority: .userInitiated) {
+            MapMatcher.project(coordinate, onto: routeCoordinates)
+        }
+        navigationCameraProjectionTask = projectionTask
+        navigationCameraUpdateTask = Task { @MainActor [weak self] in
+            let projection = await projectionTask.value
+            guard !Task.isCancelled, let self,
+                  self.state.status == .navigating,
+                  self.state.cameraState == .startingNavigation,
+                  self.state.route?.id == routeID else { return }
+            if self.state.location?.timestamp == locationTimestamp {
+                if let projection, !self.state.weakGPS {
+                    self.previousRouteMatch = (routeID, projection, locationTimestamp)
+                }
+                self.updateCameraIntent(using: projection)
+            } else {
+                self.updateCameraIntent()
+            }
+        }
     }
 
     private func updateNavigationCameraState(force: Bool = false) {
@@ -648,6 +702,16 @@ final class NavigationEngine {
         resetTransitRideConfirmation()
         if state.status == .destinationPreview { return }
         if let destination = state.destination { await preview(destination) }
+    }
+
+    private func applyConfiguredDefaultTransportMode() {
+        let mode = TransportMode.configuredDefault
+        state.transportMode = mode
+        if mode != .transit && mode != .parkRide {
+            state.journeyTimeMode = .now
+        } else if mode == .parkRide && state.journeyTimeMode == .arriveBy {
+            state.journeyTimeMode = .now
+        }
     }
 
     func setJourneyTimeMode(_ mode: JourneyTimeMode) {
@@ -860,7 +924,7 @@ final class NavigationEngine {
         state.trafficDarkIncidentTileURLTemplate = trafficProvider?.rasterIncidentTileURLTemplate(style: .dark)
     }
 
-    func refreshTraffic(force: Bool = false) {
+    func refreshTraffic(force: Bool = false, forceRouteRefresh: Bool = true) {
         guard state.transportMode == .car || state.status == .idle else { return }
         guard let trafficProvider else { state.trafficStatus = .notConfigured; return }
         let coordinate = state.location?.coordinate
@@ -875,7 +939,7 @@ final class NavigationEngine {
               state.status == .routePreview || isNavigating else { return }
         let progress = state.progress
         let routeInterval = routeTrafficRefreshInterval(progress: progress)
-        if !routeTrafficRequestInFlight,
+        if forceRouteRefresh, !routeTrafficRequestInFlight,
            force || Date().timeIntervalSince(lastRouteTrafficFetch) >= routeInterval {
             startRouteTrafficRefresh(using: trafficProvider, route: route, progress: progress)
         }
@@ -915,43 +979,55 @@ final class NavigationEngine {
         let startDistance = max(0, progress?.traveledDistance ?? 0)
         let lookAhead = RouteTrafficMonitor.lookAheadDistance(for: route, progress: progress)
         let endDistance = startDistance + lookAhead
-        let boxes = RouteTrafficMonitor.queryBoxes(for: route, from: startDistance, through: endDistance)
-        guard !boxes.isEmpty else { return }
         routeTrafficRequestInFlight = true
         lastRouteTrafficFetch = Date()
-        if state.traffic == nil { state.trafficStatus = .updating }
         let generation = trafficGeneration
         let routeID = route.id
-        Task {
-            defer { if generation == trafficGeneration { routeTrafficRequestInFlight = false } }
+        let boxesTask = Task.detached(priority: .utility) {
+            RouteTrafficMonitor.queryBoxes(for: route, from: startDistance, through: endDistance)
+        }
+        Task { @MainActor [weak self] in
+            let boxes = await boxesTask.value
+            guard let self else { return }
+            defer {
+                if generation == self.trafficGeneration { self.routeTrafficRequestInFlight = false }
+            }
+            guard generation == self.trafficGeneration,
+                  self.state.route?.id == routeID else { return }
+            guard !boxes.isEmpty else {
+                self.lastRouteTrafficFetch = .distantPast
+                return
+            }
+            if self.state.traffic == nil { self.state.trafficStatus = .updating }
             do {
                 let incidents = try await provider.incidents(in: boxes)
-                guard generation == trafficGeneration,
-                      state.route?.id == routeID else { return }
-                routeTrafficIncidents = RouteTrafficMonitor.matching(
+                guard generation == self.trafficGeneration,
+                      self.state.route?.id == routeID else { return }
+                self.routeTrafficIncidents = RouteTrafficMonitor.matching(
                     incidents, to: route, from: startDistance, through: endDistance)
-                routeTrafficDataAvailable = true
-                routeTrafficUpdatedAt = Date()
-                publishTrafficSnapshot()
-                state.trafficStatus = .available
-                if let published = state.traffic {
-                    let closureAhead = confirmedClosureAhead(in: published, on: route, progress: state.progress) != nil
-                    if !closureAhead, state.status == .navigating,
-                       let location = state.location?.coordinate {
-                        selectTrafficAdjustedRoute(from: published, currentRoute: route,
-                                                   location: location)
+                self.routeTrafficDataAvailable = true
+                self.routeTrafficUpdatedAt = Date()
+                self.publishTrafficSnapshot()
+                self.state.trafficStatus = .available
+                if let published = self.state.traffic {
+                    let closureAhead = self.confirmedClosureAhead(in: published, on: route,
+                                                                  progress: self.state.progress) != nil
+                    if !closureAhead, self.state.status == .navigating,
+                       let location = self.state.location?.coordinate {
+                        self.selectTrafficAdjustedRoute(from: published, currentRoute: route,
+                                                        location: location)
                     }
-                    if let location = state.location?.coordinate {
-                        handleConfirmedClosure(in: published, near: location)
+                    if let location = self.state.location?.coordinate {
+                        self.handleConfirmedClosure(in: published, near: location)
                     }
                 }
             } catch {
-                guard generation == trafficGeneration else { return }
-                routeTrafficIncidents = []
-                routeTrafficDataAvailable = false
-                routeTrafficUpdatedAt = nil
-                publishTrafficSnapshot()
-                state.trafficStatus = .unavailable(error.localizedDescription)
+                guard generation == self.trafficGeneration else { return }
+                self.routeTrafficIncidents = []
+                self.routeTrafficDataAvailable = false
+                self.routeTrafficUpdatedAt = nil
+                self.publishTrafficSnapshot()
+                self.state.trafficStatus = .unavailable(error.localizedDescription)
             }
         }
     }
@@ -1082,6 +1158,7 @@ final class NavigationEngine {
 
     func selectDestination(_ destination: Destination) {
         requestGeneration += 1
+        applyConfiguredDefaultTransportMode()
         state.destination = destination
         state.waypoints = []
         state.evChargingStops = []
@@ -1399,6 +1476,11 @@ final class NavigationEngine {
         }
     }
 
+    func previewNewTrip(_ destination: Destination) async {
+        applyConfiguredDefaultTransportMode()
+        await preview(destination)
+    }
+
     func preview(_ destination: Destination) async {
         guard let origin = state.location?.coordinate else {
             state.status = .error
@@ -1574,6 +1656,8 @@ final class NavigationEngine {
         guard state.transitPlanningPhase != .enrichingGeometry,
               let route = state.route,
               (!usesJourneyVoiceGuidance || route.journey != nil) else { return }
+        navigationCameraProjectionTask?.cancel()
+        navigationCameraUpdateTask?.cancel()
         revealTask?.cancel()
         state.routeRevealProgress = 1
         voice.reset()
@@ -1588,12 +1672,14 @@ final class NavigationEngine {
                 state.errorMessage = "Aplikacja nie ma skonfigurowanego śledzenia lokalizacji w tle."
             }
         }
-        if usesJourneyVoiceGuidance { updateProgress() }
-        updateCameraIntent()
+        if usesJourneyVoiceGuidance { updateProgress(reuseJourneyMatch: true) }
+        prepareNavigationCamera(for: route)
         navigationTransitionTask?.cancel()
         navigationTransitionTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(1100))
-            guard !Task.isCancelled, let self, self.state.status == .navigating else { return }
+            guard !Task.isCancelled, let self else { return }
+            await self.navigationCameraUpdateTask?.value
+            guard !Task.isCancelled, self.state.status == .navigating else { return }
             self.updateNavigationCameraState()
         }
         if let destination = state.destination, let route = state.route {
@@ -1602,7 +1688,18 @@ final class NavigationEngine {
                                       startedAt: Date(), lastLocation: state.location)
         }
         invalidateSpeedLimit()
-        if state.transportMode == .car { refreshTraffic(force: true) }
+        if state.transportMode == .car {
+            let hasFreshRouteTraffic = routeTrafficDataAvailable
+                && Date().timeIntervalSince(routeTrafficUpdatedAt ?? .distantPast) <= 120
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(50))
+                guard let self, self.state.status == .navigating,
+                      self.state.route?.id == route.id else { return }
+                // Start traffic work after the navigation UI has had a chance to render.
+                // Reuse the preview's fresh corridor response when it is still current.
+                self.refreshTraffic(force: true, forceRouteRefresh: !hasFreshRouteTraffic)
+            }
+        }
     }
     func stop() {
         finishTrip(arrived: state.status == .arrived)
@@ -1630,6 +1727,8 @@ final class NavigationEngine {
         cameraManeuverID = nil
         revealTask?.cancel()
         navigationTransitionTask?.cancel()
+        navigationCameraProjectionTask?.cancel()
+        navigationCameraUpdateTask?.cancel()
         maneuverTransitionTask?.cancel()
         state.status = .idle; state.cameraState = .browse
         updateCameraIntent()
@@ -1662,8 +1761,8 @@ final class NavigationEngine {
         }
         if state.transportMode == .car { refreshTraffic() }
     }
-    private func updateProgress() {
-        let journeyProgress = updateJourneyVoiceProgress()
+    private func updateProgress(reuseJourneyMatch: Bool = false) {
+        let journeyProgress = updateJourneyVoiceProgress(reuseExistingMatch: reuseJourneyMatch)
         if state.transportMode == .transit,
            let route = state.route, let journey = route.journey {
             let isActive = state.status == .navigating || state.status == .rerouting
@@ -1814,17 +1913,22 @@ final class NavigationEngine {
         }
     }
 
-    private func updateJourneyVoiceProgress() -> TransitNavigationProgress? {
+    private func updateJourneyVoiceProgress(reuseExistingMatch: Bool = false) -> TransitNavigationProgress? {
         guard usesJourneyVoiceGuidance,
               let route = state.route, let journey = route.journey else {
             state.transitProgress = nil
             return nil
         }
         let isActive = state.status == .navigating || state.status == .rerouting
-        let tracked = state.location.flatMap {
-            TransitRouteProgressCalculator.progress(route: route, at: $0.coordinate,
-                                                    accuracy: $0.accuracy,
-                                                    previousLegIndex: lastTransitProgressLegIndex)
+        let tracked: TransitNavigationProgress?
+        if reuseExistingMatch {
+            tracked = state.transitProgress
+        } else {
+            tracked = state.location.flatMap {
+                TransitRouteProgressCalculator.progress(route: route, at: $0.coordinate,
+                                                        accuracy: $0.accuracy,
+                                                        previousLegIndex: lastTransitProgressLegIndex)
+            }
         }
         if let tracked { lastTransitProgressLegIndex = tracked.legIndex }
         var progress = tracked

@@ -20,7 +20,7 @@ struct TrafficFlow {
     }
 }
 
-enum TrafficIncidentCategory: String, Equatable {
+enum TrafficIncidentCategory: String, CaseIterable, Equatable {
     case unknown, accident, fog, dangerousConditions, rain, ice, jam, laneClosed
     case roadClosed, roadWorks, wind, flooding, detour, cluster, brokenDownVehicle
 
@@ -39,12 +39,22 @@ enum TrafficIncidentCategory: String, Equatable {
         case 11: self = .flooding
         case 12: self = .detour
         case 13: self = .cluster
+        case 14: self = .brokenDownVehicle
         default: self = .unknown
         }
     }
 
     init(tomTomValue: String?) {
-        self = tomTomValue.flatMap(TrafficIncidentCategory.init(rawValue:)) ?? .unknown
+        guard let tomTomValue else { self = .unknown; return }
+        if let numericValue = Int(tomTomValue) {
+            self.init(tomTomValue: numericValue)
+            return
+        }
+        let normalizedValue = tomTomValue.lowercased()
+            .replacingOccurrences(of: "[^a-z0-9]", with: "", options: .regularExpression)
+        self = Self.allCases.first {
+            $0.rawValue.lowercased() == normalizedValue
+        } ?? .unknown
     }
 }
 
@@ -62,7 +72,11 @@ enum TrafficIncidentSeverity: String, Equatable {
     }
 
     init(tomTomValue: String?) {
-        switch tomTomValue {
+        if let numericValue = tomTomValue.flatMap(Int.init) {
+            self.init(tomTomValue: numericValue)
+            return
+        }
+        switch tomTomValue?.lowercased() {
         case "minor": self = .minor
         case "moderate": self = .moderate
         case "major": self = .major
@@ -92,6 +106,51 @@ extension TrafficIncidentCategory {
         case .brokenDownVehicle: "Unieruchomiony pojazd"
         }
     }
+
+    var mapSymbolName: String {
+        switch self {
+        case .unknown: "exclamationmark.triangle.fill"
+        case .accident: "car.side.front.open.fill"
+        case .fog: "cloud.fog.fill"
+        case .dangerousConditions: "exclamationmark.triangle.fill"
+        case .rain: "cloud.rain.fill"
+        case .ice: "snowflake"
+        case .jam: "car.2.fill"
+        case .laneClosed: "road.lanes.curved.left"
+        case .roadClosed: "nosign"
+        case .roadWorks: "cone.fill"
+        case .wind: "wind"
+        case .flooding: "water.waves"
+        case .detour: "arrow.triangle.turn.up.right.diamond.fill"
+        case .cluster: "car.2.fill"
+        case .brokenDownVehicle: "car.side.fill"
+        }
+    }
+
+    var mapColorHex: UInt32 {
+        switch self {
+        case .accident, .jam, .laneClosed, .roadClosed: 0xE53935
+        case .roadWorks, .dangerousConditions, .detour, .cluster: 0xF57C00
+        case .brokenDownVehicle, .unknown: 0xF9A825
+        case .fog, .rain, .ice, .wind, .flooding: 0x29B6F6
+        }
+    }
+
+    var isImportantDuringNavigation: Bool {
+        switch self {
+        case .accident, .fog, .dangerousConditions, .ice, .jam, .laneClosed,
+             .roadClosed, .roadWorks, .wind, .flooding, .cluster, .brokenDownVehicle: true
+        case .rain, .detour, .unknown: false
+        }
+    }
+
+    var mapPriority: Int {
+        switch self {
+        case .roadClosed, .accident, .jam, .laneClosed: 3
+        case .roadWorks, .dangerousConditions, .cluster, .flooding: 2
+        default: 1
+        }
+    }
 }
 
 extension TrafficIncidentSeverity {
@@ -104,6 +163,88 @@ extension TrafficIncidentSeverity {
         case .indefinite: "Nieokreślona skala utrudnienia"
         }
     }
+
+    var mapPriority: Int {
+        switch self {
+        case .unknown, .minor: 1
+        case .moderate, .indefinite: 2
+        case .major: 3
+        }
+    }
+}
+
+struct TrafficMapPresentation {
+    let symbolName: String
+    let colorHex: UInt32
+    let markerSize: Double
+    let priority: Int
+    let clusterPriority: Int
+    let isCritical: Bool
+
+    init(_ incident: TrafficIncident) {
+        symbolName = incident.category.mapSymbolName
+        if incident.category == .unknown {
+            switch incident.severity {
+            case .major: colorHex = 0xE53935
+            case .moderate, .indefinite: colorHex = 0xF57C00
+            case .minor, .unknown: colorHex = incident.category.mapColorHex
+            }
+        } else {
+            colorHex = incident.category.mapColorHex
+        }
+        priority = max(incident.category.mapPriority, incident.severity.mapPriority)
+        clusterPriority = priority * 10 + Self.colorPriority(colorHex)
+        markerSize = priority >= 3 ? 36 : priority == 2 ? 30 : 24
+        isCritical = priority >= 3
+    }
+
+    init(_ alert: RoadSafetyAlert) {
+        symbolName = alert.type.symbolName
+        colorHex = alert.type.mapColorHex
+        priority = alert.type.mapPriority
+        clusterPriority = priority * 10 + Self.colorPriority(colorHex)
+        markerSize = priority >= 3 ? 36 : priority == 2 ? 30 : 24
+        isCritical = priority >= 3
+    }
+
+    private static func colorPriority(_ colorHex: UInt32) -> Int {
+        switch colorHex {
+        case 0xE53935: 6
+        case 0xF57C00: 5
+        case 0xF9A825: 4
+        case 0x1976D2: 3
+        case 0x29B6F6: 2
+        default: 1
+        }
+    }
+}
+
+extension RoadAlertType {
+    var mapColorHex: UInt32 {
+        switch self {
+        case .speedCamera, .averageSpeedStart, .averageSpeedEnd, .redLightCamera,
+             .speedLimitChange, .variableSpeedLimit: 0x1976D2
+        case .accident, .roadClosed, .congestion: 0xE53935
+        case .roadworks: 0xF57C00
+        case .railwayCrossing, .schoolZone, .dangerousCurve: 0xF9A825
+        }
+    }
+
+    var mapPriority: Int {
+        switch self {
+        case .accident, .roadClosed, .congestion: 3
+        case .roadworks, .railwayCrossing, .dangerousCurve: 2
+        default: 1
+        }
+    }
+
+    var isImportantDuringNavigation: Bool {
+        isEnforcement || mapPriority >= 2
+    }
+}
+
+extension TrafficIncident {
+    var isImportantDuringNavigation: Bool { category.isImportantDuringNavigation || severity == .major }
 }
 
 struct TrafficIncident: Identifiable {
@@ -292,7 +433,7 @@ struct TomTomTrafficProvider: TrafficProvider {
             guard !points.isEmpty else { return nil }
             let description = feature.properties.events?.first?.description ?? "Utrudnienie drogowe"
             return TrafficIncident(id: feature.properties.id ?? UUID().uuidString,
-                                   description: description, coordinate: points[points.count / 2],
+                                   description: description, coordinate: points[0],
                                    delaySeconds: feature.properties.delayInSeconds,
                                    category: TrafficIncidentCategory(tomTomValue: feature.properties.iconCategory),
                                    severity: TrafficIncidentSeverity(tomTomValue: feature.properties.magnitudeOfDelay),
@@ -336,6 +477,21 @@ struct TomTomTrafficProvider: TrafficProvider {
         let delayInSeconds: Int?
         let iconCategory: String?
         let magnitudeOfDelay: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case id, events, delayInSeconds, iconCategory, magnitudeOfDelay
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decodeIfPresent(String.self, forKey: .id)
+            events = try container.decodeIfPresent([IncidentEvent].self, forKey: .events)
+            delayInSeconds = try container.decodeIfPresent(Int.self, forKey: .delayInSeconds)
+            iconCategory = (try? container.decode(String.self, forKey: .iconCategory))
+                ?? (try? container.decode(Int.self, forKey: .iconCategory)).map(String.init)
+            magnitudeOfDelay = (try? container.decode(String.self, forKey: .magnitudeOfDelay))
+                ?? (try? container.decode(Int.self, forKey: .magnitudeOfDelay)).map(String.init)
+        }
     }
     private struct IncidentEvent: Decodable { let description: String? }
     private struct JSONCoordinates: Decodable {

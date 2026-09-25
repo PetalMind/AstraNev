@@ -63,12 +63,13 @@ struct RouteTrafficMonitor {
                     candidate.1.alongRoute >= startDistance - 100 &&
                     candidate.1.alongRoute <= endDistance + 100
             }
-            guard let best = candidates.min(by: {
+            let best = candidates.first(where: { $0.0 == incident.coordinate }) ?? candidates.min(by: {
                 if $0.1.distanceFromRoute == $1.1.distanceFromRoute {
                     return abs($0.1.alongRoute - startDistance) < abs($1.1.alongRoute - startDistance)
                 }
                 return $0.1.distanceFromRoute < $1.1.distanceFromRoute
-            }) else { continue }
+            })
+            guard let best else { continue }
 
             let routeIncident = TrafficIncident(
                 id: incident.id,

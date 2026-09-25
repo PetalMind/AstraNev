@@ -428,10 +428,8 @@ private final class VoiceAnnouncementScheduler: NSObject, AVSpeechSynthesizerDel
                   self.enabled else { return }
             do {
                 if !self.audioSessionConfigured {
-                    try await Task.detached(priority: .userInitiated) {
-                        try AVAudioSession.sharedInstance().setCategory(
-                            .playback, mode: .spokenAudio, options: [.duckOthers])
-                    }.value
+                    try audioSession.setCategory(
+                        .playback, mode: .spokenAudio, options: [.duckOthers])
                     self.audioSessionConfigured = true
                 }
                 let activated = try await audioSession.activate(options: [])

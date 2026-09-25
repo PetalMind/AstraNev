@@ -24,7 +24,6 @@ struct ContentView: View {
     @State private var mapPlaceEstimateTask: Task<Void, Never>?
     @State private var serverAddress = UserDefaults.standard.string(forKey: "routingServer") ?? "https://valhalla1.openstreetmap.de"
     @State private var showSettings = false
-    @State private var showVoiceControls = false
     @State private var showRouteSettings = false
     @State private var showFavorites = false
     @State private var showHistory = false
@@ -58,6 +57,7 @@ struct ContentView: View {
     @AppStorage("mapTransitVisible") private var mapTransitVisible = false
     @AppStorage("mapCyclingVisible") private var mapCyclingVisible = false
     @AppStorage("speedWarningsEnabled") private var speedWarningsEnabled = true
+    @AppStorage("defaultTransportMode") private var defaultTransportMode = TransportMode.car.rawValue
 
     private var mapCapabilities: MapProviderCapabilities { ActiveMapProvider.capabilities }
 
@@ -253,9 +253,8 @@ struct ContentView: View {
                              if engine.state.destination == nil {
                                  discoveryDrawerCollapseRequest += 1
                              }
-                         }) { coordinate in
-                let destination = Destination(name: "Wybrany punkt", coordinate: coordinate)
-                selectDestination(destination, recordSearch: false)
+            }) { coordinate in
+                selectMapCoordinate(coordinate)
             }
             .ignoresSafeArea()
 
@@ -1329,9 +1328,7 @@ struct ContentView: View {
 
     private var beginRouteButton: some View {
         Button {
-            withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
-                engine.begin()
-            }
+            engine.begin()
         } label: {
             Label("Rozpocznij", systemImage: engine.state.transportMode == .transit ? "tram.fill" : "location.fill")
                 .font(.headline)
@@ -1871,42 +1868,6 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var voiceQuickControls: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            Toggle("Komunikaty głosowe", isOn: voiceEnabledBinding)
-            Picker("Gadatliwość", selection: voiceVerbosityBinding) {
-                ForEach(VoiceVerbosity.allCases) { value in
-                    Text(value.title).tag(value)
-                }
-            }
-            Picker("Głos polski", selection: voiceIdentifierBinding) {
-                Text("Automatyczny").tag("")
-                ForEach(availablePolishVoices, id: \.identifier) { voice in
-                    Text(voice.name).tag(voice.identifier)
-                }
-            }
-            voiceSliderRow(
-                title: "Tempo",
-                value: voiceRateBinding,
-                range: 0.38...0.62,
-                valueDescription: String(format: "%.0f%%", Double(engine.state.voicePreferences.speechRate) * 200)
-            )
-            voiceSliderRow(
-                title: "Głośność",
-                value: voiceVolumeBinding,
-                range: 0...1,
-                valueDescription: String(format: "%.0f%%", Double(engine.state.voicePreferences.volume) * 100)
-            )
-            Button("Więcej ustawień głosu") {
-                showVoiceControls = false
-                showSettings = true
-            }
-            .font(.footnote.weight(.semibold))
-        }
-        .padding(16)
-        .frame(width: 300)
-    }
-
     private func voiceSliderRow(title: String, value: Binding<Double>,
                                 range: ClosedRange<Double>, valueDescription: String) -> some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -1943,18 +1904,6 @@ struct ContentView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(engine.state.voiceEnabled ? "Wyłącz komunikaty głosowe" : "Włącz komunikaty głosowe")
-                    Button {
-                        showVoiceControls.toggle()
-                    } label: {
-                        circleSurface {
-                            Image(systemName: "slider.horizontal.3")
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundStyle(.primary)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Sterowanie głosem")
-                    .popover(isPresented: $showVoiceControls) { voiceQuickControls }
                 } else {
                     mapLayersMenu
                 }
@@ -2813,6 +2762,7 @@ struct ContentView: View {
             settingsPOISection
             settingsGuidanceSection
             settingsVoiceSection
+            settingsDefaultRouteSection
             settingsRoutingSection
             settingsTrafficSection
             settingsValhallaSection
@@ -2976,6 +2926,19 @@ struct ContentView: View {
             Button("Zastosuj preferencje trasy") {
                 Task { await engine.updateRoutingPreferences(routingDraft) }
             }
+        }
+    }
+
+    private var settingsDefaultRouteSection: some View {
+        Section("Typ trasy domyślny") {
+            Picker("Środek transportu", selection: $defaultTransportMode) {
+                ForEach(TransportMode.allCases) { mode in
+                    Text(mode.title).tag(mode.rawValue)
+                }
+            }
+            Text("Ten środek transportu będzie wybierany przy rozpoczęciu nowej trasy. Możesz go zmienić w podglądzie trasy.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -3253,7 +3216,7 @@ struct ContentView: View {
                             HStack(spacing: 10) {
                                 Button {
                                     showHistory = false
-                                    Task { await engine.preview(item.destination) }
+                                    Task { await engine.previewNewTrip(item.destination) }
                                 } label: {
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(item.destination.name).foregroundStyle(.primary)
@@ -3546,6 +3509,18 @@ struct ContentView: View {
         Task { await engine.planRoute() }
     }
 
+    private func selectMapCoordinate(_ coordinate: Coordinate) {
+        let destination = Destination(name: "Wybrany punkt", coordinate: coordinate)
+        selectDestination(destination, recordSearch: false)
+        Task {
+            guard let address = await GUGiKAddressProvider().reverseGeocode(coordinate),
+                  let current = engine.state.destination,
+                  current.id == destination.id else { return }
+            engine.state.destination = Destination(id: current.id, name: current.name,
+                                                   coordinate: current.coordinate, address: address)
+        }
+    }
+
     private func presentMapPlaces(_ places: [SearchResult]) {
         mapPlaceEstimateTask?.cancel()
         guard !places.isEmpty else { return }
@@ -3629,7 +3604,7 @@ struct ContentView: View {
     private func replayTrip(_ trip: TripRecord) {
         showHistory = false
         engine.state.waypoints = trip.waypoints
-        Task { await engine.preview(trip.destination) }
+        Task { await engine.previewNewTrip(trip.destination) }
     }
 
     private func saveCurrentPlace(as kind: PlaceKind) {
@@ -4294,7 +4269,7 @@ private struct DestinationSearchSheet: View {
         }
     }
 
-    private func startSearch(_ value: String) {
+    private func startSearch(_ value: String, includeUUGFallback: Bool = false) {
         searchTask?.cancel()
         transitSearchTask?.cancel()
         currentSearchID = UUID()
@@ -4345,7 +4320,8 @@ private struct DestinationSearchSheet: View {
                                             localDestinations: places.map(\.destination) + recentSearches.map(\.destination))
                 let endpoint = URL(string: UserDefaults.standard.string(forKey: "routingServer") ?? "https://valhalla1.openstreetmap.de")!
                 let effectiveQuery = alongRoute && !QueryClassifier.normalize(trimmed).hasSuffix(" po trasie") ? trimmed + " po trasie" : trimmed
-                let found = try await SearchEngine(matrix: ValhallaRouteProvider(endpoint: endpoint)).search(effectiveQuery, context: context) { partial in
+                let found = try await SearchEngine(matrix: ValhallaRouteProvider(endpoint: endpoint))
+                    .search(effectiveQuery, context: context, includeUUGFallback: includeUUGFallback) { partial in
                     guard !Task.isCancelled, currentSearchID == requestID else { return }
                     results = partial
                     engine.state.searchResults = visibleRemoteResults
@@ -4372,6 +4348,7 @@ private struct DestinationSearchSheet: View {
                 .submitLabel(.search)
                 .autocorrectionDisabled()
                 .onChange(of: query) { _, value in startSearch(value) }
+                .onSubmit { startSearch(query, includeUUGFallback: true) }
 
             if !query.isEmpty {
                 Button {
@@ -4584,6 +4561,18 @@ private struct DestinationSearchSheet: View {
         isSearchFocused = false
         let asStop = alongRoute || QueryClassifier().classify(query).alongRoute
         onSelectDestination(result.destination, asStop)
+        if !asStop, QueryClassifier().classify(query).intent == .coordinates,
+           engine.state.destination?.id == result.destination.id {
+            let destinationID = result.destination.id
+            Task {
+                guard let address = await GUGiKAddressProvider().reverseGeocode(result.destination.coordinate),
+                      let current = engine.state.destination,
+                      current.id == destinationID else { return }
+                engine.state.destination = Destination(id: current.id, name: current.name,
+                                                       coordinate: current.coordinate, address: address)
+            }
+            return
+        }
         guard result.isAddress else { return }
         Task {
             let precise = await GUGiKAddressProvider().preciseDestination(for: result)
