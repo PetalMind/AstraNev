@@ -1001,6 +1001,9 @@ struct ContentView: View {
             }
 
             transportSelector
+            if engine.state.transportMode == .transit || engine.state.transportMode == .parkRide {
+                journeyTimeControl
+            }
 
             if let route = engine.state.route {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -1048,10 +1051,18 @@ struct ContentView: View {
                                 .font(.caption.weight(.medium)).lineLimit(1)
                             Spacer(minLength: 0)
                             if let delay = displayedTransitDelay(for: firstRide), abs(delay) >= 30 {
-                                Text(delayLabel(TimeInterval(delay))).font(.caption.weight(.semibold))
-                                    .foregroundStyle(transitDelayColor(delay))
-                            } else if hasLiveTransitUpdate(for: firstRide) {
-                                Label("Na żywo", systemImage: "dot.radiowaves.left.and.right")
+                                HStack(spacing: 4) {
+                                    Text(delayLabel(TimeInterval(delay)))
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(transitDelayColor(delay))
+                                    Text(transitTimeSourceLabel(for: firstRide, in: journey))
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                }
+                            } else if firstRide.realTime || hasLiveTransitUpdate(for: firstRide) {
+                                Text(transitTimeSourceLabel(for: firstRide, in: journey))
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            } else {
+                                Text("wg rozkładu")
                                     .font(.caption2).foregroundStyle(.secondary)
                             }
                         }
@@ -1063,6 +1074,26 @@ struct ContentView: View {
                         .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                         Text("Pojazdami \(transitMetricTime(rideDuration)) · pieszo \(transitMetricTime(journey.walkingDuration)) · czekanie \(transitMetricTime(journey.waitingDuration)) · przesiadki: \(journey.transferCount)")
                             .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                        Button {
+                            Task { await engine.loadLaterTransitConnections(after: firstRide.departure) }
+                        } label: {
+                            HStack(spacing: 7) {
+                                if engine.state.isLoadingLaterTransitRoutes {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Image(systemName: "clock.arrow.circlepath")
+                                }
+                                Text(engine.state.isLoadingLaterTransitRoutes
+                                     ? "Szukam późniejszych połączeń…"
+                                     : "Pokaż późniejsze połączenia")
+                            }
+                            .font(.caption.weight(.semibold))
+                            .frame(minHeight: 38)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.accentColor)
+                        .disabled(engine.state.isLoadingLaterTransitRoutes
+                                  || engine.state.transitPlanningPhase == .enrichingGeometry)
                     }
                     if engine.state.transitPlanningPhase == .enrichingGeometry {
                         HStack(spacing: 6) {
@@ -1081,6 +1112,13 @@ struct ContentView: View {
                         Label("Przebieg dojść jest pokazany orientacyjnie.", systemImage: "info.circle")
                             .font(.caption2).foregroundStyle(.secondary)
                     }
+                }
+
+                if engine.state.didSearchLaterTransitRoutes && engine.state.laterTransitRoutes.isEmpty {
+                    Text("Nie znaleziono późniejszych połączeń w dostępnym rozkładzie.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if !engine.state.laterTransitRoutes.isEmpty {
+                    laterTransitConnections
                 }
 
                 if routePreviewExpanded {
@@ -1153,13 +1191,21 @@ struct ContentView: View {
                                                     : (leg.line ?? leg.mode)
                                                 Text("\(legTitle) · \(leg.from) → \(leg.to)")
                                                 if let delay = displayedTransitDelay(for: leg), abs(delay) >= 30 {
-                                                    Text(delayLabel(TimeInterval(delay)))
-                                                        .font(.caption2).foregroundStyle(transitDelayColor(delay))
+                                                    HStack(spacing: 4) {
+                                                        Text(delayLabel(TimeInterval(delay)))
+                                                            .foregroundStyle(transitDelayColor(delay))
+                                                        Text(transitTimeSourceLabel(for: leg, in: journey))
+                                                            .foregroundStyle(.secondary)
+                                                    }
+                                                    .font(.caption2)
                                                 } else if hasLiveTransitUpdate(for: leg) {
-                                                    Label("Na żywo", systemImage: "dot.radiowaves.left.and.right")
+                                                    Text(transitTimeSourceLabel(for: leg, in: journey))
                                                         .font(.caption2).foregroundStyle(.secondary)
                                                 } else if leg.realTime {
-                                                    Text("wg aktualizacji realtime")
+                                                    Text(transitTimeSourceLabel(for: leg, in: journey))
+                                                        .font(.caption2).foregroundStyle(.secondary)
+                                                } else if leg.mode != "WALK" {
+                                                    Text("wg rozkładu")
                                                         .font(.caption2).foregroundStyle(.secondary)
                                                 }
                                             }
@@ -1355,6 +1401,125 @@ struct ContentView: View {
             }
         }
         .animation(.spring(response: 0.34, dampingFraction: 0.88), value: engine.state.transportMode)
+    }
+
+    private var journeyTimeControl: some View {
+        HStack(spacing: 8) {
+            Menu {
+                Button { chooseJourneyTimeMode(.now) } label: {
+                    Label("Teraz", systemImage: engine.state.journeyTimeMode == .now ? "checkmark" : "clock")
+                }
+                Button { chooseJourneyTimeMode(.departAt) } label: {
+                    Label("Wyjazd o…", systemImage: engine.state.journeyTimeMode == .departAt ? "checkmark" : "arrow.up.right")
+                }
+                if engine.state.transportMode == .transit {
+                    Button { chooseJourneyTimeMode(.arriveBy) } label: {
+                        Label("Przyjazd na…", systemImage: engine.state.journeyTimeMode == .arriveBy ? "checkmark" : "mappin")
+                    }
+                }
+            } label: {
+                Label(journeyTimeControlTitle, systemImage: "clock")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 11)
+                    .frame(minHeight: 36)
+                    .background(Color.primary.opacity(0.05), in: Capsule())
+            }
+            .accessibilityLabel("Kiedy chcesz jechać")
+            .disabled(engine.state.status != .routePreview
+                      || engine.state.transitPlanningPhase == .enrichingGeometry)
+
+            if engine.state.journeyTimeMode != .now {
+                DatePicker(
+                    engine.state.journeyTimeMode == .departAt ? "Godzina wyjazdu" : "Godzina przyjazdu",
+                    selection: Binding(
+                        get: { engine.state.journeyTargetTime },
+                        set: { engine.setJourneyTargetTime($0) }),
+                    in: Date()...Date().addingTimeInterval(18 * 60 * 60),
+                    displayedComponents: [.date, .hourAndMinute])
+                    .labelsHidden()
+                    .accessibilityLabel(engine.state.journeyTimeMode == .departAt
+                                        ? "Godzina wyjazdu" : "Godzina przyjazdu")
+                    .disabled(engine.state.status != .routePreview
+                              || engine.state.transitPlanningPhase == .enrichingGeometry)
+
+                Button {
+                    Task { await engine.planRoute() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.caption.weight(.semibold))
+                        .frame(width: 34, height: 34)
+                        .background(Color.accentColor.opacity(0.12), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+                .accessibilityLabel("Przelicz połączenia")
+                .disabled(engine.state.status != .routePreview
+                          || engine.state.transitPlanningPhase == .enrichingGeometry)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var journeyTimeControlTitle: String {
+        switch engine.state.journeyTimeMode {
+        case .now: "Teraz"
+        case .departAt: "Wyjazd o"
+        case .arriveBy: "Przyjazd na"
+        }
+    }
+
+    private func chooseJourneyTimeMode(_ mode: JourneyTimeMode) {
+        engine.setJourneyTimeMode(mode)
+        if mode == .now {
+            Task { await engine.planRoute() }
+        }
+    }
+
+    private var laterTransitConnections: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Późniejsze połączenia")
+                .font(.subheadline.weight(.semibold))
+            ForEach(engine.state.laterTransitRoutes) { route in
+                if let journey = route.journey,
+                   let firstRide = journey.legs.first(where: { $0.mode != "WALK" }) {
+                    Button {
+                        engine.selectLaterTransitConnection(route)
+                    } label: {
+                        HStack(alignment: .top, spacing: 10) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("\(firstRide.departure.formatted(date: .omitted, time: .shortened))  ·  \(time(route.expectedTravelTime))")
+                                    .font(.subheadline.weight(.semibold).monospacedDigit())
+                                    .foregroundStyle(.primary)
+                                Text(journey.legs.filter { $0.mode != "WALK" }
+                                    .map { $0.line ?? "MPK" }.joined(separator: " → "))
+                                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                Text("Przyjazd \(journey.arrival.formatted(date: .omitted, time: .shortened))")
+                                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 4)
+                            if firstRide.realTime {
+                                VStack(alignment: .trailing, spacing: 2) {
+                                    Text(firstRide.delaySeconds.map { delayLabel(TimeInterval($0)) } ?? "Na żywo")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(firstRide.delaySeconds.map { transitDelayColor($0) } ?? Color.accentColor)
+                                    Text(transitTimeSourceLabel(for: firstRide, in: journey))
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                }
+                            } else {
+                                Text("wg rozkładu")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
+                        .contentShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Wybierz późniejsze połączenie")
+                }
+            }
+        }
     }
 
     private func compactTitle(for mode: TransportMode) -> String {
@@ -2039,6 +2204,16 @@ struct ContentView: View {
         guard let details = liveTransitDetails(for: leg) else { return false }
         return details.nextStops.contains(where: { $0.hasRealtime })
             || details.pastStops.contains(where: { $0.hasRealtime })
+    }
+
+    private func transitTimeSourceLabel(for leg: JourneyLeg, in journey: Journey) -> String {
+        guard leg.realTime || hasLiveTransitUpdate(for: leg) else { return "wg rozkładu" }
+        switch journey.realtimeFreshness {
+        case .live: return "Na żywo"
+        case .degraded: return "Realtime opóźnione"
+        case .stale: return "Realtime nieświeże"
+        case .unavailable: return "Realtime bez potwierdzonej świeżości"
+        }
     }
 
     private func transitRealtimeStatus(for journey: Journey) -> String {

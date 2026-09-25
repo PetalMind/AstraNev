@@ -51,6 +51,8 @@ Można dodać do ośmiu przystanków. Zwykłe wyznaczanie trasy zachowuje ich bi
 
 ## Komunikacja: kolej i MPK Łódź
 
+Pełny, osobny opis przetwarzania feedów, doboru przystanków, transferów, aktualizacji realtime, kosztu wariantów i walidacji geometrii znajduje się w [docs/TRANSIT_ROUTING.md](TRANSIT_ROUTING.md). Poniższa sekcja zachowuje krótsze omówienie w kontekście całego routingu.
+
 `LodzTransitRouteProvider` łączy miejski rozkład MPK i jego feedy GTFS-Realtime z krajowym rozkładem pociągów PKP PLK/ŁKA i feedem aktualizacji czasu przejazdu. Te publiczne źródła pobierane są bez klucza API. Identyfikatory krajowego feedu dostają prefiks `rail/`, aby nie kolidowały z identyfikatorami MPK. Surowe archiwa GTFS i skompilowana baza indeksów są cache'owane przez 24 godziny; skompilowany indeks jest zapisany jako binarny plist ze znacznikiem wersji schematu, a jego zapis nie blokuje pierwszego wyniku. Obowiązywanie kursów jest liczone według kalendarza `Europe/Warsaw`, z uwzględnieniem wyjątków kalendarza GTFS. Dane realtime mają stan `live` do 90 sekund, `degraded` do 180 sekund, `stale` powyżej 180 sekund albo `unavailable`, gdy feed nie ma poprawnego znacznika czasu. Nieświeże aktualizacje nie zmieniają czasów kursów; odświeżenie realtime działa w tle, gdy nie ma świeżej migawki.
 
 ### Wybór połączeń

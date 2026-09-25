@@ -21,6 +21,8 @@ Aplikacja wymaga internetu do map, wyszukiwania, wyznaczania trasy, danych drogo
 
 Szczegółowy opis źródeł, pobierania i interpretacji danych POI, sklepów oraz godzin otwarcia znajduje się w [docs/PLACES.md](docs/PLACES.md).
 
+Szczegółowy opis algorytmu i danych używanych do wyznaczania tras komunikacją miejską i koleją znajduje się w [docs/TRANSIT_ROUTING.md](docs/TRANSIT_ROUTING.md). Ogólny opis pozostałych profili routingu znajduje się w [docs/ROUTING.md](docs/ROUTING.md).
+
 Do kompilacji iOS wymagany jest pełny Xcode z obsługą iOS 27. Cel `NaviAstraMac` wymaga macOS 15 lub nowszego.
 
 

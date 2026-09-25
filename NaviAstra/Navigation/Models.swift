@@ -225,6 +225,22 @@ enum TransportMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum JourneyTimeMode: String, CaseIterable, Identifiable {
+    case now
+    case departAt
+    case arriveBy
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .now: "Teraz"
+        case .departAt: "Wyjazd o…"
+        case .arriveBy: "Przyjazd na…"
+        }
+    }
+}
+
 struct RoutingPreferences: Codable, Equatable {
     var avoidTolls = false
     var avoidHighways = false
@@ -304,6 +320,8 @@ struct Journey: Sendable {
     var transferCount: Int = 0
     var realtimeFreshness: TransitRealtimeFreshness = .unavailable
     var railwayScheduleAttribution: String? = nil
+    var originAccessStopID: String? = nil
+    var destinationAccessStopID: String? = nil
 }
 
 struct JourneyLeg: Identifiable, Sendable {

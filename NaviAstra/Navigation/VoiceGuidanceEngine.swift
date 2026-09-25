@@ -293,7 +293,9 @@ private final class VoiceAnnouncementScheduler: NSObject, AVSpeechSynthesizerDel
         currentUtteranceID = nil
         currentDidStart = false
         lastSpeechEndedAt = .distantPast
+#if os(iOS)
         deactivateAudioSession()
+#endif
     }
 
     func enqueue(key: String, text: String, priority: VoiceAnnouncementPriority) {
@@ -501,7 +503,9 @@ private final class VoiceAnnouncementScheduler: NSObject, AVSpeechSynthesizerDel
         currentUtterance = nil
         currentUtteranceID = nil
         currentDidStart = false
+#if os(iOS)
         deactivateAudioSession()
+#endif
     }
 
     private func finishCurrent(identifier: ObjectIdentifier, didSpeak: Bool) {

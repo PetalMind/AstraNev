@@ -10,6 +10,11 @@ final class NavigationState {
     var cameraLocation: NavigationLocation?
     var route: NavigationRoute?
     var transportMode: TransportMode = .car
+    var journeyTimeMode: JourneyTimeMode = .now
+    var journeyTargetTime = Date()
+    var laterTransitRoutes: [NavigationRoute] = []
+    var isLoadingLaterTransitRoutes = false
+    var didSearchLaterTransitRoutes = false
     // Keep provider order stable when the selected route changes.
     var routeOptions: [NavigationRoute] = []
     var alternatives: [NavigationRoute] {
@@ -376,6 +381,7 @@ final class NavigationEngine {
     private var routeProvider: RouteProvider
     private var transitProvider: LodzTransitRouteProvider
     private var requestGeneration = 0
+    private var laterTransitRequestGeneration = 0
     private var trafficGeneration = 0
     private var speedLimitGeneration = 0
     private var roadDataGeneration = 0
@@ -628,6 +634,11 @@ final class NavigationEngine {
     func selectTransportMode(_ mode: TransportMode) async {
         guard state.status != .navigating && state.status != .rerouting else { return }
         state.transportMode = mode
+        if mode != .transit && mode != .parkRide {
+            state.journeyTimeMode = .now
+        } else if mode == .parkRide && state.journeyTimeMode == .arriveBy {
+            state.journeyTimeMode = .now
+        }
         if mode != .transit { state.transitPlanningPhase = nil }
         if mode != .car { resetRoadSafetyData() }
         state.transitProgress = nil
@@ -637,6 +648,95 @@ final class NavigationEngine {
         resetTransitRideConfirmation()
         if state.status == .destinationPreview { return }
         if let destination = state.destination { await preview(destination) }
+    }
+
+    func setJourneyTimeMode(_ mode: JourneyTimeMode) {
+        guard mode != .arriveBy || state.transportMode == .transit else { return }
+        state.journeyTimeMode = mode
+        let now = Date()
+        if mode == .now {
+            state.journeyTargetTime = now
+        } else if state.journeyTargetTime < now.addingTimeInterval(60) {
+            state.journeyTargetTime = now.addingTimeInterval(3_600)
+        }
+        laterTransitRequestGeneration += 1
+        state.isLoadingLaterTransitRoutes = false
+        state.laterTransitRoutes = []
+        state.didSearchLaterTransitRoutes = false
+    }
+
+    func setJourneyTargetTime(_ date: Date) {
+        state.journeyTargetTime = date
+        laterTransitRequestGeneration += 1
+        state.isLoadingLaterTransitRoutes = false
+        state.laterTransitRoutes = []
+        state.didSearchLaterTransitRoutes = false
+    }
+
+    func loadLaterTransitConnections(after departure: Date) async {
+        guard state.status == .routePreview,
+              state.transportMode == .transit,
+              let destination = state.destination,
+              let origin = state.location?.coordinate else { return }
+        let expectedRouteID = state.route?.id
+        let expectedDestinationID = destination.id
+        let generation = requestGeneration
+        laterTransitRequestGeneration += 1
+        let laterGeneration = laterTransitRequestGeneration
+        state.isLoadingLaterTransitRoutes = true
+        state.laterTransitRoutes = []
+        state.didSearchLaterTransitRoutes = false
+        defer {
+            if laterGeneration == laterTransitRequestGeneration {
+                state.isLoadingLaterTransitRoutes = false
+            }
+        }
+
+        do {
+            let routes = try await transitProvider.calculateRoutes(
+                from: origin,
+                to: destination.coordinate,
+                departingAt: departure.addingTimeInterval(1))
+            guard generation == requestGeneration,
+                  laterGeneration == laterTransitRequestGeneration,
+                  state.status == .routePreview,
+                  state.destination?.id == expectedDestinationID,
+                  state.route?.id == expectedRouteID else { return }
+            state.laterTransitRoutes = routes.filter { route in
+                (route.journey?.legs.first(where: { $0.mode != "WALK" })?.departure ?? .distantPast) > departure
+            }.sorted {
+                let firstDeparture = $0.journey?.legs.first(where: { $0.mode != "WALK" })?.departure ?? .distantFuture
+                let secondDeparture = $1.journey?.legs.first(where: { $0.mode != "WALK" })?.departure ?? .distantFuture
+                return firstDeparture < secondDeparture
+            }
+            state.didSearchLaterTransitRoutes = true
+        } catch {
+            guard generation == requestGeneration,
+                  laterGeneration == laterTransitRequestGeneration,
+                  state.destination?.id == expectedDestinationID,
+                  state.route?.id == expectedRouteID else { return }
+            state.errorMessage = error.localizedDescription
+            state.laterTransitRoutes = []
+            state.didSearchLaterTransitRoutes = true
+        }
+    }
+
+    func selectLaterTransitConnection(_ route: NavigationRoute) {
+        guard state.status == .routePreview,
+              state.laterTransitRoutes.contains(where: { $0.id == route.id }) else { return }
+        state.route = route
+        state.routeOptions = [route]
+        state.journeyTimeMode = .departAt
+        state.journeyTargetTime = route.journey?.departure ?? Date()
+        laterTransitRequestGeneration += 1
+        state.isLoadingLaterTransitRoutes = false
+        state.laterTransitRoutes = []
+        state.didSearchLaterTransitRoutes = false
+        state.transitPlanningPhase = nil
+        state.transitProgress = nil
+        updateCameraIntent()
+        invalidateTraffic()
+        updateProgress()
     }
 
     func updateTransitTripDetails(_ details: TransitTripDetails?, tripID: String?) {
@@ -654,6 +754,9 @@ final class NavigationEngine {
               Date().timeIntervalSince(lastTransitPlanRefresh) >= 45,
               let destination = state.destination,
               let origin = state.location?.coordinate else { return }
+
+        // Keep an explicitly selected future departure or arrival deadline stable in preview.
+        guard state.status != .routePreview || state.journeyTimeMode == .now else { return }
 
         if state.status == .navigating {
             guard state.transitProgress?.isOnVehicle != true else { return }
@@ -1302,6 +1405,8 @@ final class NavigationEngine {
             state.errorMessage = "Czekam na dokładną pozycję GPS."
             return
         }
+        let requestedJourneyTimeMode = state.journeyTimeMode
+        let requestedJourneyTime = state.journeyTargetTime
         requestGeneration += 1
         let generation = requestGeneration
         state.destination = destination
@@ -1309,6 +1414,10 @@ final class NavigationEngine {
         state.status = .routeCalculating
         state.route = nil
         state.routeOptions = []
+        state.laterTransitRoutes = []
+        state.isLoadingLaterTransitRoutes = false
+        state.didSearchLaterTransitRoutes = false
+        laterTransitRequestGeneration += 1
         state.transitPlanningPhase = nil
         state.progress = nil
         state.transitProgress = nil
@@ -1321,30 +1430,65 @@ final class NavigationEngine {
         do {
             let routes: [NavigationRoute]
             if state.transportMode == .transit {
-                routes = try await transitProvider.calculateRoutes(
-                    from: origin, to: destination.coordinate, departingAt: Date(),
-                    onProgress: { [weak self] phase in
-                        guard let self, self.requestGeneration == generation else { return }
-                        self.state.transitPlanningPhase = phase
-                    },
-                    onProvisionalRoutes: { [weak self] routes in
-                        guard let self, self.requestGeneration == generation,
-                              let firstRoute = routes.first else { return }
-                        self.state.route = firstRoute
-                        self.state.routeOptions = routes
-                        self.state.status = .routePreview
-                        self.state.transitPlanningPhase = .enrichingGeometry
-                        self.state.cameraState = .routeOverview
-                        self.lastTransitPlanRefresh = Date()
-                        self.updateProgress()
-                        self.updateCameraIntent()
-#if os(macOS)
-                        self.revealRoute()
-#else
-                        self.state.routeRevealProgress = 1
-#endif
+                let onProgress: TransitPlanningProgressHandler = { [weak self] phase in
+                    guard let self, self.requestGeneration == generation else { return }
+                    self.state.transitPlanningPhase = phase
+                }
+                if requestedJourneyTimeMode == .arriveBy {
+                    let deadline = requestedJourneyTime
+                    var lowerDeparture = deadline.addingTimeInterval(-18 * 60 * 60)
+                    var upperDeparture = deadline
+                    var bestRoutes: [NavigationRoute] = []
+                    for _ in 0..<10 {
+                        guard generation == requestGeneration else { throw CancellationError() }
+                        let interval = upperDeparture.timeIntervalSince(lowerDeparture)
+                        guard interval > 60 else { break }
+                        let departure = lowerDeparture.addingTimeInterval(interval / 2)
+                        do {
+                            let candidates = try await transitProvider.calculateRoutes(
+                                from: origin, to: destination.coordinate, departingAt: departure,
+                                onProgress: onProgress)
+                            let eligible = candidates.filter { ($0.journey?.arrival ?? .distantFuture) <= deadline }
+                                .sorted {
+                                    let firstDeparture = $0.journey?.legs.first(where: { $0.mode != "WALK" })?.departure ?? .distantPast
+                                    let secondDeparture = $1.journey?.legs.first(where: { $0.mode != "WALK" })?.departure ?? .distantPast
+                                    if firstDeparture != secondDeparture { return firstDeparture > secondDeparture }
+                                    return ($0.journey?.arrival ?? .distantFuture) < ($1.journey?.arrival ?? .distantFuture)
+                                }
+                            if let latest = eligible.first {
+                                let latestDeparture = latest.journey?.legs.first(where: { $0.mode != "WALK" })?.departure ?? .distantPast
+                                let previousBestDeparture = bestRoutes.first?.journey?.legs
+                                    .first(where: { $0.mode != "WALK" })?.departure ?? .distantPast
+                                let latestArrival = latest.journey?.arrival ?? .distantFuture
+                                let previousBestArrival = bestRoutes.first?.journey?.arrival ?? .distantFuture
+                                if latestDeparture > previousBestDeparture
+                                    || (latestDeparture == previousBestDeparture && latestArrival < previousBestArrival) {
+                                    bestRoutes = eligible
+                                }
+                                lowerDeparture = departure
+                            } else {
+                                upperDeparture = departure
+                            }
+                        } catch TransitRoutingError.noJourney {
+                            upperDeparture = departure
+                        }
                     }
-                )
+                    guard !bestRoutes.isEmpty else { throw TransitRoutingError.noJourneyBeforeArrivalDeadline }
+                    routes = bestRoutes
+                    onProvisionalTransitRoutes(routes, generation: generation)
+                } else {
+                    let departure = requestedJourneyTimeMode == .departAt ? requestedJourneyTime : Date()
+                    routes = try await transitProvider.calculateRoutes(
+                        from: origin, to: destination.coordinate, departingAt: departure,
+                        onProgress: onProgress,
+                        onProvisionalRoutes: { [weak self] routes in
+                            self?.onProvisionalTransitRoutes(routes, generation: generation)
+                        })
+                }
+            } else if state.transportMode == .parkRide {
+                let departure = requestedJourneyTimeMode == .departAt ? requestedJourneyTime : Date()
+                routes = try await calculateParkRideRoutes(from: origin, to: destination.coordinate,
+                                                            departingAt: departure)
             } else {
                 routes = try await calculateRoutes(from: origin, to: destination.coordinate)
             }
@@ -1377,11 +1521,33 @@ final class NavigationEngine {
             state.errorMessage = error.localizedDescription
         }
     }
+
+    private func onProvisionalTransitRoutes(_ routes: [NavigationRoute], generation: Int) {
+        guard requestGeneration == generation, let firstRoute = routes.first else { return }
+        state.route = firstRoute
+        state.routeOptions = routes
+        state.status = .routePreview
+        state.transitPlanningPhase = .enrichingGeometry
+        state.cameraState = .routeOverview
+        lastTransitPlanRefresh = Date()
+        updateProgress()
+        updateCameraIntent()
+#if os(macOS)
+        revealRoute()
+#else
+        state.routeRevealProgress = 1
+#endif
+    }
+
     func select(_ route: NavigationRoute) {
         guard state.status == .routePreview,
               state.transitPlanningPhase != .enrichingGeometry,
               state.route?.id != route.id,
               let selectedRoute = state.routeOptions.first(where: { $0.id == route.id }) else { return }
+        laterTransitRequestGeneration += 1
+        state.isLoadingLaterTransitRoutes = false
+        state.laterTransitRoutes = []
+        state.didSearchLaterTransitRoutes = false
         state.route = selectedRoute
         state.evChargingStops = selectedRoute.chargingStops.map(\.destination)
         if usesRoadVoiceGuidance { loadRoadData(for: selectedRoute) }
@@ -1441,10 +1607,14 @@ final class NavigationEngine {
     func stop() {
         finishTrip(arrived: state.status == .arrived)
         requestGeneration += 1
+        laterTransitRequestGeneration += 1
         invalidateTraffic()
         invalidateSpeedLimit()
         voice.reset()
         state.route = nil; state.routeOptions = []; state.progress = nil; state.destination = nil
+        state.laterTransitRoutes = []
+        state.isLoadingLaterTransitRoutes = false
+        state.didSearchLaterTransitRoutes = false
         state.transitPlanningPhase = nil
         resetRoadSafetyData()
         state.transitProgress = nil
@@ -2048,7 +2218,8 @@ final class NavigationEngine {
         return try await routeProvider.calculateRoutes(from: from, to: to, mode: state.transportMode)
     }
 
-    private func calculateParkRideRoutes(from: Coordinate, to: Coordinate) async throws -> [NavigationRoute] {
+    private func calculateParkRideRoutes(from: Coordinate, to: Coordinate,
+                                         departingAt requestedDeparture: Date = Date()) async throws -> [NavigationRoute] {
         guard let provider = routeProvider as? AdvancedRouteProvider else {
             throw TransitRoutingError.noParkRide
         }
@@ -2081,7 +2252,7 @@ final class NavigationEngine {
             to.distance(to: $0.destination.coordinate) < to.distance(to: $1.destination.coordinate)
         }
         guard !parkings.isEmpty else { throw TransitRoutingError.noParkRide }
-        let departure = Date()
+        let departure = requestedDeparture
         var combined: [NavigationRoute] = []
         for parking in parkings.prefix(12) {
             try Task.checkCancellation()
