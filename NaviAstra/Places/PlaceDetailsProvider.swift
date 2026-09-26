@@ -225,15 +225,22 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
     }
 
     func details(for identity: PlaceIdentity) async throws -> PlaceDetails? {
+        try await details(for: identity, forceRefresh: false)
+    }
+
+    func details(for identity: PlaceIdentity, forceRefresh: Bool) async throws -> PlaceDetails? {
         try Task.checkCancellation()
-        let value = try await PlaceDetailsRequests.load(key: endpoint.absoluteString + "/" + identity.cacheKey) {
-            try await fetchDetails(for: identity)
+        let value = try await PlaceDetailsRequests.load(
+            key: endpoint.absoluteString + "/" + identity.cacheKey,
+            forceRefresh: forceRefresh
+        ) {
+            try await fetchDetails(for: identity, forceRefresh: forceRefresh)
         }
         try Task.checkCancellation()
         return value
     }
 
-    private func fetchDetails(for identity: PlaceIdentity) async throws -> PlaceDetails? {
+    private func fetchDetails(for identity: PlaceIdentity, forceRefresh: Bool) async throws -> PlaceDetails? {
         let partial = PlaceDetails.partial(for: identity)
         let requestedID: OpenStreetMapObjectID?
         if identity.provider == .openStreetMap,
@@ -243,7 +250,7 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
             requestedID = nil
         }
         let requestKey = identity.cacheKey
-        if let cached = await PlaceDetailsCache.shared.value(for: requestKey) {
+        if !forceRefresh, let cached = await PlaceDetailsCache.shared.value(for: requestKey) {
             return partial.merging(cached)
         }
 
@@ -251,14 +258,15 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         if let requestedID {
             selector = "\(requestedID.selector);"
         } else {
-            selector = "nwr(around:100,\(identity.coordinate.latitude),\(identity.coordinate.longitude))[\"name\"];"
+            selector = "nwr(around:100,\(identity.coordinate.latitude),\(identity.coordinate.longitude))[~\"^(name(:.*)?|brand|operator)$\"~\".\"];"
         }
         let query = "[out:json][timeout:6];\(selector)out center tags;"
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.timeoutInterval = 8
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.setValue("NaviAstra/1.0 (OpenStreetMap place details)", forHTTPHeaderField: "User-Agent")
+        request.setValue("NaviAstra/1.0 (https://github.com/PetalMind/AstraNev; OpenStreetMap place details)",
+                         forHTTPHeaderField: "User-Agent")
         var body = URLComponents()
         body.queryItems = [URLQueryItem(name: "data", value: query)]
         request.httpBody = body.percentEncodedQuery?.data(using: .utf8)
@@ -291,12 +299,13 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
                     return (candidate, 1_500 + categoryScore - distance)
                 }
 
-                guard distance <= 40,
+                guard distance <= 100,
                       !Self.hasConflictingAddress(identity.address, tags: tags),
                       let nameScore = Self.nameMatchScore(identity, tags: tags),
                       nameScore >= 400 else { return nil }
                 let categoryMatch = identity.category.map { Self.matchesCategory($0, tags: tags) } ?? false
                 let addressMatch = Self.addressMatchScore(identity.address, tags: tags)
+                guard distance <= 40 || nameScore >= 760 || categoryMatch || addressMatch >= 100 else { return nil }
                 let score = nameScore + (categoryMatch ? 180 : 0) + addressMatch - distance * 2
                 return (candidate, score)
             }
@@ -317,21 +326,31 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
 
     private static func matchesExactName(_ expected: String, tags: [String: String]) -> Bool {
         guard !expected.isEmpty else { return false }
-        for value in [tags["name"], tags["brand"], tags["operator"]].compactMap({ $0 }) {
+        let taggedNames = [tags["name"], tags["brand"], tags["operator"]].compactMap { $0 }
+            + tags.filter { $0.key.lowercased().hasPrefix("name:") }.map(\.value)
+        for value in taggedNames {
             if normalized(value) == expected { return true }
         }
         return false
     }
 
     private static func matchesCategory(_ expected: String, tags: [String: String]) -> Bool {
-        let category = normalized(expected)
-        guard !category.isEmpty else { return false }
-        return tags.keys.contains(where: { normalized($0) == category }) ||
-            tags.values.contains(where: { normalized($0) == category })
+        let rawCategory = expected.split(separator: "=").last.map(String.init) ?? expected
+        var aliases = [normalized(rawCategory)]
+        let mapKitPrefix = "mkpoicategory"
+        let normalizedCategory = normalized(expected)
+        if normalizedCategory.hasPrefix(mapKitPrefix) {
+            aliases.append(String(normalizedCategory.dropFirst(mapKitPrefix.count)))
+        }
+        aliases = aliases.filter { !$0.isEmpty }
+        guard !aliases.isEmpty else { return false }
+        return tags.keys.contains(where: { aliases.contains(normalized($0)) }) ||
+            tags.values.contains(where: { aliases.contains(normalized($0)) })
     }
 
     private static func nameMatchScore(_ identity: PlaceIdentity, tags: [String: String]) -> Double? {
-        let taggedNames = [tags["name"], tags["brand"], tags["operator"]].compactMap { $0 }.map(normalized)
+        let taggedNames = ([tags["name"], tags["brand"], tags["operator"]].compactMap { $0 }
+            + tags.filter { $0.key.lowercased().hasPrefix("name:") }.map(\.value)).map(normalized)
         guard !taggedNames.isEmpty else { return nil }
         let expected = [identity.name, identity.brand, identity.operatorName]
             .compactMap { $0 }.map(normalized).filter { !$0.isEmpty }
@@ -361,8 +380,8 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         guard let expected else { return 0 }
         let expectedValue = normalized(expected)
         guard !expectedValue.isEmpty else { return 0 }
-        let taggedAddress = [tags["addr:street"], tags["addr:housenumber"], tags["addr:postcode"],
-                             tags["addr:city"], tags["addr:place"]]
+        let taggedAddress = [tags["addr:full"], tags["addr:street"], tags["addr:housenumber"],
+                             tags["addr:suburb"], tags["addr:postcode"], tags["addr:city"], tags["addr:place"]]
             .compactMap { $0 }.joined(separator: " ")
         let actualValue = normalized(taggedAddress)
         guard !actualValue.isEmpty else { return 0 }
@@ -394,7 +413,7 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
             .compactMap { $0 }
             .joined(separator: ", ")
         let address = tags["addr:full"] ?? (structuredAddress.isEmpty ? nil : structuredAddress)
-        let category = ["amenity", "shop", "tourism", "leisure", "office", "craft"]
+        let category = ["amenity", "shop", "tourism", "leisure", "office", "craft", "historic"]
             .compactMap { tags[$0] }
             .first
 
@@ -406,7 +425,13 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         let imageLicense = tags["image:license"]
         let wikimediaCommons = tags["wikimedia_commons"]
         let wikidataID = tags["wikidata"]
-        let brandWikidataID = tags["brand:wikidata"] ?? tags["operator:wikidata"]
+        let brandWikidataID = [tags["brand:wikidata"], tags["operator:wikidata"]]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .reduce(into: [String]()) { identifiers, value in
+                if !identifiers.contains(value) { identifiers.append(value) }
+            }
+            .joined(separator: ";")
         let wheelchair = tags["wheelchair"]
         let parking = tags["parking"]
         let driveThrough = tags["drive_through"]
@@ -510,9 +535,14 @@ private enum PlaceDetailsRequests {
     static var pending: [String: Task<PlaceDetails?, Error>] = [:]
     static var missingUntil: [String: Date] = [:]
 
-    static func load(key: String, operation: @escaping @MainActor () async throws -> PlaceDetails?) async throws -> PlaceDetails? {
+    static func load(key: String, forceRefresh: Bool = false,
+                     operation: @escaping @MainActor () async throws -> PlaceDetails?) async throws -> PlaceDetails? {
         if let pending = pending[key] { return try await pending.value }
-        if let until = missingUntil[key], until > Date() { return nil }
+        if forceRefresh {
+            missingUntil[key] = nil
+        } else if let until = missingUntil[key], until > Date() {
+            return nil
+        }
         let task = Task { try await operation() }
         pending[key] = task
         defer { pending[key] = nil }

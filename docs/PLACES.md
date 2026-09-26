@@ -55,14 +55,16 @@ Z tagów OSM budowany jest model `PlaceDetails`:
 | --- | --- |
 | Nazwa | `name`, z fallbackiem do `brand` lub nazwy już widocznej w karcie |
 | Marka i operator | `brand`, `operator` |
-| Kategoria | pierwszy dostępny z `amenity`, `shop`, `tourism`, `leisure`, `office`, `craft` |
+| Kategoria | pierwszy dostępny z `amenity`, `shop`, `tourism`, `leisure`, `office`, `craft`, `historic` |
 | Adres | `addr:full` albo złożenie ulicy, numeru, dzielnicy, kodu pocztowego i miejscowości |
 | Godziny otwarcia | `opening_hours` |
 | Telefon i strona | `contact:phone` / `phone` oraz `contact:website` / `website` |
-| Zdjęcie lub logo | `image` z `image:attribution` (oraz `image:license`, jeśli jest); potem `wikimedia_commons` lub `wikidata` → `P18`; logo marki z `brand:wikidata` / `operator:wikidata` → `P154` |
+| Zdjęcie lub logo | `image` z `image:attribution` (deklarowana licencja musi być rozpoznana i dopuszczalna; NC/ND są odrzucane; bez deklaracji karta pokazuje brak informacji o licencji); potem `wikimedia_commons` lub `wikidata` → `P18`; logo marki z `brand:wikidata` / `operator:wikidata` → `P154` |
 | Dostępność i udogodnienia | `wheelchair`, `parking`, `drive_through`; dla parkingów także dedykowane tagi opłat, dostępu, godzin, limitu postoju, pojemności i stron ulicy |
 
 Pola nieobecne w OSM pozostają puste. Zdjęcia mają osobny resolver opisany niżej; aplikacja nie odpyta strony sklepu ani nie dopasowuje fotografii wyłącznie po nazwie.
+
+Gdy wynik wyszukiwania ma identyfikator OSM, szczegóły są pobierane po tym identyfikatorze. Dla wyniku Apple Maps bez identyfikatora OSM aplikacja szuka w promieniu 100 m po nazwie (w tym lokalizowanej), marce lub operatorze, a następnie ocenia odległość, kategorię i adres. Karta pozwala wymusić ponowne pobranie, gdy usługa nie zwróciła danych albo dopasowanie się nie powiodło.
 
 ## Zdjęcia POI
 
@@ -70,16 +72,16 @@ Jedno zdjęcie pojawia się wyłącznie po rozwinięciu karty wybranych atrakcji
 
 `PlacePhotoResolver` używa kolejno:
 
-1. tagu OSM `image`, ale tylko z `image:attribution`; tag `image:license` dołącza się do podpisu, jeśli jest dostępny;
+1. tagu OSM `image`, gdy zawiera `image:attribution`; podana licencja musi być rozpoznaną licencją CC0, domeną publiczną, CC BY lub CC BY-SA (NC/ND i nierozpoznane licencje są odrzucane). Gdy licencji brakuje, karta jawnie pokazuje „Licencja niepodana”; bezpieczny adres podanej licencji jest klikalny;
 2. pliku wskazanego w `wikimedia_commons`;
 3. encji OSM `wikidata`, jej właściwości `P18` i metadanych Wikimedia Commons;
 4. statycznego podglądu Apple Look Around;
 5. logo marki z `brand:wikidata` lub `operator:wikidata`, właściwości `P154` i Wikimedia Commons;
 6. ikony kategorii.
 
-Commons zwraca miniaturę do karty, stronę pliku, autora i nazwę licencji. Zdjęcie z Commons jest używane tylko wtedy, gdy odpowiedź zawiera nazwę licencji. Podpis zdjęcia prowadzi do strony pliku Wikimedia Commons, gdzie widoczne są szczegóły licencji. Wyniki pozytywne są przechowywane w pamięci aplikacji przez 7 dni, a brak zdjęcia przez 24 godziny. Obraz ładuje się dopiero po otwarciu szczegółów. Jeżeli nie ma zdjęcia z tych źródeł, karta próbuje uzyskać statyczny podgląd Apple Look Around; gdy Apple nie ma sceny, pokazuje ikonę kategorii i nazwę miejsca. Na iOS przycisk „Rozejrzyj się” otwiera interaktywną scenę; na macOS pozostaje statyczny podgląd.
+Commons zwraca miniaturę do karty, stronę pliku, autora lub informację o atrybucji i nazwę licencji. Zdjęcie z Commons jest używane tylko wtedy, gdy odpowiedź zawiera nazwę licencji oraz autora/atrybucję (wyjątkiem są licencje CC0 i domena publiczna). Resolver próbuje kolejno dostępne źródła Commons i Wikidata, więc błędny plik nie blokuje następnego źródła. Podpis zdjęcia prowadzi do strony pliku Wikimedia Commons, a jeśli API udostępnia bezpieczny adres licencji, jej nazwa prowadzi bezpośrednio do tekstu licencji. API Wikimedia otrzymuje identyfikator aplikacji z adresem repozytorium. Wyniki pozytywne są przechowywane w pamięci aplikacji przez 7 dni, a brak zdjęcia przez 5 minut; pamięć ogranicza się do 256 ostatnio używanych wpisów. Przycisk ponowienia pomija cache zdjęcia i cache braku wyniku. Obraz ładuje się dopiero po otwarciu szczegółów. Jeżeli obraz źródłowy nie pobierze się, karta próbuje uzyskać statyczny podgląd Apple Look Around; bez dostępnej sceny pokazuje ikonę kategorii i nazwę miejsca zamiast bez końca wyświetlać wskaźnik ładowania. Na iOS przycisk „Rozejrzyj się” otwiera interaktywną scenę; na macOS pozostaje statyczny podgląd.
 
-W ramach obsługi zdjęć współrzędne są wysyłane do Apple przy próbie uzyskania Look Around. Zapytanie Wikidata używa identyfikatora encji OSM, a zapytanie Wikimedia Commons — wskazanego pliku; aplikacja nie wysyła nazwy miejsca do wyszukiwarki zdjęć. Źródła płatne Google Places i Foursquare nie są używane.
+W ramach obsługi zdjęć współrzędne są wysyłane do Apple przy próbie uzyskania Look Around. Zapytanie Wikidata używa identyfikatora encji OSM, a zapytanie Wikimedia Commons — wskazanego pliku; aplikacja nie wysyła nazwy miejsca do wyszukiwarki zdjęć. Jeśli karta użyje bezpośredniego tagu `image=*`, obraz pobiera host wskazany w tym tagu i widzi zwykłe żądanie sieciowe urządzenia; współrzędne nie są mu przekazywane osobno. Źródła płatne Google Places i Foursquare nie są używane.
 
 ## Godziny otwarcia i ich interpretacja
 

@@ -40,7 +40,7 @@ struct PlaceDetailsView: View {
     @State private var isLoadingPlacePhoto = false
     @State private var showLookAround = false
     private let provider = OpenStreetMapPlaceDetailsProvider()
-    private let fuelPriceProvider: any FuelPriceProvider = BenzynaMapaFuelPriceProvider.shared
+    private let fuelPriceProvider: any FuelPriceProvider = FuelWideFuelPriceProvider.shared
 
     init(result: SearchResult, isSaved: Bool, onSave: @escaping () -> Bool,
          isNavigating: Bool = false, primaryActionTitle: String = "Wyznacz trasę",
@@ -147,8 +147,12 @@ struct PlaceDetailsView: View {
                         .font(.caption.weight(.semibold))
                 }
             } else if result.isPOI, details?.hasAdditionalInformation != true, supplementalDetails.isEmpty {
-                Text("Brak dodatkowych informacji o tym miejscu.")
-                    .font(.caption).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Brak dodatkowych informacji o tym miejscu.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Sprawdź ponownie", systemImage: "arrow.clockwise") { retry += 1 }
+                        .font(.caption.weight(.semibold))
+                }
             }
 
             if let loadedAt {
@@ -213,7 +217,7 @@ struct PlaceDetailsView: View {
                 loadedAt = cached.fetchedAt
             }
             do {
-                if let loaded = try await provider.details(for: result.placeIdentity) {
+                if let loaded = try await provider.details(for: result.placeIdentity, forceRefresh: retry > 0) {
                     guard !Task.isCancelled else { return }
                     details = details?.merging(loaded) ?? loaded
                     loadedAt = loaded.fetchedAt
@@ -234,9 +238,9 @@ struct PlaceDetailsView: View {
                !isNavigating {
                 if PlacePhotoResolver.isEligible(category: current.category)
                     || PlacePhotoResolver.isEligible(category: result.category) {
-                    await loadPlacePhoto(for: current)
+                    await loadPlacePhoto(for: current, forceRefresh: retry > 0)
                 } else {
-                    await loadBrandLogo(for: current)
+                    await loadBrandLogo(for: current, forceRefresh: retry > 0)
                 }
             }
         }
@@ -320,9 +324,14 @@ struct PlaceDetailsView: View {
                             case .empty:
                                 photoLoadingPlaceholder
                             case .failure:
-                                photoLoadingPlaceholder.task(id: placePhoto.imageURL) {
-                                    placePhotoLoadFailed = true
-                                    await loadLookAroundFallback()
+                                if placePhotoLoadFailed {
+                                    photoPlaceholder
+                                } else {
+                                    photoLoadingPlaceholder.task(id: placePhoto.imageURL) {
+                                        guard !Task.isCancelled else { return }
+                                        placePhotoLoadFailed = true
+                                        await loadLookAroundFallback()
+                                    }
                                 }
                             @unknown default:
                                 photoPlaceholder
@@ -362,15 +371,11 @@ struct PlaceDetailsView: View {
                 Label("Widok z Apple Look Around", systemImage: "viewfinder")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-            } else if let placePhoto {
-                HStack(alignment: .top, spacing: 5) {
-                    Link(placePhoto.source == .wikimediaCommons ? "Wikimedia Commons" : "Oryginalne zdjęcie",
-                         destination: placePhoto.sourcePageURL)
-                    Text("· \(placePhoto.attribution)")
-                        .foregroundStyle(.secondary)
-                }
-                .font(.caption2)
-                .lineLimit(2)
+            } else if let placePhoto, !placePhotoLoadFailed {
+                photoCredit(placePhoto,
+                            sourceTitle: placePhoto.source == .wikimediaCommons
+                                ? "Wikimedia Commons"
+                                : "Oryginalne zdjęcie")
             } else if lookAroundPreview != nil {
                 Label("Widok z Apple Look Around", systemImage: "viewfinder")
                     .font(.caption2)
@@ -389,9 +394,13 @@ struct PlaceDetailsView: View {
                 case .empty:
                     ProgressView().controlSize(.small)
                 case .failure:
-                    Image(systemName: "tag.fill")
-                        .font(.title2)
-                        .foregroundStyle(Color.accentColor)
+                    Button { retry += 1 } label: {
+                        Image(systemName: "tag.fill")
+                            .font(.title2)
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Ponów pobieranie logo")
                 @unknown default:
                     Image(systemName: "tag.fill")
                         .font(.title2)
@@ -406,13 +415,7 @@ struct PlaceDetailsView: View {
                 Text(details?.brand ?? result.brand ?? result.destination.name)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
-                HStack(alignment: .top, spacing: 5) {
-                    Link("Logo · Wikimedia Commons", destination: photo.sourcePageURL)
-                    Text("· \(photo.attribution)")
-                        .foregroundStyle(.secondary)
-                }
-                .font(.caption2)
-                .lineLimit(2)
+                photoCredit(photo, sourceTitle: "Logo · Wikimedia Commons")
             }
             Spacer(minLength: 0)
         }
@@ -438,9 +441,30 @@ struct PlaceDetailsView: View {
             Text(isLoadingPlacePhoto ? "Wyszukiwanie zdjęcia miejsca…" : "Zdjęcie niedostępne")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if !isLoading && !isLoadingPlacePhoto {
+                Button("Spróbuj ponownie", systemImage: "arrow.clockwise") { retry += 1 }
+                    .font(.caption.weight(.semibold))
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.primary.opacity(0.045))
+    }
+
+    @ViewBuilder
+    private func photoCredit(_ photo: PlacePhoto, sourceTitle: String) -> some View {
+        HStack(alignment: .top, spacing: 5) {
+            Link(sourceTitle, destination: photo.sourcePageURL)
+            Text("· \(photo.attribution)")
+                .foregroundStyle(.secondary)
+            if let licenseURL = photo.licenseURL {
+                Link(photo.licenseName ?? "Licencja", destination: licenseURL)
+            } else if let licenseName = photo.licenseName {
+                Text("· \(licenseName)")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.caption2)
+        .lineLimit(2)
     }
 
     private var photoLoadingPlaceholder: some View {
@@ -450,34 +474,51 @@ struct PlaceDetailsView: View {
             .background(Color.primary.opacity(0.045))
     }
 
-    private func loadPlacePhoto(for details: PlaceDetails) async {
+    private func loadPlacePhoto(for details: PlaceDetails, forceRefresh: Bool) async {
         isLoadingPlacePhoto = true
-        defer { isLoadingPlacePhoto = false }
-        placePhoto = await PlacePhotoResolver.resolve(for: details, identity: result.placeIdentity)
+        defer {
+            if !Task.isCancelled { isLoadingPlacePhoto = false }
+        }
+        let resolvedPhoto = await PlacePhotoResolver.resolve(for: details, identity: result.placeIdentity,
+                                                             forceRefresh: forceRefresh)
         guard !Task.isCancelled else { return }
-        if placePhoto == nil {
-            await loadLookAroundFallback()
+        placePhoto = resolvedPhoto
+        if resolvedPhoto == nil {
+            await loadLookAroundFallback(forceRefresh: forceRefresh)
         }
         guard !Task.isCancelled else { return }
         if placePhoto == nil && lookAroundPreview == nil {
-            placePhoto = await PlacePhotoResolver.resolveBrandLogo(for: details, identity: result.placeIdentity)
+            let brandLogo = await PlacePhotoResolver.resolveBrandLogo(for: details, identity: result.placeIdentity,
+                                                                       forceRefresh: forceRefresh)
+            guard !Task.isCancelled else { return }
+            placePhoto = brandLogo
         }
     }
 
-    private func loadBrandLogo(for details: PlaceDetails) async {
+    private func loadBrandLogo(for details: PlaceDetails, forceRefresh: Bool) async {
         isLoadingPlacePhoto = true
-        defer { isLoadingPlacePhoto = false }
-        placePhoto = await PlacePhotoResolver.resolveBrandLogo(for: details, identity: result.placeIdentity)
+        defer {
+            if !Task.isCancelled { isLoadingPlacePhoto = false }
+        }
+        let brandLogo = await PlacePhotoResolver.resolveBrandLogo(for: details, identity: result.placeIdentity,
+                                                                   forceRefresh: forceRefresh)
+        guard !Task.isCancelled else { return }
+        placePhoto = brandLogo
     }
 
-    private func loadLookAroundFallback() async {
+    private func loadLookAroundFallback(forceRefresh: Bool = false) async {
         guard lookAroundPreview == nil, !Task.isCancelled,
               PlacePhotoResolver.isEligible(category: details?.category)
                 || PlacePhotoResolver.isEligible(category: result.category) else { return }
-        lookAroundPreview = await PlaceLookAroundProvider.preview(at: result.destination.coordinate)
-        guard lookAroundPreview == nil, !Task.isCancelled,
+        let preview = await PlaceLookAroundProvider.preview(at: result.destination.coordinate)
+        guard !Task.isCancelled else { return }
+        lookAroundPreview = preview
+        guard preview == nil,
               let details,
-              let brandLogo = await PlacePhotoResolver.resolveBrandLogo(for: details, identity: result.placeIdentity) else { return }
+              let brandLogo = await PlacePhotoResolver.resolveBrandLogo(for: details,
+                                                                         identity: result.placeIdentity,
+                                                                         forceRefresh: forceRefresh),
+              !Task.isCancelled else { return }
         placePhoto = brandLogo
         placePhotoLoadFailed = false
     }
@@ -517,7 +558,7 @@ struct PlaceDetailsView: View {
 
     private var fuelPricesSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("Ceny paliw", systemImage: "fuelpump.fill")
+            Label("Średnie ceny paliw w Polsce", systemImage: "fuelpump.fill")
                 .font(.subheadline.weight(.semibold))
 
             if isLoadingFuelPrices {
@@ -533,10 +574,6 @@ struct PlaceDetailsView: View {
                 fuelPriceLookupContent(fuelPriceLookup)
             }
 
-            Link("Źródło: BenzynaMAPA.pl + OpenStreetMap",
-                 destination: URL(string: "https://benzynamapa.pl")!)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -547,52 +584,11 @@ struct PlaceDetailsView: View {
     private func fuelPriceLookupContent(_ lookup: FuelPriceLookupResult) -> some View {
         switch lookup {
         case .outsideCoverage:
-            Text("Ceny BenzynaMAPA są dostępne dla stacji w Polsce.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        case .stationNotFound:
-            Text("Brak dopasowanych cen dla tej stacji.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        case .noPrices:
-            Text("Dostawca nie podał cen paliw dla tej stacji.")
+            Text("Dane o cenach są dostępne dla Polski.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         case .prices(let report):
-            if report.prices.isEmpty {
-                Text("Dostawca nie podał cen paliw dla tej stacji.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading),
-                                    GridItem(.flexible(), alignment: .leading)],
-                          alignment: .leading, spacing: 8) {
-                    ForEach(report.prices) { price in
-                        HStack(spacing: 5) {
-                            Text(price.title)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer(minLength: 3)
-                            Text("\(price.isEstimated ? "~" : "")\(price.amount.formatted(.number.precision(.fractionLength(2)))) zł/l")
-                                .font(.subheadline.weight(.semibold).monospacedDigit())
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.8)
-                        }
-                    }
-                }
-            }
-
-            if let source = report.source, !source.isEmpty {
-                Text("Dane: \(source)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            if let reportedAt = report.reportedAt, !reportedAt.isEmpty {
-                Text("Aktualizacja: \(reportedAt)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
+            FuelPriceReportContent(report: report)
         }
     }
 
@@ -879,6 +875,99 @@ private extension PlaceDetails {
         address != nil || openingHours != nil || phone != nil || website != nil ||
             imageURL != nil || wikimediaCommons != nil || wikidataID != nil || brandWikidataID != nil ||
             wheelchair != nil || parking != nil || osmParking != nil || driveThrough != nil
+    }
+}
+
+private struct FuelPriceReportContent: View {
+    let report: FuelPriceReport
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading),
+                                GridItem(.flexible(), alignment: .leading)],
+                      alignment: .leading, spacing: 8) {
+                ForEach(report.prices) { price in
+                    HStack(spacing: 5) {
+                        Text(price.title)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 3)
+                        Text("\(price.isEstimated ? "≈ " : "")\(price.amount.formatted(.number.precision(.fractionLength(2)))) zł/l")
+                            .font(.subheadline.weight(.semibold).monospacedDigit())
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                }
+            }
+
+            Text(report.notes)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Text("Aktualizacja: \(report.reportedAt)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
+            if report.isStale {
+                Label("Dostawca oznacza te dane jako nieaktualne.", systemImage: "exclamationmark.triangle")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+
+            Link(report.source,
+                 destination: URL(string: "https://energy.ec.europa.eu/data-and-analysis/weekly-oil-bulletin_en")!)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Link("API FuelWide", destination: URL(string: "https://fuelwide.com/fuel-prices/poland")!)
+                Link("Kurs EUR/PLN: NBP", destination: URL(string: "https://api.nbp.pl/api/exchangerates/rates/a/eur/?format=json")!)
+            }
+            .font(.caption2)
+        }
+    }
+}
+
+struct FuelPriceSummaryCard: View {
+    @State private var report: FuelPriceReport?
+    @State private var loadError: String?
+    @State private var isLoading = true
+    @State private var retry = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Label("Ceny paliw · średnia krajowa", systemImage: "fuelpump.fill")
+                .font(.subheadline.weight(.semibold))
+
+            if isLoading {
+                ProgressView("Pobieranie aktualnych cen…")
+                    .font(.caption)
+            } else if let loadError {
+                Text(loadError)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Spróbuj ponownie", systemImage: "arrow.clockwise") { retry += 1 }
+                    .font(.caption.weight(.semibold))
+            } else if let report {
+                FuelPriceReportContent(report: report)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+        .task(id: retry) {
+            isLoading = true
+            loadError = nil
+            defer {
+                if !Task.isCancelled { isLoading = false }
+            }
+            do {
+                report = try await FuelWideFuelPriceProvider.shared.pricesForPoland()
+            } catch {
+                guard !Task.isCancelled else { return }
+                loadError = "Nie udało się pobrać cen paliw."
+            }
+        }
     }
 }
 
