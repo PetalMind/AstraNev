@@ -2254,7 +2254,9 @@ final class NavigationEngine {
         state.deviceHeading = nil
         updateCameraIntent()
         locationManager.stopBackgroundNavigationUpdates()
-        if state.voiceEnabled { voice.announceArrival(destination: state.destination) }
+        if state.voiceEnabled {
+            voice.announceArrival(destination: state.destination, transportMode: state.transportMode)
+        }
         finishTrip(arrived: true)
     }
 

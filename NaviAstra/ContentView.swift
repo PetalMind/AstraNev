@@ -161,9 +161,111 @@ struct ContentView: View {
         engine.state.status == .navigating || engine.state.status == .rerouting
     }
 
+    private var activeParkRideLeg: JourneyLeg? {
+        guard let legs = engine.state.route?.journey?.legs, !legs.isEmpty else { return nil }
+        if let index = engine.state.transitProgress?.legIndex, legs.indices.contains(index) {
+            return legs[index]
+        }
+        return legs.first { $0.arrival > Date() } ?? legs.last
+    }
+
+    private var activeJourneyTargetText: String {
+        let fallback = currentJourneyLeg?.current.name ?? engine.state.destination?.name ?? "celu"
+        switch engine.state.transportMode {
+        case .car:
+            return "Teraz jedziesz do \(fallback)"
+        case .walking:
+            return "Teraz idziesz do \(fallback)"
+        case .bicycle:
+            return "Teraz jedziesz rowerem do \(fallback)"
+        case .transit:
+            guard let leg = activeTransitLeg else { return "Teraz podróżujesz do \(fallback)" }
+            return leg.mode == "WALK"
+                ? "Teraz idziesz do \(leg.to)"
+                : "Teraz jedziesz linią \(leg.line ?? "MPK") do \(leg.to)"
+        case .parkRide:
+            guard let leg = activeParkRideLeg else { return "Teraz podróżujesz do \(fallback)" }
+            if leg.mode == "WALK" { return "Teraz idziesz do \(leg.to)" }
+            if leg.mode == "CAR" { return "Teraz jedziesz samochodem do \(leg.to)" }
+            return "Teraz jedziesz linią \(leg.line ?? "MPK") do \(leg.to)"
+        }
+    }
+
+    private var arrivalTitle: String {
+        switch engine.state.transportMode {
+        case .car: "Cel osiągnięty samochodem!"
+        case .walking: "Cel osiągnięty pieszo!"
+        case .bicycle: "Cel osiągnięty rowerem!"
+        case .transit: "Cel osiągnięty komunikacją miejską!"
+        case .parkRide: "Cel osiągnięty w systemie P+R!"
+        }
+    }
+
+    private var arrivalDistanceCaption: String {
+        switch engine.state.transportMode {
+        case .car: "samochodem"
+        case .walking: "pieszo"
+        case .bicycle: "rowerem"
+        case .transit: "komunikacją"
+        case .parkRide: "trasą P+R"
+        }
+    }
+
+    private var arrivalSummaryMetric: (symbol: String, value: String, caption: String) {
+        let trip = engine.state.lastTrip
+        switch engine.state.transportMode {
+        case .walking:
+            let pace = trip.flatMap { trip -> String? in
+                guard trip.distanceMeters > 0, trip.movingSeconds > 0 else { return nil }
+                let minutesPerKilometer = Int(ceil(trip.movingSeconds / (trip.distanceMeters / 1_000) / 60))
+                return "\(minutesPerKilometer) min/km"
+            } ?? "—"
+            return ("figure.walk", pace, "tempo")
+        case .transit:
+            guard let transfers = engine.state.route?.journey?.transferCount else {
+                return ("arrow.left.arrow.right", "—", "przesiadek")
+            }
+            return ("arrow.left.arrow.right", "\(transfers)", transferCaption(transfers))
+        case .parkRide:
+            guard let journeyTransfers = engine.state.route?.journey?.transferCount else {
+                return ("arrow.left.arrow.right", "—", "przesiadek")
+            }
+            let transfers = journeyTransfers + 1
+            return ("arrow.left.arrow.right", "\(transfers)", transferCaption(transfers))
+        case .car, .bicycle:
+            let symbol = engine.state.transportMode == .car ? "car.side" : "bicycle"
+            let speed = trip.map { "\(Int($0.averageSpeedKph.rounded())) km/h" } ?? "—"
+            return (symbol, speed, "śr. prędkość")
+        }
+    }
+
+    private var navigationArrivalCaption: String {
+        switch engine.state.transportMode {
+        case .walking, .bicycle: "dotarcie"
+        case .car, .transit, .parkRide: "przyjazd"
+        }
+    }
+
+    private func transferCaption(_ count: Int) -> String {
+        let lastTwoDigits = count % 100
+        let lastDigit = count % 10
+        if lastDigit == 1, lastTwoDigits != 11 { return "przesiadka" }
+        if (2...4).contains(lastDigit), !(12...14).contains(lastTwoDigits) { return "przesiadki" }
+        return "przesiadek"
+    }
+
     private var usesFullBleedNavigationPanel: Bool {
         #if os(iOS)
-        isNavigating || engine.state.status == .arrived
+        isNavigating || engine.state.status == .arrived || isIOSRoutePlanningPreview
+        #else
+        false
+        #endif
+    }
+
+    private var isIOSRoutePlanningPreview: Bool {
+        #if os(iOS)
+        engine.state.destination != nil &&
+            (engine.state.status == .routePreview || engine.state.status == .error)
         #else
         false
         #endif
@@ -362,18 +464,23 @@ struct ContentView: View {
                                             collapseRequest: discoveryDrawerCollapseRequest) { compact in
                                 discoveryPanel(compact: compact)
                             }
+                        } else if isIOSRoutePlanningPreview {
+                            routePlanningSheet(
+                                maxHeight: min(geometry.size.height * 0.70,
+                                               max(220, geometry.size.height - mapHeaderInset - 108)),
+                                bottomInset: geometry.safeAreaInsets.bottom)
                         } else {
                             ScrollView(.vertical) {
                                 activePanel
                                     .padding(.horizontal, usesFullBleedNavigationPanel ? 0 : 2)
                                     .padding(.top, usesFullBleedNavigationPanel ? 0 : 2)
-                                    .padding(.bottom, isTransitRoutePreview ? 76 : 0)
+                                    .padding(.bottom, isTransitRoutePreview && !usesFullBleedNavigationPanel ? 76 : 0)
                                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { panelHeight = $0 }
                             }
                             .scrollIndicators(.hidden)
                             .frame(height: min(panelHeight, geometry.size.height * (geometry.size.height < 500 ? 0.48 : 0.64)))
                             .overlay(alignment: .bottom) {
-                                if isTransitRoutePreview {
+                                if isTransitRoutePreview && !usesFullBleedNavigationPanel {
                                     beginRouteButton
                                         .padding(.horizontal, 16)
                                         .padding(.top, 10)
@@ -738,7 +845,7 @@ struct ContentView: View {
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(Color.accentColor)
 
-                Text("Dokąd chcesz jechać?")
+                Text("Szukaj miejsca lub połączenia")
                     .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
@@ -753,7 +860,7 @@ struct ContentView: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityHint("Otwiera wyszukiwanie miejsca lub adresu")
+        .accessibilityHint("Otwiera wyszukiwanie miejsc, adresów i połączeń")
     }
 
     private var routeEndpointFields: some View {
@@ -1349,6 +1456,14 @@ struct ContentView: View {
     }
 
     private var routePreviewCard: some View {
+#if os(iOS)
+        routePlanningSheet(maxHeight: 560, bottomInset: 0)
+#else
+        desktopRoutePreviewCard
+#endif
+    }
+
+    private var desktopRoutePreviewCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Button {
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
@@ -1734,6 +1849,618 @@ struct ContentView: View {
         })
     }
 
+    private var routePlanningOptions: [NavigationRoute] {
+        var routes = engine.state.routeOptions
+        if routes.isEmpty, let route = engine.state.route {
+            routes = [route]
+        }
+        let selectedID = engine.state.route?.id
+        return routes.sorted { lhs, rhs in
+            let lhsIsSelected = lhs.id == selectedID
+            let rhsIsSelected = rhs.id == selectedID
+            if lhsIsSelected != rhsIsSelected { return lhsIsSelected }
+            return lhs.expectedTravelTime < rhs.expectedTravelTime
+        }
+    }
+
+    private var routePlanningShareURL: URL? {
+        guard let origin = routeOriginPoint, let destination = engine.state.destination else { return nil }
+        let originValue = origin.isCurrentLocation
+            ? "Current Location"
+            : "\(origin.coordinate.latitude),\(origin.coordinate.longitude)"
+        let destinationValue = "\(destination.coordinate.latitude),\(destination.coordinate.longitude)"
+        let directionsMode: String = switch engine.state.transportMode {
+        case .car: "d"
+        case .walking: "w"
+        case .bicycle: "b"
+        case .transit, .parkRide: "r"
+        }
+        var components = URLComponents(string: "https://maps.apple.com/")
+        components?.queryItems = [
+            URLQueryItem(name: "saddr", value: originValue),
+            URLQueryItem(name: "daddr", value: destinationValue),
+            URLQueryItem(name: "dirflg", value: directionsMode)
+        ]
+        return components?.url
+    }
+
+    private func routePlanningSheet(maxHeight: CGFloat, bottomInset: CGFloat) -> some View {
+        let shape = UnevenRoundedRectangle(
+            cornerRadii: RectangleCornerRadii(topLeading: 40, bottomLeading: 0,
+                                              bottomTrailing: 0, topTrailing: 40),
+            style: .continuous)
+
+        return VStack(spacing: 0) {
+            Capsule()
+                .fill(Color.white.opacity(0.48))
+                .frame(width: 38, height: 4)
+                .padding(.top, 9)
+                .padding(.bottom, 12)
+
+            ScrollView(.vertical) {
+                VStack(spacing: 10) {
+                    routePlanningEndpoints
+                    routePlanningTransportSelector
+
+                    if engine.state.transportMode == .transit || engine.state.transportMode == .parkRide {
+                        journeyTimeControl
+                            .padding(.horizontal, 11)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .modifier(NavigationGlassSurface(radius: 17))
+                    }
+
+                    if let route = engine.state.route {
+                        routePlanningOverview(route)
+                        routePlanningAlternatives(for: route)
+                        if routePreviewExpanded {
+                            routePlanningDetails(for: route)
+                                .transition(.opacity.combined(with: .move(edge: .top)))
+                        }
+                    } else {
+                        routePlanningUnavailable
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 11)
+            }
+            .scrollIndicators(.hidden)
+            .frame(maxHeight: .infinity, alignment: .top)
+
+            routePlanningFooter(bottomInset: bottomInset)
+        }
+        .frame(maxWidth: 560)
+        .frame(height: maxHeight, alignment: .top)
+        .frame(maxWidth: .infinity)
+        .background {
+            ZStack {
+                shape.fill(.ultraThinMaterial)
+                shape.fill(
+                    LinearGradient(
+                        colors: [Color(red: 0.12, green: 0.18, blue: 0.26).opacity(0.94),
+                                 Color(red: 0.045, green: 0.075, blue: 0.12).opacity(0.98)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing))
+            }
+        }
+        .overlay { shape.strokeBorder(Color.white.opacity(0.11), lineWidth: 1) }
+        .shadow(color: .black.opacity(0.32), radius: 22, y: -8)
+        .gesture(DragGesture(minimumDistance: 20).onEnded { value in
+            if value.translation.height < -35 {
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { routePreviewExpanded = true }
+            } else if value.translation.height > 35 {
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { routePreviewExpanded = false }
+            }
+        })
+    }
+
+    private var routePlanningEndpoints: some View {
+        HStack(spacing: 12) {
+            VStack(spacing: 3) {
+                Image(systemName: routeOriginPoint?.isCurrentLocation == true ? "location.north.fill" : "a.circle.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 31, height: 31)
+                    .background(Color.accentColor, in: Circle())
+                ForEach(0..<3, id: \.self) { _ in
+                    Circle().fill(Color.accentColor.opacity(0.72)).frame(width: 3.5, height: 3.5)
+                }
+                Text("B")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 31, height: 31)
+                    .background(Color.red.opacity(0.9), in: Circle())
+            }
+            .frame(width: 34)
+
+            VStack(spacing: 0) {
+                Button { showOriginPicker = true } label: {
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(routeOriginPoint?.name ?? "Twoja lokalizacja")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                            Text("Punkt startowy")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Color.white.opacity(0.56))
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "arrow.up.arrow.down")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Color.white.opacity(0.55))
+                    }
+                    .frame(minHeight: 47)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Punkt startowy: \(routeOriginPoint?.name ?? "Twoja lokalizacja")")
+
+                Rectangle()
+                    .fill(Color.white.opacity(0.11))
+                    .frame(height: 1)
+
+                HStack(spacing: 8) {
+                    Button(action: presentSearch) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(engine.state.destination?.name ?? "Dokąd?")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                            Text(engine.state.destination?.address ?? "Cel podróży")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Color.white.opacity(0.56))
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 47, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Cel podróży: \(engine.state.destination?.name ?? "Nie wybrano")")
+
+                    Button(action: toggleDestinationFavorite) {
+                        Image(systemName: isDestinationFavorite ? "star.fill" : "star")
+                            .font(.system(size: 17, weight: .medium))
+                            .foregroundStyle(isDestinationFavorite ? Color.yellow : Color.white.opacity(0.8))
+                            .frame(width: 36, height: 36)
+                            .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isDestinationFavorite ? "Usuń cel z ulubionych" : "Zapisz cel w ulubionych")
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .modifier(NavigationGlassSurface(radius: 23))
+    }
+
+    private var routePlanningTransportSelector: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 7) {
+                ForEach(TransportMode.allCases) { mode in
+                    let selected = engine.state.transportMode == mode
+                    Button {
+                        Task { await engine.selectTransportMode(mode) }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: mode.symbol)
+                                .font(.system(size: 14, weight: .semibold))
+                            Text(mode.title)
+                                .font(.system(size: 11, weight: .semibold))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                        }
+                        .foregroundStyle(selected ? Color.accentColor : Color.white.opacity(0.65))
+                        .padding(.horizontal, 11)
+                        .frame(minHeight: 43)
+                        .background(selected ? Color.accentColor.opacity(0.16) : Color.white.opacity(0.055),
+                                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(selected ? Color.accentColor.opacity(0.7) : Color.white.opacity(0.045),
+                                              lineWidth: selected ? 1.2 : 1)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(mode.title)
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
+        .animation(.spring(response: 0.34, dampingFraction: 0.88), value: engine.state.transportMode)
+    }
+
+    private func routePlanningOverview(_ route: NavigationRoute) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(time(route.expectedTravelTime))
+                    .font(.system(size: 31, weight: .bold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                Text("\(distance(route.distance)) · Przyjazd \(routePlanningArrivalTime(route))")
+                    .font(.system(size: 12, weight: .medium, design: .rounded).monospacedDigit())
+                    .foregroundStyle(Color.white.opacity(0.67))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                if let traffic = routePlanningTrafficSummary(for: route) {
+                    Label(traffic.title, systemImage: traffic.symbol)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(traffic.color)
+                        .lineLimit(1)
+                }
+                if !route.chargingStops.isEmpty {
+                    Text("Postoje na ładowanie: \(route.chargingStops.count) · +\(Int((route.chargingDuration / 60).rounded())) min")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Color.white.opacity(0.56))
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 2)
+            Button {
+                if isRouteOriginAwayFromUser {
+                    navigateToRouteOrigin()
+                } else {
+                    engine.begin()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: isRouteOriginAwayFromUser ? "location.magnifyingglass" : "location.fill")
+                        .font(.system(size: 16, weight: .bold))
+                    Text(isRouteOriginAwayFromUser ? "Do startu" : "Rozpocznij")
+                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+                .foregroundStyle(.white)
+                .frame(width: 126, height: 58)
+                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 19, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 19, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(engine.state.status != .routePreview
+                      || engine.state.transitPlanningPhase == .enrichingGeometry)
+            .opacity(engine.state.status == .routePreview
+                     && engine.state.transitPlanningPhase != .enrichingGeometry ? 1 : 0.55)
+            .accessibilityLabel(isRouteOriginAwayFromUser ? "Nawiguj do punktu startowego" : "Rozpocznij nawigację")
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 23, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 23, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.095), lineWidth: 1)
+        }
+    }
+
+    private func routePlanningArrivalTime(_ route: NavigationRoute) -> String {
+        let arrival = route.journey?.arrival ?? Date().addingTimeInterval(max(0, route.expectedTravelTime))
+        return arrival.formatted(date: .omitted, time: .shortened)
+    }
+
+    private func routePlanningTrafficSummary(for route: NavigationRoute) -> (title: String, symbol: String, color: Color)? {
+        guard engine.state.transportMode == .car,
+              let traffic = engine.state.traffic else { return nil }
+        let segments = traffic.routeFlowSegments.filter { $0.routeID == route.id }
+        guard !segments.isEmpty else { return nil }
+        let colors = Set(segments.map(\.colorHex))
+        let prefix = "Ruch na początku trasy: "
+        if colors.contains(RouteColorPalette.closure) {
+            return (prefix + "zamknięcie", "exclamationmark.triangle.fill", .red)
+        }
+        if colors.contains(RouteColorPalette.trafficStationary) {
+            return (prefix + "zatrzymany", "exclamationmark.triangle.fill", .red)
+        }
+        if colors.contains(RouteColorPalette.trafficHeavy) {
+            return (prefix + "wolny", "car.side.fill", .orange)
+        }
+        if colors.contains(RouteColorPalette.trafficSlow) {
+            return (prefix + "spowolnienia", "car.side.fill", .orange)
+        }
+        if colors.contains(RouteColorPalette.trafficModerate) {
+            return (prefix + "umiarkowany", "car.side.fill", .yellow)
+        }
+        guard colors.contains(RouteColorPalette.trafficFree) else { return nil }
+        return (prefix + "płynny", "leaf.fill", .green)
+    }
+
+    @ViewBuilder
+    private func routePlanningAlternatives(for selectedRoute: NavigationRoute) -> some View {
+        let routes = routePlanningOptions
+        if routes.count > 1 {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Alternatywne trasy")
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.84))
+
+                ForEach(Array(routes.enumerated()), id: \.element.id) { _, route in
+                    let isSelected = route.id == selectedRoute.id
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.25)) { engine.select(route) }
+                    } label: {
+                        HStack(spacing: 9) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(time(route.expectedTravelTime))
+                                    .font(.system(size: 15, weight: .bold, design: .rounded).monospacedDigit())
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                                Text(distance(route.distance))
+                                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                                    .foregroundStyle(Color.white.opacity(0.57))
+                            }
+                            Spacer(minLength: 3)
+                            VStack(alignment: .trailing, spacing: 2) {
+                                Text(isSelected ? "Wybrana" : "Alternatywna")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(isSelected ? Color.accentColor : Color.white.opacity(0.76))
+                                Text(routePlanningDifference(route, from: selectedRoute))
+                                    .font(.system(size: 10, weight: .medium, design: .rounded).monospacedDigit())
+                                    .foregroundStyle(Color.white.opacity(0.55))
+                            }
+                            Image(systemName: isSelected ? "checkmark.circle.fill" : "chevron.right")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(isSelected ? Color.accentColor : Color.white.opacity(0.5))
+                                .padding(.leading, 3)
+                        }
+                        .padding(.horizontal, 13)
+                        .padding(.vertical, 9)
+                        .frame(maxWidth: .infinity, minHeight: 55, alignment: .leading)
+                        .background(isSelected ? Color.accentColor.opacity(0.12) : Color.white.opacity(0.045),
+                                    in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                                .strokeBorder(isSelected ? Color.accentColor.opacity(0.85) : Color.white.opacity(0.07),
+                                              lineWidth: isSelected ? 1.3 : 1)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(isSelected ? "Wybrana trasa" : "Alternatywna trasa"), \(time(route.expectedTravelTime)), \(distance(route.distance))")
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
+                }
+            }
+        }
+    }
+
+    private func routePlanningDifference(_ route: NavigationRoute, from selectedRoute: NavigationRoute) -> String {
+        let difference = route.expectedTravelTime - selectedRoute.expectedTravelTime
+        let minutes = Int(ceil(abs(difference) / 60))
+        guard minutes > 0 else { return "Podobny czas" }
+        return difference > 0 ? "+\(minutes) min" : "\(minutes) min szybciej"
+    }
+
+    private func routePlanningDetails(for route: NavigationRoute) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if !route.maneuvers.isEmpty {
+                VStack(alignment: .leading, spacing: 9) {
+                    Text("Przebieg trasy")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                    ForEach(Array(route.maneuvers.prefix(12))) { maneuver in
+                        HStack(alignment: .top, spacing: 9) {
+                            Image(systemName: maneuver.iconName)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 20)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(maneuver.displayInstruction)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(Color.white.opacity(0.88))
+                                if let street = maneuver.streetLine {
+                                    Text(street)
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundStyle(Color.white.opacity(0.55))
+                                }
+                            }
+                            Spacer(minLength: 0)
+                        }
+                    }
+                }
+            }
+
+            waypointDetails
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Opcje trasy")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                routePreferenceToggle("Unikaj autostrad", keyPath: \.avoidHighways)
+                routePreferenceToggle("Unikaj dróg płatnych", keyPath: \.avoidTolls)
+                routePreferenceToggle("Unikaj promów", keyPath: \.avoidFerries)
+                routePreferenceToggle("Unikaj dróg gruntowych", keyPath: \.avoidUnpaved)
+            }
+            .tint(Color.accentColor)
+
+            if !route.chargingStops.isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("Ładowanie po drodze")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text("Szacowany czas postojów: \(Int((route.chargingDuration / 60).rounded())) min")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.white.opacity(0.62))
+                    ForEach(route.chargingStops) { stop in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(stop.destination.name)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(.white)
+                            Text("\(stop.connectorTypes.joined(separator: ", ")) · do \(Int(stop.maximumPowerKW.rounded())) kW · postój \(Int((stop.estimatedChargingTime / 60).rounded())) min")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(Color.white.opacity(0.62))
+                            Text(stop.availabilityKnown ? "Status: działająca według OpenStreetMap" : "Dostępność ładowarki nieznana")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(Color.white.opacity(0.52))
+                            Text(stop.publicAccess == true ? "Dostęp publiczny według OpenStreetMap" : "Dostęp publiczny niepotwierdzony")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(Color.white.opacity(0.52))
+                        }
+                        .padding(.top, 3)
+                    }
+                }
+            }
+
+            if let journey = route.journey {
+                routePlanningJourneyDetails(journey)
+            }
+
+            if engine.state.transportMode == .car {
+                Button { showTrafficDetails = true } label: {
+                    Label("Szczegóły ruchu", systemImage: "car.side")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(14)
+        .modifier(NavigationGlassSurface(radius: 21))
+    }
+
+    private func routePlanningJourneyDetails(_ journey: Journey) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Połączenie")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white)
+            Text("Odjazd \(journey.departure.formatted(date: .omitted, time: .shortened)) · Przyjazd \(journey.arrival.formatted(date: .omitted, time: .shortened))")
+                .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
+                .foregroundStyle(Color.white.opacity(0.8))
+            Text("Pieszo \(transitMetricTime(journey.walkingDuration)) · oczekiwanie \(transitMetricTime(journey.waitingDuration)) · przesiadki: \(journey.transferCount)")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.62))
+            Text(transitRealtimeStatus(for: journey))
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.56))
+            if !journey.alerts.isEmpty {
+                ForEach(Array(journey.alerts.enumerated()), id: \.offset) { _, alert in
+                    Label(alert, systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.orange)
+                }
+            } else if !journey.alertsFeedAvailable {
+                Text("Komunikaty na trasie niedostępne")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.56))
+            } else {
+                Text("Brak aktywnych komunikatów dla tej trasy")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.56))
+            }
+            if let attribution = journey.railwayScheduleAttribution {
+                Text(attribution)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.45))
+            }
+            ForEach(journey.legs) { leg in
+                HStack(alignment: .top, spacing: 8) {
+                    Text(leg.departure.formatted(date: .omitted, time: .shortened))
+                        .font(.system(size: 10, weight: .medium, design: .rounded).monospacedDigit())
+                        .foregroundStyle(Color.white.opacity(0.7))
+                    Text("\(leg.mode == "WALK" ? "Pieszo" : (leg.line ?? leg.mode)) · \(leg.from) → \(leg.to)")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Color.white.opacity(0.82))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private var routePlanningUnavailable: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            if engine.state.status == .routeCalculating {
+                HStack(spacing: 9) {
+                    ProgressView()
+                    Text(engine.state.transportMode == .transit ? "Szukam połączeń…" : "Wyznaczanie trasy…")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color.white.opacity(0.75))
+                }
+            } else {
+                Text(engine.state.errorMessage ?? "Nie udało się wyznaczyć trasy.")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.75))
+                Button {
+                    Task { await engine.planRoute() }
+                } label: {
+                    Label("Spróbuj ponownie", systemImage: "arrow.clockwise")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, minHeight: 43)
+                        .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .modifier(NavigationGlassSurface(radius: 19))
+    }
+
+    private func routePlanningFooter(bottomInset: CGFloat) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
+                    routePreviewExpanded.toggle()
+                }
+            } label: {
+                routePlanningFooterLabel(symbol: routePreviewExpanded ? "chevron.down" : "map",
+                                         title: routePreviewExpanded ? "Zwiń" : "Szczegóły\ntrasy")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(routePreviewExpanded ? "Zwiń szczegóły trasy" : "Szczegóły trasy")
+
+            Button {
+                addingWaypoint = true
+                showSearch = true
+            } label: {
+                routePlanningFooterLabel(symbol: "plus.circle", title: "Dodaj\nprzystanek")
+            }
+            .buttonStyle(.plain)
+            .disabled(engine.state.waypoints.count >= 8 || engine.state.status != .routePreview)
+            .opacity(engine.state.waypoints.count >= 8 || engine.state.status != .routePreview ? 0.52 : 1)
+            .accessibilityLabel("Dodaj przystanek")
+
+            Group {
+                if let url = routePlanningShareURL {
+                    ShareLink(item: url) {
+                        routePlanningFooterLabel(symbol: "square.and.arrow.up", title: "Udostępnij\ntrasę")
+                    }
+                } else {
+                    routePlanningFooterLabel(symbol: "square.and.arrow.up", title: "Udostępnij\ntrasę")
+                        .opacity(0.48)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Udostępnij trasę")
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, max(12, min(22, bottomInset * 0.55)))
+        .background(Color.black.opacity(0.08))
+    }
+
+    private func routePlanningFooterLabel(symbol: String, title: String) -> some View {
+        VStack(spacing: 5) {
+            Image(systemName: symbol)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.9))
+            Text(title)
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.88))
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(maxWidth: .infinity, minHeight: 59)
+        .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.075), lineWidth: 1)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
     private var beginRouteButton: some View {
         Button {
             if isRouteOriginAwayFromUser {
@@ -2100,35 +2827,50 @@ struct ContentView: View {
     private func discoveryPanel(compact: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             searchButton
+            nearbyTransitCard
             if !compact {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Dokąd ruszamy?")
-                        .font(.title2.bold())
-                    Spacer()
-                    Button { showHistory = true } label: {
-                        Label("Ostatnie", systemImage: "clock.arrow.circlepath")
-                            .font(.subheadline.weight(.medium))
-                            .frame(minHeight: 44)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.accentColor)
-                }
-                HStack {
-                    Text("Szybki dostęp")
-                        .font(.subheadline.weight(.semibold))
+                    Text("Ulubione")
+                        .font(.headline.weight(.semibold))
                     Spacer()
                     Button("Zobacz wszystkie", systemImage: "star") { showFavorites = true }
                         .font(.caption.weight(.semibold))
                         .frame(minHeight: 44)
                 }
-                if !quickDestinations.isEmpty {
-                    quickDestinationShelf
+                if !savedPlaceShortcuts.isEmpty {
+                    quickDestinationShelf(savedPlaceShortcuts)
                 } else {
                     Text("Zapisz Dom, Pracę lub ulubiony adres, aby mieć je zawsze pod ręką.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
+
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Ostatnie miejsca")
+                        .font(.headline.weight(.semibold))
+                    Spacer()
+                    Button {
+                        showHistory = true
+                    } label: {
+                        Label("Historia", systemImage: "clock.arrow.circlepath")
+                            .font(.subheadline.weight(.medium))
+                            .frame(minHeight: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+                    .accessibilityLabel("Historia podróży")
+                }
+                if !recentPlaceShortcuts.isEmpty {
+                    quickDestinationShelf(recentPlaceShortcuts)
+                } else {
+                    Text("Ostatnio wybrane miejsca pojawią się tutaj.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
                 Divider()
+                Text("Szukaj w pobliżu")
+                    .font(.headline.weight(.semibold))
                 ScrollView(.horizontal) {
                     HStack(spacing: 8) {
                         ForEach([NearbyPlaceCategory.fuel, .charging, .parking, .food]) { category in
@@ -2144,13 +2886,11 @@ struct ContentView: View {
                         }
                     }
                 }
-                .scrollIndicators(.hidden)
+                .scrollIndicators(.visible)
                 .accessibilityLabel("Miejsca w pobliżu")
             }
-            nearbyTransitCard
         }
         .padding(18)
-
     }
 
     @ViewBuilder
@@ -2211,83 +2951,78 @@ struct ContentView: View {
         return .primary
     }
 
-    private var quickDestinationShelf: some View {
-        Group {
-            if !quickDestinations.isEmpty {
-                ScrollViewReader { proxy in
-                    HStack(spacing: 0) {
-                        ScrollView(.horizontal) {
-                            HStack(spacing: 8) {
-                                ForEach(quickDestinations) { shortcut in
-                                    Button {
-                                        withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
-                                            selectDestination(shortcut.destination)
-                                        }
-                                    } label: {
-                                        HStack(spacing: 9) {
-                                            Image(systemName: shortcut.symbol)
-                                                .font(.system(size: 15, weight: .semibold))
-                                                .foregroundStyle(Color.accentColor)
-                                                .frame(width: 20)
-
-                                            VStack(alignment: .leading, spacing: 1) {
-                                                Text(shortcut.title)
-                                                    .font(.subheadline.weight(.semibold))
-                                                    .foregroundStyle(.primary)
-                                                    .lineLimit(1)
-                                                if let estimatedMinutes = shortcut.estimatedMinutes {
-                                                    Text("\(estimatedMinutes) min")
-                                                        .font(.caption.weight(.medium).monospacedDigit())
-                                                        .foregroundStyle(.secondary)
-                                                }
-                                            }
-                                        }
-                                        .padding(.horizontal, 13)
-                                        .frame(minWidth: 112, minHeight: 54, alignment: .leading)
-                                        .background(Color.primary.opacity(0.045), in: Capsule())
-                                        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.045)))
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel("Pokaż miejsce \(shortcut.title)")
-                                    .accessibilityHint(shortcut.isRecent ? "Ostatnio wybrane miejsce" : "Zapisane miejsce")
-                                    .id(shortcut.id)
-                                }
-                            }
-                            .padding(.leading, 7)
-                            .padding(.trailing, quickDestinations.count > 2 ? 10 : 7)
-                        }
-                        .scrollIndicators(.hidden)
-                        .mask(LinearGradient(
-                            stops: [
-                                .init(color: .black, location: 0),
-                                .init(color: .black, location: 0.82),
-                                .init(color: .clear, location: 1)
-                            ],
-                            startPoint: .leading,
-                            endPoint: .trailing))
-
-                        if quickDestinations.count > 2, let lastShortcut = quickDestinations.last {
+    private func quickDestinationShelf(_ shortcuts: [PlaceShortcut]) -> some View {
+        ScrollViewReader { proxy in
+            HStack(spacing: 0) {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        ForEach(shortcuts) { shortcut in
                             Button {
-                                withAnimation(.easeInOut(duration: 0.28)) {
-                                    proxy.scrollTo(lastShortcut.id, anchor: .trailing)
+                                withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+                                    selectDestination(shortcut.destination)
                                 }
                             } label: {
-                                Image(systemName: "arrow.right")
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 37, height: 42)
-                                    .contentShape(Rectangle())
+                                HStack(spacing: 9) {
+                                    Image(systemName: shortcut.symbol)
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundStyle(Color.accentColor)
+                                        .frame(width: 20)
+
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(shortcut.title)
+                                            .font(.subheadline.weight(.semibold))
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(1)
+                                        if let estimatedMinutes = shortcut.estimatedMinutes {
+                                            Text("\(estimatedMinutes) min")
+                                                .font(.caption.weight(.medium).monospacedDigit())
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                                .padding(.horizontal, 13)
+                                .frame(minWidth: 112, minHeight: 54, alignment: .leading)
+                                .background(Color.primary.opacity(0.045), in: Capsule())
+                                .overlay(Capsule().strokeBorder(Color.primary.opacity(0.045)))
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel("Pokaż kolejne miejsca")
+                            .accessibilityLabel("Pokaż miejsce \(shortcut.title)")
+                            .accessibilityHint(shortcut.isRecent ? "Ostatnio wybrane miejsce" : "Zapisane miejsce")
+                            .id(shortcut.id)
                         }
                     }
-                    .padding(.vertical, 4)
-
+                    .padding(.leading, 7)
+                    .padding(.trailing, shortcuts.count > 2 ? 10 : 7)
                 }
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .scrollIndicators(.hidden)
+                .mask(LinearGradient(
+                    stops: [
+                        .init(color: .black, location: 0),
+                        .init(color: .black, location: 0.82),
+                        .init(color: .clear, location: 1)
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing))
+
+                if shortcuts.count > 2, let lastShortcut = shortcuts.last {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.28)) {
+                            proxy.scrollTo(lastShortcut.id, anchor: .trailing)
+                        }
+                    } label: {
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 37, height: 42)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Pokaż kolejne miejsca")
+                }
             }
+            .padding(.vertical, 4)
         }
+        .transition(.move(edge: .bottom).combined(with: .opacity))
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -2400,7 +3135,7 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     journeySummaryMetric(value: distance(engine.state.progress?.remainingDistance ?? 0), caption: "pozostało")
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    journeySummaryMetric(value: arrivalTime(engine.state.progress?.remainingTime ?? 0), caption: "przyjazd")
+                    journeySummaryMetric(value: arrivalTime(engine.state.progress?.remainingTime ?? 0), caption: navigationArrivalCaption)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Image(systemName: navigationPanelExpanded ? "chevron.down" : "chevron.up")
                         .font(.system(size: 13, weight: .semibold))
@@ -2544,7 +3279,7 @@ struct ContentView: View {
                     .background(Color.accentColor.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Teraz jedziesz do \(currentLeg?.current.name ?? engine.state.destination?.name ?? "celu")")
+                    Text(activeJourneyTargetText)
                         .font(.system(size: 14, weight: .semibold, design: .rounded))
                         .lineLimit(1)
                     if let following = currentLeg?.following {
@@ -2570,7 +3305,7 @@ struct ContentView: View {
             }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Pokaż trasę do \(currentLeg?.current.name ?? engine.state.destination?.name ?? "celu")")
+        .accessibilityLabel("Pokaż trasę. \(activeJourneyTargetText)")
     }
 
     private func journeySummaryMetric(value: String, caption: String) -> some View {
@@ -2628,7 +3363,7 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     metric(value: distance(engine.state.progress?.remainingDistance ?? 0), caption: "pozostało")
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    metric(value: arrivalTime(engine.state.progress?.remainingTime ?? 0), caption: "przyjazd")
+                    metric(value: arrivalTime(engine.state.progress?.remainingTime ?? 0), caption: navigationArrivalCaption)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Image(systemName: navigationPanelExpanded ? "chevron.down" : "chevron.up")
                         .font(.caption.weight(.semibold))
@@ -2654,7 +3389,7 @@ struct ContentView: View {
                         .frame(width: 30, height: 30)
                         .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Teraz jedziesz do \(currentLeg.current.name)")
+                        Text(activeJourneyTargetText)
                             .font(.subheadline.weight(.semibold))
                             .lineLimit(1)
                         if let following = currentLeg.following {
@@ -3208,7 +3943,7 @@ struct ContentView: View {
                     .background(Color.green, in: Circle())
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Dotarłeś do celu")
+                    Text(arrivalTitle)
                         .font(.headline)
                     Text(engine.state.destination?.name ?? "Podróż zakończona")
                         .font(.subheadline)
@@ -3220,11 +3955,11 @@ struct ContentView: View {
 
             if let trip = engine.state.lastTrip {
                 HStack(spacing: 0) {
-                    metric(value: distance(trip.distanceMeters), caption: "przejechano")
+                    metric(value: distance(trip.distanceMeters), caption: arrivalDistanceCaption)
                     Spacer()
                     metric(value: time(trip.duration), caption: "czas")
                     Spacer()
-                    metric(value: "\(Int(trip.averageSpeedKph.rounded())) km/h", caption: "średnio")
+                    metric(value: arrivalSummaryMetric.value, caption: arrivalSummaryMetric.caption)
                 }
                 HStack(spacing: 0) {
                     metric(value: timeAllowingZero(trip.stoppedSeconds), caption: "postój")
@@ -3272,7 +4007,7 @@ struct ContentView: View {
                 .padding(.top, 1)
 
             VStack(spacing: 2) {
-                Text("Dotarłeś do celu!")
+                Text(arrivalTitle)
                     .font(.system(size: 20, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
                 Text(engine.state.lastTrip?.destination.name ?? engine.state.destination?.name ?? "Podróż zakończona")
@@ -3283,9 +4018,9 @@ struct ContentView: View {
             .padding(.top, -3)
 
             HStack(spacing: 0) {
-                arrivalMetric(symbol: "road.lanes",
+                arrivalMetric(symbol: engine.state.transportMode.symbol,
                               value: engine.state.lastTrip.map { distance($0.distanceMeters) } ?? "—",
-                              caption: "przejechano")
+                              caption: arrivalDistanceCaption)
                     .frame(maxWidth: .infinity)
                 Rectangle()
                     .fill(Color.white.opacity(0.10))
@@ -3297,9 +4032,9 @@ struct ContentView: View {
                 Rectangle()
                     .fill(Color.white.opacity(0.10))
                     .frame(width: 1, height: 45)
-                arrivalMetric(symbol: "speedometer",
-                              value: engine.state.lastTrip.map { "\(Int($0.averageSpeedKph.rounded())) km/h" } ?? "—",
-                              caption: "średnio")
+                arrivalMetric(symbol: arrivalSummaryMetric.symbol,
+                              value: arrivalSummaryMetric.value,
+                              caption: arrivalSummaryMetric.caption)
                     .frame(maxWidth: .infinity)
             }
             .frame(height: 76)
@@ -4118,7 +4853,7 @@ struct ContentView: View {
         }
     }
 
-    private var quickDestinations: [PlaceShortcut] {
+    private var savedPlaceShortcuts: [PlaceShortcut] {
         var shortcuts: [PlaceShortcut] = []
 
         for kind in [PlaceKind.home, .work, .favorite] {
@@ -4134,31 +4869,40 @@ struct ContentView: View {
                 ))
             }
         }
+        return Array(shortcuts.prefix(6))
+    }
 
+    private var recentPlaceShortcuts: [PlaceShortcut] {
+        var candidates: [(date: Date, shortcut: PlaceShortcut)] = []
         for search in localData.searches {
-            guard shortcuts.count < 6 else { break }
-            guard !shortcuts.contains(where: { $0.destination.coordinate == search.destination.coordinate }) else { continue }
-            shortcuts.append(PlaceShortcut(
+            candidates.append((search.searchedAt, PlaceShortcut(
                 id: "recent-\(search.id.uuidString)",
                 title: search.destination.name,
                 symbol: "clock.arrow.circlepath",
                 destination: search.destination,
                 isRecent: true
-            ))
+            )))
         }
 
-        for trip in localData.trips where shortcuts.count < 6 {
-            guard !shortcuts.contains(where: { $0.destination.coordinate == trip.destination.coordinate }) else { continue }
-            shortcuts.append(PlaceShortcut(
+        for trip in localData.trips {
+            candidates.append((trip.endedAt, PlaceShortcut(
                 id: "trip-\(trip.id.uuidString)",
                 title: trip.destination.name,
                 symbol: "clock.arrow.circlepath",
                 destination: trip.destination,
                 isRecent: true
-            ))
+            )))
         }
 
-        return Array(shortcuts.prefix(6))
+        var shortcuts: [PlaceShortcut] = []
+        for candidate in candidates.sorted(by: { $0.date > $1.date }) {
+            guard shortcuts.count < 6 else { break }
+            guard !shortcuts.contains(where: {
+                $0.destination.coordinate == candidate.shortcut.destination.coordinate
+            }) else { continue }
+            shortcuts.append(candidate.shortcut)
+        }
+        return shortcuts
     }
 
     private var quickETADestinationFingerprint: String {
@@ -4172,7 +4916,7 @@ struct ContentView: View {
 
     private func refreshQuickDestinationETAs() async {
         guard !quickETAInFlight, let origin = engine.state.location?.coordinate else { return }
-        let priorityDestinations = quickDestinations.filter { $0.symbol == "house.fill" || $0.symbol == "briefcase.fill" }
+        let priorityDestinations = savedPlaceShortcuts.filter { $0.symbol == "house.fill" || $0.symbol == "briefcase.fill" }
         guard !priorityDestinations.isEmpty else {
             quickETAMinutes = [:]
             quickETADestinationKey = quickETADestinationFingerprint
@@ -5706,33 +6450,69 @@ private struct DiscoveryDrawer<Content: View>: View {
 
     private var heights: [CGFloat] {
         let maximum = max(140, maximumHeight)
-        return [min(140, maximum), min(360, maximum), maximum]
+        let candidates = [min(140, maximum), min(360, maximum), maximum]
+        var uniqueHeights: [CGFloat] = []
+        for candidate in candidates {
+            if uniqueHeights.last.map({ abs($0 - candidate) > 1 }) ?? true {
+                uniqueHeights.append(candidate)
+            }
+        }
+        return uniqueHeights
     }
-    private var height: CGFloat { min(heights[2], max(heights[0], heights[detent] - translation)) }
+    private var selectedDetent: Int { min(max(detent, 0), heights.count - 1) }
+    private var detentNames: [String] {
+        switch heights.count {
+        case 1: ["Zwinięty"]
+        case 2: ["Zwinięty", "Rozwinięty"]
+        default: ["Zwinięty", "Średni", "Rozwinięty"]
+        }
+    }
+    private var height: CGFloat {
+        let baseHeight = heights[selectedDetent] - translation
+        let minimumHeight = heights[0]
+        let maximumHeight = heights[heights.count - 1]
+        return min(maximumHeight, max(minimumHeight, baseHeight))
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            Button { settle(at: detent == 2 ? 0 : detent + 1) } label: {
-                Capsule()
-                    .fill(Color.secondary.opacity(0.4))
-                    .frame(width: 38, height: 5)
-                    .frame(maxWidth: .infinity, minHeight: 36)
-                    .contentShape(Rectangle())
+            Button {
+                let nextDetent = selectedDetent == heights.count - 1
+                    ? max(0, selectedDetent - 1)
+                    : selectedDetent + 1
+                settle(at: nextDetent)
+            } label: {
+                ZStack {
+                    Capsule()
+                        .fill(Color.secondary.opacity(0.4))
+                        .frame(width: 38, height: 5)
+                    Image(systemName: selectedDetent == heights.count - 1 ? "chevron.down" : "chevron.up")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.trailing, 18)
+                }
+                .frame(maxWidth: .infinity, minHeight: 40)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Wysokość panelu wyszukiwania")
-            .accessibilityValue(["Zwinięty", "Średni", "Rozwinięty"][detent])
+            .accessibilityLabel("Panel eksploracji")
+            .accessibilityValue(detentNames[selectedDetent])
             .accessibilityAdjustableAction { direction in
-                settle(at: direction == .increment ? min(2, detent + 1) : max(0, detent - 1))
+                settle(at: direction == .increment
+                       ? min(heights.count - 1, selectedDetent + 1)
+                       : max(0, selectedDetent - 1))
             }
             .highPriorityGesture(DragGesture(minimumDistance: 6)
                 .updating($translation) { value, state, _ in state = value.translation.height }
                 .onEnded { value in
-                    let projected = heights[detent] - value.predictedEndTranslation.height
-                    let closest = heights.indices.min { abs(heights[$0] - projected) < abs(heights[$1] - projected) } ?? 1
+                    let projected = heights[selectedDetent] - value.predictedEndTranslation.height
+                    let closest = heights.indices.min {
+                        abs(heights[$0] - projected) < abs(heights[$1] - projected)
+                    } ?? selectedDetent
                     settle(at: closest)
                 })
-            ScrollView { content(height < 180) }
+            ScrollView { content(selectedDetent == 0) }
                 .scrollIndicators(.hidden)
         }
         .frame(height: height, alignment: .top)
@@ -5743,7 +6523,7 @@ private struct DiscoveryDrawer<Content: View>: View {
 
     private func settle(at value: Int) {
         withAnimation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.88)) {
-            detent = value
+            detent = min(max(value, 0), heights.count - 1)
         }
     }
 }

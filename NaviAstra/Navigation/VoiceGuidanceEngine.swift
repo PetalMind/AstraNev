@@ -198,11 +198,19 @@ final class VoiceGuidanceEngine {
         )
     }
 
-    func announceArrival(destination: Destination?) {
+    func announceArrival(destination: Destination?, transportMode: TransportMode) {
         let destinationKey = destination.map {
             "\(Int(($0.coordinate.latitude * 10_000).rounded()))-\(Int(($0.coordinate.longitude * 10_000).rounded()))"
         } ?? "unknown"
-        scheduler.enqueue(key: "arrival|\(destinationKey)", text: "Dotarłeś do celu.", priority: .critical)
+        let instruction: String
+        switch transportMode {
+        case .car: instruction = "Cel osiągnięty samochodem."
+        case .walking: instruction = "Cel osiągnięty pieszo."
+        case .bicycle: instruction = "Cel osiągnięty rowerem."
+        case .transit: instruction = "Cel osiągnięty komunikacją miejską."
+        case .parkRide: instruction = "Cel osiągnięty w systemie Parkuj i jedź."
+        }
+        scheduler.enqueue(key: "arrival|\(destinationKey)", text: instruction, priority: .critical)
     }
 
     func announceReroute(number: Int) {
