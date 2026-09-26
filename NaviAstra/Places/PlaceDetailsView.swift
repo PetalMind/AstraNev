@@ -1,8 +1,17 @@
 import SwiftUI
+import MapKit
+#if os(macOS)
+import AppKit
+#endif
+#if os(iOS)
+import UIKit
+#endif
 
 struct PlaceDetailsView: View {
     let result: SearchResult
     let onSave: () -> Bool
+    let onRemove: (() -> Bool)?
+    let onRename: ((String) -> Bool)?
     let onPlanRoute: () -> Void
     let onRouteFromPlace: (() -> Void)?
     let isNavigating: Bool
@@ -12,6 +21,11 @@ struct PlaceDetailsView: View {
     @State private var details: PlaceDetails?
     @State private var isSaved: Bool
     @State private var saveError: String?
+    @State private var showSavedConfirmation = false
+    @State private var showRemoveConfirmation = false
+    @State private var showRenamePrompt = false
+    @State private var savedName = ""
+    @State private var favoritePulseScale: CGFloat = 1
     @State private var isLoading = false
     @State private var loadError: String?
     @State private var retry = 0
@@ -20,6 +34,11 @@ struct PlaceDetailsView: View {
     @State private var fuelPriceLookup: FuelPriceLookupResult?
     @State private var fuelPriceError: String?
     @State private var isLoadingFuelPrices = false
+    @State private var placePhoto: PlacePhoto?
+    @State private var placePhotoLoadFailed = false
+    @State private var lookAroundPreview: PlaceLookAroundPreview?
+    @State private var isLoadingPlacePhoto = false
+    @State private var showLookAround = false
     private let provider = OpenStreetMapPlaceDetailsProvider()
     private let fuelPriceProvider: any FuelPriceProvider = BenzynaMapaFuelPriceProvider.shared
 
@@ -27,28 +46,46 @@ struct PlaceDetailsView: View {
          isNavigating: Bool = false, primaryActionTitle: String = "Wyznacz trasę",
          supplementalDetails: [String] = [],
          onRouteFromPlace: (() -> Void)? = nil,
+         onRemove: (() -> Bool)? = nil,
+         onRename: ((String) -> Bool)? = nil,
          onPlanRoute: @escaping () -> Void) {
         self.result = result
         self.onSave = onSave
         self.onPlanRoute = onPlanRoute
         self.onRouteFromPlace = onRouteFromPlace
+        self.onRemove = onRemove
+        self.onRename = onRename
         self.isNavigating = isNavigating
         self.primaryActionTitle = primaryActionTitle
         self.supplementalDetails = supplementalDetails
         _details = State(initialValue: PlaceDetails.partial(for: result))
         _isSaved = State(initialValue: isSaved)
+        _savedName = State(initialValue: result.destination.name)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(details?.name ?? result.destination.name)
-                    .font(.title3.weight(.semibold))
-                    .textSelection(.enabled)
-                if let travelSummary {
-                    Label(travelSummary, systemImage: "location")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+            if showsPlacePhoto {
+                placePhotoSection
+            }
+
+            HStack(alignment: .top, spacing: 10) {
+                if result.isPOI && !showsPlacePhoto {
+                    Image(systemName: photoSymbol(for: details?.category ?? result.category ?? ""))
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 38, height: 38)
+                        .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+                }
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(details?.name ?? result.destination.name)
+                        .font(.title3.weight(.semibold))
+                        .textSelection(.enabled)
+                    if let travelSummary {
+                        Label(travelSummary, systemImage: "location")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 
@@ -74,20 +111,18 @@ struct PlaceDetailsView: View {
                     .accessibilityLabel("Więcej opcji trasy")
                 }
 
-                Button {
-                    if onSave() {
-                        isSaved = true
-                        saveError = nil
-                    } else {
-                        saveError = "Nie udało się zapisać miejsca na urządzeniu."
-                    }
-                } label: {
-                    Label(isSaved ? "Zapisano" : "Zapisz", systemImage: isSaved ? "star.fill" : "star")
-                        .font(.subheadline.weight(.medium))
-                        .frame(minHeight: 42)
+                Button(action: toggleSavedState) {
+                    Image(systemName: isSaved ? "heart.fill" : "heart")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(isSaved ? Color.red : Color.secondary)
+                        .frame(width: 42, height: 42)
+                        .contentShape(Rectangle())
+                        .scaleEffect(favoritePulseScale)
                 }
                 .buttonStyle(.bordered)
-                .disabled(isSaved)
+                .accessibilityLabel(isSaved ? "Usuń z Ulubionych" : "Dodaj do Ulubionych")
+                .accessibilityHint(isSaved ? "Wymaga potwierdzenia" : "Zapisz to miejsce na później")
+                .disabled(isSaved && onRemove == nil)
             }
 
             if let saveError {
@@ -126,8 +161,47 @@ struct PlaceDetailsView: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 16))
+        .confirmationDialog("Dodano do Ulubionych", isPresented: $showSavedConfirmation,
+                            titleVisibility: .visible) {
+            if onRename != nil {
+                Button("Zmień nazwę") { showRenamePrompt = true }
+            }
+            Button("Gotowe", role: .cancel) { }
+        } message: {
+            Text(result.destination.name)
+        }
+        .confirmationDialog("Usunąć z Ulubionych?", isPresented: $showRemoveConfirmation,
+                            titleVisibility: .visible) {
+            Button("Usuń", role: .destructive) {
+                if onRemove?() == true { isSaved = false }
+            }
+            Button("Anuluj", role: .cancel) { }
+        } message: {
+            Text(result.destination.name)
+        }
+        .alert("Zmień nazwę", isPresented: $showRenamePrompt) {
+            TextField("Nazwa miejsca", text: $savedName)
+            Button("Zapisz") {
+                if onRename?(savedName) != true {
+                    saveError = "Nie udało się zmienić nazwy miejsca."
+                }
+            }
+            Button("Anuluj", role: .cancel) { }
+        }
+#if os(iOS)
+        .sheet(isPresented: $showLookAround) {
+            if let scene = lookAroundPreview?.scene {
+                LookAroundPreview(initialScene: scene)
+                    .frame(minWidth: 320, minHeight: 300)
+            }
+        }
+#endif
         .task(id: "\(result.placeIdentity.cacheKey)/\(retry)") {
             details = PlaceDetails.partial(for: result)
+            placePhoto = nil
+            placePhotoLoadFailed = false
+            lookAroundPreview = nil
+            isLoadingPlacePhoto = false
             loadedAt = nil
             loadError = nil
             guard result.isPOI else { return }
@@ -156,6 +230,15 @@ struct PlaceDetailsView: View {
                 updated.timeZoneIdentifier = timeZoneIdentifier
                 details = updated
             }
+            if let current = details,
+               !isNavigating {
+                if PlacePhotoResolver.isEligible(category: current.category)
+                    || PlacePhotoResolver.isEligible(category: result.category) {
+                    await loadPlacePhoto(for: current)
+                } else {
+                    await loadBrandLogo(for: current)
+                }
+            }
         }
         .task(id: fuelPriceTaskID) {
             isLoadingFuelPrices = false
@@ -176,6 +259,252 @@ struct PlaceDetailsView: View {
                 fuelPriceError = "Nie udało się pobrać cen paliw."
             }
         }
+    }
+
+    private func toggleSavedState() {
+        if isSaved {
+            showRemoveConfirmation = true
+            return
+        }
+        guard onSave() else {
+            saveError = "Nie udało się zapisać miejsca na urządzeniu."
+            return
+        }
+        isSaved = true
+        saveError = nil
+        showSavedConfirmation = true
+        withAnimation(.spring(response: 0.15, dampingFraction: 0.52)) {
+            favoritePulseScale = 1.18
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(150))
+            withAnimation(.spring(response: 0.19, dampingFraction: 0.8)) {
+                favoritePulseScale = 1
+            }
+        }
+#if os(iOS)
+        let haptic = UIImpactFeedbackGenerator(style: .light)
+        haptic.prepare()
+        haptic.impactOccurred()
+#endif
+    }
+
+    private var showsPlacePhoto: Bool {
+        !isNavigating && (PlacePhotoResolver.isEligible(category: details?.category)
+                          || PlacePhotoResolver.isEligible(category: result.category)
+                          || placePhoto?.role == .brandLogo)
+    }
+
+    @ViewBuilder
+    private var placePhotoSection: some View {
+        if let placePhoto, placePhoto.role == .brandLogo {
+            brandLogoSection(placePhoto)
+        } else {
+            placePhotoHero
+        }
+    }
+
+    private var placePhotoHero: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ZStack(alignment: .bottomTrailing) {
+                Group {
+                    if let lookAroundPreview, placePhoto == nil || placePhotoLoadFailed {
+                        platformImage(lookAroundPreview.image)
+                            .resizable()
+                            .scaledToFill()
+                    } else if let placePhoto {
+                        AsyncImage(url: placePhoto.imageURL) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image.resizable().scaledToFill()
+                            case .empty:
+                                photoLoadingPlaceholder
+                            case .failure:
+                                photoLoadingPlaceholder.task(id: placePhoto.imageURL) {
+                                    placePhotoLoadFailed = true
+                                    await loadLookAroundFallback()
+                                }
+                            @unknown default:
+                                photoPlaceholder
+                            }
+                        }
+                    } else if let lookAroundPreview {
+                        platformImage(lookAroundPreview.image)
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        photoPlaceholder
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 184)
+                .clipped()
+
+#if os(iOS)
+                if lookAroundPreview != nil {
+                    Button {
+                        showLookAround = true
+                    } label: {
+                        Label("Rozejrzyj się", systemImage: "viewfinder")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(.regularMaterial, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(10)
+                }
+#endif
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+
+            if lookAroundPreview != nil && (placePhoto == nil || placePhotoLoadFailed) {
+                Label("Widok z Apple Look Around", systemImage: "viewfinder")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else if let placePhoto {
+                HStack(alignment: .top, spacing: 5) {
+                    Link(placePhoto.source == .wikimediaCommons ? "Wikimedia Commons" : "Oryginalne zdjęcie",
+                         destination: placePhoto.sourcePageURL)
+                    Text("· \(placePhoto.attribution)")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.caption2)
+                .lineLimit(2)
+            } else if lookAroundPreview != nil {
+                Label("Widok z Apple Look Around", systemImage: "viewfinder")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func brandLogoSection(_ photo: PlacePhoto) -> some View {
+        HStack(spacing: 12) {
+            AsyncImage(url: photo.imageURL) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFit()
+                case .empty:
+                    ProgressView().controlSize(.small)
+                case .failure:
+                    Image(systemName: "tag.fill")
+                        .font(.title2)
+                        .foregroundStyle(Color.accentColor)
+                @unknown default:
+                    Image(systemName: "tag.fill")
+                        .font(.title2)
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+            .frame(width: 62, height: 62)
+            .padding(8)
+            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(details?.brand ?? result.brand ?? result.destination.name)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                HStack(alignment: .top, spacing: 5) {
+                    Link("Logo · Wikimedia Commons", destination: photo.sourcePageURL)
+                    Text("· \(photo.attribution)")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.caption2)
+                .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var photoPlaceholder: some View {
+        let category = details?.category ?? result.category ?? ""
+        let title = details?.brand ?? result.brand ?? result.destination.name
+        return VStack(spacing: 8) {
+            if isLoadingPlacePhoto {
+                ProgressView().controlSize(.regular)
+            } else {
+                Image(systemName: photoSymbol(for: category))
+                    .font(.system(size: 31, weight: .medium))
+                    .foregroundStyle(Color.accentColor)
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+            }
+            Text(isLoadingPlacePhoto ? "Wyszukiwanie zdjęcia miejsca…" : "Zdjęcie niedostępne")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.primary.opacity(0.045))
+    }
+
+    private var photoLoadingPlaceholder: some View {
+        ProgressView("Ładowanie zdjęcia…")
+            .font(.caption)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.primary.opacity(0.045))
+    }
+
+    private func loadPlacePhoto(for details: PlaceDetails) async {
+        isLoadingPlacePhoto = true
+        defer { isLoadingPlacePhoto = false }
+        placePhoto = await PlacePhotoResolver.resolve(for: details, identity: result.placeIdentity)
+        guard !Task.isCancelled else { return }
+        if placePhoto == nil {
+            await loadLookAroundFallback()
+        }
+        guard !Task.isCancelled else { return }
+        if placePhoto == nil && lookAroundPreview == nil {
+            placePhoto = await PlacePhotoResolver.resolveBrandLogo(for: details, identity: result.placeIdentity)
+        }
+    }
+
+    private func loadBrandLogo(for details: PlaceDetails) async {
+        isLoadingPlacePhoto = true
+        defer { isLoadingPlacePhoto = false }
+        placePhoto = await PlacePhotoResolver.resolveBrandLogo(for: details, identity: result.placeIdentity)
+    }
+
+    private func loadLookAroundFallback() async {
+        guard lookAroundPreview == nil, !Task.isCancelled,
+              PlacePhotoResolver.isEligible(category: details?.category)
+                || PlacePhotoResolver.isEligible(category: result.category) else { return }
+        lookAroundPreview = await PlaceLookAroundProvider.preview(at: result.destination.coordinate)
+        guard lookAroundPreview == nil, !Task.isCancelled,
+              let details,
+              let brandLogo = await PlacePhotoResolver.resolveBrandLogo(for: details, identity: result.placeIdentity) else { return }
+        placePhoto = brandLogo
+        placePhotoLoadFailed = false
+    }
+
+    private func photoSymbol(for category: String) -> String {
+        let value = category.lowercased()
+        if value.contains("fuel") || value.contains("gas_station") { return "fuelpump.fill" }
+        if value.contains("parking") { return "parkingsign.circle.fill" }
+        if value.contains("charging") || value.contains("ev_charger") { return "bolt.car.fill" }
+        if value.contains("pharmacy") { return "cross.case.fill" }
+        if value.contains("atm") || value.contains("bank") { return "banknote.fill" }
+        if value.contains("shop") || value.contains("supermarket") { return "cart.fill" }
+        if value.contains("museum") || value.contains("historic") || value.contains("castle") { return "building.columns.fill" }
+        if value.contains("theatre") || value.contains("theater") || value.contains("cinema") { return "theatermasks.fill" }
+        if value.contains("hotel") || value.contains("hostel") { return "bed.double.fill" }
+        if value.contains("restaurant") || value.contains("cafe") || value.contains("food") { return "fork.knife" }
+        if value.contains("park") || value.contains("garden") { return "tree.fill" }
+        if value.contains("viewpoint") || value.contains("attraction") { return "binoculars.fill" }
+        return "photo"
+    }
+
+    private func platformImage(_ image: PlacePhotoPlatformImage) -> Image {
+#if os(macOS)
+        Image(nsImage: image)
+#else
+        Image(uiImage: image)
+#endif
     }
 
     private var fuelPriceTaskID: String {
@@ -548,6 +877,7 @@ struct PlaceDetailsView: View {
 private extension PlaceDetails {
     var hasAdditionalInformation: Bool {
         address != nil || openingHours != nil || phone != nil || website != nil ||
+            imageURL != nil || wikimediaCommons != nil || wikidataID != nil || brandWikidataID != nil ||
             wheelchair != nil || parking != nil || osmParking != nil || driveThrough != nil
     }
 }
@@ -557,6 +887,8 @@ struct PlaceSearchResultRow: View {
     let index: Int
     let isSaved: Bool
     let onSave: () -> Bool
+    var onRemove: (() -> Bool)? = nil
+    var onRename: ((String) -> Bool)? = nil
     let onSelect: () -> Void
     var isNavigating = false
     var primaryActionTitle = "Wyznacz trasę"
@@ -627,7 +959,9 @@ struct PlaceSearchResultRow: View {
             if isExpanded {
                 PlaceDetailsView(result: result, isSaved: isSaved, onSave: onSave,
                                  isNavigating: isNavigating, primaryActionTitle: primaryActionTitle,
-                                 supplementalDetails: allSupplementalDetails, onPlanRoute: onSelect)
+                                 supplementalDetails: allSupplementalDetails,
+                                 onRemove: onRemove, onRename: onRename,
+                                 onPlanRoute: onSelect)
                     .id(result.placeIdentity.cacheKey)
                     .padding(.bottom, 8)
                     .transition(.opacity.combined(with: .move(edge: .top)))

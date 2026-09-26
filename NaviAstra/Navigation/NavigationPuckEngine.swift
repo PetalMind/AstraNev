@@ -87,7 +87,7 @@ final class NavigationPuckEngine {
     private var smoothedBearing: CLLocationDirection?
 
     func update(location: NavigationLocation?, route: NavigationRoute?, isNavigating: Bool,
-                at now: Date = Date()) {
+                matchedRoute: NavigationRouteMatch? = nil, at now: Date = Date()) {
         guard let location else { return }
         let activeRoute = isNavigating ? route : nil
         let routeID = activeRoute?.id
@@ -105,6 +105,11 @@ final class NavigationPuckEngine {
         let isSameRoute = routeID != nil && routeID == lastInputRouteID && !routeChanged
         let projectedMatch = geometry.flatMap { geometry -> RouteMatch? in
             guard isNavigating else { return nil }
+            if let matchedRoute,
+               matchedRoute.routeID == geometry.id,
+               matchedRoute.locationTimestamp == location.timestamp {
+                return matchedRoute.match
+            }
             return MapMatcher.match(location, onto: geometry.coordinates,
                                     previous: isSameRoute ? previousProjection : nil,
                                     previousTimestamp: isSameRoute ? previousProjectionTimestamp : nil)
@@ -113,14 +118,13 @@ final class NavigationPuckEngine {
         let acceptedMatch = projectedMatch.flatMap {
             $0.projection.distanceFromRoute <= maximumMatchDistance ? $0 : nil
         }
-        let closeProjection = geometry.flatMap { geometry -> RouteProjection? in
+        let closeProjection = acceptedMatch == nil ? geometry.flatMap { geometry -> RouteProjection? in
             guard isNavigating else { return nil }
             guard let projection = MapMatcher.project(location.coordinate, onto: geometry.coordinates) else {
                 return nil
             }
-            return projection.distanceFromRoute <= maximumMatchDistance
-                ? projection : nil
-        }
+            return projection.distanceFromRoute <= maximumMatchDistance ? projection : nil
+        } : nil
         let routeProjection = acceptedMatch?.projection ?? closeProjection
         if let routeProjection {
             previousProjection = routeProjection

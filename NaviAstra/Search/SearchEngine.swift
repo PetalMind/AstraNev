@@ -124,6 +124,7 @@ struct SearchEngine {
                 unique.append(value)
             }
             return unique.sorted { a, b in
+                if a.isContact != b.isContact { return a.isContact }
                 let aRelevance = Self.relevance(a, intent: intent)
                 let bRelevance = Self.relevance(b, intent: intent)
                 if aRelevance != bRelevance { return aRelevance > bRelevance }
@@ -164,6 +165,11 @@ struct SearchEngine {
             requests.append(.init {
                 try await MapKitSearchProvider().search(intent.text, near: searchCenter)
             })
+            if ContactsAccessStatus.current().canReadContacts {
+                requests.append(.init {
+                    try await ContactsSearchProvider().search(query, near: searchCenter)
+                })
+            }
             do {
                 candidates = try await SearchProviderBatch.search(requests, onUpdate: publish)
             } catch {
@@ -242,6 +248,7 @@ struct SearchEngine {
         try Task.checkCancellation()
         results.sort { a, b in
             // Along-route results minimize added journey time; other searches keep text relevance first.
+            if a.isContact != b.isContact { return a.isContact }
             let aTime = intent.alongRoute ? a.detour : a.travelTime
             let bTime = intent.alongRoute ? b.detour : b.travelTime
             let aRelevance = Self.relevance(a, intent: intent)
@@ -258,6 +265,7 @@ struct SearchEngine {
     }
 
     private static func samePlace(_ lhs: SearchResult, _ rhs: SearchResult) -> Bool {
+        guard lhs.isContact == rhs.isContact else { return false }
         let leftIdentity = lhs.placeIdentity
         let rightIdentity = rhs.placeIdentity
         if leftIdentity.cacheKey == rightIdentity.cacheKey,

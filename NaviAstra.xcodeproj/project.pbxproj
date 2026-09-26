@@ -304,6 +304,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = NaviAstra;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.travel";
+				INFOPLIST_KEY_NSContactsUsageDescription = "Kontakty pomagają wyszukiwać zapisane adresy jako cele nawigacji.";
 				INFOPLIST_KEY_NSLocationUsageDescription = "Pozycja jest potrzebna do wyznaczania trasy i prowadzenia nawigacji.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Pozycja jest potrzebna do wyznaczania trasy i prowadzenia nawigacji.";
 				MACOSX_DEPLOYMENT_TARGET = 26.6;
@@ -331,6 +332,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = NaviAstra;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.travel";
+				INFOPLIST_KEY_NSContactsUsageDescription = "Kontakty pomagają wyszukiwać zapisane adresy jako cele nawigacji.";
 				INFOPLIST_KEY_NSLocationUsageDescription = "Pozycja jest potrzebna do wyznaczania trasy i prowadzenia nawigacji.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Pozycja jest potrzebna do wyznaczania trasy i prowadzenia nawigacji.";
 				MACOSX_DEPLOYMENT_TARGET = 26.6;
@@ -476,6 +478,7 @@
 				INFOPLIST_FILE = "Config/NaviAstra-iOS-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = NaviAstra;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
+				INFOPLIST_KEY_NSContactsUsageDescription = "Kontakty pomagają wyszukiwać zapisane adresy jako cele nawigacji.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Dostęp Zawsze pozwala śledzić aktywną podróż komunikacją i głosowo ostrzec przed przystankiem, także przy zablokowanym ekranie.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Pozycja jest potrzebna do wyznaczania trasy i prowadzenia nawigacji.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
@@ -526,6 +529,7 @@
 				INFOPLIST_FILE = "Config/NaviAstra-iOS-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = NaviAstra;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
+				INFOPLIST_KEY_NSContactsUsageDescription = "Kontakty pomagają wyszukiwać zapisane adresy jako cele nawigacji.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Dostęp Zawsze pozwala śledzić aktywną podróż komunikacją i głosowo ostrzec przed przystankiem, także przy zablokowanym ekranie.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Pozycja jest potrzebna do wyznaczania trasy i prowadzenia nawigacji.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;

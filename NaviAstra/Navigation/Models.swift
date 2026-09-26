@@ -614,6 +614,7 @@ struct TransitStopMapVisibilityDecision: Equatable {
 struct TransitStopMapVisibilityPolicy {
     let zoom: Double
     let transportMode: TransportMode
+    let isPlanningCarRoute: Bool
     let isNavigating: Bool
     let isTransitRoutePreview: Bool
     let visibleStopCount: Int
@@ -625,6 +626,8 @@ struct TransitStopMapVisibilityPolicy {
 
     func decision(for stop: TransitStop, selectedStopID: String?, activeStopID: String?,
                   alightingStopID: String?) -> TransitStopMapVisibilityDecision? {
+        guard !isPlanningCarRoute else { return nil }
+
         let memberIDs = Set(stop.detailStopIDs)
         let isSelected = selectedStopID.map(memberIDs.contains) ?? false
         let isActive = activeStopID.map(memberIDs.contains) ?? false

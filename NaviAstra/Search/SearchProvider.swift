@@ -77,6 +77,8 @@ struct SearchResult: Identifiable {
     var detourDistance: Double? = nil
     var travelEstimateStatus: TravelEstimateStatus = .notRequested
     var requiresRouteEstimate = false
+    var isContact = false
+    var contactAddressLabel: String? = nil
 
     var id: UUID { destination.id }
     var navigationDestination: Destination {
@@ -115,6 +117,8 @@ struct SearchResult: Identifiable {
         if merged.website == nil { merged.website = other.website }
         if merged.timeZoneIdentifier == nil { merged.timeZoneIdentifier = other.timeZoneIdentifier }
         if merged.photonImportance == nil { merged.photonImportance = other.photonImportance }
+        if merged.contactAddressLabel == nil { merged.contactAddressLabel = other.contactAddressLabel }
+        merged.isContact = merged.isContact || other.isContact
         return merged.replacingAddressFields(from: other)
     }
 
@@ -174,6 +178,10 @@ struct SearchResult: Identifiable {
         !isPOI && ((houseNumber != nil && (street != nil || city != nil)) || street != nil)
     }
     var subtitle: String {
+        if isContact {
+            let address = destination.address ?? "Adres kontaktu"
+            return contactAddressLabel.map { "\($0) · \(address)" } ?? address
+        }
         if let address = destination.address { return address }
         if isAddress { return houseNumber == nil ? "Ulica lub obszar adresowy" : "Adres · punkt budynku" }
         return isPOI ? "Miejsce · \(placeProvider == .mapKit ? "Apple Maps" : "OpenStreetMap")" : "Miejsce lub obszar"
@@ -257,6 +265,9 @@ struct AddressSearchProvider: SearchProvider {
             .init { try await PhotonSearchProvider().search(query, near: near) },
             .init { try await MapKitSearchProvider().search(query, near: near) }
         ]
+        if ContactsAccessStatus.current().canReadContacts {
+            requests.append(.init { try await ContactsSearchProvider().search(query, near: near) })
+        }
         if includeUUGFallback, PhotonSearchProvider.houseNumber(in: query) != nil {
             requests.append(.init(authoritative: true) {
                 if let exact = await GUGiKAddressProvider().searchExact(query) { return [exact] }

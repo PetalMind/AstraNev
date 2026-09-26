@@ -52,6 +52,12 @@ struct PlaceDetails: Codable, Identifiable {
     var coordinate: Coordinate? = nil
     var countryCode: String? = nil
     var timeZoneIdentifier: String? = nil
+    var imageURL: String? = nil
+    var imageAttribution: String? = nil
+    var imageLicense: String? = nil
+    var wikimediaCommons: String? = nil
+    var wikidataID: String? = nil
+    var brandWikidataID: String? = nil
     var wheelchair: String?
     var parking: String?
     var osmParking: ParkingInformation?
@@ -141,6 +147,12 @@ struct PlaceDetails: Codable, Identifiable {
                      coordinate: newer.coordinate ?? coordinate,
                      countryCode: newer.countryCode ?? countryCode,
                      timeZoneIdentifier: newer.timeZoneIdentifier ?? timeZoneIdentifier,
+                     imageURL: newer.imageURL ?? imageURL,
+                     imageAttribution: newer.imageAttribution ?? imageAttribution,
+                     imageLicense: newer.imageLicense ?? imageLicense,
+                     wikimediaCommons: newer.wikimediaCommons ?? wikimediaCommons,
+                     wikidataID: newer.wikidataID ?? wikidataID,
+                     brandWikidataID: newer.brandWikidataID ?? brandWikidataID,
                      wheelchair: newer.wheelchair ?? wheelchair,
                      parking: newer.parking ?? parking,
                      osmParking: newer.osmParking ?? osmParking,
@@ -389,6 +401,12 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         let name = tags["name"] ?? tags["brand"] ?? fallbackName
         let phone = tags["contact:phone"] ?? tags["phone"]
         let website = tags["contact:website"] ?? tags["website"]
+        let imageURL = tags["image"]
+        let imageAttribution = tags["image:attribution"]
+        let imageLicense = tags["image:license"]
+        let wikimediaCommons = tags["wikimedia_commons"]
+        let wikidataID = tags["wikidata"]
+        let brandWikidataID = tags["brand:wikidata"] ?? tags["operator:wikidata"]
         let wheelchair = tags["wheelchair"]
         let parking = tags["parking"]
         let driveThrough = tags["drive_through"]
@@ -413,6 +431,12 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
                             coordinate: nil,
                             countryCode: countryCode(from: tags),
                             timeZoneIdentifier: nil,
+                            imageURL: imageURL,
+                            imageAttribution: imageAttribution,
+                            imageLicense: imageLicense,
+                            wikimediaCommons: wikimediaCommons,
+                            wikidataID: wikidataID,
+                            brandWikidataID: brandWikidataID,
                             wheelchair: wheelchair,
                             parking: parking,
                             osmParking: osmParking,

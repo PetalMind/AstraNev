@@ -20,6 +20,10 @@ struct ContentView: View {
     @State private var pickedRouteOriginCoordinate: Coordinate?
     @State private var pickedRouteOriginAddress: String?
     @State private var routeOriginGeocodingTask: Task<Void, Never>?
+    @State private var savedPlaceMapSelectionKind: PlaceKind?
+    @State private var savedPlaceMapCoordinate: Coordinate?
+    @State private var savedPlaceMapAddress: String?
+    @State private var savedPlaceMapGeocodingTask: Task<Void, Never>?
     @State private var selectedMapPlaces: [SearchResult] = []
     @State private var selectedTransitSheet: TransitSheetSelection?
     @State private var selectedTransitStopID: String?
@@ -35,6 +39,9 @@ struct ContentView: View {
     @State private var showRouteSettings = false
     @State private var showFavorites = false
     @State private var showHistory = false
+    @State private var editingSavedPlace: SavedPlace?
+    @State private var placePendingRemoval: SavedPlace?
+    @State private var showPlaceRemovalConfirmation = false
     @State private var addingWaypoint = false
     @State private var showTrafficDetails = false
     @State private var nearbyRequest: NearbySearchRequest?
@@ -44,13 +51,14 @@ struct ContentView: View {
     @State private var destinationExpanded = false
     @State private var routePreviewExpanded = false
     @State private var favoritePulseScale: CGFloat = 1
+    @State private var showFavoriteRemovalConfirmation = false
     @State private var trafficKey = ""
     @State private var trafficConfigured = TrafficCredential.read() != nil
     @State private var isMapReady = false
     @State private var discoveryDrawerCollapseRequest = 0
     @State private var routingDraft = RoutingPreferences()
     @State private var navigationPanelExpanded = false
-    @State private var quickETAMinutes: [String: Int] = [:]
+    @State private var quickETAEstimates: [String: PlaceRouteEstimate] = [:]
     @State private var quickETAOrigin: Coordinate?
     @State private var quickETADestinationKey = ""
     @State private var quickETAUpdatedAt = Date.distantPast
@@ -393,14 +401,19 @@ struct ContentView: View {
                          viewportPadding: CameraPadding(top: Double(mapHeaderInset), left: 24,
                                                         bottom: Double(mapPanelInset), right: 24),
                          onSearchSelect: { destination in
-                             if selectingRouteOriginOnMap {
+                             if let kind = savedPlaceMapSelectionKind {
+                                 saveMapSelectedPlace(destination, as: kind)
+                             } else if selectingRouteOriginOnMap {
                                  applyRouteOrigin(destination, source: destination.poi == nil ? .search : .poi)
                              } else {
                                  selectDestination(destination)
                              }
                          },
                          onPlaceSelect: { places in
-                             if selectingRouteOriginOnMap, let place = places.first {
+                             if savedPlaceMapSelectionKind != nil, let place = places.first {
+                                 engine.focusMap(on: place.destination.coordinate)
+                                 updateSavedPlaceMapSelection(place.destination.coordinate)
+                             } else if selectingRouteOriginOnMap, let place = places.first {
                                  engine.focusMap(on: place.destination.coordinate)
                                  updatePickedRouteOrigin(place.destination.coordinate)
                              } else {
@@ -420,7 +433,10 @@ struct ContentView: View {
                                  discoveryDrawerCollapseRequest += 1
                              }
             }) { coordinate in
-                if selectingRouteOriginOnMap {
+                if savedPlaceMapSelectionKind != nil {
+                    engine.focusMap(on: coordinate)
+                    updateSavedPlaceMapSelection(coordinate)
+                } else if selectingRouteOriginOnMap {
                     engine.focusMap(on: coordinate)
                     updatePickedRouteOrigin(coordinate)
                 } else {
@@ -437,6 +453,8 @@ struct ContentView: View {
 
             if selectingRouteOriginOnMap {
                 routeOriginMapPicker
+            } else if let kind = savedPlaceMapSelectionKind {
+                savedPlaceMapPicker(kind)
             } else {
             GeometryReader { geometry in
                 VStack(spacing: 12) {
@@ -545,71 +563,7 @@ struct ContentView: View {
             openDestinationSearchAfterPlaceDismiss = false
             presentSearch()
         }) {
-            NavigationStack {
-                Group {
-                    if selectedMapPlaces.count > 1 {
-                        List(selectedMapPlaces) { result in
-                            Button {
-                                presentMapPlace(result)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(result.destination.name)
-                                        .font(.body.weight(.semibold))
-                                    Text(result.category?.replacingOccurrences(of: "_", with: " ").capitalized ?? "Miejsce")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .listStyle(.plain)
-                    } else if let result = selectedMapPlaces.first {
-                        ScrollView {
-                            PlaceDetailsView(
-                                result: result,
-                                isSaved: localData.places.contains {
-                                    $0.kind == .favorite && $0.destination.coordinate == result.destination.coordinate
-                                },
-                                onSave: { localData.add(result.navigationDestination) },
-                                isNavigating: isNavigating,
-                                primaryActionTitle: isNavigating ? "Dodaj przystanek" : "Wyznacz trasę",
-                                onRouteFromPlace: {
-                                    let point = result.navigationDestination
-                                    selectedMapPlaces = []
-                                    localData.recordSearch(point)
-                                    if engine.state.destination == nil {
-                                        openDestinationSearchAfterPlaceDismiss = true
-                                    }
-                                    Task {
-                                        await engine.setRouteOrigin(RoutePoint(
-                                            point, source: point.poi == nil ? .search : .poi))
-                                    }
-                                },
-                                onPlanRoute: {
-                                    selectedMapPlaces = []
-                                    if isNavigating {
-                                        Task { await engine.addWaypoint(result.navigationDestination) }
-                                    } else {
-                                        selectDestination(result.navigationDestination)
-                                    }
-                                })
-                                .id(result.placeIdentity.cacheKey)
-                                .padding()
-                        }
-                    }
-                }
-                .navigationTitle(selectedMapPlaces.count > 1 ? "Wybierz miejsce" : (selectedMapPlaces.first?.destination.name ?? "Miejsce"))
-#if os(iOS)
-                .navigationBarTitleDisplayMode(.inline)
-#endif
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("Zamknij") { selectedMapPlaces = [] }
-                    }
-                }
-            }
+            selectedMapPlacesSheet
             .onDisappear { mapPlaceEstimateTask?.cancel() }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
@@ -622,7 +576,9 @@ struct ContentView: View {
             NearbyPlacesSheet(engine: engine, nearDestination: request.nearDestination,
                               initialCategory: request.category,
                               savedPlaces: localData.places,
-                              onSave: { localData.add($0) }) { destination in
+                              onSave: { localData.add($0) },
+                              onRemoveSaved: { removeFavorite(for: $0) },
+                              onRenameSaved: { renameFavorite(for: $0, to: $1) }) { destination in
                 Task {
                     await engine.selectNearbyPlace(destination, asFinalParking: request.nearDestination)
                     nearbyRequest = nil
@@ -648,17 +604,28 @@ struct ContentView: View {
             Task { await refreshQuickDestinationETAs() }
         }
         .onChange(of: engine.state.searchMapCenter) { _, center in
-            guard selectingRouteOriginOnMap, let center else { return }
-            updatePickedRouteOrigin(center)
+            guard let center else { return }
+            if selectingRouteOriginOnMap {
+                updatePickedRouteOrigin(center)
+            } else if savedPlaceMapSelectionKind != nil {
+                updateSavedPlaceMapSelection(center)
+            }
         }
         .onChange(of: quickETADestinationFingerprint) { _, _ in
             Task { await refreshQuickDestinationETAs() }
         }
         .onChange(of: engine.state.status) { _, status in
-            if status == .navigating || status == .rerouting || status == .arrived || status == .idle {
-                routePreviewExpanded = false
+            handleNavigationStatusChange(status)
+        }
+        .confirmationDialog("Usunąć z Ulubionych?", isPresented: $showFavoriteRemovalConfirmation,
+                            titleVisibility: .visible) {
+            Button("Usuń", role: .destructive) {
+                guard let destination = engine.state.destination else { return }
+                _ = removeFavorite(for: destination)
             }
-            if status != .navigating && status != .rerouting { navigationPanelExpanded = false }
+            Button("Anuluj", role: .cancel) { }
+        } message: {
+            Text(engine.state.destination?.name ?? "")
         }
     }
 
@@ -684,10 +651,118 @@ struct ContentView: View {
         }
     }
 
+    private var selectedMapPlacesSheet: some View {
+        NavigationStack {
+            Group {
+                if selectedMapPlaces.count > 1 {
+                    List(selectedMapPlaces) { result in
+                        mapPlaceSelectionRow(result)
+                    }
+                    .listStyle(.plain)
+                } else if let result = selectedMapPlaces.first {
+                    selectedMapPlaceDetails(for: result)
+                }
+            }
+            .navigationTitle(selectedMapPlacesSheetTitle)
+#if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+#endif
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Zamknij") { selectedMapPlaces = [] }
+                }
+            }
+        }
+    }
+
+    private var selectedMapPlacesSheetTitle: String {
+        guard selectedMapPlaces.count > 1 else {
+            return selectedMapPlaces.first?.destination.name ?? "Miejsce"
+        }
+        return "Wybierz miejsce"
+    }
+
+    private func mapPlaceSelectionRow(_ result: SearchResult) -> some View {
+        let category = result.category ?? "Miejsce"
+        let categoryTitle = category.replacingOccurrences(of: "_", with: " ").capitalized
+        return Button {
+            presentMapPlace(result)
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(result.destination.name)
+                    .font(.body.weight(.semibold))
+                Text(categoryTitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func selectedMapPlaceDetails(for result: SearchResult) -> some View {
+        ScrollView {
+            PlaceDetailsView(
+                result: result,
+                isSaved: isMapPlaceSaved(result),
+                onSave: { localData.add(result.navigationDestination) },
+                isNavigating: isNavigating,
+                primaryActionTitle: isNavigating ? "Dodaj przystanek" : "Wyznacz trasę",
+                onRouteFromPlace: { setMapPlaceAsRouteOrigin(result) },
+                onRemove: { removeFavorite(for: result.destination) },
+                onRename: { renameFavorite(for: result.destination, to: $0) },
+                onPlanRoute: { planRoute(from: result) })
+                .id(result.placeIdentity.cacheKey)
+                .padding()
+        }
+    }
+
+    private func isMapPlaceSaved(_ result: SearchResult) -> Bool {
+        localData.places.contains {
+            $0.kind == .favorite && $0.destination.coordinate == result.destination.coordinate
+        }
+    }
+
+    private func setMapPlaceAsRouteOrigin(_ result: SearchResult) {
+        let destination = result.navigationDestination
+        selectedMapPlaces = []
+        localData.recordSearch(destination)
+        if engine.state.destination == nil {
+            openDestinationSearchAfterPlaceDismiss = true
+        }
+        Task {
+            await engine.setRouteOrigin(RoutePoint(
+                destination, source: destination.poi == nil ? .search : .poi))
+        }
+    }
+
+    private func planRoute(from result: SearchResult) {
+        let destination = result.navigationDestination
+        selectedMapPlaces = []
+        if isNavigating {
+            Task { await engine.addWaypoint(destination) }
+        } else {
+            selectDestination(destination)
+        }
+    }
+
     private func revealMapSplash() {
         guard !isMapReady else { return }
         withAnimation(.easeOut(duration: 0.35)) {
             isMapReady = true
+        }
+    }
+
+    private func handleNavigationStatusChange(_ status: NavigationStatus) {
+        switch status {
+        case .navigating, .rerouting:
+            routePreviewExpanded = false
+        case .arrived, .idle:
+            routePreviewExpanded = false
+            navigationPanelExpanded = false
+        case .destinationPreview, .routeCalculating, .routePreview, .error:
+            navigationPanelExpanded = false
         }
     }
 
@@ -906,6 +981,8 @@ struct ContentView: View {
             }
             .frame(minHeight: 48)
 
+            routeWaypointRows(darkStyle: false)
+
             HStack(spacing: 10) {
                 Image(systemName: "arrow.turn.down.right")
                     .font(.system(size: 13, weight: .medium))
@@ -943,9 +1020,136 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Cel podróży: \(engine.state.destination?.name ?? "Wybierz miejsce")")
+
+            routeWaypointAddButton()
         }
         .padding(11)
         .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func routeWaypointRows(darkStyle: Bool) -> some View {
+        ForEach(Array(engine.state.waypoints.enumerated()), id: \.element.id) { index, waypoint in
+            routeWaypointConnector(darkStyle: darkStyle)
+            routeWaypointRow(waypoint, index: index, darkStyle: darkStyle)
+        }
+    }
+
+    private func routeWaypointConnector(darkStyle: Bool) -> some View {
+        HStack(spacing: 10) {
+            VStack(spacing: 3) {
+                ForEach(0..<3, id: \.self) { _ in
+                    Circle()
+                        .fill(darkStyle ? Color.accentColor.opacity(0.85) : Color.accentColor.opacity(0.65))
+                        .frame(width: 3, height: 3)
+                }
+            }
+            .frame(width: 34)
+            Rectangle()
+                .fill(darkStyle ? Color.white.opacity(0.08) : Color.primary.opacity(0.055))
+                .frame(height: 1)
+        }
+        .frame(height: 11)
+        .accessibilityHidden(true)
+    }
+
+    private func routeWaypointRow(_ waypoint: Destination, index: Int, darkStyle: Bool) -> some View {
+        HStack(spacing: 10) {
+            Text("\(index + 1)")
+                .font(.system(size: 12, weight: .bold, design: .rounded).monospacedDigit())
+                .foregroundStyle(darkStyle ? Color.white : Color.accentColor)
+                .frame(width: 30, height: 30)
+                .background(darkStyle ? Color.accentColor : Color.accentColor.opacity(0.12), in: Circle())
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(waypoint.name)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(darkStyle ? Color.white.opacity(0.94) : Color.primary)
+                    .lineLimit(1)
+                Text(waypoint.address.map { "Przystanek \(index + 1) · \($0)" } ?? "Przystanek \(index + 1)")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(darkStyle ? Color.white.opacity(0.56) : Color.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 3)
+
+            Menu {
+                if index > 0 {
+                    Button("Bliżej punktu startowego", systemImage: "arrow.up") {
+                        Task { await engine.moveWaypoint(waypoint.id, by: -1) }
+                    }
+                }
+                if index + 1 < engine.state.waypoints.count {
+                    Button("Bliżej celu", systemImage: "arrow.down") {
+                        Task { await engine.moveWaypoint(waypoint.id, by: 1) }
+                    }
+                }
+            } label: {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(darkStyle ? Color.white.opacity(0.72) : Color.secondary)
+                    .frame(width: 32, height: 34)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(engine.state.status != .routePreview || engine.state.waypoints.count < 2)
+            .accessibilityLabel("Zmień kolejność przystanku \(index + 1)")
+
+            Button {
+                Task { await engine.removeWaypoint(waypoint.id) }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(darkStyle ? Color.white.opacity(0.72) : Color.secondary)
+                    .frame(width: 30, height: 34)
+                    .background(darkStyle ? Color.white.opacity(0.06) : Color.primary.opacity(0.04),
+                                in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(engine.state.status != .routePreview)
+            .accessibilityLabel("Usuń przystanek \(index + 1)")
+        }
+        .frame(minHeight: 44)
+        .dropDestination(for: String.self) { draggedIDs, location in
+            guard engine.state.status == .routePreview,
+                  let draggedIDString = draggedIDs.first,
+                  let draggedID = UUID(uuidString: draggedIDString),
+                  let sourceIndex = engine.state.waypoints.firstIndex(where: { $0.id == draggedID }) else {
+                return false
+            }
+
+            let targetInsertionIndex = index + (location.y >= 22 ? 1 : 0)
+            let finalIndex = targetInsertionIndex - (sourceIndex < targetInsertionIndex ? 1 : 0)
+            Task { await engine.reorderWaypoint(draggedID, to: finalIndex) }
+            return true
+        }
+        .draggable(waypoint.id.uuidString)
+        .accessibilityHint("Przeciągnij przystanek, aby zmienić jego kolejność na trasie")
+    }
+
+    private func routeWaypointAddButton() -> some View {
+        Button {
+            selectingRouteOriginInSearch = false
+            addingWaypoint = true
+            showSearch = true
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "plus")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("Dodaj przystanek")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(Color.accentColor)
+            .frame(minHeight: 38)
+            .padding(.leading, 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(engine.state.waypoints.count >= 8 || engine.state.status != .routePreview)
+        .opacity(engine.state.waypoints.count >= 8 || engine.state.status != .routePreview ? 0.5 : 1)
+        .accessibilityLabel("Dodaj przystanek przed celem podróży")
     }
 
     private var routeOriginPicker: some View {
@@ -978,11 +1182,10 @@ struct ContentView: View {
                         ForEach(localData.places) { place in
                             Button {
                                 applyRouteOrigin(
-                                    place.destination,
+                                    place.navigationDestination,
                                     source: place.kind == .favorite ? .favorite : .savedPlace)
                             } label: {
-                                Label(place.destination.name,
-                                      systemImage: routeOriginSavedPlaceSymbol(place.kind))
+                                Label(place.displayName, systemImage: place.icon.symbol)
                             }
                         }
                     }
@@ -1082,6 +1285,114 @@ struct ContentView: View {
         .ignoresSafeArea()
     }
 
+    private func savedPlaceMapPicker(_ kind: PlaceKind) -> some View {
+        GeometryReader { geometry in
+            ZStack {
+                Image(systemName: kind.defaultIcon.symbol)
+                    .font(.system(size: 38, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .shadow(color: .black.opacity(0.28), radius: 5, y: 2)
+                    .offset(y: -18)
+                    .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                    .allowsHitTesting(false)
+
+                VStack(spacing: 0) {
+                    HStack {
+                        Button {
+                            savedPlaceMapGeocodingTask?.cancel()
+                            savedPlaceMapSelectionKind = nil
+                            showSearch = true
+                        } label: {
+                            Label("Wstecz", systemImage: "chevron.left")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        .buttonStyle(.borderedProminent)
+                        Spacer()
+                        Text("Zapisz \(kind.title.lowercased())")
+                            .font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 9)
+                            .background(.regularMaterial, in: Capsule())
+                    }
+
+                    Spacer(minLength: 0)
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label(savedPlaceMapAddress ?? "Przesuń mapę pod pinezkę",
+                              systemImage: savedPlaceMapAddress == nil ? "location.magnifyingglass" : "mappin.and.ellipse")
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(2)
+                        if savedPlaceMapCoordinate != nil {
+                            Text("Punkt pod pinezką na środku mapy")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Button(action: confirmSavedPlaceMapSelection) {
+                            Label("Zapisz \(kind.title.lowercased())", systemImage: kind.defaultIcon.symbol)
+                                .font(.headline)
+                                .frame(maxWidth: .infinity, minHeight: 46)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(savedPlaceMapCoordinate == nil)
+                    }
+                    .padding(16)
+                    .frame(maxWidth: 560)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .padding(.horizontal, 16)
+                }
+                .padding(.top, max(12, geometry.safeAreaInsets.top + 8))
+                .padding(.bottom, max(12, geometry.safeAreaInsets.bottom + 10))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .ignoresSafeArea()
+    }
+
+    private func beginSavedPlaceMapSelection(as kind: PlaceKind) {
+        savedPlaceMapSelectionKind = kind
+        let coordinate = engine.state.searchMapCenter ?? engine.state.location?.coordinate
+            ?? engine.state.destination?.coordinate
+        savedPlaceMapCoordinate = coordinate
+        savedPlaceMapAddress = nil
+        showSearch = false
+        if let coordinate {
+            engine.focusMap(on: coordinate, zoom: 15.5)
+            updateSavedPlaceMapSelection(coordinate)
+        }
+    }
+
+    private func updateSavedPlaceMapSelection(_ coordinate: Coordinate) {
+        savedPlaceMapCoordinate = coordinate
+        savedPlaceMapAddress = nil
+        savedPlaceMapGeocodingTask?.cancel()
+        savedPlaceMapGeocodingTask = Task {
+            try? await Task.sleep(for: .milliseconds(420))
+            guard !Task.isCancelled, savedPlaceMapSelectionKind != nil,
+                  savedPlaceMapCoordinate == coordinate else { return }
+            let address = await GUGiKAddressProvider().reverseGeocode(coordinate)
+            guard !Task.isCancelled, savedPlaceMapSelectionKind != nil,
+                  savedPlaceMapCoordinate == coordinate else { return }
+            savedPlaceMapAddress = address
+        }
+    }
+
+    private func confirmSavedPlaceMapSelection() {
+        guard let kind = savedPlaceMapSelectionKind, let coordinate = savedPlaceMapCoordinate else { return }
+        let destination = Destination(name: kind.title, coordinate: coordinate, address: savedPlaceMapAddress)
+        localData.add(destination, kind: kind)
+        savedPlaceMapGeocodingTask?.cancel()
+        savedPlaceMapSelectionKind = nil
+    }
+
+    private func saveMapSelectedPlace(_ destination: Destination, as kind: PlaceKind) {
+        let saved = Destination(name: kind.title, coordinate: destination.coordinate,
+                                address: destination.address, poi: destination.poi)
+        localData.add(saved, kind: kind)
+        savedPlaceMapGeocodingTask?.cancel()
+        savedPlaceMapSelectionKind = nil
+    }
+
     private func beginRouteOriginMapSelection() {
         showOriginPicker = false
         selectingRouteOriginOnMap = true
@@ -1140,14 +1451,6 @@ struct ContentView: View {
 
     private func swapRouteEndpoints() {
         Task { await engine.swapRoutePoints() }
-    }
-
-    private func routeOriginSavedPlaceSymbol(_ kind: PlaceKind) -> String {
-        switch kind {
-        case .favorite: "star.fill"
-        case .home: "house.fill"
-        case .work: "briefcase.fill"
-        }
     }
 
     private var maneuverCard: some View {
@@ -1405,7 +1708,7 @@ struct ContentView: View {
             if destinationExpanded, let destination = engine.state.destination {
                 Divider()
                 HStack(spacing: 14) {
-                    Button("Zapisz", systemImage: "star") {
+                    Button("Zapisz", systemImage: "heart") {
                         isSavingPlace = true
                         favoriteName = destination.name
                     }
@@ -1487,9 +1790,9 @@ struct ContentView: View {
             HStack {
                 Spacer()
                 Button(action: toggleDestinationFavorite) {
-                    Image(systemName: isDestinationFavorite ? "star.fill" : "star")
+                    Image(systemName: isDestinationFavorite ? "heart.fill" : "heart")
                         .font(.system(size: 17, weight: .medium))
-                        .foregroundStyle(isDestinationFavorite ? Color.accentColor : Color.secondary)
+                        .foregroundStyle(isDestinationFavorite ? Color.red : Color.secondary)
                         .frame(width: 36, height: 36)
                         .contentShape(Circle())
                         .scaleEffect(favoritePulseScale)
@@ -1786,29 +2089,6 @@ struct ContentView: View {
                     .frame(height: 240)
                     .scrollIndicators(.hidden)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
-                } else {
-                    Button {
-                        addingWaypoint = true
-                        showSearch = true
-                    } label: {
-                        HStack(spacing: 7) {
-                            Image(systemName: "plus")
-                                .font(.system(size: 12, weight: .semibold))
-                            Text(engine.state.waypoints.isEmpty
-                                 ? "Dodaj przystanek"
-                                 : "Przystanki · \(engine.state.waypoints.count)")
-                                .font(.subheadline.weight(.medium))
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
-                        .foregroundStyle(Color.accentColor)
-                        .frame(minHeight: 30)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(engine.state.waypoints.count >= 8 || engine.state.status != .routePreview)
                 }
 
                 if engine.state.transportMode != .transit {
@@ -1931,19 +2211,7 @@ struct ContentView: View {
         .frame(maxWidth: 560)
         .frame(height: maxHeight, alignment: .top)
         .frame(maxWidth: .infinity)
-        .background {
-            ZStack {
-                shape.fill(.ultraThinMaterial)
-                shape.fill(
-                    LinearGradient(
-                        colors: [Color(red: 0.12, green: 0.18, blue: 0.26).opacity(0.94),
-                                 Color(red: 0.045, green: 0.075, blue: 0.12).opacity(0.98)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing))
-            }
-        }
-        .overlay { shape.strokeBorder(Color.white.opacity(0.11), lineWidth: 1) }
-        .shadow(color: .black.opacity(0.32), radius: 22, y: -8)
+        .modifier(NavigationGlassPanelSurface(shape: shape))
         .gesture(DragGesture(minimumDistance: 20).onEnded { value in
             if value.translation.height < -35 {
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { routePreviewExpanded = true }
@@ -1954,84 +2222,80 @@ struct ContentView: View {
     }
 
     private var routePlanningEndpoints: some View {
-        HStack(spacing: 12) {
-            VStack(spacing: 3) {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
                 Image(systemName: routeOriginPoint?.isCurrentLocation == true ? "location.north.fill" : "a.circle.fill")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.white)
                     .frame(width: 31, height: 31)
                     .background(Color.accentColor, in: Circle())
-                ForEach(0..<3, id: \.self) { _ in
-                    Circle().fill(Color.accentColor.opacity(0.72)).frame(width: 3.5, height: 3.5)
+                Button { showOriginPicker = true } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(routeOriginPoint?.name ?? "Twoja lokalizacja")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        Text("Punkt startowy")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Color.white.opacity(0.56))
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 47, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Punkt startowy: \(routeOriginPoint?.name ?? "Twoja lokalizacja")")
+                Button(action: swapRouteEndpoints) {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.62))
+                        .frame(width: 34, height: 36)
+                }
+                .buttonStyle(.plain)
+                .disabled(engine.state.destination == nil || routeOriginPoint == nil)
+                .accessibilityLabel("Zamień punkt startowy i cel")
+            }
+
+            routeWaypointRows(darkStyle: true)
+            routeWaypointConnector(darkStyle: true)
+
+            HStack(spacing: 10) {
                 Text("B")
                     .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(width: 31, height: 31)
                     .background(Color.red.opacity(0.9), in: Circle())
-            }
-            .frame(width: 34)
-
-            VStack(spacing: 0) {
-                Button { showOriginPicker = true } label: {
-                    HStack(spacing: 8) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(routeOriginPoint?.name ?? "Twoja lokalizacja")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .lineLimit(1)
-                            Text("Punkt startowy")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(Color.white.opacity(0.56))
-                        }
-                        Spacer(minLength: 0)
-                        Image(systemName: "arrow.up.arrow.down")
+                Button(action: presentSearch) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(engine.state.destination?.name ?? "Dokąd?")
                             .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(Color.white.opacity(0.55))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        Text(engine.state.destination?.address ?? "Cel podróży")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Color.white.opacity(0.56))
+                            .lineLimit(1)
                     }
-                    .frame(minHeight: 47)
+                    .frame(maxWidth: .infinity, minHeight: 47, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Punkt startowy: \(routeOriginPoint?.name ?? "Twoja lokalizacja")")
-
-                Rectangle()
-                    .fill(Color.white.opacity(0.11))
-                    .frame(height: 1)
-
-                HStack(spacing: 8) {
-                    Button(action: presentSearch) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(engine.state.destination?.name ?? "Dokąd?")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .lineLimit(1)
-                            Text(engine.state.destination?.address ?? "Cel podróży")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(Color.white.opacity(0.56))
-                                .lineLimit(1)
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 47, alignment: .leading)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Cel podróży: \(engine.state.destination?.name ?? "Nie wybrano")")
-
+                .accessibilityLabel("Cel podróży: \(engine.state.destination?.name ?? "Nie wybrano")")
                     Button(action: toggleDestinationFavorite) {
-                        Image(systemName: isDestinationFavorite ? "star.fill" : "star")
+                        Image(systemName: isDestinationFavorite ? "heart.fill" : "heart")
                             .font(.system(size: 17, weight: .medium))
-                            .foregroundStyle(isDestinationFavorite ? Color.yellow : Color.white.opacity(0.8))
-                            .frame(width: 36, height: 36)
-                            .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(isDestinationFavorite ? "Usuń cel z ulubionych" : "Zapisz cel w ulubionych")
+                            .foregroundStyle(isDestinationFavorite ? Color.red : Color.white.opacity(0.8))
+                        .frame(width: 36, height: 36)
+                        .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isDestinationFavorite ? "Usuń cel z ulubionych" : "Zapisz cel w ulubionych")
             }
+
+            routeWaypointAddButton()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
-        .modifier(NavigationGlassSurface(radius: 23))
+        .modifier(NavigationGlassSurface(radius: 23, interactive: true))
     }
 
     private var routePlanningTransportSelector: some View {
@@ -2053,13 +2317,12 @@ struct ContentView: View {
                         .foregroundStyle(selected ? Color.accentColor : Color.white.opacity(0.65))
                         .padding(.horizontal, 11)
                         .frame(minHeight: 43)
-                        .background(selected ? Color.accentColor.opacity(0.16) : Color.white.opacity(0.055),
-                                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                         .overlay {
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
                                 .strokeBorder(selected ? Color.accentColor.opacity(0.7) : Color.white.opacity(0.045),
                                               lineWidth: selected ? 1.2 : 1)
                         }
+                        .modifier(NavigationGlassSurface(radius: 14, interactive: true))
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(mode.title)
@@ -2129,11 +2392,7 @@ struct ContentView: View {
             .accessibilityLabel(isRouteOriginAwayFromUser ? "Nawiguj do punktu startowego" : "Rozpocznij nawigację")
         }
         .padding(14)
-        .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 23, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 23, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.095), lineWidth: 1)
-        }
+        .modifier(NavigationGlassSurface(radius: 23))
     }
 
     private func routePlanningArrivalTime(_ route: NavigationRoute) -> String {
@@ -2208,8 +2467,7 @@ struct ContentView: View {
                         .padding(.horizontal, 13)
                         .padding(.vertical, 9)
                         .frame(maxWidth: .infinity, minHeight: 55, alignment: .leading)
-                        .background(isSelected ? Color.accentColor.opacity(0.12) : Color.white.opacity(0.045),
-                                    in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+                        .modifier(NavigationGlassSurface(radius: 17, interactive: true))
                         .overlay {
                             RoundedRectangle(cornerRadius: 17, style: .continuous)
                                 .strokeBorder(isSelected ? Color.accentColor.opacity(0.85) : Color.white.opacity(0.07),
@@ -2410,17 +2668,6 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .accessibilityLabel(routePreviewExpanded ? "Zwiń szczegóły trasy" : "Szczegóły trasy")
 
-            Button {
-                addingWaypoint = true
-                showSearch = true
-            } label: {
-                routePlanningFooterLabel(symbol: "plus.circle", title: "Dodaj\nprzystanek")
-            }
-            .buttonStyle(.plain)
-            .disabled(engine.state.waypoints.count >= 8 || engine.state.status != .routePreview)
-            .opacity(engine.state.waypoints.count >= 8 || engine.state.status != .routePreview ? 0.52 : 1)
-            .accessibilityLabel("Dodaj przystanek")
-
             Group {
                 if let url = routePlanningShareURL {
                     ShareLink(item: url) {
@@ -2453,11 +2700,7 @@ struct ContentView: View {
                 .minimumScaleFactor(0.75)
         }
         .frame(maxWidth: .infinity, minHeight: 59)
-        .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.075), lineWidth: 1)
-        }
+        .modifier(NavigationGlassSurface(radius: 16, interactive: true))
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
@@ -2678,11 +2921,15 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
     private var waypointDetails: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        if !engine.state.waypoints.isEmpty {
             HStack {
-                Text("Przystanki pośrednie")
+                Label("Przystanki pośrednie", systemImage: "mappin.and.ellipse")
                     .font(.subheadline.weight(.semibold))
+                Text("\(engine.state.waypoints.count)")
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.secondary)
                 Spacer()
                 if engine.state.waypoints.count >= 2 {
                     Button("Optymalizuj", systemImage: "arrow.triangle.swap") {
@@ -2692,44 +2939,6 @@ struct ContentView: View {
                     .disabled(engine.state.status != .routePreview)
                 }
             }
-
-            ForEach(Array(engine.state.waypoints.enumerated()), id: \.element.id) { index, waypoint in
-                HStack(spacing: 8) {
-                    Text("\(index + 1)")
-                        .font(.caption.weight(.bold).monospacedDigit())
-                        .foregroundStyle(Color.accentColor)
-                        .frame(width: 22, height: 22)
-                        .background(Color.accentColor.opacity(0.12), in: Circle())
-                    Text(waypoint.name)
-                        .font(.subheadline)
-                        .lineLimit(1)
-                    Spacer(minLength: 4)
-                    Button("Przenieś wyżej", systemImage: "chevron.up") {
-                        Task { await engine.moveWaypoint(waypoint.id, by: -1) }
-                    }
-                    .labelStyle(.iconOnly)
-                    .disabled(index == 0 || engine.state.status != .routePreview)
-                    Button("Przenieś niżej", systemImage: "chevron.down") {
-                        Task { await engine.moveWaypoint(waypoint.id, by: 1) }
-                    }
-                    .labelStyle(.iconOnly)
-                    .disabled(index == engine.state.waypoints.count - 1 || engine.state.status != .routePreview)
-                    Button("Usuń przystanek", systemImage: "xmark.circle.fill", role: .destructive) {
-                        Task { await engine.removeWaypoint(waypoint.id) }
-                    }
-                    .labelStyle(.iconOnly)
-                    .disabled(engine.state.status != .routePreview)
-                }
-            }
-
-            Button {
-                addingWaypoint = true
-                showSearch = true
-            } label: {
-                Label("Dodaj przystanek", systemImage: "plus.circle")
-                    .font(.subheadline.weight(.medium))
-            }
-            .disabled(engine.state.waypoints.count >= 8 || engine.state.status != .routePreview)
         }
     }
 
@@ -2833,7 +3042,7 @@ struct ContentView: View {
                     Text("Ulubione")
                         .font(.headline.weight(.semibold))
                     Spacer()
-                    Button("Zobacz wszystkie", systemImage: "star") { showFavorites = true }
+                    Button("Zobacz wszystkie", systemImage: "heart") { showFavorites = true }
                         .font(.caption.weight(.semibold))
                         .frame(minHeight: 44)
                 }
@@ -2974,7 +3183,8 @@ struct ContentView: View {
                                             .foregroundStyle(.primary)
                                             .lineLimit(1)
                                         if let estimatedMinutes = shortcut.estimatedMinutes {
-                                            Text("\(estimatedMinutes) min")
+                                            let routeDistance = shortcut.estimatedDistanceMeters.map(distance)
+                                            Text(routeDistance.map { "\(estimatedMinutes) min · \($0)" } ?? "\(estimatedMinutes) min")
                                                 .font(.caption.weight(.medium).monospacedDigit())
                                                 .foregroundStyle(.secondary)
                                         }
@@ -3242,21 +3452,7 @@ struct ContentView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .top)
-        .background {
-            ZStack {
-                shape.fill(.ultraThinMaterial)
-                shape.fill(
-                    LinearGradient(
-                        colors: [Color(red: 0.12, green: 0.18, blue: 0.26).opacity(0.92),
-                                 Color(red: 0.045, green: 0.075, blue: 0.12).opacity(0.97)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing))
-            }
-        }
-        .overlay {
-            shape.strokeBorder(Color.white.opacity(0.11), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.32), radius: 22, y: -8)
+        .modifier(NavigationGlassPanelSurface(shape: shape))
         .gesture(DragGesture(minimumDistance: 20).onEnded { value in
             if value.translation.height < -35 {
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { navigationPanelExpanded = true }
@@ -3298,11 +3494,7 @@ struct ContentView: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 13)
             .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
-            .background(Color.white.opacity(0.065), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
-            }
+            .modifier(NavigationGlassSurface(radius: 18, interactive: true))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Pokaż trasę. \(activeJourneyTargetText)")
@@ -3340,12 +3532,13 @@ struct ContentView: View {
             .padding(.horizontal, 7)
             .background {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(primary ? Color(red: 0.05, green: 0.49, blue: 0.97) : Color.white.opacity(0.075))
+                    .fill(primary ? Color(red: 0.05, green: 0.49, blue: 0.97) : Color.white.opacity(0.025))
             }
             .overlay {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .strokeBorder(Color.white.opacity(primary ? 0.12 : 0.08), lineWidth: 1)
             }
+            .modifier(NavigationGlassSurface(radius: 18, interactive: true))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title.replacingOccurrences(of: "\n", with: " "))
@@ -4038,11 +4231,7 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity)
             }
             .frame(height: 76)
-            .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 19, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 19, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.09), lineWidth: 1)
-            }
+            .modifier(NavigationGlassSurface(radius: 19))
             .padding(.horizontal, 16)
             .padding(.top, 10)
 
@@ -4073,21 +4262,7 @@ struct ContentView: View {
             .padding(.bottom, 14)
         }
         .frame(maxWidth: .infinity, alignment: .top)
-        .background {
-            ZStack {
-                shape.fill(.ultraThinMaterial)
-                shape.fill(
-                    LinearGradient(
-                        colors: [Color(red: 0.12, green: 0.18, blue: 0.26).opacity(0.92),
-                                 Color(red: 0.045, green: 0.075, blue: 0.12).opacity(0.97)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing))
-            }
-        }
-        .overlay {
-            shape.strokeBorder(Color.white.opacity(0.11), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.32), radius: 22, y: -8)
+        .modifier(NavigationGlassPanelSurface(shape: shape))
     }
 
     private var arrivalShareAction: some View {
@@ -4141,12 +4316,13 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, minHeight: 55)
         .background {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(primary ? Color(red: 0.05, green: 0.49, blue: 0.97) : Color.white.opacity(0.075))
+                .fill(primary ? Color(red: 0.05, green: 0.49, blue: 0.97) : Color.white.opacity(0.025))
         }
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .strokeBorder(Color.white.opacity(primary ? 0.12 : 0.08), lineWidth: 1)
         }
+        .modifier(NavigationGlassSurface(radius: 18, interactive: true))
     }
 
     private var searchSheet: some View {
@@ -4156,8 +4332,23 @@ struct ContentView: View {
             places: localData.places,
             recentDestinations: recentDestinations,
             recentSearches: localData.searches,
+            quickEstimates: quickETAEstimates,
             pointSelectionHint: pointSelectionHint,
-            onSavePlace: { localData.add($0) },
+            onRemoveFavorite: { removeFavorite(for: $0) },
+            onRenameFavorite: { renameFavorite(for: $0, to: $1) },
+            onRefreshContactPlace: { contactReference, destination in
+                localData.updateContactPlace(contactReference, destination: destination)
+            },
+            onSavePlaceAs: { destination, kind, contactIdentifier in
+                localData.add(destination, kind: kind, sourceContactIdentifier: contactIdentifier)
+            },
+            onSaveCurrentLocation: { kind in
+                guard let coordinate = engine.state.location?.coordinate else { return false }
+                let address = await GUGiKAddressProvider().reverseGeocode(coordinate)
+                let destination = Destination(name: kind.title, coordinate: coordinate, address: address)
+                return localData.add(destination, kind: kind)
+            },
+            onChooseOnMap: { kind in beginSavedPlaceMapSelection(as: kind) },
             onSelectTransitStop: { stop in
                 showSearch = false
                 openTransitStop(stop)
@@ -4726,40 +4917,36 @@ struct ContentView: View {
             List {
                 if localData.places.isEmpty {
                     ContentUnavailableView("Brak zapisanych miejsc",
-                                           systemImage: "star",
-                                           description: Text("Zapisz cel po wyznaczeniu trasy, aby łatwo do niego wrócić."))
+                                           systemImage: "heart",
+                                           description: Text("Dodaj Dom, Pracę albo ulubiony adres z wyszukiwarki."))
                 }
 
-                ForEach(localData.places) { place in
-                    HStack(spacing: 12) {
-                        Button {
-                            showFavorites = false
-                            selectDestination(place.destination, recordSearch: false)
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: place.kind == .home ? "house" : place.kind == .work ? "briefcase" : "star")
-                                    .foregroundStyle(Color.accentColor)
-                                    .frame(width: 34, height: 34)
-                                    .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 11))
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(place.destination.name)
-                                        .foregroundStyle(.primary)
-                                    Text(place.kind.title)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
+                let quickPlaces = [PlaceKind.home, .work].compactMap { kind in
+                    localData.places.first(where: { $0.kind == kind })
+                }
+                if !quickPlaces.isEmpty {
+                    Section("Szybkie miejsca") {
+                        ForEach(quickPlaces) { place in
+                            favoritePlaceRow(place)
                         }
-                        .buttonStyle(.plain)
+                    }
+                }
 
-                        Spacer()
-
-                        Button(role: .destructive) {
-                            localData.removePlace(place.id)
-                        } label: {
-                            Image(systemName: "trash")
+                let pinnedFavorites = localData.places.filter { $0.kind == .favorite && $0.isPinned }
+                if !pinnedFavorites.isEmpty {
+                    Section("Przypięte ulubione") {
+                        ForEach(pinnedFavorites) { place in
+                            favoritePlaceRow(place)
                         }
-                        .accessibilityLabel("Usuń \(place.destination.name)")
+                    }
+                }
+
+                let otherFavorites = localData.places.filter { $0.kind == .favorite && !$0.isPinned }
+                if !otherFavorites.isEmpty {
+                    Section("Pozostałe ulubione") {
+                        ForEach(otherFavorites) { place in
+                            favoritePlaceRow(place)
+                        }
                     }
                 }
             }
@@ -4770,6 +4957,91 @@ struct ContentView: View {
                     Button("Zamknij") { showFavorites = false }
                 }
             }
+            .sheet(item: $editingSavedPlace) { place in
+                SavedPlaceEditorSheet(place: place) { name, icon, isPinned in
+                    localData.updatePlace(place.id, customName: name, icon: icon, isPinned: isPinned)
+                } onRemove: {
+                    localData.removePlace(place.id)
+                }
+            }
+            .confirmationDialog("Usunąć to miejsce z Ulubionych?",
+                                isPresented: $showPlaceRemovalConfirmation,
+                                titleVisibility: .visible) {
+                Button("Usuń", role: .destructive) {
+                    if let placePendingRemoval { localData.removePlace(placePendingRemoval.id) }
+                    placePendingRemoval = nil
+                }
+                Button("Anuluj", role: .cancel) { placePendingRemoval = nil }
+            } message: {
+                Text(placePendingRemoval?.displayName ?? "")
+            }
+        }
+    }
+
+    private func favoritePlaceRow(_ place: SavedPlace) -> some View {
+        HStack(spacing: 12) {
+            Button {
+                showFavorites = false
+                selectDestination(place.navigationDestination, recordSearch: false)
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: place.icon.symbol)
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 36, height: 36)
+                        .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 11))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(place.displayName).foregroundStyle(.primary)
+                        Text(place.sourceContactIdentifier != nil
+                             ? "Z Kontaktów · \(place.destination.address ?? place.kind.title)"
+                             : (place.destination.address ?? place.kind.title))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 8)
+                    if let estimate = quickETAEstimates[place.id.uuidString] {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text("\(estimate.minutes) min")
+                            Text(distance(estimate.distanceMeters))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .font(.caption.weight(.semibold).monospacedDigit())
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                editingSavedPlace = place
+            } label: {
+                Image(systemName: "pencil")
+                    .font(.body.weight(.medium))
+                    .frame(width: 36, height: 40)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Edytuj nazwę miejsca \(place.displayName)")
+
+            Menu {
+                if place.kind == .favorite {
+                    Button(place.isPinned ? "Odepnij od wyszukiwarki" : "Przypnij pod wyszukiwarką",
+                           systemImage: place.isPinned ? "pin.slash" : "pin") {
+                        localData.updatePlace(place.id, customName: place.customName,
+                                              isPinned: !place.isPinned)
+                    }
+                }
+                Button("Usuń", systemImage: "trash", role: .destructive) {
+                    placePendingRemoval = place
+                    showPlaceRemovalConfirmation = true
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .frame(width: 36, height: 40)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Opcje miejsca \(place.displayName)")
         }
     }
 
@@ -4798,7 +5070,7 @@ struct ContentView: View {
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 }
                                 .buttonStyle(.plain)
-                                Button("Zapisz do ulubionych", systemImage: "star") {
+                                Button("Zapisz do ulubionych", systemImage: "heart") {
                                     localData.add(item.destination)
                                 }
                                 .labelStyle(.iconOnly)
@@ -4829,7 +5101,7 @@ struct ContentView: View {
                                     replayTrip(trip)
                                 }
                                 .labelStyle(.iconOnly)
-                                Button("Zapisz cel do ulubionych", systemImage: "star") {
+                                Button("Zapisz cel do ulubionych", systemImage: "heart") {
                                     localData.add(trip.destination)
                                 }
                                 .labelStyle(.iconOnly)
@@ -4857,15 +5129,16 @@ struct ContentView: View {
         var shortcuts: [PlaceShortcut] = []
 
         for kind in [PlaceKind.home, .work, .favorite] {
-            for place in localData.places where place.kind == kind {
+            for place in localData.places where place.kind == kind && (kind != .favorite || place.isPinned) {
                 guard !shortcuts.contains(where: { $0.destination.coordinate == place.destination.coordinate }) else { continue }
                 shortcuts.append(PlaceShortcut(
                     id: place.id.uuidString,
-                    title: kind == .favorite ? place.destination.name : kind.title,
-                    symbol: kind == .home ? "house.fill" : kind == .work ? "briefcase.fill" : "star.fill",
-                    destination: place.destination,
+                    title: place.displayName,
+                    symbol: place.icon.symbol,
+                    destination: place.navigationDestination,
                     isRecent: false,
-                    estimatedMinutes: kind == .favorite ? nil : quickETAMinutes[place.id.uuidString]
+                    estimatedMinutes: quickETAEstimates[place.id.uuidString]?.minutes,
+                    estimatedDistanceMeters: quickETAEstimates[place.id.uuidString]?.distanceMeters
                 ))
             }
         }
@@ -4906,8 +5179,8 @@ struct ContentView: View {
     }
 
     private var quickETADestinationFingerprint: String {
-        [PlaceKind.home, .work].compactMap { kind in
-            localData.places.first(where: { $0.kind == kind })
+        savedPlaceShortcuts.prefix(6).compactMap { shortcut in
+            localData.places.first(where: { $0.id.uuidString == shortcut.id })
         }.map { place in
             let coordinate = place.destination.coordinate
             return "\(place.id.uuidString):\(coordinate.latitude),\(coordinate.longitude)"
@@ -4916,9 +5189,9 @@ struct ContentView: View {
 
     private func refreshQuickDestinationETAs() async {
         guard !quickETAInFlight, let origin = engine.state.location?.coordinate else { return }
-        let priorityDestinations = savedPlaceShortcuts.filter { $0.symbol == "house.fill" || $0.symbol == "briefcase.fill" }
+        let priorityDestinations = Array(savedPlaceShortcuts.prefix(6))
         guard !priorityDestinations.isEmpty else {
-            quickETAMinutes = [:]
+            quickETAEstimates = [:]
             quickETADestinationKey = quickETADestinationFingerprint
             return
         }
@@ -4932,15 +5205,15 @@ struct ContentView: View {
         quickETAOrigin = origin
         quickETADestinationKey = destinationKey
         quickETAUpdatedAt = Date()
-        quickETAMinutes = [:]
+        quickETAEstimates = [:]
         defer { quickETAInFlight = false }
 
-        var estimates: [String: Int] = [:]
+        var estimates: [String: PlaceRouteEstimate] = [:]
         for shortcut in priorityDestinations.prefix(2) {
-            guard let seconds = await engine.estimatedCarTravelTime(to: shortcut.destination) else { continue }
-            estimates[shortcut.id] = max(1, Int(ceil(seconds / 60)))
+            guard let estimate = await engine.estimatedCarRouteEstimate(to: shortcut.destination) else { continue }
+            estimates[shortcut.id] = estimate
         }
-        quickETAMinutes = estimates
+        quickETAEstimates = estimates
     }
 
     private var recentDestinations: [Destination] {
@@ -5220,25 +5493,22 @@ struct ContentView: View {
     private func saveCurrentPlace(as kind: PlaceKind) {
         guard let destination = engine.state.destination else { return }
         let name = favoriteName.trimmingCharacters(in: .whitespacesAndNewlines)
-        localData.add(
-            Destination(name: name.isEmpty ? destination.name : name, coordinate: destination.coordinate),
-            kind: kind
-        )
+        localData.add(destination, kind: kind, customName: name.isEmpty ? nil : name)
         favoriteName = ""
         isSavingPlace = false
     }
 
     private func toggleDestinationFavorite() {
         guard let destination = engine.state.destination else { return }
-        let wasFavorite = isDestinationFavorite
-        if let saved = localData.places.first(where: {
-            $0.kind == .favorite && $0.destination.coordinate == destination.coordinate
-        }) {
-            localData.removePlace(saved.id)
-        } else {
-            localData.add(destination, kind: .favorite)
+        if isDestinationFavorite {
+            showFavoriteRemovalConfirmation = true
+            return
         }
-        guard isDestinationFavorite != wasFavorite else { return }
+        guard localData.add(destination, kind: .favorite) else { return }
+        animateFavoritePulse()
+    }
+
+    private func animateFavoritePulse() {
         withAnimation(.spring(response: 0.16, dampingFraction: 0.52)) {
             favoritePulseScale = 1.15
         }
@@ -5252,7 +5522,22 @@ struct ContentView: View {
         let haptic = UIImpactFeedbackGenerator(style: .light)
         haptic.prepare()
         haptic.impactOccurred()
-        #endif
+#endif
+    }
+
+    private func removeFavorite(for destination: Destination) -> Bool {
+        guard let place = localData.places.first(where: {
+            $0.kind == .favorite && $0.destination.coordinate == destination.coordinate
+        }) else { return false }
+        localData.removePlace(place.id)
+        return !localData.places.contains { $0.id == place.id }
+    }
+
+    private func renameFavorite(for destination: Destination, to name: String) -> Bool {
+        guard let place = localData.places.first(where: {
+            $0.kind == .favorite && $0.destination.coordinate == destination.coordinate
+        }) else { return false }
+        return localData.updatePlace(place.id, customName: name)
     }
 
     private func distance(_ meters: Double) -> String {
@@ -5360,6 +5645,8 @@ private struct NearbyPlacesSheet: View {
     let initialCategory: NearbyPlaceCategory
     let savedPlaces: [SavedPlace]
     let onSave: (Destination) -> Bool
+    let onRemoveSaved: (Destination) -> Bool
+    let onRenameSaved: (Destination, String) -> Bool
     let onSelect: (Destination) -> Void
     @State private var category: NearbyPlaceCategory
     @State private var retryID = UUID()
@@ -5373,12 +5660,16 @@ private struct NearbyPlacesSheet: View {
 
     init(engine: NavigationEngine, nearDestination: Bool, initialCategory: NearbyPlaceCategory,
          savedPlaces: [SavedPlace], onSave: @escaping (Destination) -> Bool,
+         onRemoveSaved: @escaping (Destination) -> Bool,
+         onRenameSaved: @escaping (Destination, String) -> Bool,
          onSelect: @escaping (Destination) -> Void) {
         self.engine = engine
         self.nearDestination = nearDestination
         self.initialCategory = initialCategory
         self.savedPlaces = savedPlaces
         self.onSave = onSave
+        self.onRemoveSaved = onRemoveSaved
+        self.onRenameSaved = onRenameSaved
         self.onSelect = onSelect
         _category = State(initialValue: initialCategory)
     }
@@ -5556,27 +5847,27 @@ private struct NearbyPlacesSheet: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 12) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(categories) { value in
-                            Button {
-                                guard category != value else { return }
-                                category = value
-                                expandedRadius = false
-                                clearFilters()
-                                engine.state.nearbySuggestions = []
-                                engine.state.nearbyStatus = .searching
-                            } label: {
-                                Label(value.title, systemImage: value.symbol)
-                                    .font(.subheadline.weight(.medium))
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 10)
-                                    .background(category == value ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.08),
-                                                in: Capsule())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityAddTraits(category == value ? .isSelected : [])
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)],
+                           alignment: .leading, spacing: 8) {
+                    ForEach(categories) { value in
+                        Button {
+                            guard category != value else { return }
+                            category = value
+                            expandedRadius = false
+                            clearFilters()
+                            engine.state.nearbySuggestions = []
+                            engine.state.nearbyStatus = .searching
+                        } label: {
+                            Label(value.title, systemImage: value.symbol)
+                                .font(.subheadline.weight(.medium))
+                                .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
+                                .padding(.horizontal, 12)
+                                .foregroundStyle(category == value ? Color.accentColor : Color.primary)
+                                .background(category == value ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.08),
+                                            in: Capsule())
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(category == value ? .isSelected : [])
                     }
                 }
 
@@ -5653,12 +5944,22 @@ private struct NearbyPlacesSheet: View {
                                  : nearestSearch ? "Szukam najbliższych miejsc…" : "Szukam miejsc wzdłuż trasy…")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .unavailable(let message):
-                    ContentUnavailableView("Nie udało się wyszukać miejsc",
-                                           systemImage: "magnifyingglass",
-                                           description: Text(message))
-                    Button("Spróbuj ponownie") { retryID = UUID() }
-                        .buttonStyle(.borderedProminent)
-                        .frame(maxWidth: .infinity)
+                    VStack(spacing: 10) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 25, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Text("Nie udało się wyszukać miejsc")
+                            .font(.headline)
+                            .multilineTextAlignment(.center)
+                        Text(message)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                        Button("Spróbuj ponownie") { retryID = UUID() }
+                            .buttonStyle(.borderedProminent)
+                            .padding(.top, 4)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .available:
                     if engine.state.nearbySuggestions.isEmpty {
                         ContentUnavailableView("Brak miejsc w pobliżu",
@@ -5696,6 +5997,8 @@ private struct NearbyPlacesSheet: View {
                                 result: result, index: index + 1,
                                 isSaved: savedPlaces.contains { $0.kind == .favorite && $0.destination.coordinate == result.destination.coordinate },
                                 onSave: { onSave(result.navigationDestination) },
+                                onRemove: { onRemoveSaved(result.destination) },
+                                onRename: { onRenameSaved(result.destination, $0) },
                                 onSelect: {
                                     onSelect(result.navigationDestination)
                                     dismiss()
@@ -5748,6 +6051,7 @@ private struct NearbyPlacesSheet: View {
 
     private func searchResult(_ suggestion: RouteStopSuggestion) -> SearchResult {
         let candidate = suggestion.candidate
+        let poi = candidate.destination.poi
         let category: String = switch candidate.category {
         case .fuel: "fuel"
         case .food: "restaurant"
@@ -5756,9 +6060,13 @@ private struct NearbyPlacesSheet: View {
         }
         return SearchResult(destination: candidate.destination, street: nil, houseNumber: nil,
                             city: nil, countryCode: candidate.countryCode, isPOI: true,
-                            osmID: candidate.id.replacingOccurrences(of: "-", with: ":"),
-                            category: candidate.osmCategory ?? category,
-                            brand: candidate.brand, operatorName: candidate.operatorName,
+                            osmID: poi?.provider == .openStreetMap
+                                ? poi?.osmID : poi == nil ? candidate.id.replacingOccurrences(of: "-", with: ":") : nil,
+                            providerID: candidate.providerID,
+                            placeProvider: poi?.provider ?? .openStreetMap,
+                            category: poi?.category ?? candidate.osmCategory ?? category,
+                            brand: poi?.brand ?? candidate.brand,
+                            operatorName: poi?.operatorName ?? candidate.operatorName,
                             openingHours: candidate.openingHours,
                             timeZoneIdentifier: candidate.timeZoneIdentifier,
                             straightDistance: nearDestination
@@ -5781,14 +6089,21 @@ private enum DestinationSearchScope: String, CaseIterable, Identifiable {
 
 private struct DestinationSearchSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
 
     let engine: NavigationEngine
     let selectingRouteOrigin: Bool
     let places: [SavedPlace]
     let recentDestinations: [Destination]
     let recentSearches: [SearchHistoryEntry]
+    let quickEstimates: [String: PlaceRouteEstimate]
     let pointSelectionHint: String
-    let onSavePlace: (Destination) -> Bool
+    let onRemoveFavorite: (Destination) -> Bool
+    let onRenameFavorite: (Destination, String) -> Bool
+    let onRefreshContactPlace: (String, Destination) -> Bool
+    let onSavePlaceAs: (Destination, PlaceKind, String?) -> Bool
+    let onSaveCurrentLocation: (PlaceKind) async -> Bool
+    let onChooseOnMap: (PlaceKind) -> Void
     let onSelectTransitStop: (TransitStop) -> Void
     let onSelectTransitLine: (TransitLineSearchResult) -> Void
     let onSelectDestination: (Destination, Bool) -> Void
@@ -5806,6 +6121,12 @@ private struct DestinationSearchSheet: View {
     @State private var currentSearchID = UUID()
     @State private var searchArea: Coordinate?
     @State private var alongRoute = false
+    @State private var savingKind: PlaceKind?
+    @State private var savedPlaceNotice: String?
+    @State private var saveAlertMessage = ""
+    @State private var showSaveAlert = false
+    @State private var contactsAccessStatus = ContactsAccessStatus.current()
+    @State private var isRequestingContactsAccess = false
     @FocusState private var isSearchFocused: Bool
 
     private var trimmedQuery: String {
@@ -5817,8 +6138,8 @@ private struct DestinationSearchSheet: View {
         guard !needle.isEmpty else { return [] }
 
         var matches: [LocalSearchSuggestion] = []
-        for place in places where normalized(place.destination.name).contains(needle) {
-            append(place.destination, subtitle: place.kind.title, symbol: symbol(for: place.kind), to: &matches)
+        for place in places where normalized(place.displayName).contains(needle) {
+            append(place.navigationDestination, subtitle: place.kind.title, symbol: place.icon.symbol, to: &matches)
         }
         for destination in recentDestinations where normalized(destination.name).contains(needle) {
             append(destination, subtitle: selectingRouteOrigin ? "Ostatnie miejsce" : "Ostatni cel",
@@ -5831,8 +6152,35 @@ private struct DestinationSearchSheet: View {
     }
 
     private var visibleRemoteResults: [SearchResult] {
-        // A saved/history entry must not hide a freshly ranked nearby result.
-        results
+        // Contact destinations stay grouped separately from place results.
+        results.filter { !$0.isContact }
+    }
+
+    private var visibleContactResults: [SearchResult] {
+        results.filter(\.isContact)
+    }
+
+    private var contactResultActionTitle: String {
+        if savingKind != nil { return "Zapisz" }
+        if selectingRouteOrigin { return "Start" }
+        if alongRoute || QueryClassifier().classify(query).alongRoute { return "Dodaj" }
+        return "Trasa"
+    }
+
+    private var contactResultActionSymbol: String {
+        if savingKind != nil { return "plus" }
+        if selectingRouteOrigin { return "location" }
+        if alongRoute || QueryClassifier().classify(query).alongRoute { return "plus" }
+        return "arrow.turn.down.right"
+    }
+
+    private var contactResultActionHint: String {
+        if let savingKind { return "Zapisz ten adres jako \(savingKind.title.lowercased())." }
+        if selectingRouteOrigin { return "Użyj tego adresu jako punktu startowego." }
+        if alongRoute || QueryClassifier().classify(query).alongRoute {
+            return "Dodaj ten adres jako przystanek do trasy."
+        }
+        return "Wyznacz trasę do tego adresu kontaktu."
     }
 
     private var hasResultsForCurrentScope: Bool {
@@ -5848,6 +6196,15 @@ private struct DestinationSearchSheet: View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 16) {
                 searchField
+                if let savedPlaceNotice {
+                    Label(savedPlaceNotice, systemImage: "checkmark.circle.fill")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.green)
+                        .transition(.opacity)
+                }
+                if !selectingRouteOrigin && searchScope == .places && trimmedQuery.isEmpty {
+                    quickPlacesSection
+                }
                 if !selectingRouteOrigin {
                     Picker("Rodzaj wyszukiwania", selection: $searchScope) {
                         ForEach(DestinationSearchScope.allCases) { scope in
@@ -5891,6 +6248,7 @@ private struct DestinationSearchSheet: View {
                         } else {
                             if searchScope == .places {
                                 matchingDestinations
+                                contactsResultsSection
                                 searchStatus
                                 remoteResults
                             } else {
@@ -5907,13 +6265,20 @@ private struct DestinationSearchSheet: View {
             .padding(.top, 14)
             .frame(maxWidth: 620, maxHeight: .infinity, alignment: .top)
             .frame(maxWidth: .infinity)
-            .navigationTitle(selectingRouteOrigin ? "Skąd zaczynasz?" : "Szukaj")
+            .navigationTitle(selectingRouteOrigin ? "Skąd zaczynasz?" :
+                             savingKind.map { "Dodaj \($0.title.lowercased())" } ?? "Szukaj")
+            .alert("Nie udało się dodać miejsca", isPresented: $showSaveAlert) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text(saveAlertMessage)
+            }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Zamknij") { dismiss() }
                 }
             }
             .onAppear {
+                contactsAccessStatus = ContactsAccessStatus.current()
                 query = ""
                 if selectingRouteOrigin {
                     searchScope = .places
@@ -5935,10 +6300,23 @@ private struct DestinationSearchSheet: View {
                     startSearch(query)
                 }
             }
+            .onChange(of: scenePhase) { _, phase in
+                guard phase == .active, !isRequestingContactsAccess else { return }
+                let previousStatus = contactsAccessStatus
+                contactsAccessStatus = ContactsAccessStatus.current()
+                if previousStatus != contactsAccessStatus, !trimmedQuery.isEmpty {
+                    startSearch(query)
+                }
+            }
             .onDisappear {
                 searchTask?.cancel()
                 transitSearchTask?.cancel()
-                engine.state.searchResults = []
+                let closingSearchID = currentSearchID
+                Task { @MainActor in
+                    await Task.yield()
+                    guard currentSearchID == closingSearchID else { return }
+                    engine.state.searchResults = []
+                }
             }
         }
     }
@@ -6006,20 +6384,31 @@ private struct DestinationSearchSheet: View {
                                             route: remainingRoute,
                                             routeTarget: routeTarget,
                                             mode: state.transportMode, preferences: state.routingPreferences,
-                                            localDestinations: places.map(\.destination) + recentSearches.map(\.destination))
+                                            localDestinations: places.map(\.navigationDestination) + recentSearches.map(\.destination))
                 let endpoint = URL(string: UserDefaults.standard.string(forKey: "routingServer") ?? "https://valhalla1.openstreetmap.de")!
                 let effectiveQuery = alongRoute && !QueryClassifier.normalize(trimmed).hasSuffix(" po trasie") ? trimmed + " po trasie" : trimmed
                 let found = try await SearchEngine(matrix: ValhallaRouteProvider(endpoint: endpoint))
                     .search(effectiveQuery, context: context, includeUUGFallback: includeUUGFallback) { partial in
                     guard !Task.isCancelled, currentSearchID == requestID else { return }
                     results = partial
-                    engine.state.searchResults = visibleRemoteResults
+                    engine.state.searchResults = results
                 }
                 guard !Task.isCancelled, currentSearchID == requestID else { return }
                 results = found
-                engine.state.searchResults = visibleRemoteResults
+                engine.state.searchResults = results
                 isSearching = false
                 didCompleteSearchWithNoResults = found.isEmpty
+                var didRefreshSavedContact = false
+                for result in found {
+                    guard let contactReference = contactIdentifier(for: result),
+                          places.contains(where: { $0.sourceContactIdentifier == contactReference }) else { continue }
+                    if onRefreshContactPlace(contactReference, result.navigationDestination) {
+                        didRefreshSavedContact = true
+                    }
+                }
+                if didRefreshSavedContact {
+                    savedPlaceNotice = "Zaktualizowano zapisany adres z Kontaktów."
+                }
             } catch {
                 guard !Task.isCancelled, currentSearchID == requestID else { return }
                 isSearching = false
@@ -6033,7 +6422,8 @@ private struct DestinationSearchSheet: View {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(Color.accentColor)
             TextField(searchScope == .places
-                      ? (selectingRouteOrigin ? "Adres lub miejsce" : "Adres, marka lub kategoria")
+                      ? (savingKind.map { "Adres lub miejsce dla \($0.title.lowercased())" }
+                         ?? (selectingRouteOrigin ? "Adres, miejsce lub kontakt" : "Adres, miejsce, marka lub kontakt"))
                       : "Linia lub przystanek", text: $query)
                 .focused($isSearchFocused)
                 .submitLabel(.search)
@@ -6063,13 +6453,255 @@ private struct DestinationSearchSheet: View {
         .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08)))
     }
 
+    private var quickPlacesSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("SZYBKIE MIEJSCA")
+                    .font(.caption.weight(.semibold))
+                    .tracking(0.7)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                addPlaceMenu
+            }
+
+            ScrollView(.horizontal) {
+                HStack(spacing: 8) {
+                    ForEach([PlaceKind.home, .work], id: \.self) { kind in
+                        if let place = places.first(where: { $0.kind == kind }) {
+                            quickPlaceCard(place)
+                        } else {
+                            Button {
+                                beginAddressSave(as: kind)
+                            } label: {
+                                Label("Dodaj \(kind.title.lowercased())", systemImage: "plus")
+                                    .font(.subheadline.weight(.medium))
+                                    .padding(.horizontal, 13)
+                                    .frame(minHeight: 62)
+                                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 15))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Color.accentColor)
+                        }
+                    }
+
+                    ForEach(pinnedFavoritePlaces) { place in
+                        quickPlaceCard(place)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .scrollIndicators(.hidden)
+
+        }
+    }
+
+    private var pinnedFavoritePlaces: [SavedPlace] {
+        var seen = Set<String>()
+        return places.filter { place in
+            guard place.kind == .favorite, place.isPinned else { return false }
+            let coordinate = place.destination.coordinate
+            let key = "\(coordinate.latitude),\(coordinate.longitude)"
+            return seen.insert(key).inserted
+        }.prefix(6).map { $0 }
+    }
+
+    private func quickPlaceCard(_ place: SavedPlace) -> some View {
+        Button {
+            handleDestination(place.navigationDestination, contactIdentifier: place.sourceContactIdentifier)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: place.icon.symbol)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 22)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(place.displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    if let estimate = quickEstimates[place.id.uuidString] {
+                        Text("\(estimate.minutes) min · \(formattedRouteDistance(estimate.distanceMeters))")
+                            .font(.caption.weight(.medium).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    } else {
+                        Text(place.destination.address ?? place.kind.title)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(minWidth: place.kind == .favorite ? 145 : 158, minHeight: 62, alignment: .leading)
+            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 15).strokeBorder(Color.primary.opacity(0.045)))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Pokaż miejsce \(place.displayName)")
+    }
+
+    private var addPlaceMenu: some View {
+        Menu {
+            Menu("Wyszukaj adres", systemImage: "magnifyingglass") {
+                ForEach([PlaceKind.home, .work, .favorite], id: \.self) { kind in
+                    Button(kind.title, systemImage: kind.defaultIcon.symbol) { beginAddressSave(as: kind) }
+                }
+            }
+            Menu("Moja lokalizacja", systemImage: "location.fill") {
+                ForEach([PlaceKind.home, .work, .favorite], id: \.self) { kind in
+                    Button(kind.title, systemImage: kind.defaultIcon.symbol) { saveCurrentLocation(as: kind) }
+                }
+            }
+            Menu("Wybierz na mapie", systemImage: "mappin.and.ellipse") {
+                ForEach([PlaceKind.home, .work, .favorite], id: \.self) { kind in
+                    Button(kind.title, systemImage: kind.defaultIcon.symbol) {
+                        onChooseOnMap(kind)
+                        dismiss()
+                    }
+                }
+            }
+            Menu("Adres kontaktu", systemImage: "person.crop.circle") {
+                ForEach([PlaceKind.home, .work, .favorite], id: \.self) { kind in
+                    Button(kind.title, systemImage: kind.defaultIcon.symbol) { beginContactSave(as: kind) }
+                }
+            }
+        } label: {
+            Label("Dodaj", systemImage: "plus")
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 11)
+                .frame(minHeight: 34)
+                .background(Color.accentColor.opacity(0.09), in: Capsule())
+        }
+        .accessibilityLabel("Dodaj zapisane miejsce")
+    }
+
+    private func beginAddressSave(as kind: PlaceKind) {
+        savingKind = kind
+        savedPlaceNotice = nil
+        isSearchFocused = true
+    }
+
+    private func beginContactSave(as kind: PlaceKind) {
+        beginAddressSave(as: kind)
+        if contactsAccessStatus == .notDetermined {
+            requestContactsAccess()
+        } else if !contactsAccessStatus.canReadContacts {
+            saveAlertMessage = "Włącz dostęp do Kontaktów w Ustawieniach, aby wyszukać zapisany adres."
+            showSaveAlert = true
+        }
+    }
+
+    private func saveCurrentLocation(as kind: PlaceKind) {
+        Task {
+            let saved = await onSaveCurrentLocation(kind)
+            if saved {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    savedPlaceNotice = "Zapisano \(kind.title.lowercased()) z bieżącej lokalizacji."
+                }
+            } else {
+                saveAlertMessage = "Bieżąca lokalizacja jest niedostępna. Spróbuj ponownie, gdy mapa ustali Twoją pozycję."
+                showSaveAlert = true
+            }
+        }
+    }
+
+    private func formattedRouteDistance(_ meters: Double) -> String {
+        let kilometers = NumberFormatter()
+        kilometers.locale = Locale(identifier: "pl_PL")
+        kilometers.minimumFractionDigits = 1
+        kilometers.maximumFractionDigits = 1
+        return "\(kilometers.string(from: NSNumber(value: meters / 1_000)) ?? "—") km"
+    }
+
+    @ViewBuilder
+    private var contactsResultsSection: some View {
+        if !visibleContactResults.isEmpty {
+            VStack(alignment: .leading, spacing: 7) {
+                sectionHeading("Kontakty")
+                ForEach(visibleContactResults, id: \.placeIdentity.cacheKey) { result in
+                    Button {
+                        selectResult(result)
+                    } label: {
+                        HStack(spacing: 11) {
+                            Image(systemName: "person.crop.circle.fill")
+                                .font(.system(size: 20))
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 38, height: 38)
+                                .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(result.destination.name)
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(.primary)
+                                Text(result.subtitle)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                                if let summary = result.travelSummary {
+                                    Text(summary)
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            Spacer(minLength: 0)
+                            Label(contactResultActionTitle, systemImage: contactResultActionSymbol)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Color.accentColor)
+                        }
+                        .padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint(contactResultActionHint)
+                }
+            }
+        } else if !trimmedQuery.isEmpty && contactsAccessStatus != .authorized {
+            VStack(alignment: .leading, spacing: 7) {
+                sectionHeading("Kontakty")
+                if contactsAccessStatus == .notDetermined {
+                    Button(action: requestContactsAccess) {
+                        Label("Szukaj w Kontaktach", systemImage: "person.crop.circle.badge.plus")
+                            .font(.subheadline.weight(.medium))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 6)
+                    }
+                    .buttonStyle(.plain)
+                    Text("NaviAstra użyje zapisanych nazw i adresów, aby znaleźć cel nawigacji.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(contactsAccessStatus == .restricted
+                         ? "Dostęp do Kontaktów jest ograniczony przez system."
+                         : "Dostęp do Kontaktów jest wyłączony. Możesz go zmienić w Ustawieniach systemowych.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func requestContactsAccess() {
+        Task {
+            isRequestingContactsAccess = true
+            let status = await ContactsSearchProvider().requestAccess()
+            isRequestingContactsAccess = false
+            contactsAccessStatus = status
+            if contactsAccessStatus.canReadContacts {
+                startSearch(query)
+            }
+        }
+    }
+
     @ViewBuilder
     private var savedDestinations: some View {
         if !places.isEmpty {
             VStack(alignment: .leading, spacing: 7) {
                 sectionHeading("Zapisane miejsca")
                 ForEach(places.prefix(5)) { place in
-                    destinationRow(place.destination, subtitle: place.kind.title, symbol: symbol(for: place.kind))
+                    destinationRow(place.navigationDestination,
+                                   subtitle: place.destination.address ?? place.kind.title,
+                                   symbol: place.icon.symbol)
                 }
             }
         }
@@ -6173,7 +6805,12 @@ private struct DestinationSearchSheet: View {
                         result: result,
                         index: index + 1,
                         isSaved: places.contains { $0.kind == .favorite && $0.destination.coordinate == result.destination.coordinate },
-                        onSave: { onSavePlace(result.navigationDestination) },
+                        onSave: {
+                            onSavePlaceAs(result.navigationDestination, .favorite,
+                                          contactIdentifier(for: result))
+                        },
+                        onRemove: { onRemoveFavorite(result.destination) },
+                        onRename: { onRenameFavorite(result.destination, $0) },
                         onSelect: { selectResult(result) },
                         isNavigating: alongRoute || QueryClassifier().classify(query).alongRoute,
                         primaryActionTitle: alongRoute || QueryClassifier().classify(query).alongRoute ? "Dodaj przystanek" : "Wyznacz trasę")
@@ -6252,6 +6889,11 @@ private struct DestinationSearchSheet: View {
     private func selectResult(_ result: SearchResult) {
         searchTask?.cancel()
         isSearchFocused = false
+        if let kind = savingKind {
+            saveDestination(result.navigationDestination, as: kind,
+                            contactIdentifier: contactIdentifier(for: result))
+            return
+        }
         let asStop = alongRoute || QueryClassifier().classify(query).alongRoute
         onSelectDestination(result.navigationDestination, asStop)
         if selectingRouteOrigin { return }
@@ -6283,7 +6925,7 @@ private struct DestinationSearchSheet: View {
     private func destinationRow(_ destination: Destination, subtitle: String, symbol: String) -> some View {
         Button {
             isSearchFocused = false
-            onSelectDestination(destination, false)
+            handleDestination(destination, contactIdentifier: nil)
         } label: {
             HStack(spacing: 13) {
                 Image(systemName: symbol)
@@ -6310,20 +6952,45 @@ private struct DestinationSearchSheet: View {
         .buttonStyle(.plain)
     }
 
+    private func handleDestination(_ destination: Destination, contactIdentifier: String?) {
+        guard let kind = savingKind else {
+            onSelectDestination(destination, false)
+            return
+        }
+        saveDestination(destination, as: kind, contactIdentifier: contactIdentifier)
+    }
+
+    private func saveDestination(_ destination: Destination, as kind: PlaceKind,
+                                 contactIdentifier: String?) {
+        guard onSavePlaceAs(destination, kind, contactIdentifier) else {
+            saveAlertMessage = "Miejsce nie zostało zapisane na urządzeniu. Spróbuj ponownie."
+            showSaveAlert = true
+            return
+        }
+        withAnimation(.easeInOut(duration: 0.18)) {
+            savingKind = nil
+            savedPlaceNotice = "Dodano do \(kind.title)."
+        }
+        query = ""
+        results = []
+        searchError = nil
+        didCompleteSearchWithNoResults = false
+        engine.state.searchResults = []
+        isSearchFocused = false
+    }
+
+    private func contactIdentifier(for result: SearchResult) -> String? {
+        guard result.isContact, let providerID = result.providerID,
+              providerID.hasPrefix("contact-") else { return nil }
+        return providerID
+    }
+
     private func sectionHeading(_ title: String) -> some View {
         Text(title.uppercased())
             .font(.caption.weight(.semibold))
             .tracking(0.7)
             .foregroundStyle(.secondary)
             .padding(.top, 3)
-    }
-
-    private func symbol(for kind: PlaceKind) -> String {
-        switch kind {
-        case .home: "house"
-        case .work: "briefcase"
-        case .favorite: "star"
-        }
     }
 
     private func append(_ destination: Destination, subtitle: String, symbol: String,
@@ -6360,6 +7027,115 @@ private struct PlaceShortcut: Identifiable {
     var destination: Destination
     var isRecent: Bool
     var estimatedMinutes: Int? = nil
+    var estimatedDistanceMeters: Double? = nil
+}
+
+private struct SavedPlaceEditorSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let place: SavedPlace
+    let onSave: (String, SavedPlaceIcon, Bool) -> Void
+    let onRemove: () -> Void
+
+    @State private var name: String
+    @State private var icon: SavedPlaceIcon
+    @State private var isPinned: Bool
+    @State private var confirmingRemoval = false
+
+    init(place: SavedPlace, onSave: @escaping (String, SavedPlaceIcon, Bool) -> Void,
+         onRemove: @escaping () -> Void) {
+        self.place = place
+        self.onSave = onSave
+        self.onRemove = onRemove
+        _name = State(initialValue: place.customName ?? (place.kind == .favorite ? place.destination.name : ""))
+        _icon = State(initialValue: place.icon)
+        _isPinned = State(initialValue: place.isPinned)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section(place.kind == .favorite ? "Nazwa ulubionego miejsca" : "Nazwa miejsca") {
+                    TextField("Wpisz nazwę", text: $name)
+                }
+
+                Section("Szczegóły miejsca") {
+                    LabeledContent("Adres", value: place.destination.address ?? "Zapisane współrzędne")
+                        .lineLimit(2)
+                    if place.sourceContactIdentifier != nil {
+                        Label("Adres powiązany z Kontaktami", systemImage: "person.crop.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if place.kind == .favorite {
+                    Section("Ikona") {
+                        HStack(spacing: 0) {
+                            ForEach(SavedPlaceIcon.allCases) { option in
+                                Button {
+                                    icon = option
+                                } label: {
+                                    Image(systemName: option.symbol)
+                                        .font(.system(size: 17, weight: .semibold))
+                                        .foregroundStyle(icon == option ? Color.accentColor : Color.secondary)
+                                        .frame(maxWidth: .infinity, minHeight: 42)
+                                        .background(icon == option ? Color.accentColor.opacity(0.1) : .clear,
+                                                    in: RoundedRectangle(cornerRadius: 10))
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(option.title)
+                                .accessibilityAddTraits(icon == option ? .isSelected : [])
+                            }
+                        }
+                    }
+                } else {
+                    Section("Ikona") {
+                        Label(place.kind.title, systemImage: place.kind.defaultIcon.symbol)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if place.kind == .favorite {
+                    Section {
+                        Toggle("Przypięte pod wyszukiwarką", isOn: $isPinned)
+                    } footer: {
+                        Text("Przypięte miejsca pojawiają się w szybkich skrótach.")
+                    }
+                }
+
+                Section {
+                    Button("Usuń miejsce", role: .destructive) { confirmingRemoval = true }
+                }
+            }
+            .navigationTitle("Edytuj miejsce")
+#if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+#endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Anuluj") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Zapisz") {
+                        onSave(name, icon, isPinned)
+                        dismiss()
+                    }
+                }
+            }
+            .confirmationDialog("Usunąć to miejsce z Ulubionych?", isPresented: $confirmingRemoval,
+                                titleVisibility: .visible) {
+                Button("Usuń", role: .destructive) {
+                    onRemove()
+                    dismiss()
+                }
+                Button("Anuluj", role: .cancel) { }
+            } message: {
+                Text(place.displayName)
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
 }
 
 private struct MapLoadingSplash: View {
@@ -6436,6 +7212,44 @@ private struct NavigationGlassSurface: ViewModifier {
                 .overlay(shape.strokeBorder(.white.opacity(0.3)))
                 .shadow(color: .black.opacity(0.1), radius: 18, y: 6)
         }
+    }
+}
+
+/// A shared translucent shell for the route preview, active trip, and arrival panels.
+private struct NavigationGlassPanelSurface: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+    let shape: UnevenRoundedRectangle
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        Group {
+            if reduceTransparency || contrast == .increased {
+                content
+                    .background(Color(red: 0.045, green: 0.075, blue: 0.12).opacity(0.98), in: shape)
+                    .overlay(shape.strokeBorder(Color.white.opacity(0.22), lineWidth: 1))
+            } else if #available(iOS 26.0, macOS 26.0, *) {
+                content
+                    .background(shape.fill(Color(red: 0.045, green: 0.075, blue: 0.12).opacity(0.18)))
+                    .glassEffect(.regular.interactive(), in: shape)
+                    .overlay(shape.strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
+            } else {
+                content
+                    .background {
+                        ZStack {
+                            shape.fill(.ultraThinMaterial)
+                            shape.fill(
+                                LinearGradient(
+                                    colors: [Color(red: 0.12, green: 0.18, blue: 0.26).opacity(0.44),
+                                             Color(red: 0.045, green: 0.075, blue: 0.12).opacity(0.58)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing))
+                        }
+                    }
+                    .overlay(shape.strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
+            }
+        }
+        .shadow(color: .black.opacity(0.28), radius: 22, y: -8)
     }
 }
 

@@ -193,6 +193,7 @@ private struct TransitStopRenderKey: Equatable {
     let showsOnlyRouteEndpoints: Bool
     let displayContext: MapDisplayContext
     let transportMode: TransportMode
+    let isPlanningCarRoute: Bool
     let isNavigating: Bool
     let isTransitRoutePreview: Bool
     let routeStopIDs: Set<String>
@@ -709,6 +710,9 @@ struct MapLibreView: NSViewRepresentable {
             let isTransitRoutePreview = parent.state.transportMode == .transit
                 && (parent.state.status == .destinationPreview || parent.state.status == .routeCalculating
                     || parent.state.status == .routePreview)
+            let isPlanningCarRoute = parent.state.transportMode == .car
+                && (parent.state.status == .destinationPreview || parent.state.status == .routeCalculating
+                    || parent.state.status == .routePreview)
             let visibleRadius = transitVisibleRadius(on: map, center: center)
             let visibleStopCount = parent.transitStops.reduce(into: 0) { count, stop in
                 if center.distance(to: stop.coordinate) <= visibleRadius { count += 1 }
@@ -723,6 +727,7 @@ struct MapLibreView: NSViewRepresentable {
                                                   showsOnlyRouteEndpoints: showsOnlyRouteEndpoints,
                                                   displayContext: parent.settings.context,
                                                   transportMode: parent.state.transportMode,
+                                                  isPlanningCarRoute: isPlanningCarRoute,
                                                   isNavigating: isNavigating,
                                                   isTransitRoutePreview: isTransitRoutePreview,
                                                   routeStopIDs: routeStopIDs,
@@ -734,6 +739,7 @@ struct MapLibreView: NSViewRepresentable {
 
             let visibility = TransitStopMapVisibilityPolicy(zoom: zoom,
                                                             transportMode: parent.state.transportMode,
+                                                            isPlanningCarRoute: isPlanningCarRoute,
                                                             isNavigating: isNavigating,
                                                             isTransitRoutePreview: isTransitRoutePreview,
                                                             visibleStopCount: visibleStopCount,
@@ -1121,9 +1127,15 @@ struct MapLibreView: NSViewRepresentable {
 
         private func updatePositionPuck(on map: MKMapView) {
             let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
-            puckEngine.update(location: parent.state.location,
-                              route: isNavigating ? parent.state.route : nil,
-                              isNavigating: isNavigating)
+            let activeRoute = isNavigating ? parent.state.route : nil
+            let matchedRoute = parent.state.routeMatch.flatMap { match in
+                guard let activeRoute,
+                      match.routeID == activeRoute.id,
+                      match.locationTimestamp == parent.state.location?.timestamp else { return nil }
+                return match
+            }
+            puckEngine.update(location: parent.state.location, route: activeRoute,
+                              isNavigating: isNavigating, matchedRoute: matchedRoute)
             if isNavigating, parent.state.location != nil {
                 if puckRenderTimer == nil {
                     let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in

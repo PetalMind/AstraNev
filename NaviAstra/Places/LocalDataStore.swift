@@ -10,12 +10,94 @@ enum PlaceKind: String, Codable, CaseIterable {
         case .work: "Praca"
         }
     }
+
+    var defaultIcon: SavedPlaceIcon {
+        switch self {
+        case .home: .home
+        case .work: .work
+        case .favorite: .heart
+        }
+    }
+}
+
+enum SavedPlaceIcon: String, Codable, CaseIterable, Identifiable {
+    case heart, star, home, work, shoppingCart
+
+    var id: String { rawValue }
+
+    var symbol: String {
+        switch self {
+        case .heart: "heart.fill"
+        case .star: "star.fill"
+        case .home: "house.fill"
+        case .work: "briefcase.fill"
+        case .shoppingCart: "cart.fill"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .heart: "Serce"
+        case .star: "Gwiazda"
+        case .home: "Dom"
+        case .work: "Praca"
+        case .shoppingCart: "Zakupy"
+        }
+    }
+}
+
+struct PlaceRouteEstimate: Equatable, Sendable {
+    var minutes: Int
+    var distanceMeters: Double
 }
 
 struct SavedPlace: Identifiable, Codable {
     var id = UUID()
     var destination: Destination
     var kind: PlaceKind = .favorite
+    var customName: String? = nil
+    var icon: SavedPlaceIcon = .heart
+    var isPinned = true
+    var sourceContactIdentifier: String? = nil
+
+    init(id: UUID = UUID(), destination: Destination, kind: PlaceKind = .favorite,
+         customName: String? = nil, icon: SavedPlaceIcon? = nil, isPinned: Bool? = nil,
+         sourceContactIdentifier: String? = nil) {
+        self.id = id
+        self.destination = destination
+        self.kind = kind
+        self.customName = customName
+        self.icon = icon ?? kind.defaultIcon
+        self.isPinned = isPinned ?? true
+        self.sourceContactIdentifier = sourceContactIdentifier
+    }
+
+    var displayName: String {
+        if let customName = customName?.trimmingCharacters(in: .whitespacesAndNewlines), !customName.isEmpty {
+            return customName
+        }
+        return kind == .favorite ? destination.name : kind.title
+    }
+
+    var navigationDestination: Destination {
+        Destination(id: destination.id, name: displayName, coordinate: destination.coordinate,
+                    address: destination.address, poi: destination.poi)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, destination, kind, customName, icon, isPinned, sourceContactIdentifier
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        destination = try values.decode(Destination.self, forKey: .destination)
+        kind = try values.decodeIfPresent(PlaceKind.self, forKey: .kind) ?? .favorite
+        customName = try values.decodeIfPresent(String.self, forKey: .customName)
+        icon = try values.decodeIfPresent(SavedPlaceIcon.self, forKey: .icon) ?? kind.defaultIcon
+        isPinned = try values.decodeIfPresent(Bool.self, forKey: .isPinned) ?? true
+        sourceContactIdentifier = try values.decodeIfPresent(String.self, forKey: .sourceContactIdentifier)
+    }
 }
 
 struct TripRecord: Identifiable, Codable {
@@ -100,11 +182,48 @@ final class LocalDataStore {
     }
 
     @discardableResult
-    func add(_ destination: Destination, kind: PlaceKind = .favorite) -> Bool {
+    func add(_ destination: Destination, kind: PlaceKind = .favorite,
+             customName: String? = nil, icon: SavedPlaceIcon? = nil,
+             isPinned: Bool? = nil, sourceContactIdentifier: String? = nil) -> Bool {
         guard !places.contains(where: { $0.destination.coordinate == destination.coordinate && $0.kind == kind }) else { return true }
         var updated = places
         if kind == .home || kind == .work { updated.removeAll { $0.kind == kind } }
-        updated.insert(SavedPlace(destination: destination, kind: kind), at: 0)
+        updated.insert(SavedPlace(destination: destination, kind: kind, customName: customName,
+                                  icon: icon, isPinned: isPinned,
+                                  sourceContactIdentifier: sourceContactIdentifier), at: 0)
+        guard persist(updated, file: "places.json") else { return false }
+        places = updated
+        return true
+    }
+
+    @discardableResult
+    func updatePlace(_ id: UUID, customName: String?, icon: SavedPlaceIcon? = nil,
+                     isPinned: Bool? = nil) -> Bool {
+        guard var place = places.first(where: { $0.id == id }) else { return false }
+        place.customName = customName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        if let icon { place.icon = icon }
+        if let isPinned { place.isPinned = isPinned }
+        let updated = places.map { $0.id == id ? place : $0 }
+        guard persist(updated, file: "places.json") else { return false }
+        places = updated
+        return true
+    }
+
+    @discardableResult
+    func updateContactPlace(_ contactReference: String, destination: Destination) -> Bool {
+        let matchingPlaces = places.filter { $0.sourceContactIdentifier == contactReference }
+        guard !matchingPlaces.isEmpty,
+              matchingPlaces.contains(where: {
+                  $0.destination.coordinate != destination.coordinate || $0.destination.address != destination.address
+              }) else { return false }
+        let updated = places.map { place in
+            guard place.sourceContactIdentifier == contactReference else { return place }
+            var refreshed = place
+            refreshed.destination = Destination(id: place.destination.id, name: destination.name,
+                                                coordinate: destination.coordinate,
+                                                address: destination.address, poi: destination.poi)
+            return refreshed
+        }
         guard persist(updated, file: "places.json") else { return false }
         places = updated
         return true
@@ -147,4 +266,8 @@ final class LocalDataStore {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         return try JSONDecoder().decode(type, from: Data(contentsOf: url))
     }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

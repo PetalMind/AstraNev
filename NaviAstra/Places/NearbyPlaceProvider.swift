@@ -1,4 +1,5 @@
 import Foundation
+import MapKit
 
 enum NearbyPlaceCategory: String, CaseIterable, Identifiable {
     case fuel, food, parking, charging, parkRide
@@ -56,6 +57,7 @@ struct NearbyPlaceCandidate: Identifiable {
     var timeZoneIdentifier: String? = nil
     var fuelTypes: [String] = []
     var chargingStation: ChargingStationCapabilities? = nil
+    var providerID: String? = nil
 
     var operatorOrBrand: String? {
         [operatorName, brand].compactMap { $0 }.first { $0 != destination.name }
@@ -102,7 +104,7 @@ enum NearbyPlaceError: LocalizedError {
     case unavailable, invalidResponse
     var errorDescription: String? {
         switch self {
-        case .unavailable: "Wyszukiwanie miejsc w OpenStreetMap jest chwilowo niedostępne."
+        case .unavailable: "Wyszukiwanie miejsc jest chwilowo niedostępne."
         case .invalidResponse: "Usługa miejsc zwróciła nieprawidłowe dane."
         }
     }
@@ -302,6 +304,125 @@ struct OpenStreetMapNearbyPlaceProvider {
         }
     }
     private struct Center: Decodable { let lat: Double; let lon: Double }
+}
+
+struct NearbyPlaceSearchProvider {
+    func search(_ category: NearbyPlaceCategory, around coordinate: Coordinate,
+                radius: Double, resultLimit: Int) async throws -> [NearbyPlaceCandidate] {
+        var openStreetMapError: Error?
+        do {
+            let candidates = try await OpenStreetMapNearbyPlaceProvider()
+                .search(category, around: coordinate, radius: radius, resultLimit: resultLimit)
+            if !candidates.isEmpty { return candidates }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            openStreetMapError = error
+        }
+
+        try Task.checkCancellation()
+        do {
+            let candidates = try await MapKitNearbyPlaceProvider()
+                .search(category, around: coordinate, radius: radius, resultLimit: resultLimit)
+            if candidates.isEmpty, let openStreetMapError { throw openStreetMapError }
+            return candidates
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            if let openStreetMapError { throw openStreetMapError }
+            throw NearbyPlaceError.unavailable
+        }
+    }
+}
+
+struct MapKitNearbyPlaceProvider {
+    func search(_ category: NearbyPlaceCategory, around coordinate: Coordinate,
+                radius: Double, resultLimit: Int) async throws -> [NearbyPlaceCandidate] {
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = category.mapKitSearchQuery
+        request.resultTypes = [.pointOfInterest]
+        request.pointOfInterestFilter = MKPointOfInterestFilter(including: category.mapKitCategories)
+        request.region = MKCoordinateRegion(center: coordinate.cl,
+                                            latitudinalMeters: radius * 2,
+                                            longitudinalMeters: radius * 2)
+        let search = MKLocalSearch(request: request)
+        let response = try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await search.start()
+        } onCancel: {
+            Task { @MainActor in search.cancel() }
+        }
+        try Task.checkCancellation()
+
+        let candidates = response.mapItems.compactMap { item -> NearbyPlaceCandidate? in
+            guard let name = item.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
+                return nil
+            }
+            if category == .parkRide, !Self.isParkAndRide(name) { return nil }
+
+            let location = item.location
+            let candidateCoordinate = Coordinate(latitude: location.coordinate.latitude,
+                                                 longitude: location.coordinate.longitude)
+            let distance = coordinate.distance(to: candidateCoordinate)
+            guard distance <= radius else { return nil }
+
+            let address = [item.address?.shortAddress, item.address?.fullAddress]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first { !$0.isEmpty }
+            let providerID = item.identifier?.rawValue
+            let categoryValue = item.pointOfInterestCategory?.rawValue
+            let destination = Destination(
+                name: name,
+                coordinate: candidateCoordinate,
+                address: address,
+                poi: POIMetadata(provider: .mapKit, category: categoryValue))
+            let id = providerID.map { "mapkit-\($0)" }
+                ?? "mapkit-\(candidateCoordinate.latitude)-\(candidateCoordinate.longitude)"
+            return NearbyPlaceCandidate(id: id, destination: destination,
+                                        category: category, distanceFromRoute: distance,
+                                        osmCategory: categoryValue,
+                                        timeZoneIdentifier: item.timeZone?.identifier,
+                                        providerID: providerID)
+        }
+
+        var unique: [NearbyPlaceCandidate] = []
+        for candidate in candidates.sorted(by: { $0.distanceFromRoute < $1.distanceFromRoute }) {
+            guard !unique.contains(where: {
+                $0.destination.coordinate.distance(to: candidate.destination.coordinate) < 15
+            }) else { continue }
+            unique.append(candidate)
+            if unique.count >= max(1, min(resultLimit, 100)) { break }
+        }
+        return unique
+    }
+
+    private static func isParkAndRide(_ name: String) -> Bool {
+        let normalized = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .filter { $0.isLetter || $0.isNumber || $0.isWhitespace }
+        return normalized.contains("p r") || normalized.contains("park and ride")
+            || normalized.contains("parkuj i jedz")
+    }
+}
+
+fileprivate extension NearbyPlaceCategory {
+    var mapKitSearchQuery: String {
+        switch self {
+        case .fuel: "gas station"
+        case .food: "food"
+        case .parking: "parking"
+        case .charging: "EV charging station"
+        case .parkRide: "park and ride"
+        }
+    }
+
+    var mapKitCategories: [MKPointOfInterestCategory] {
+        switch self {
+        case .fuel: [.gasStation]
+        case .food: [.restaurant, .cafe, .bakery]
+        case .parking, .parkRide: [.parking]
+        case .charging: [.evCharger]
+        }
+    }
 }
 
 private extension String {

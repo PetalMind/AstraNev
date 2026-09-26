@@ -44,6 +44,7 @@ final class NavigationState {
     var waypointNavigationTargets: [UUID: POINavigationTarget] = [:]
     var routingPreferences = RoutingPreferences()
     var progress: RouteProgress?
+    var routeMatch: NavigationRouteMatch?
     var transitProgress: TransitNavigationProgress?
     var transitPlanningPhase: TransitPlanningPhase?
     var status: NavigationStatus = .idle
@@ -272,7 +273,11 @@ nonisolated enum MapMatcher {
     static func match(_ location: NavigationLocation, onto route: [Coordinate],
                       previous: RouteProjection? = nil, previousTimestamp: Date? = nil) -> RouteMatch? {
         guard route.count > 1 else { return nil }
-        var candidates: [(projection: RouteProjection, bearing: Double)] = []
+        let accuracy = max(8, location.accuracy)
+        let elapsed = previousTimestamp.map { max(0, location.timestamp.timeIntervalSince($0)) } ?? 0
+        let expectedProgress = previous.map { $0.alongRoute + max(0, location.speed) * elapsed }
+        var bestProjection: RouteProjection?
+        var bestScore = Double.infinity
         var traveled = 0.0
         let metersPerLatitudeDegree = 110_574.0
         let metersPerLongitudeDegree = 111_320.0 * cos(location.coordinate.latitude * .pi / 180)
@@ -297,36 +302,63 @@ nonisolated enum MapMatcher {
                                              segment: index)
             if projection.distanceFromRoute <= max(250, location.accuracy * 6) {
                 let bearing = atan2(dx, dy) * 180 / .pi
-                candidates.append((projection, (bearing + 360).truncatingRemainder(dividingBy: 360)))
+                let normalizedBearing = (bearing + 360).truncatingRemainder(dividingBy: 360)
+                let distanceScore = pow(projection.distanceFromRoute / accuracy, 2)
+                var score = distanceScore
+                if location.speed >= 1.5, location.course >= 0, location.course <= 360 {
+                    let difference = abs(location.course - normalizedBearing)
+                    let headingDifference = min(difference, 360 - difference)
+                    score += pow(headingDifference / 55, 2)
+                }
+                if let expectedProgress {
+                    let continuityScale = max(35, max(0, location.speed) * elapsed + accuracy * 2)
+                    score += pow((projection.alongRoute - expectedProgress) / continuityScale, 2) * 0.35
+                }
+                if score < bestScore {
+                    bestProjection = projection
+                    bestScore = score
+                }
             }
             traveled += segmentLength
         }
-        guard !candidates.isEmpty else { return nil }
-        let accuracy = max(8, location.accuracy)
-        let elapsed = previousTimestamp.map { max(0, location.timestamp.timeIntervalSince($0)) } ?? 0
-        let expectedProgress = previous.map { $0.alongRoute + max(0, location.speed) * elapsed }
-        let scored = candidates.map { candidate -> (RouteProjection, Double) in
-            let distanceScore = pow(candidate.projection.distanceFromRoute / accuracy, 2)
-            var score = distanceScore
-            if location.speed >= 1.5, location.course >= 0, location.course <= 360 {
-                let difference = abs(location.course - candidate.bearing)
-                let headingDifference = min(difference, 360 - difference)
-                score += pow(headingDifference / 55, 2)
-            }
-            if let expectedProgress {
-                let continuityScale = max(35, max(0, location.speed) * elapsed + accuracy * 2)
-                score += pow((candidate.projection.alongRoute - expectedProgress) / continuityScale, 2) * 0.35
-            }
-            return (candidate.projection, score)
-        }
-        guard let best = scored.min(by: { $0.1 < $1.1 }) else { return nil }
-        return RouteMatch(projection: best.0, confidence: exp(-0.5 * min(40, best.1)))
+        guard let bestProjection else { return nil }
+        return RouteMatch(projection: bestProjection, confidence: exp(-0.5 * min(40, bestScore)))
     }
 }
 
-nonisolated struct RouteMatch {
+nonisolated struct RouteMatch: Sendable {
     let projection: RouteProjection
     let confidence: Double
+}
+
+nonisolated struct NavigationRouteMatch: Sendable {
+    let routeID: UUID
+    let locationTimestamp: Date
+    let match: RouteMatch
+}
+
+private struct RouteProgressGeometry {
+    let routeID: UUID
+    let cumulativeDistances: [Double]
+    let length: Double
+
+    init(_ route: NavigationRoute) {
+        routeID = route.id
+        var distances = [0.0]
+        distances.reserveCapacity(route.coordinates.count)
+        for (start, end) in zip(route.coordinates, route.coordinates.dropFirst()) {
+            distances.append((distances.last ?? 0) + start.distance(to: end))
+        }
+        cumulativeDistances = distances
+        length = distances.last ?? 0
+    }
+
+    func distance(from startIndex: Int, through endIndex: Int) -> Double {
+        guard !cumulativeDistances.isEmpty else { return 0 }
+        let start = min(cumulativeDistances.count - 1, max(0, startIndex))
+        let end = min(cumulativeDistances.count - 1, max(start, endIndex))
+        return cumulativeDistances[end] - cumulativeDistances[start]
+    }
 }
 
 enum TransitRouteProgressCalculator {
@@ -405,6 +437,7 @@ final class NavigationEngine {
     private var filter = LocationFilter()
     private var offRouteSince: Date?
     private var previousRouteMatch: (routeID: UUID, projection: RouteProjection, timestamp: Date)?
+    private var progressGeometryCache: RouteProgressGeometry?
     private var displayedRouteGeometryProgress: (routeID: UUID, fraction: Double)?
     private var lastAcceptedFix = Date.distantPast
     private var locationStartedAt = Date.distantPast
@@ -442,6 +475,13 @@ final class NavigationEngine {
     private var lastRouteTrafficFetch = Date.distantPast
     private var lastRouteFlowFetch = Date.distantPast
     private var routeFlowRouteID: UUID?
+    private var projectedFlowRouteID: UUID?
+    private var projectedFlowUpdatedAt: Date?
+    private var projectedFlowCoordinates: [Coordinate] = []
+    private var projectedFlowDistanceRange: (start: Double, end: Double)?
+    private var projectedChargingRouteID: UUID?
+    private var projectedChargingCoordinates: [Coordinate] = []
+    private var projectedChargingDistances: [Double?] = []
     private var latestNearbyTrafficSnapshot: TrafficSnapshot?
     private var routeTrafficIncidents: [TrafficIncident] = []
     private var routeTrafficDataAvailable = false
@@ -658,10 +698,9 @@ final class NavigationEngine {
                 if let projection, !self.state.weakGPS {
                     self.previousRouteMatch = (routeID, projection, locationTimestamp)
                 }
-                self.updateCameraIntent(using: projection)
-            } else {
-                self.updateCameraIntent()
             }
+            // Keep the first camera animation intact. The navigation camera will
+            // consume this projection after its startup animation has settled.
         }
     }
 
@@ -1240,7 +1279,7 @@ final class NavigationEngine {
         return eta + min(1_800, delays)
     }
 
-    func estimatedCarTravelTime(to destination: Destination) async -> TimeInterval? {
+    func estimatedCarRouteEstimate(to destination: Destination) async -> PlaceRouteEstimate? {
         guard let origin = state.location?.coordinate else { return nil }
         let target: Coordinate
         if destination.poi != nil {
@@ -1254,10 +1293,14 @@ final class NavigationEngine {
                 let routes = try await provider.calculateRoutes(
                     from: origin, to: target, through: [], mode: .car,
                     preferences: state.routingPreferences, avoiding: [])
-                return routes.first?.expectedTravelTime
+                guard let route = routes.first else { return nil }
+                return PlaceRouteEstimate(minutes: max(1, Int(ceil(route.expectedTravelTime / 60))),
+                                          distanceMeters: route.distance)
             }
             let routes = try await routeProvider.calculateRoutes(from: origin, to: target, mode: .car)
-            return routes.first?.expectedTravelTime
+            guard let route = routes.first else { return nil }
+            return PlaceRouteEstimate(minutes: max(1, Int(ceil(route.expectedTravelTime / 60))),
+                                      distanceMeters: route.distance)
         } catch {
             return nil
         }
@@ -1310,10 +1353,12 @@ final class NavigationEngine {
                   RoutePoint(Destination(name: "Twoja lokalizacja", coordinate: $0.coordinate),
                              source: .currentLocation)
               }) else { return }
+        let reversedWaypoints = Array(state.waypoints.reversed())
         let replacementOrigin = RoutePoint(destination, source: destination.poi == nil ? .search : .poi)
         state.routeOrigin = replacementOrigin
         selectDestination(previousOrigin.destination, applyConfiguredMode: false)
         state.routeOrigin = replacementOrigin
+        state.waypoints = reversedWaypoints
         await preview(previousOrigin.destination)
     }
 
@@ -1354,7 +1399,15 @@ final class NavigationEngine {
         guard let index = state.waypoints.firstIndex(where: { $0.id == id }) else { return }
         let target = index + offset
         guard state.waypoints.indices.contains(target) else { return }
-        state.waypoints.swapAt(index, target)
+        await reorderWaypoint(id, to: target)
+    }
+
+    func reorderWaypoint(_ id: UUID, to targetIndex: Int) async {
+        guard let sourceIndex = state.waypoints.firstIndex(where: { $0.id == id }) else { return }
+        let boundedTarget = min(max(0, targetIndex), state.waypoints.count - 1)
+        guard sourceIndex != boundedTarget else { return }
+        let waypoint = state.waypoints.remove(at: sourceIndex)
+        state.waypoints.insert(waypoint, at: boundedTarget)
         state.evChargingStops = []
         if let final = state.destination { await preview(final) }
     }
@@ -1420,15 +1473,16 @@ final class NavigationEngine {
         let pendingStopDestinations = current.map { unvisitedStops(from: $0) } ?? []
         state.nearbyStatus = .searching
         do {
-            let placeProvider = OpenStreetMapNearbyPlaceProvider()
             let candidates: [NearbyPlaceCandidate]
             if nearDestination, let destination {
-                candidates = try await placeProvider.search(category, around: destination.coordinate, radius: 2_000)
+                candidates = try await NearbyPlaceSearchProvider().search(
+                    category, around: destination.coordinate, radius: 2_000, resultLimit: resultLimit)
             } else if nearestSearch, let current {
-                candidates = try await placeProvider.search(category, around: current,
-                                                            radius: searchRadius, resultLimit: resultLimit)
+                candidates = try await NearbyPlaceSearchProvider().search(
+                    category, around: current, radius: searchRadius, resultLimit: resultLimit)
             } else {
-                candidates = try await placeProvider.search(category, along: coordinates, radius: 1_500)
+                candidates = try await OpenStreetMapNearbyPlaceProvider()
+                    .search(category, along: coordinates, radius: 1_500)
             }
             try Task.checkCancellation()
             guard nearbySearchID == searchID else { return }
@@ -1974,6 +2028,15 @@ final class NavigationEngine {
         state.traffic = nil
         offRouteSince = nil
         previousRouteMatch = nil
+        state.routeMatch = nil
+        progressGeometryCache = nil
+        projectedFlowRouteID = nil
+        projectedFlowUpdatedAt = nil
+        projectedFlowCoordinates = []
+        projectedFlowDistanceRange = nil
+        projectedChargingRouteID = nil
+        projectedChargingCoordinates = []
+        projectedChargingDistances = []
         displayedRouteGeometryProgress = nil
         refreshTraffic(force: true)
         
@@ -2013,10 +2076,55 @@ final class NavigationEngine {
         }
         if state.transportMode == .car { refreshTraffic() }
     }
+    private func flowDistanceRange(on route: NavigationRoute,
+                                   flow: TrafficFlow) -> (start: Double, end: Double)? {
+        if projectedFlowRouteID != route.id || projectedFlowUpdatedAt != flow.updatedAt ||
+            projectedFlowCoordinates != flow.coordinates {
+            let distances = flow.coordinates.compactMap { coordinate -> Double? in
+                guard let projection = MapMatcher.project(coordinate, onto: route.coordinates),
+                      projection.distanceFromRoute <= RouteTrafficMonitor.routeMatchToleranceMeters else {
+                    return nil
+                }
+                return projection.alongRoute
+            }
+            projectedFlowRouteID = route.id
+            projectedFlowUpdatedAt = flow.updatedAt
+            projectedFlowCoordinates = flow.coordinates
+            projectedFlowDistanceRange = distances.min().flatMap { start in
+                distances.max().map { (start: start, end: $0) }
+            }
+        }
+        return projectedFlowDistanceRange
+    }
+
+    private func chargingStopDistances(on route: NavigationRoute) -> [Double?] {
+        let coordinates = route.chargingStops.map { stop in
+            state.waypointNavigationTargets[stop.destination.id]?.coordinate ?? stop.destination.coordinate
+        }
+        if projectedChargingRouteID != route.id || projectedChargingCoordinates != coordinates {
+            projectedChargingRouteID = route.id
+            projectedChargingCoordinates = coordinates
+            projectedChargingDistances = coordinates.map { coordinate in
+                MapMatcher.project(coordinate, onto: route.coordinates)?.alongRoute
+            }
+        }
+        return projectedChargingDistances
+    }
+
+    private func progressGeometry(for route: NavigationRoute) -> RouteProgressGeometry {
+        if let progressGeometryCache, progressGeometryCache.routeID == route.id {
+            return progressGeometryCache
+        }
+        let geometry = RouteProgressGeometry(route)
+        progressGeometryCache = geometry
+        return geometry
+    }
+
     private func updateProgress(reuseJourneyMatch: Bool = false) {
         let journeyProgress = updateJourneyVoiceProgress(reuseExistingMatch: reuseJourneyMatch)
         if state.transportMode == .transit,
            let route = state.route, let journey = route.journey {
+            state.routeMatch = nil
             let isActive = state.status == .navigating || state.status == .rerouting
             let transitProgress = journeyProgress
 
@@ -2061,15 +2169,26 @@ final class NavigationEngine {
             }
             return
         }
-        guard let route = state.route, let location = state.location else { return }
+        guard let route = state.route, let location = state.location else {
+            state.routeMatch = nil
+            return
+        }
         let previousMatch = previousRouteMatch?.routeID == route.id ? previousRouteMatch : nil
         let routeMatch = MapMatcher.match(location, onto: route.coordinates,
                                           previous: previousMatch?.projection,
                                           previousTimestamp: previousMatch?.timestamp)
         guard let projection = routeMatch?.projection
-            ?? MapMatcher.project(location.coordinate, onto: route.coordinates) else { return }
+            ?? MapMatcher.project(location.coordinate, onto: route.coordinates) else {
+            state.routeMatch = nil
+            return
+        }
         previousRouteMatch = (route.id, projection, location.timestamp)
-        let geometryLength = RouteGeometrySplitter.length(of: route.coordinates)
+        let geometry = progressGeometry(for: route)
+        let geometryLength = geometry.length
+        state.routeMatch = NavigationRouteMatch(
+            routeID: route.id,
+            locationTimestamp: location.timestamp,
+            match: routeMatch ?? RouteMatch(projection: projection, confidence: 0))
         let totalGeometry = route.distance > 0 ? route.distance : geometryLength
         let fraction = totalGeometry > 0 ? min(1, projection.alongRoute / totalGeometry) : 0
         let geometryFraction = geometryLength > 0 ? projection.alongRoute / geometryLength : 0
@@ -2079,8 +2198,9 @@ final class NavigationEngine {
         let next = route.maneuvers.first { $0.shapeIndex >= projection.segment + 1 }
         let maneuverDistance: Double
         if let next {
-            maneuverDistance = route.coordinates[projection.segment...next.shapeIndex].adjacentDistance() -
-                route.coordinates[projection.segment].distance(to: projection.coordinate)
+            maneuverDistance = max(0,
+                geometry.distance(from: projection.segment, through: next.shapeIndex) -
+                    route.coordinates[projection.segment].distance(to: projection.coordinate))
         } else { maneuverDistance = 0 }
         let remainingDistance = route.distance * (1 - fraction)
         let plannedDrivingTime = max(0, route.expectedTravelTime - route.chargingDuration)
@@ -2094,31 +2214,23 @@ final class NavigationEngine {
         }
         if let flow = state.traffic?.flow, flow.coordinates.count > 1,
            let flowProjection = MapMatcher.project(location.coordinate, onto: flow.coordinates),
-           flowProjection.distanceFromRoute < 80 {
-            let routeFlowDistances = flow.coordinates.compactMap { coordinate -> Double? in
-                guard let flowPoint = MapMatcher.project(coordinate, onto: route.coordinates),
-                      flowPoint.distanceFromRoute <= RouteTrafficMonitor.routeMatchToleranceMeters else {
-                    return nil
-                }
-                return flowPoint.alongRoute
-            }
-            if let flowStart = routeFlowDistances.min(), let flowEnd = routeFlowDistances.max() {
-                let remainingFlowDistance = max(0, min(geometryLength, flowEnd) -
-                                                max(projection.alongRoute, flowStart))
-                if remainingFlowDistance > 0 {
-                    let currentSpeed = max(5, Double(flow.currentSpeedKph)) / 3.6
-                    let freeFlowSpeed = Double(max(1, flow.freeFlowSpeedKph)) / 3.6
-                    drivingTimeRemaining += max(0, remainingFlowDistance / currentSpeed -
-                                                remainingFlowDistance / freeFlowSpeed)
-                }
+           flowProjection.distanceFromRoute < 80,
+           let flowRange = flowDistanceRange(on: route, flow: flow) {
+            let remainingFlowDistance = max(0, min(geometryLength, flowRange.end) -
+                                            max(projection.alongRoute, flowRange.start))
+            if remainingFlowDistance > 0 {
+                let currentSpeed = max(5, Double(flow.currentSpeedKph)) / 3.6
+                let freeFlowSpeed = Double(max(1, flow.freeFlowSpeedKph)) / 3.6
+                drivingTimeRemaining += max(0, remainingFlowDistance / currentSpeed -
+                                            remainingFlowDistance / freeFlowSpeed)
             }
         }
-        let chargingTimeRemaining = route.chargingStops.reduce(0.0) { total, stop in
-            let coordinate = state.waypointNavigationTargets[stop.destination.id]?.coordinate
-                ?? stop.destination.coordinate
-            guard let chargeProjection = MapMatcher.project(coordinate, onto: route.coordinates),
-                  chargeProjection.alongRoute > projection.alongRoute + 40 else { return total }
-            return total + stop.estimatedChargingTime
+        let chargingDistances = chargingStopDistances(on: route)
+        let chargingTimeRemaining = route.chargingStops.enumerated().reduce(0.0) { total, item in
+            guard chargingDistances.indices.contains(item.offset),
+                  let chargeDistance = chargingDistances[item.offset],
+                  chargeDistance > projection.alongRoute + 40 else { return total }
+            return total + item.element.estimatedChargingTime
         }
         let remainingTime = drivingTimeRemaining + chargingTimeRemaining
             + upcomingTrafficDelay(on: route, after: projection.alongRoute)

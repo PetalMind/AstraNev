@@ -9,7 +9,8 @@ Ten dokument opisuje, skąd NaviAstra bierze informacje o POI (punktach zaintere
 | Wyszukiwanie tekstowe miejsca, marki lub kategorii | Photon (domyślnie `https://photon.komoot.io/api/`) oraz Apple MapKit. Dla zapytań rozpoznanych jako marka lub kategoria dochodzi lokalne wyszukiwanie OSM przez Overpass. | Wyniki są łączone, porządkowane, deduplikowane i pokazywane w wyszukiwarce. Szczegóły POI są pobierane z OSM po otwarciu karty, chyba że zostały już pobrane razem z wynikiem OSM. |
 | Dotknięcie POI na mapie iOS | Widoczny obiekt z wektorowych kafli OpenFreeMap; MapLibre odczytuje m.in. nazwę, kategorię, markę i dostępny identyfikator OSM. | Karta próbuje potwierdzić lub odnaleźć ten obiekt w OSM i pobrać jego tagi. |
 | Wybór POI na mapie macOS | Apple MapKit wyszukuje punkty zainteresowania wokół wskazanego obszaru mapy. Wynik może zawierać adres, telefon i stronę. | Karta zachowuje dostępne dane Apple i próbuje uzupełnić je danymi OSM. |
-| Wyszukiwanie przystanku lub punktu po trasie | OpenStreetMap przez Overpass. Dotyczy m.in. stacji paliw, jedzenia, parkingów, parkingów P+R i ładowarek EV. | Dane tagów z odpowiedzi służą do filtrowania i opisu kandydatów; pełne szczegóły POI trafiają również do cache. |
+| Szybkie wyszukiwanie w pobliżu pozycji lub celu | OpenStreetMap przez Overpass; gdy usługa nie działa albo nie zwróci miejsc, zapasowo Apple MapKit. | Wyniki OSM zawierają tagi potrzebne do filtrów i opisu. Wyniki MapKit zachowują nazwę, adres, kategorię i strefę czasową, ale nie dostarczają tagów OSM, np. typów paliwa, godzin ani złączy ładowarki. |
+| Wyszukiwanie punktu po trasie | OpenStreetMap przez Overpass. Dotyczy m.in. stacji paliw, jedzenia, parkingów, parkingów P+R i ładowarek EV. | Dane tagów z odpowiedzi służą do filtrowania i opisu kandydatów; pełne szczegóły POI trafiają również do cache. |
 
 ## Adresy, geokodowanie i wskazanie punktu
 
@@ -58,9 +59,27 @@ Z tagów OSM budowany jest model `PlaceDetails`:
 | Adres | `addr:full` albo złożenie ulicy, numeru, dzielnicy, kodu pocztowego i miejscowości |
 | Godziny otwarcia | `opening_hours` |
 | Telefon i strona | `contact:phone` / `phone` oraz `contact:website` / `website` |
+| Zdjęcie lub logo | `image` z `image:attribution` (oraz `image:license`, jeśli jest); potem `wikimedia_commons` lub `wikidata` → `P18`; logo marki z `brand:wikidata` / `operator:wikidata` → `P154` |
 | Dostępność i udogodnienia | `wheelchair`, `parking`, `drive_through`; dla parkingów także dedykowane tagi opłat, dostępu, godzin, limitu postoju, pojemności i stron ulicy |
 
-Pola nieobecne w OSM pozostają puste. Aplikacja nie uzupełnia ich przez zgadywanie ani przez odpytywanie strony sklepu.
+Pola nieobecne w OSM pozostają puste. Zdjęcia mają osobny resolver opisany niżej; aplikacja nie odpyta strony sklepu ani nie dopasowuje fotografii wyłącznie po nazwie.
+
+## Zdjęcia POI
+
+Jedno zdjęcie pojawia się wyłącznie po rozwinięciu karty wybranych atrakcji, obiektów kultury, restauracji, hoteli, parków i większych obiektów handlowych. Zwinięta lista wyników i ekran prowadzenia nie pobierają ani nie pokazują zdjęć. Dla pozostałych kategorii karta pokazuje logo marki, jeśli jego identyfikator Wikidata jest zapisany w OSM, a w innym przypadku ikonę kategorii.
+
+`PlacePhotoResolver` używa kolejno:
+
+1. tagu OSM `image`, ale tylko z `image:attribution`; tag `image:license` dołącza się do podpisu, jeśli jest dostępny;
+2. pliku wskazanego w `wikimedia_commons`;
+3. encji OSM `wikidata`, jej właściwości `P18` i metadanych Wikimedia Commons;
+4. statycznego podglądu Apple Look Around;
+5. logo marki z `brand:wikidata` lub `operator:wikidata`, właściwości `P154` i Wikimedia Commons;
+6. ikony kategorii.
+
+Commons zwraca miniaturę do karty, stronę pliku, autora i nazwę licencji. Zdjęcie z Commons jest używane tylko wtedy, gdy odpowiedź zawiera nazwę licencji. Podpis zdjęcia prowadzi do strony pliku Wikimedia Commons, gdzie widoczne są szczegóły licencji. Wyniki pozytywne są przechowywane w pamięci aplikacji przez 7 dni, a brak zdjęcia przez 24 godziny. Obraz ładuje się dopiero po otwarciu szczegółów. Jeżeli nie ma zdjęcia z tych źródeł, karta próbuje uzyskać statyczny podgląd Apple Look Around; gdy Apple nie ma sceny, pokazuje ikonę kategorii i nazwę miejsca. Na iOS przycisk „Rozejrzyj się” otwiera interaktywną scenę; na macOS pozostaje statyczny podgląd.
+
+W ramach obsługi zdjęć współrzędne są wysyłane do Apple przy próbie uzyskania Look Around. Zapytanie Wikidata używa identyfikatora encji OSM, a zapytanie Wikimedia Commons — wskazanego pliku; aplikacja nie wysyła nazwy miejsca do wyszukiwarki zdjęć. Źródła płatne Google Places i Foursquare nie są używane.
 
 ## Godziny otwarcia i ich interpretacja
 
@@ -84,7 +103,7 @@ Jeżeli odświeżenie się nie powiedzie, karta zachowuje dane już dostępne i 
 
 OpenStreetMap jest edytowaną społecznościowo bazą, więc kompletność i aktualność godzin, adresów oraz kontaktu zależą od jej danych. Photon i publiczny Overpass mogą być czasowo niedostępne lub limitować ruch. W repozytorium nie ma własnego katalogu sklepów, synchronizacji z sieciami handlowymi ani danych o bieżącym działaniu placówki.
 
-Zapytanie tekstowe i przybliżony obszar wyszukiwania trafiają do używanych usług wyszukiwania. Przy dociąganiu szczegółów Overpass dostaje identyfikator i typ obiektu OSM, jeśli są dostępne; w przeciwnym razie dostaje współrzędne do pobrania obiektów w pobliżu. Dopasowanie nazwy, operatora, kategorii i adresu odbywa się w aplikacji po pobraniu odpowiedzi. Aplikacja nie wysyła do Overpass nazwy sklepu jako części zapytania o szczegóły. Podczas planowania trasy do wybranego POI współrzędne miejsca trafiają też do Overpass w zapytaniu o parkingi, główne wejścia i drogi serwisowe w promieniu 250 m; jeśli dostępny jest identyfikator OSM, żądanie obejmuje również ten obiekt. Gdy wynik OSM nie ma strefy czasowej, współrzędne wybranego POI mogą zostać wysłane do odwrotnego wyszukiwania MapKit, aby ustalić lokalny czas.
+Zapytanie tekstowe i przybliżony obszar wyszukiwania trafiają do używanych usług wyszukiwania. Szybkie wyszukiwanie wokół pozycji lub celu może wysłać do MapKit kategorię i współrzędne, jeśli Overpass nie zwróci miejsc. Przy dociąganiu szczegółów Overpass dostaje identyfikator i typ obiektu OSM, jeśli są dostępne; w przeciwnym razie dostaje współrzędne do pobrania obiektów w pobliżu. Dopasowanie nazwy, operatora, kategorii i adresu odbywa się w aplikacji po pobraniu odpowiedzi. Aplikacja nie wysyła do Overpass nazwy sklepu jako części zapytania o szczegóły. Podczas planowania trasy do wybranego POI współrzędne miejsca trafiają też do Overpass w zapytaniu o parkingi, główne wejścia i drogi serwisowe w promieniu 250 m; jeśli dostępny jest identyfikator OSM, żądanie obejmuje również ten obiekt. Gdy wynik OSM nie ma strefy czasowej, współrzędne wybranego POI mogą zostać wysłane do odwrotnego wyszukiwania MapKit, aby ustalić lokalny czas.
 
 Najważniejsze miejsca w kodzie:
 
@@ -92,6 +111,7 @@ Najważniejsze miejsca w kodzie:
 - `NaviAstra/Search/SearchProvider.swift` — Photon i Apple MapKit;
 - `NaviAstra/Maps/MapLibreView.swift` i `NaviAstra/Maps/MacMapView.swift` — wybór POI na mapach iOS/macOS;
 - `NaviAstra/Places/PlaceDetailsProvider.swift` — tożsamość miejsca, dopasowanie obiektu OSM, pobranie tagów i cache;
+- `NaviAstra/Places/PlacePhotoProvider.swift` — filtrowanie zdjęć, atrybucja Wikimedia i fallback Look Around;
 - `NaviAstra/Places/PlaceOpeningHours.swift` — adapter parsera składni OSM, kalendarz lokalny i tygodniowe przedziały;
 - `NaviAstra/Places/PlaceTimeZoneResolver.swift` — ustalanie strefy miejsca przez MapKit;
 - `NaviAstra/opening_hours.js` i `NaviAstra/suncalc.js` — lokalne zasoby parsera i obliczeń słońca;

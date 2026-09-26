@@ -67,6 +67,7 @@ private struct TransitStopRenderKey: Equatable {
     let showsOnlyRouteEndpoints: Bool
     let displayContext: MapDisplayContext
     let transportMode: TransportMode
+    let isPlanningCarRoute: Bool
     let isNavigating: Bool
     let isTransitRoutePreview: Bool
     let routeStopIDs: Set<String>
@@ -260,9 +261,15 @@ struct MapLibreView: UIViewRepresentable {
 
         private func updatePuck(on map: MLNMapView) {
             let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
-            puckEngine.update(location: parent.state.location,
-                              route: isNavigating ? parent.state.route : nil,
-                              isNavigating: isNavigating)
+            let activeRoute = isNavigating ? parent.state.route : nil
+            let matchedRoute: NavigationRouteMatch? = parent.state.routeMatch.flatMap { match -> NavigationRouteMatch? in
+                guard let activeRoute,
+                      match.routeID == activeRoute.id,
+                      match.locationTimestamp == parent.state.location?.timestamp else { return nil }
+                return match
+            }
+            puckEngine.update(location: parent.state.location, route: activeRoute,
+                              isNavigating: isNavigating, matchedRoute: matchedRoute)
             puckDisplayLink?.isPaused = !isNavigating || parent.state.location == nil
             renderPuckFrame()
             if let marker = vehicleMarker {
@@ -599,6 +606,9 @@ struct MapLibreView: UIViewRepresentable {
             let isTransitRoutePreview = parent.state.transportMode == .transit
                 && (parent.state.status == .destinationPreview || parent.state.status == .routeCalculating
                     || parent.state.status == .routePreview)
+            let isPlanningCarRoute = parent.state.transportMode == .car
+                && (parent.state.status == .destinationPreview || parent.state.status == .routeCalculating
+                    || parent.state.status == .routePreview)
             let visibleRadius = transitVisibleRadius(on: map, center: center)
             let visibleStopCount = parent.transitStops.reduce(into: 0) { count, stop in
                 if center.distance(to: stop.coordinate) <= visibleRadius { count += 1 }
@@ -613,6 +623,7 @@ struct MapLibreView: UIViewRepresentable {
                                                   showsOnlyRouteEndpoints: showsOnlyRouteEndpoints,
                                                   displayContext: parent.settings.context,
                                                   transportMode: parent.state.transportMode,
+                                                  isPlanningCarRoute: isPlanningCarRoute,
                                                   isNavigating: isNavigating,
                                                   isTransitRoutePreview: isTransitRoutePreview,
                                                   routeStopIDs: routeStopIDs,
@@ -625,6 +636,7 @@ struct MapLibreView: UIViewRepresentable {
             let routeEndpoints = transitRouteEndpointCoordinates
             let visibility = TransitStopMapVisibilityPolicy(zoom: zoom,
                                                             transportMode: parent.state.transportMode,
+                                                            isPlanningCarRoute: isPlanningCarRoute,
                                                             isNavigating: isNavigating,
                                                             isTransitRoutePreview: isTransitRoutePreview,
                                                             visibleStopCount: visibleStopCount,
@@ -1972,12 +1984,15 @@ struct MapLibreView: UIViewRepresentable {
 
 private enum CameraAnimator {
     static func apply(_ intent: CameraIntent, state: NavigationCameraState, to map: MLNMapView) {
-        if !intent.bounds.isEmpty, state == .destinationPreview || state == .routeOverview || state == .arrived {
+        guard isValid(intent.target), intent.zoom.isFinite, intent.pitch.isFinite,
+              intent.bearing.isFinite else { return }
+        let validBounds = intent.bounds.filter(isValid)
+        if !validBounds.isEmpty, state == .destinationPreview || state == .routeOverview || state == .arrived {
             let camera = map.camera
             camera.pitch = CGFloat(intent.pitch)
             camera.heading = intent.bearing
             map.setCamera(camera, withDuration: 0, animationTimingFunction: nil)
-            let lats = intent.bounds.map(\.latitude), lons = intent.bounds.map(\.longitude)
+            let lats = validBounds.map(\.latitude), lons = validBounds.map(\.longitude)
             let bounds = MLNCoordinateBounds(sw: CLLocationCoordinate2D(latitude: lats.min()!, longitude: lons.min()!),
                                              ne: CLLocationCoordinate2D(latitude: lats.max()!, longitude: lons.max()!))
             map.setVisibleCoordinateBounds(bounds,
@@ -1988,11 +2003,14 @@ private enum CameraAnimator {
         }
         let camera = map.camera
         camera.centerCoordinate = intent.target.cl
-        camera.pitch = CGFloat(intent.pitch)
-        camera.heading = intent.bearing
-        camera.altitude = max(120, camera.altitude * pow(2, map.zoomLevel - intent.zoom))
+        guard map.zoomLevel.isFinite, camera.altitude.isFinite else { return }
+        let targetAltitude = camera.altitude * pow(2, map.zoomLevel - intent.zoom)
+        guard targetAltitude.isFinite else { return }
+        camera.pitch = CGFloat(min(60, max(0, intent.pitch)))
+        camera.heading = intent.bearing.truncatingRemainder(dividingBy: 360)
+        camera.altitude = max(120, targetAltitude)
         let defaultDuration: TimeInterval = switch state {
-        case .startingNavigation: 1.1
+        case .startingNavigation: 0.9
         case .maneuverNow: 0.45
         case .leavingManeuver: 0.7
         case .approachingManeuver: 0.4
@@ -2004,6 +2022,11 @@ private enum CameraAnimator {
                       edgePadding: UIEdgeInsets(top: intent.padding.top, left: intent.padding.left,
                                                 bottom: intent.padding.bottom, right: intent.padding.right),
                       completionHandler: nil)
+    }
+
+    private static func isValid(_ coordinate: Coordinate) -> Bool {
+        coordinate.latitude.isFinite && (-90...90).contains(coordinate.latitude) &&
+            coordinate.longitude.isFinite && (-180...180).contains(coordinate.longitude)
     }
 }
 
