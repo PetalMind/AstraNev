@@ -4,6 +4,7 @@ struct PlaceDetailsView: View {
     let result: SearchResult
     let onSave: () -> Bool
     let onPlanRoute: () -> Void
+    let onRouteFromPlace: (() -> Void)?
     let isNavigating: Bool
     let primaryActionTitle: String
     let supplementalDetails: [String]
@@ -25,10 +26,12 @@ struct PlaceDetailsView: View {
     init(result: SearchResult, isSaved: Bool, onSave: @escaping () -> Bool,
          isNavigating: Bool = false, primaryActionTitle: String = "Wyznacz trasę",
          supplementalDetails: [String] = [],
+         onRouteFromPlace: (() -> Void)? = nil,
          onPlanRoute: @escaping () -> Void) {
         self.result = result
         self.onSave = onSave
         self.onPlanRoute = onPlanRoute
+        self.onRouteFromPlace = onRouteFromPlace
         self.isNavigating = isNavigating
         self.primaryActionTitle = primaryActionTitle
         self.supplementalDetails = supplementalDetails
@@ -57,6 +60,19 @@ struct PlaceDetailsView: View {
                         .frame(maxWidth: .infinity, minHeight: 42)
                 }
                 .buttonStyle(.borderedProminent)
+
+                if let onRouteFromPlace, !isNavigating {
+                    Menu {
+                        Button("Trasa z tego miejsca", systemImage: "arrowshape.turn.up.left") {
+                            onRouteFromPlace()
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .frame(width: 40, height: 42)
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("Więcej opcji trasy")
+                }
 
                 Button {
                     if onSave() {

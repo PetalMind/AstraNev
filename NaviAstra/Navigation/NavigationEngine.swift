@@ -5,9 +5,11 @@ import Observation
 @MainActor @Observable
 final class NavigationState {
     var searchMapCenter: Coordinate?
+    var routeOriginMapSelectionActive = false
     var searchResults: [SearchResult] = []
     var location: NavigationLocation?
     var cameraLocation: NavigationLocation?
+    var deviceHeading: Double?
     var route: NavigationRoute?
     var transportMode: TransportMode = .car
     var journeyTimeMode: JourneyTimeMode = .now
@@ -20,9 +22,26 @@ final class NavigationState {
     var alternatives: [NavigationRoute] {
         routeOptions.filter { $0.id != route?.id }
     }
+    var routeGeometryProgress: Double {
+        guard let route, progress?.geometryRouteID == route.id else { return 0 }
+        return progress?.geometryProgress ?? 0
+    }
+    var routeOrigin: RoutePoint?
+    var routePlan: RoutePlan? {
+        guard let destination,
+              let origin = routeOrigin ?? location.map({
+                  RoutePoint(Destination(name: "Twoja lokalizacja", coordinate: $0.coordinate),
+                             source: .currentLocation)
+              }) else { return nil }
+        return RoutePlan(origin: origin,
+                         destination: RoutePoint(destination, source: destination.poi == nil ? .search : .poi))
+    }
     var destination: Destination?
+    var navigationTarget: POINavigationTarget?
+    var parkRideCarTarget: POINavigationTarget?
     var waypoints: [Destination] = []
     var evChargingStops: [Destination] = []
+    var waypointNavigationTargets: [UUID: POINavigationTarget] = [:]
     var routingPreferences = RoutingPreferences()
     var progress: RouteProgress?
     var transitProgress: TransitNavigationProgress?
@@ -92,16 +111,28 @@ enum EVPlanningError: LocalizedError {
 final class LocationManager: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     var onLocation: ((CLLocation) -> Void)?
+    var onHeading: ((CLHeading) -> Void)?
     var onAuthorization: ((CLAuthorizationStatus) -> Void)?
     var onFailure: ((Error) -> Void)?
     override init() {
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
-        manager.distanceFilter = 5
+        manager.distanceFilter = kCLDistanceFilterNone
+        manager.activityType = .automotiveNavigation
     }
     func start() { manager.requestWhenInUseAuthorization(); manager.startUpdatingLocation() }
-    func stop() { manager.stopUpdatingLocation() }
+    func stop() {
+        manager.stopUpdatingLocation()
+        manager.stopUpdatingHeading()
+    }
+    func setHeadingUpdatesEnabled(_ enabled: Bool) {
+        guard enabled, CLLocationManager.headingAvailable() else {
+            manager.stopUpdatingHeading()
+            return
+        }
+        manager.startUpdatingHeading()
+    }
 
     var backgroundLocationModeEnabled: Bool {
 #if os(iOS)
@@ -142,6 +173,9 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
         Task { @MainActor [weak self] in self?.onLocation?(location) }
+    }
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        Task { @MainActor [weak self] in self?.onHeading?(newHeading) }
     }
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         let status = manager.authorizationStatus
@@ -361,6 +395,7 @@ final class NavigationEngine {
     let state = NavigationState()
     private let locationManager = LocationManager()
     private let voice = VoiceGuidanceEngine()
+    private let walkingCameraController = WalkingCameraController()
     private var usesJourneyVoiceGuidance: Bool {
         state.transportMode == .transit || state.transportMode == .parkRide
     }
@@ -370,6 +405,7 @@ final class NavigationEngine {
     private var filter = LocationFilter()
     private var offRouteSince: Date?
     private var previousRouteMatch: (routeID: UUID, projection: RouteProjection, timestamp: Date)?
+    private var displayedRouteGeometryProgress: (routeID: UUID, fraction: Double)?
     private var lastAcceptedFix = Date.distantPast
     private var locationStartedAt = Date.distantPast
     private var gpsWatchdog: Task<Void, Never>?
@@ -404,10 +440,14 @@ final class NavigationEngine {
     private var trafficRequestInFlight = false
     private var routeTrafficRequestInFlight = false
     private var lastRouteTrafficFetch = Date.distantPast
+    private var lastRouteFlowFetch = Date.distantPast
+    private var routeFlowRouteID: UUID?
     private var latestNearbyTrafficSnapshot: TrafficSnapshot?
     private var routeTrafficIncidents: [TrafficIncident] = []
     private var routeTrafficDataAvailable = false
     private var routeTrafficUpdatedAt: Date?
+    private var routeTrafficFlowSegments: [RouteTrafficSegment] = []
+    private var routeTrafficFlowUpdatedAt: Date?
     private var speedLimitRequestInFlight = false
     private var speedLimitProvider: SpeedLimitProvider
     private let roadDataProvider: RoadDataProvider
@@ -436,6 +476,17 @@ final class NavigationEngine {
         }
         updateTrafficTileURLTemplates()
         locationManager.onLocation = { [weak self] in self?.receive($0) }
+        locationManager.onHeading = { [weak self] heading in
+            guard let self, heading.headingAccuracy >= 0, heading.headingAccuracy <= 45 else { return }
+            let direction = heading.trueHeading >= 0 ? heading.trueHeading : heading.magneticHeading
+            guard direction.isFinite, (0...360).contains(direction) else { return }
+            guard self.state.transportMode == .walking,
+                  (self.state.status == .navigating || self.state.status == .rerouting) else { return }
+            self.state.deviceHeading = direction
+            self.walkingCameraController.update(location: self.state.cameraLocation ?? self.state.location,
+                                                deviceHeading: direction, isNewLocationFix: false)
+            self.updateCameraIntent()
+        }
         locationManager.onAuthorization = { [weak self] authorization in
             guard let self else { return }
             self.state.transitBackgroundLocationAvailable = authorization == .authorizedAlways &&
@@ -478,6 +529,10 @@ final class NavigationEngine {
                 try? await Task.sleep(for: .seconds(1))
                 guard let self else { return }
                 self.checkGPS()
+                if self.state.transportMode == .walking,
+                   (self.state.status == .navigating || self.state.status == .rerouting) {
+                    self.updateCameraIntent()
+                }
                 if self.usesJourneyVoiceGuidance,
                    (self.state.status == .navigating || self.state.status == .rerouting),
                    Date().timeIntervalSince(self.lastTransitProgressRefresh) >= 10 {
@@ -549,7 +604,15 @@ final class NavigationEngine {
                                                   destination: state.destination, route: state.route,
                                                   alternatives: state.alternatives, progress: state.progress,
                                                   previousBearing: state.cameraIntent?.bearing ?? 0,
-                                                  precomputedRouteProjection: routeProjection)
+                                                  precomputedRouteProjection: routeProjection,
+                                                  transportMode: state.transportMode,
+                                                  walkingCamera: walkingCameraSnapshot)
+    }
+
+    private var walkingCameraSnapshot: WalkingCameraSnapshot? {
+        guard state.transportMode == .walking,
+              state.status == .navigating || state.status == .rerouting else { return nil }
+        return walkingCameraController.snapshot()
     }
 
     private var cameraRouteProjection: RouteProjection? {
@@ -573,7 +636,8 @@ final class NavigationEngine {
         state.cameraIntent = CameraPlanner.intent(
             for: .startingNavigation, location: state.cameraLocation ?? state.location,
             destination: state.destination, route: nil, alternatives: [], progress: state.progress,
-            previousBearing: state.cameraIntent?.bearing ?? 0)
+            previousBearing: state.cameraIntent?.bearing ?? 0,
+            transportMode: state.transportMode, walkingCamera: walkingCameraSnapshot)
 
         guard let location = state.cameraLocation ?? state.location else { return }
         let routeID = route.id
@@ -623,9 +687,12 @@ final class NavigationEngine {
             scheduleFollowAfterManeuver()
         } else if let nextManeuver {
             let distance = state.progress?.distanceToNextManeuver ?? .infinity
-            if distance <= 22 {
+            let maneuverDistanceThreshold = state.transportMode == .walking ? 20.0 : 22.0
+            let approachDistanceThreshold = state.transportMode == .walking
+                ? 120.0 : (nextManeuver.kind.isExit ? 1_600.0 : 300.0)
+            if distance <= maneuverDistanceThreshold {
                 state.cameraState = .maneuverNow
-            } else if distance <= (nextManeuver.kind.isExit ? 1_600 : 300) {
+            } else if distance <= approachDistanceThreshold {
                 state.cameraState = .approachingManeuver
             } else {
                 state.cameraState = .followNavigation
@@ -647,7 +714,8 @@ final class NavigationEngine {
     private func scheduleFollowAfterManeuver() {
         maneuverTransitionTask?.cancel()
         maneuverTransitionTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(650))
+            let delay: Duration = self?.state.transportMode == .walking ? .seconds(3) : .milliseconds(650)
+            try? await Task.sleep(for: delay)
             guard !Task.isCancelled, let self, self.state.cameraState == .leavingManeuver else { return }
             self.state.cameraState = self.state.weakGPS ? .weakGPS : .followNavigation
             self.updateCameraIntent()
@@ -757,9 +825,10 @@ final class NavigationEngine {
         }
 
         do {
+            let routeTarget = destinationRouteCoordinate(for: destination)
             let routes = try await transitProvider.calculateRoutes(
                 from: origin,
-                to: destination.coordinate,
+                to: routeTarget,
                 departingAt: departure.addingTimeInterval(1))
             guard generation == requestGeneration,
                   laterGeneration == laterTransitRequestGeneration,
@@ -844,7 +913,8 @@ final class NavigationEngine {
         let previousRoute = state.route
         let previousOptions = state.routeOptions
         do {
-            let routes = try await transitProvider.calculateRoutes(from: origin, to: destination.coordinate,
+            let routeTarget = destinationRouteCoordinate(for: destination)
+            let routes = try await transitProvider.calculateRoutes(from: origin, to: routeTarget,
                                                                     departingAt: Date())
             guard !Task.isCancelled,
                   state.transportMode == .transit,
@@ -979,57 +1049,80 @@ final class NavigationEngine {
         let startDistance = max(0, progress?.traveledDistance ?? 0)
         let lookAhead = RouteTrafficMonitor.lookAheadDistance(for: route, progress: progress)
         let endDistance = startDistance + lookAhead
+        let shouldFetchFlow = routeFlowRouteID != route.id ||
+            Date().timeIntervalSince(lastRouteFlowFetch) >= 180
         routeTrafficRequestInFlight = true
         lastRouteTrafficFetch = Date()
         let generation = trafficGeneration
         let routeID = route.id
         let routeCoordinates = route.coordinates
+        let flowQueriesTask = Task.detached(priority: .utility) {
+            RouteTrafficMonitor.flowQueries(for: routeCoordinates, from: startDistance,
+                                            through: endDistance)
+        }
         let boxesTask = Task.detached(priority: .utility) {
             RouteTrafficMonitor.queryBoxes(for: routeCoordinates, from: startDistance,
                                            through: endDistance)
         }
         Task { @MainActor [weak self] in
-            let boxes = await boxesTask.value
+            let (boxes, flowQueries) = await (boxesTask.value, flowQueriesTask.value)
             guard let self else { return }
             defer {
                 if generation == self.trafficGeneration { self.routeTrafficRequestInFlight = false }
             }
             guard generation == self.trafficGeneration,
                   self.state.route?.id == routeID else { return }
-            guard !boxes.isEmpty else {
+            guard !boxes.isEmpty || (shouldFetchFlow && !flowQueries.isEmpty) else {
                 self.lastRouteTrafficFetch = .distantPast
                 return
             }
             if self.state.traffic == nil { self.state.trafficStatus = .updating }
+            async let incidentRequest = provider.incidents(in: boxes)
+            async let flowRequest = shouldFetchFlow ? provider.routeFlowSamples(at: flowQueries) : []
+            let flowSamples = await flowRequest
+            guard generation == self.trafficGeneration,
+                  self.state.route?.id == routeID else { return }
+
+            var trafficError: Error?
             do {
-                let incidents = try await provider.incidents(in: boxes)
-                guard generation == self.trafficGeneration,
-                      self.state.route?.id == routeID else { return }
+                let incidents = try await incidentRequest
                 self.routeTrafficIncidents = RouteTrafficMonitor.matching(
                     incidents, to: route, from: startDistance, through: endDistance)
                 self.routeTrafficDataAvailable = true
                 self.routeTrafficUpdatedAt = Date()
-                self.publishTrafficSnapshot()
-                self.state.trafficStatus = .available
-                if let published = self.state.traffic {
-                    let closureAhead = self.confirmedClosureAhead(in: published, on: route,
-                                                                  progress: self.state.progress) != nil
-                    if !closureAhead, self.state.status == .navigating,
-                       let location = self.state.location?.coordinate {
-                        self.selectTrafficAdjustedRoute(from: published, currentRoute: route,
-                                                        location: location)
-                    }
-                    if let location = self.state.location?.coordinate {
-                        self.handleConfirmedClosure(in: published, near: location)
-                    }
-                }
             } catch {
-                guard generation == self.trafficGeneration else { return }
+                trafficError = error
                 self.routeTrafficIncidents = []
                 self.routeTrafficDataAvailable = false
                 self.routeTrafficUpdatedAt = nil
-                self.publishTrafficSnapshot()
-                self.state.trafficStatus = .unavailable(error.localizedDescription)
+            }
+
+            if shouldFetchFlow {
+                self.routeFlowRouteID = routeID
+                self.lastRouteFlowFetch = Date()
+                self.routeTrafficFlowSegments = RouteTrafficMonitor.coloredSegments(
+                    on: route, from: startDistance, through: endDistance,
+                    queries: flowQueries, samples: flowSamples)
+                self.routeTrafficFlowUpdatedAt = self.routeTrafficFlowSegments.isEmpty ? nil : Date()
+            }
+
+            self.publishTrafficSnapshot()
+            if trafficError == nil || !flowSamples.isEmpty {
+                self.state.trafficStatus = .available
+            } else if let trafficError {
+                self.state.trafficStatus = .unavailable(trafficError.localizedDescription)
+            }
+            if let published = self.state.traffic {
+                let closureAhead = self.confirmedClosureAhead(in: published, on: route,
+                                                              progress: self.state.progress) != nil
+                if !closureAhead, self.state.status == .navigating,
+                   let location = self.state.location?.coordinate {
+                    self.selectTrafficAdjustedRoute(from: published, currentRoute: route,
+                                                    location: location)
+                }
+                if let location = self.state.location?.coordinate {
+                    self.handleConfirmedClosure(in: published, near: location)
+                }
             }
         }
     }
@@ -1052,7 +1145,10 @@ final class NavigationEngine {
         }
         let routeDataIsFresh = routeTrafficDataAvailable &&
             now.timeIntervalSince(routeTrafficUpdatedAt ?? .distantPast) <= 120
-        guard nearby != nil || routeDataIsFresh else {
+        let routeFlowDataIsFresh = routeTrafficFlowUpdatedAt.map {
+            now.timeIntervalSince($0) <= 240
+        } ?? false
+        guard nearby != nil || routeDataIsFresh || routeFlowDataIsFresh else {
             state.traffic = nil
             return
         }
@@ -1061,10 +1157,12 @@ final class NavigationEngine {
             incidentsByID[incident.id] = incident
         }
         let routeUpdatedAt = routeDataIsFresh ? (routeTrafficUpdatedAt ?? .distantPast) : .distantPast
+        let flowUpdatedAt = routeFlowDataIsFresh ? (routeTrafficFlowUpdatedAt ?? .distantPast) : .distantPast
         state.traffic = TrafficSnapshot(
             flow: nearby?.flow,
             incidents: Array(incidentsByID.values),
-            updatedAt: max(nearby?.updatedAt ?? .distantPast, routeUpdatedAt),
+            routeFlowSegments: routeFlowDataIsFresh ? routeTrafficFlowSegments : [],
+            updatedAt: max(nearby?.updatedAt ?? .distantPast, max(routeUpdatedAt, flowUpdatedAt)),
             partialError: nearby?.partialError,
             incidentDataAvailable: (nearby?.incidentDataAvailable ?? false) || routeDataIsFresh)
     }
@@ -1144,26 +1242,36 @@ final class NavigationEngine {
 
     func estimatedCarTravelTime(to destination: Destination) async -> TimeInterval? {
         guard let origin = state.location?.coordinate else { return nil }
+        let target: Coordinate
+        if destination.poi != nil {
+            target = await POIAccessResolver.shared.resolve(for: destination, mode: .car)?.coordinate
+                ?? destination.coordinate
+        } else {
+            target = destination.coordinate
+        }
         do {
             if let provider = routeProvider as? AdvancedRouteProvider {
                 let routes = try await provider.calculateRoutes(
-                    from: origin, to: destination.coordinate, through: [], mode: .car,
+                    from: origin, to: target, through: [], mode: .car,
                     preferences: state.routingPreferences, avoiding: [])
                 return routes.first?.expectedTravelTime
             }
-            let routes = try await routeProvider.calculateRoutes(from: origin, to: destination.coordinate, mode: .car)
+            let routes = try await routeProvider.calculateRoutes(from: origin, to: target, mode: .car)
             return routes.first?.expectedTravelTime
         } catch {
             return nil
         }
     }
 
-    func selectDestination(_ destination: Destination) {
+    func selectDestination(_ destination: Destination, applyConfiguredMode: Bool = true) {
         requestGeneration += 1
-        applyConfiguredDefaultTransportMode()
+        if applyConfiguredMode { applyConfiguredDefaultTransportMode() }
         state.destination = destination
+        state.navigationTarget = nil
+        state.parkRideCarTarget = nil
         state.waypoints = []
         state.evChargingStops = []
+        state.waypointNavigationTargets = [:]
         state.status = .destinationPreview
         state.cameraState = .destinationPreview
         updateCameraIntent()
@@ -1181,9 +1289,37 @@ final class NavigationEngine {
         invalidateTraffic()
     }
 
+    func setRouteOrigin(_ point: RoutePoint?) async {
+        if let point {
+            state.routeOrigin = point
+        } else if let location = state.location {
+            state.routeOrigin = RoutePoint(
+                Destination(name: "Twoja lokalizacja", coordinate: location.coordinate),
+                source: .currentLocation)
+        } else {
+            state.routeOrigin = nil
+        }
+        guard let destination = state.destination,
+              state.status != .navigating, state.status != .rerouting else { return }
+        await preview(destination)
+    }
+
+    func swapRoutePoints() async {
+        guard let destination = state.destination,
+              let previousOrigin = state.routeOrigin ?? state.location.map({
+                  RoutePoint(Destination(name: "Twoja lokalizacja", coordinate: $0.coordinate),
+                             source: .currentLocation)
+              }) else { return }
+        let replacementOrigin = RoutePoint(destination, source: destination.poi == nil ? .search : .poi)
+        state.routeOrigin = replacementOrigin
+        selectDestination(previousOrigin.destination, applyConfiguredMode: false)
+        state.routeOrigin = replacementOrigin
+        await preview(previousOrigin.destination)
+    }
+
     func planRoute() async {
         guard let destination = state.destination else { return }
-        guard state.location != nil else {
+        guard routeOriginCoordinate != nil else {
             state.errorMessage = "Czekam na dokładną pozycję GPS."
             return
         }
@@ -1224,8 +1360,8 @@ final class NavigationEngine {
     }
 
     func optimizeWaypoints() async {
-        guard state.waypoints.count >= 2, let origin = state.location?.coordinate,
-              let destination = state.destination else { return }
+        guard state.waypoints.count >= 2, let destination = state.destination,
+              let origin = await resolvedRouteOriginCoordinate(for: state.transportMode) else { return }
         guard state.transportMode == .car || state.transportMode == .walking || state.transportMode == .bicycle else {
             state.errorMessage = "Optymalizacja przystanków jest dostępna dla tras samochodowych, pieszych i rowerowych."
             return
@@ -1235,8 +1371,10 @@ final class NavigationEngine {
             return
         }
         do {
-            let order = try await provider.optimizedWaypointOrder(from: origin, to: destination.coordinate,
-                                                                 waypoints: state.waypoints, mode: state.transportMode,
+            let target = destinationRouteCoordinate(for: destination)
+            let routedWaypoints = await routedDestinations(state.waypoints, mode: state.transportMode)
+            let order = try await provider.optimizedWaypointOrder(from: origin, to: target,
+                                                                 waypoints: routedWaypoints, mode: state.transportMode,
                                                                  preferences: state.routingPreferences)
             guard order.count == state.waypoints.count,
                   order.allSatisfy({ $0 >= 0 && $0 < state.waypoints.count }) else { throw RoutingError.invalidResponse }
@@ -1279,7 +1417,7 @@ final class NavigationEngine {
             return
         }
         let preferences = state.routingPreferences
-        let pendingStops = current.map { unvisitedStops(from: $0).map(\.coordinate) } ?? []
+        let pendingStopDestinations = current.map { unvisitedStops(from: $0) } ?? []
         state.nearbyStatus = .searching
         do {
             let placeProvider = OpenStreetMapNearbyPlaceProvider()
@@ -1307,44 +1445,60 @@ final class NavigationEngine {
             }
             guard !nearestSearch, !candidates.isEmpty, let destination, let current, state.transportMode == .car,
                   let provider = routeProvider as? AdvancedRouteProvider else { return }
+            let destinationCoordinate = destinationRouteCoordinate(for: destination)
+            let pendingStops = await routedDestinations(pendingStopDestinations, mode: .car).map(\.coordinate)
             let selected = Array(candidates.prefix(8))
             for index in selected.indices { state.nearbySuggestions[index].estimateStatus = .calculating }
+            let resolvedSelected = await POIAccessResolver.shared.resolveMany(
+                for: selected.map(\.destination), mode: .car)
+            try Task.checkCancellation()
+            guard nearbySearchID == searchID else { return }
+            let routedSelected: [(selectedIndex: Int, candidate: NearbyPlaceCandidate, coordinate: Coordinate)] =
+                selected.indices.compactMap { index in
+                    if selected[index].destination.poi != nil {
+                        return (index, selected[index], resolvedSelected[index]?.coordinate
+                                ?? selected[index].destination.coordinate)
+                    }
+                    return (index, selected[index], selected[index].destination.coordinate)
+                }
+            guard !routedSelected.isEmpty else { return }
             do {
                 if pendingStops.isEmpty, let matrix = provider as? ValhallaRouteProvider {
-                    let targets = selected.map { $0.destination.coordinate }
-                    async let outbound = matrix.searchMatrix(sources: [current], targets: targets + [destination.coordinate],
+                    let targets = routedSelected.map { $0.coordinate }
+                    async let outbound = matrix.searchMatrix(sources: [current], targets: targets + [destinationCoordinate],
                                                               mode: .car, preferences: preferences)
-                    async let onward = matrix.searchMatrix(sources: targets, targets: [destination.coordinate],
+                    async let onward = matrix.searchMatrix(sources: targets, targets: [destinationCoordinate],
                                                            mode: .car, preferences: preferences)
                     let (first, second) = try await (outbound, onward)
                     try Task.checkCancellation()
                     guard nearbySearchID == searchID else { return }
                     if let baseline = first[0][targets.count].time {
-                        for index in selected.indices {
-                            if let arrival = first[0][index].time,
-                               let continuation = second[index][0].time {
-                                state.nearbySuggestions[index].detourSeconds = max(0, arrival + continuation - baseline)
+                        for (rowIndex, routed) in routedSelected.enumerated() {
+                            if let arrival = first[0][rowIndex].time,
+                               let continuation = second[rowIndex][0].time {
+                                state.nearbySuggestions[routed.selectedIndex].detourSeconds =
+                                    max(0, arrival + continuation - baseline)
                             }
                         }
                     }
                 } else {
-                    let baseline = try await provider.calculateRoutes(from: current, to: destination.coordinate,
+                    let baseline = try await provider.calculateRoutes(from: current, to: destinationCoordinate,
                         through: pendingStops, mode: .car, preferences: preferences, avoiding: []).first?.expectedTravelTime
                     if let baseline {
                         // Limit server load while letting independent estimates complete together.
-                        for start in stride(from: 0, to: selected.count, by: 3) {
+                        for start in stride(from: 0, to: routedSelected.count, by: 3) {
                             try Task.checkCancellation()
                             guard nearbySearchID == searchID else { return }
                             await withTaskGroup(of: (Int, Double?).self) { group in
-                                for index in start..<min(start + 3, selected.count) {
-                                    let candidate = selected[index]
+                            for index in start..<min(start + 3, routedSelected.count) {
+                                    let routed = routedSelected[index]
                                     group.addTask { @MainActor in
                                         do {
                                             let first = try await provider.calculateRoutes(from: current,
-                                                to: candidate.destination.coordinate, through: nearDestination ? pendingStops : [],
+                                                to: routed.coordinate, through: nearDestination ? pendingStops : [],
                                                 mode: .car, preferences: preferences, avoiding: []).first
                                             let second = nearDestination ? 0 : try await provider.calculateRoutes(
-                                                from: candidate.destination.coordinate, to: destination.coordinate,
+                                                from: routed.coordinate, to: destinationCoordinate,
                                                 through: pendingStops, mode: .car, preferences: preferences, avoiding: []).first?.expectedTravelTime
                                             guard let first, let second else { return (index, nil) }
                                             return (index, max(0, first.expectedTravelTime + second - baseline))
@@ -1353,8 +1507,10 @@ final class NavigationEngine {
                                 }
                                 for await (index, detour) in group {
                                     guard nearbySearchID == searchID, !Task.isCancelled else { continue }
-                                    state.nearbySuggestions[index].detourSeconds = detour
-                                    state.nearbySuggestions[index].estimateStatus = detour == nil ? .unavailable : .notRequested
+                                    let selectedIndex = routedSelected[index].selectedIndex
+                                    state.nearbySuggestions[selectedIndex].detourSeconds = detour
+                                    state.nearbySuggestions[selectedIndex].estimateStatus =
+                                        detour == nil ? .unavailable : .notRequested
                                 }
                             }
                         }
@@ -1402,29 +1558,48 @@ final class NavigationEngine {
             state.nearbySuggestions[index].estimateStatus = .calculating
         }
         do {
+            let poiIndexes = candidates.indices.filter { candidates[$0].destination.poi != nil }
+            let poiDestinations = poiIndexes.map { candidates[$0].destination }
+            let resolvedPOIs = await POIAccessResolver.shared.resolveMany(for: poiDestinations, mode: .car)
+            try Task.checkCancellation()
+            guard nearbySearchID == searchID else { return }
+            var poiCoordinates: [Int: Coordinate] = [:]
+            for (offset, index) in poiIndexes.enumerated() {
+                poiCoordinates[index] = resolvedPOIs[offset]?.coordinate
+                    ?? candidates[index].destination.coordinate
+            }
+            let routedCandidates: [(index: Int, candidate: NearbyPlaceCandidate, coordinate: Coordinate)] =
+                candidates.indices.compactMap { index in
+                    if candidates[index].destination.poi != nil {
+                        return (index, candidates[index], poiCoordinates[index]
+                                ?? candidates[index].destination.coordinate)
+                    }
+                    return (index, candidates[index], candidates[index].destination.coordinate)
+                }
+            guard !routedCandidates.isEmpty else { return }
             if let matrix = routeProvider as? ValhallaRouteProvider {
                 let rows = try await matrix.searchMatrix(sources: [origin],
-                    targets: candidates.map { $0.destination.coordinate }, mode: .car,
+                    targets: routedCandidates.map { $0.coordinate }, mode: .car,
                     preferences: preferences)
                 try Task.checkCancellation()
                 guard nearbySearchID == searchID else { return }
-                for index in candidates.indices {
-                    let estimate = rows[0][index]
-                    guard let suggestionIndex = state.nearbySuggestions.firstIndex(where: { $0.id == candidates[index].id }) else { continue }
+                for (rowIndex, routed) in routedCandidates.enumerated() {
+                    let estimate = rows[0][rowIndex]
+                    guard let suggestionIndex = state.nearbySuggestions.firstIndex(where: { $0.id == routed.candidate.id }) else { continue }
                     state.nearbySuggestions[suggestionIndex].travelTime = estimate.time
                     state.nearbySuggestions[suggestionIndex].travelDistance = estimate.distance.map { $0 * 1_000 }
                 }
             } else {
-                for start in stride(from: 0, to: candidates.count, by: 3) {
+                for start in stride(from: 0, to: routedCandidates.count, by: 3) {
                     try Task.checkCancellation()
                     guard nearbySearchID == searchID else { return }
                     await withTaskGroup(of: (Int, TimeInterval?, Double?).self) { group in
-                        for index in start..<min(start + 3, candidates.count) {
-                            let candidate = candidates[index]
+                        for index in start..<min(start + 3, routedCandidates.count) {
+                            let routed = routedCandidates[index]
                             group.addTask { @MainActor in
                                 do {
                                     let route = try await provider.calculateRoutes(from: origin,
-                                        to: candidate.destination.coordinate, through: [], mode: .car,
+                                        to: routed.coordinate, through: [], mode: .car,
                                         preferences: preferences, avoiding: []).first
                                     return (index, route?.expectedTravelTime, route?.distance)
                                 } catch {
@@ -1434,7 +1609,9 @@ final class NavigationEngine {
                         }
                         for await (index, travelTime, travelDistance) in group {
                             guard nearbySearchID == searchID, !Task.isCancelled else { continue }
-                            guard let suggestionIndex = state.nearbySuggestions.firstIndex(where: { $0.id == candidates[index].id }) else { continue }
+                            guard let suggestionIndex = state.nearbySuggestions.firstIndex(where: {
+                                $0.id == routedCandidates[index].candidate.id
+                            }) else { continue }
                             state.nearbySuggestions[suggestionIndex].travelTime = travelTime
                             state.nearbySuggestions[suggestionIndex].travelDistance = travelDistance
                         }
@@ -1458,15 +1635,28 @@ final class NavigationEngine {
         if !active && !asFinalParking {
             state.waypoints = []
             state.evChargingStops = []
+            state.waypointNavigationTargets = [:]
             await preview(destination)
             return
         }
         if asFinalParking {
-            state.destination = destination
-            state.evChargingStops = []
-            tripSession?.destination = destination
-            if active, let location = state.location?.coordinate { await reroute(from: location) }
-            else { await preview(destination) }
+            if active, let location = state.location?.coordinate {
+                let previousDestinationID = state.destination?.id
+                let targets = await resolveAccessTargets(for: destination, mode: state.transportMode)
+                guard (state.status == .navigating || state.status == .rerouting),
+                      state.destination?.id == previousDestinationID else { return }
+                state.destination = destination
+                state.navigationTarget = targets.navigation
+                state.parkRideCarTarget = targets.parkRideCar
+                state.evChargingStops = []
+                state.waypointNavigationTargets = [:]
+                tripSession?.destination = destination
+                await reroute(from: location)
+            } else {
+                state.evChargingStops = []
+                state.waypointNavigationTargets = [:]
+                await preview(destination)
+            }
             return
         }
         if active, let location = state.location?.coordinate {
@@ -1484,16 +1674,21 @@ final class NavigationEngine {
     }
 
     func preview(_ destination: Destination) async {
-        guard let origin = state.location?.coordinate else {
+        requestGeneration += 1
+        let generation = requestGeneration
+        let mode = state.transportMode
+        guard let origin = await resolvedRouteOriginCoordinate(for: mode),
+              generation == requestGeneration else {
+            guard generation == requestGeneration else { return }
             state.status = .error
             state.errorMessage = "Czekam na dokładną pozycję GPS."
             return
         }
         let requestedJourneyTimeMode = state.journeyTimeMode
         let requestedJourneyTime = state.journeyTargetTime
-        requestGeneration += 1
-        let generation = requestGeneration
         state.destination = destination
+        state.navigationTarget = nil
+        state.parkRideCarTarget = nil
         state.evChargingStops = []
         state.status = .routeCalculating
         state.route = nil
@@ -1512,6 +1707,11 @@ final class NavigationEngine {
         state.errorMessage = nil
         // The destination camera stays in place until route geometry is available.
         do {
+            let accessTargets = await resolveAccessTargets(for: destination, mode: state.transportMode)
+            guard generation == requestGeneration else { return }
+            state.navigationTarget = accessTargets.navigation
+            state.parkRideCarTarget = accessTargets.parkRideCar
+            let routeDestination = accessTargets.navigation?.coordinate ?? destination.coordinate
             let routes: [NavigationRoute]
             if state.transportMode == .transit {
                 let onProgress: TransitPlanningProgressHandler = { [weak self] phase in
@@ -1530,7 +1730,7 @@ final class NavigationEngine {
                         let departure = lowerDeparture.addingTimeInterval(interval / 2)
                         do {
                             let candidates = try await transitProvider.calculateRoutes(
-                                from: origin, to: destination.coordinate, departingAt: departure,
+                                from: origin, to: routeDestination, departingAt: departure,
                                 onProgress: onProgress)
                             let eligible = candidates.filter { ($0.journey?.arrival ?? .distantFuture) <= deadline }
                                 .sorted {
@@ -1563,7 +1763,7 @@ final class NavigationEngine {
                 } else {
                     let departure = requestedJourneyTimeMode == .departAt ? requestedJourneyTime : Date()
                     routes = try await transitProvider.calculateRoutes(
-                        from: origin, to: destination.coordinate, departingAt: departure,
+                        from: origin, to: routeDestination, departingAt: departure,
                         onProgress: onProgress,
                         onProvisionalRoutes: { [weak self] routes in
                             self?.onProvisionalTransitRoutes(routes, generation: generation)
@@ -1571,10 +1771,10 @@ final class NavigationEngine {
                 }
             } else if state.transportMode == .parkRide {
                 let departure = requestedJourneyTimeMode == .departAt ? requestedJourneyTime : Date()
-                routes = try await calculateParkRideRoutes(from: origin, to: destination.coordinate,
+                routes = try await calculateParkRideRoutes(from: origin, to: routeDestination,
                                                             departingAt: departure)
             } else {
-                routes = try await calculateRoutes(from: origin, to: destination.coordinate)
+                routes = try await calculateRoutes(from: origin, to: routeDestination)
             }
             guard generation == requestGeneration else { return }
             guard let firstRoute = routes.first else { throw RoutingError.invalidResponse }
@@ -1604,6 +1804,21 @@ final class NavigationEngine {
             state.status = .error
             state.errorMessage = error.localizedDescription
         }
+    }
+
+    private var routeOriginCoordinate: Coordinate? {
+        if let origin = state.routeOrigin, !origin.isCurrentLocation { return origin.coordinate }
+        return state.location?.coordinate
+    }
+
+    private func resolvedRouteOriginCoordinate(for mode: TransportMode) async -> Coordinate? {
+        guard let origin = state.routeOrigin, !origin.isCurrentLocation else {
+            return state.location?.coordinate
+        }
+        guard origin.poi != nil else { return origin.coordinate }
+        let destination = origin.destination
+        return await POIAccessResolver.shared.resolve(for: destination, mode: mode)?.coordinate
+            ?? origin.coordinate
     }
 
     private func onProvisionalTransitRoutes(_ routes: [NavigationRoute], generation: Int) {
@@ -1666,8 +1881,20 @@ final class NavigationEngine {
         resetTransitRideConfirmation()
         cameraManeuverID = state.progress?.nextManeuver?.id
         maneuverTransitionTask?.cancel()
+        displayedRouteGeometryProgress = nil
+        if var progress = state.progress {
+            progress.geometryProgress = 0
+            progress.geometryRouteID = route.id
+            state.progress = progress
+        }
         state.status = .navigating
         state.cameraState = .startingNavigation
+        walkingCameraController.reset()
+        locationManager.setHeadingUpdatesEnabled(state.transportMode == .walking)
+        if state.transportMode == .walking {
+            walkingCameraController.update(location: state.location,
+                                           deviceHeading: state.deviceHeading)
+        }
         if usesJourneyVoiceGuidance {
             state.transitBackgroundLocationAvailable = locationManager.requestTransitBackgroundAuthorization()
             if !locationManager.backgroundLocationModeEnabled {
@@ -1711,6 +1938,7 @@ final class NavigationEngine {
         invalidateSpeedLimit()
         voice.reset()
         state.route = nil; state.routeOptions = []; state.progress = nil; state.destination = nil
+        state.navigationTarget = nil; state.parkRideCarTarget = nil
         state.laterTransitRoutes = []
         state.isLoadingLaterTransitRoutes = false
         state.didSearchLaterTransitRoutes = false
@@ -1722,8 +1950,17 @@ final class NavigationEngine {
         lastTransitProgressLegIndex = nil
         resetTransitRideConfirmation()
         locationManager.stopBackgroundNavigationUpdates()
+        locationManager.setHeadingUpdatesEnabled(false)
+        walkingCameraController.reset()
+        state.deviceHeading = nil
+        state.routeOriginMapSelectionActive = false
+        state.routeOrigin = state.location.map {
+            RoutePoint(Destination(name: "Twoja lokalizacja", coordinate: $0.coordinate),
+                       source: .currentLocation)
+        }
         state.waypoints = []
         state.evChargingStops = []
+        state.waypointNavigationTargets = [:]
         state.weakGPS = false
         state.gpsQuality = .noSignal
         cameraManeuverID = nil
@@ -1737,6 +1974,7 @@ final class NavigationEngine {
         state.traffic = nil
         offRouteSince = nil
         previousRouteMatch = nil
+        displayedRouteGeometryProgress = nil
         refreshTraffic(force: true)
         
     }
@@ -1744,13 +1982,25 @@ final class NavigationEngine {
         guard filter.accept(raw, mode: state.transportMode) else { return }
         let coordinate = Coordinate(latitude: raw.coordinate.latitude, longitude: raw.coordinate.longitude)
         state.location = NavigationLocation(coordinate: coordinate, speed: raw.speed, course: raw.course,
-                                            accuracy: raw.horizontalAccuracy, timestamp: raw.timestamp)
+                                            accuracy: raw.horizontalAccuracy, timestamp: raw.timestamp,
+                                            speedAccuracy: raw.speedAccuracy,
+                                            courseAccuracy: raw.courseAccuracy)
+        if state.routeOrigin == nil || state.routeOrigin?.isCurrentLocation == true {
+            state.routeOrigin = RoutePoint(
+                Destination(name: "Twoja lokalizacja", coordinate: coordinate),
+                source: .currentLocation)
+        }
         state.cameraLocation = state.location
         lastAcceptedFix = raw.timestamp
         state.weakGPS = false
         state.gpsQuality = raw.horizontalAccuracy <= 10 ? .excellent : (raw.horizontalAccuracy <= 35 ? .good : .weak)
         tripSession?.record(state.location!)
         updateProgress()
+        if state.transportMode == .walking,
+           (state.status == .navigating || state.status == .rerouting) {
+            walkingCameraController.update(location: state.cameraLocation,
+                                           deviceHeading: state.deviceHeading)
+        }
         if state.status == .idle || state.status == .destinationPreview || state.status == .routeCalculating {
             updateCameraIntent()
         }
@@ -1774,6 +2024,8 @@ final class NavigationEngine {
                 (isActive
                     ? max(0, min(1, 1 - journey.arrival.timeIntervalSinceNow / max(1, route.expectedTravelTime)))
                     : 0)
+            let geometryProgress = routeGeometryProgress(routeID: route.id, candidate: progressFraction,
+                                                         canAdvance: isActive)
             let scheduledArrival = journey.arrival
             var estimatedArrival = scheduledArrival
             if let tripID = transitTripDetailsID,
@@ -1792,11 +2044,15 @@ final class NavigationEngine {
                                            remainingDistance: route.distance * (1 - progressFraction),
                                            remainingTime: remainingTime,
                                            distanceToNextManeuver: .infinity,
-                                           nextManeuver: nil)
+                                           nextManeuver: nil,
+                                           geometryProgress: geometryProgress,
+                                           geometryRouteID: route.id)
             state.estimatedArrival = isActive ? estimatedArrival : Date().addingTimeInterval(remainingTime)
 
+            let destinationCoordinate = state.destination.map { destinationRouteCoordinate(for: $0) }
+                ?? route.coordinates.last!
             if isActive, let location = state.location,
-               location.coordinate.distance(to: state.destination?.coordinate ?? route.coordinates.last!) <= 45 {
+               location.coordinate.distance(to: destinationCoordinate) <= 45 {
                 arriveAtDestination()
                 return
             }
@@ -1813,10 +2069,13 @@ final class NavigationEngine {
         guard let projection = routeMatch?.projection
             ?? MapMatcher.project(location.coordinate, onto: route.coordinates) else { return }
         previousRouteMatch = (route.id, projection, location.timestamp)
-        let totalGeometry = route.distance > 0
-            ? route.distance
-            : zip(route.coordinates, route.coordinates.dropFirst()).reduce(0) { $0 + $1.0.distance(to: $1.1) }
+        let geometryLength = RouteGeometrySplitter.length(of: route.coordinates)
+        let totalGeometry = route.distance > 0 ? route.distance : geometryLength
         let fraction = totalGeometry > 0 ? min(1, projection.alongRoute / totalGeometry) : 0
+        let geometryFraction = geometryLength > 0 ? projection.alongRoute / geometryLength : 0
+        let reliableGeometryMatch = projection.distanceFromRoute <= max(40, location.accuracy * 1.5)
+        let geometryProgress = routeGeometryProgress(routeID: route.id, candidate: geometryFraction,
+                                                     canAdvance: reliableGeometryMatch)
         let next = route.maneuvers.first { $0.shapeIndex >= projection.segment + 1 }
         let maneuverDistance: Double
         if let next {
@@ -1836,14 +2095,28 @@ final class NavigationEngine {
         if let flow = state.traffic?.flow, flow.coordinates.count > 1,
            let flowProjection = MapMatcher.project(location.coordinate, onto: flow.coordinates),
            flowProjection.distanceFromRoute < 80 {
-            let flowDistance = zip(flow.coordinates, flow.coordinates.dropFirst())
-                .reduce(0.0) { $0 + $1.0.distance(to: $1.1) }
-            let currentSpeed = max(5, Double(flow.currentSpeedKph)) / 3.6
-            let freeFlowSpeed = Double(max(1, flow.freeFlowSpeedKph)) / 3.6
-            drivingTimeRemaining += max(0, flowDistance / currentSpeed - flowDistance / freeFlowSpeed)
+            let routeFlowDistances = flow.coordinates.compactMap { coordinate -> Double? in
+                guard let flowPoint = MapMatcher.project(coordinate, onto: route.coordinates),
+                      flowPoint.distanceFromRoute <= RouteTrafficMonitor.routeMatchToleranceMeters else {
+                    return nil
+                }
+                return flowPoint.alongRoute
+            }
+            if let flowStart = routeFlowDistances.min(), let flowEnd = routeFlowDistances.max() {
+                let remainingFlowDistance = max(0, min(geometryLength, flowEnd) -
+                                                max(projection.alongRoute, flowStart))
+                if remainingFlowDistance > 0 {
+                    let currentSpeed = max(5, Double(flow.currentSpeedKph)) / 3.6
+                    let freeFlowSpeed = Double(max(1, flow.freeFlowSpeedKph)) / 3.6
+                    drivingTimeRemaining += max(0, remainingFlowDistance / currentSpeed -
+                                                remainingFlowDistance / freeFlowSpeed)
+                }
+            }
         }
         let chargingTimeRemaining = route.chargingStops.reduce(0.0) { total, stop in
-            guard let chargeProjection = MapMatcher.project(stop.destination.coordinate, onto: route.coordinates),
+            let coordinate = state.waypointNavigationTargets[stop.destination.id]?.coordinate
+                ?? stop.destination.coordinate
+            guard let chargeProjection = MapMatcher.project(coordinate, onto: route.coordinates),
                   chargeProjection.alongRoute > projection.alongRoute + 40 else { return total }
             return total + stop.estimatedChargingTime
         }
@@ -1852,11 +2125,14 @@ final class NavigationEngine {
         state.progress = RouteProgress(traveledDistance: route.distance * fraction,
                                        remainingDistance: remainingDistance,
                                        remainingTime: max(0, remainingTime),
-                                       distanceToNextManeuver: max(0, maneuverDistance), nextManeuver: next)
+                                       distanceToNextManeuver: max(0, maneuverDistance), nextManeuver: next,
+                                       geometryProgress: geometryProgress,
+                                       geometryRouteID: route.id)
         state.estimatedArrival = Date().addingTimeInterval(max(0, remainingTime))
         guard state.status == .navigating || state.status == .rerouting else { return }
-        let destinationDistance = location.coordinate.distance(
-            to: state.destination?.coordinate ?? coordinateFallback(route))
+        let targetCoordinate = state.destination.map { destinationRouteCoordinate(for: $0) }
+            ?? coordinateFallback(route)
+        let destinationDistance = location.coordinate.distance(to: targetCoordinate)
         if usesJourneyVoiceGuidance, destinationDistance <= 45 {
             arriveAtDestination()
             return
@@ -1915,6 +2191,21 @@ final class NavigationEngine {
         }
     }
 
+    private func routeGeometryProgress(routeID: UUID, candidate: Double, canAdvance: Bool) -> Double {
+        guard state.status == .navigating || state.status == .rerouting else {
+            displayedRouteGeometryProgress = nil
+            return 0
+        }
+
+        let previous = displayedRouteGeometryProgress?.routeID == routeID
+            ? displayedRouteGeometryProgress?.fraction ?? 0
+            : 0
+        let snapped = candidate.isFinite ? max(0, min(1, candidate)) : previous
+        let displayed = canAdvance ? max(previous, snapped) : previous
+        displayedRouteGeometryProgress = (routeID, displayed)
+        return displayed
+    }
+
     private func updateJourneyVoiceProgress(reuseExistingMatch: Bool = false) -> TransitNavigationProgress? {
         guard usesJourneyVoiceGuidance,
               let route = state.route, let journey = route.journey else {
@@ -1959,6 +2250,8 @@ final class NavigationEngine {
     private func arriveAtDestination() {
         state.status = .arrived
         state.cameraState = .arrived
+        locationManager.setHeadingUpdatesEnabled(false)
+        state.deviceHeading = nil
         updateCameraIntent()
         locationManager.stopBackgroundNavigationUpdates()
         if state.voiceEnabled { voice.announceArrival(destination: state.destination) }
@@ -1985,7 +2278,15 @@ final class NavigationEngine {
             trafficProjectionRouteID = route.id
             trafficProjectionUpdatedAt = traffic.updatedAt
             projectedTrafficIncidents = traffic.incidents.compactMap { incident in
-                guard let projection = MapMatcher.project(incident.coordinate, onto: route.coordinates) else { return nil }
+                let coordinates = [incident.coordinate] + incident.geometry
+                let projections = coordinates.compactMap {
+                    MapMatcher.project($0, onto: route.coordinates)
+                }.filter {
+                    $0.distanceFromRoute <= RouteTrafficMonitor.routeMatchToleranceMeters
+                }
+                guard let projection = projections.min(by: {
+                    $0.distanceFromRoute < $1.distanceFromRoute
+                }) else { return nil }
                 return (alongRoute: projection.alongRoute, delaySeconds: incident.delaySeconds)
             }
         }
@@ -2134,10 +2435,14 @@ final class NavigationEngine {
         routeTrafficRequestInFlight = false
         lastTrafficFetch = .distantPast
         lastRouteTrafficFetch = .distantPast
+        lastRouteFlowFetch = .distantPast
+        routeFlowRouteID = nil
         latestNearbyTrafficSnapshot = nil
         routeTrafficIncidents = []
         routeTrafficDataAvailable = false
         routeTrafficUpdatedAt = nil
+        routeTrafficFlowSegments = []
+        routeTrafficFlowUpdatedAt = nil
         state.traffic = nil
     }
     private func invalidateSpeedLimit() {
@@ -2264,7 +2569,8 @@ final class NavigationEngine {
         if state.cameraState != .freeLook { state.cameraState = .rerouting; updateCameraIntent() }
         do {
             let remainingStops = unvisitedStops(from: origin)
-            let routes = try await calculateRoutes(from: origin, to: destination.coordinate,
+            let target = destinationRouteCoordinate(for: destination)
+            let routes = try await calculateRoutes(from: origin, to: target,
                                                    through: remainingStops.map(\.coordinate))
             guard state.status == .rerouting else { return }
             guard let firstRoute = routes.first else { throw RoutingError.invalidResponse }
@@ -2292,10 +2598,11 @@ final class NavigationEngine {
         guard let route = state.route,
               let current = MapMatcher.project(origin, onto: route.coordinates) else { return stops }
         return stops.compactMap { stop -> (Destination, Double)? in
-            guard let projection = MapMatcher.project(stop.coordinate, onto: route.coordinates),
+            let coordinate = state.waypointNavigationTargets[stop.id]?.coordinate ?? stop.coordinate
+            guard let projection = MapMatcher.project(coordinate, onto: route.coordinates),
                   projection.alongRoute > current.alongRoute + 50 else { return nil }
             return (stop, projection.alongRoute)
-        }.sorted { $0.1 < $1.1 }.map(\.0)
+        }.sorted { $0.1 < $1.1 }.map { $0.0 }
     }
     private func calculateRoutes(from: Coordinate, to: Coordinate, through: [Coordinate]? = nil) async throws -> [NavigationRoute] {
         if state.transportMode == .transit {
@@ -2305,14 +2612,30 @@ final class NavigationEngine {
         if state.transportMode == .parkRide {
             return try await calculateParkRideRoutes(from: from, to: to)
         }
-        let stops = through ?? state.waypoints.map(\.coordinate)
+        let routedWaypoints = await routedDestinations(state.waypoints, mode: state.transportMode)
+        let routedEVStops = await routedDestinations(state.evChargingStops, mode: state.transportMode)
+        let originalStops = state.waypoints + state.evChargingStops
+        let routedStops = routedWaypoints + routedEVStops
+        let stops: [Coordinate]
+        if let through {
+            stops = through.map { requested in
+                guard let index = originalStops.firstIndex(where: { $0.coordinate.distance(to: requested) <= 10 }) else {
+                    return requested
+                }
+                return routedStops[index].coordinate
+            }
+        } else {
+            stops = routedWaypoints.map(\.coordinate)
+        }
         if let provider = routeProvider as? AdvancedRouteProvider {
             if state.transportMode == .car, state.routingPreferences.evPlanningEnabled {
-                let mandatoryStops = through.map { coordinates in
+                let mandatoryWaypoints = through.map { coordinates in
                     state.waypoints.filter { waypoint in
                         coordinates.contains { $0.distance(to: waypoint.coordinate) <= 10 }
                     }
                 } ?? state.waypoints
+                let mandatoryIDs = Set(mandatoryWaypoints.map(\.id))
+                let mandatoryStops = state.waypoints.filter { mandatoryIDs.contains($0.id) }
                 return try await calculateEVRoutes(from: from, to: to, explicitStops: mandatoryStops,
                                                    provider: provider, avoiding: [])
             }
@@ -2324,15 +2647,61 @@ final class NavigationEngine {
         return try await routeProvider.calculateRoutes(from: from, to: to, mode: state.transportMode)
     }
 
+    private func destinationRouteCoordinate(for destination: Destination) -> Coordinate {
+        if destination.poi != nil {
+            // If OSM has no access point, keep the route usable and let Valhalla snap the POI pin.
+            return state.navigationTarget?.coordinate ?? destination.coordinate
+        }
+        return destination.coordinate
+    }
+
+    private func routedDestinations(_ destinations: [Destination], mode: TransportMode) async -> [Destination] {
+        let poiIndexes = destinations.indices.filter { destinations[$0].poi != nil }
+        let targets = await POIAccessResolver.shared.resolveMany(
+            for: poiIndexes.map { destinations[$0] }, mode: mode)
+        var routed = destinations
+        for (offset, index) in poiIndexes.enumerated() {
+            guard let target = targets[offset] else {
+                // A missing access target leaves this copy at the original POI coordinate for Valhalla.
+                state.waypointNavigationTargets[destinations[index].id] = nil
+                continue
+            }
+            routed[index].coordinate = target.coordinate
+            if state.waypoints.contains(where: { $0.id == destinations[index].id }) ||
+                state.evChargingStops.contains(where: { $0.id == destinations[index].id }) {
+                state.waypointNavigationTargets[destinations[index].id] = target
+            }
+        }
+        return routed
+    }
+
+    private func resolveAccessTargets(for destination: Destination, mode: TransportMode) async ->
+        (navigation: POINavigationTarget?, parkRideCar: POINavigationTarget?) {
+        guard destination.poi != nil else { return (nil, nil) }
+        if mode == .parkRide {
+            let walkingTarget = await POIAccessResolver.shared.resolve(for: destination, mode: .walking)
+            let carTarget = await POIAccessResolver.shared.resolve(for: destination, mode: .car)
+            return (walkingTarget, carTarget)
+        }
+        let target = await POIAccessResolver.shared.resolve(for: destination, mode: mode)
+        return (target, nil)
+    }
+
     private func calculateParkRideRoutes(from: Coordinate, to: Coordinate,
                                          departingAt requestedDeparture: Date = Date()) async throws -> [NavigationRoute] {
         guard let provider = routeProvider as? AdvancedRouteProvider else {
             throw TransitRoutingError.noParkRide
         }
+        let carDestination: Coordinate
+        if state.destination?.poi != nil {
+            carDestination = state.parkRideCarTarget?.coordinate ?? state.destination?.coordinate ?? to
+        } else {
+            carDestination = to
+        }
         let baseRoute: NavigationRoute
         do {
             guard let route = try await provider.calculateRoutes(
-                from: from, to: to, through: [], mode: .car,
+                from: from, to: carDestination, through: [], mode: .car,
                 preferences: state.routingPreferences, avoiding: []).first else {
                 throw TransitRoutingError.noParkRide
             }
@@ -2358,14 +2727,20 @@ final class NavigationEngine {
             to.distance(to: $0.destination.coordinate) < to.distance(to: $1.destination.coordinate)
         }
         guard !parkings.isEmpty else { throw TransitRoutingError.noParkRide }
+        let selectedParkings = Array(parkings.prefix(12))
+        let parkingTargets = await POIAccessResolver.shared.resolveMany(
+            for: selectedParkings.map(\.destination), mode: .car)
+        try Task.checkCancellation()
         let departure = requestedDeparture
         var combined: [NavigationRoute] = []
-        for parking in parkings.prefix(12) {
+        for index in selectedParkings.indices {
             try Task.checkCancellation()
+            let parking = selectedParkings[index]
+            let parkingTarget = parkingTargets[index]?.coordinate ?? parking.destination.coordinate
             let carRoutes: [NavigationRoute]
             do {
                 carRoutes = try await provider.calculateRoutes(
-                    from: from, to: parking.destination.coordinate, through: [], mode: .car,
+                    from: from, to: parkingTarget, through: [], mode: .car,
                     preferences: state.routingPreferences, avoiding: [])
             } catch is CancellationError {
                 throw CancellationError()
@@ -2377,7 +2752,7 @@ final class NavigationEngine {
             let transitRoutes: [NavigationRoute]
             do {
                 transitRoutes = try await transitProvider.calculateRoutes(
-                    from: parking.destination.coordinate, to: to, departingAt: parkingArrival)
+                    from: parkingTarget, to: to, departingAt: parkingArrival)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -2448,14 +2823,21 @@ final class NavigationEngine {
     private func calculateEVRoutes(from: Coordinate, to: Coordinate, explicitStops: [Destination],
                                    provider: AdvancedRouteProvider,
                                    avoiding: [Coordinate] = []) async throws -> [NavigationRoute] {
+        let destinationTarget: Coordinate
+        if let destination = state.destination, destination.poi != nil {
+            destinationTarget = destinationRouteCoordinate(for: destination)
+        } else {
+            destinationTarget = to
+        }
+        let routedExplicitStops = await routedDestinations(explicitStops, mode: .car)
         let preferences = state.routingPreferences
         guard preferences.evRangeKilometers > 0 else { throw EVPlanningError.rangeNotConfigured }
         guard preferences.evConsumptionKWhPer100Km > 0,
               preferences.evMaximumChargingPowerKW > 0 else {
             throw EVPlanningError.consumptionNotConfigured
         }
-        let baseRoutes = try await provider.calculateRoutes(from: from, to: to,
-                                                            through: explicitStops.map(\.coordinate), mode: .car,
+        let baseRoutes = try await provider.calculateRoutes(from: from, to: destinationTarget,
+                                                            through: routedExplicitStops.map(\.coordinate), mode: .car,
                                                             preferences: preferences, avoiding: avoiding)
         guard let baseRoute = baseRoutes.first else { throw RoutingError.invalidResponse }
         let availableRange = preferences.availableEVRangeKilometers * 1_000
@@ -2509,14 +2891,16 @@ final class NavigationEngine {
             segmentRange = fullRange
             if selected.count > 10 { throw EVPlanningError.chargersUnavailable }
         }
-        let orderedStops = (explicitStops.map { destination -> (Destination, Double) in
+        let routedChargingStops = await routedDestinations(selected.map(\.destination), mode: .car)
+        let orderedStops = (routedExplicitStops.map { destination -> (Coordinate, Double) in
             let along = MapMatcher.project(destination.coordinate, onto: baseRoute.coordinates)?.alongRoute ?? .infinity
-            return (destination, along)
-        } + selected.map { ($0.destination, $0.distanceFromRoute) })
+            return (destination.coordinate, along)
+        } + selected.indices.map { index in
+            (routedChargingStops[index].coordinate, selected[index].distanceFromRoute)
+        })
             .sorted { $0.1 < $1.1 }
-            .map(\.0)
-        let routes = try await provider.calculateRoutes(from: from, to: to,
-                                                        through: orderedStops.map(\.coordinate),
+        let routes = try await provider.calculateRoutes(from: from, to: destinationTarget,
+                                                        through: orderedStops.map { $0.0 },
                                                         mode: .car, preferences: preferences, avoiding: avoiding)
         var energyFeasible: [NavigationRoute] = []
         for var route in routes {
@@ -2534,6 +2918,7 @@ final class NavigationEngine {
         guard !energyFeasible.isEmpty else { throw EVPlanningError.chargersUnavailable }
         let rankedRoutes = energyFeasible.sorted { $0.expectedTravelTime < $1.expectedTravelTime }
         state.evChargingStops = rankedRoutes[0].chargingStops.map(\.destination)
+        _ = await routedDestinations(state.evChargingStops, mode: .car)
         return rankedRoutes
     }
 
@@ -2593,19 +2978,22 @@ final class NavigationEngine {
         Task {
             do {
                 let stops = unvisitedStops(from: location)
+                let routedStops = await routedDestinations(stops, mode: .car)
+                let destination = state.destination.map { destinationRouteCoordinate(for: $0) }
+                    ?? route.coordinates.last!
                 let routes: [NavigationRoute]
                 if state.routingPreferences.evPlanningEnabled {
                     let mandatoryStops = stops.filter { stop in
                         state.waypoints.contains(where: { $0.id == stop.id })
                     }
                     routes = try await calculateEVRoutes(
-                        from: location, to: state.destination?.coordinate ?? route.coordinates.last!,
+                        from: location, to: destination,
                         explicitStops: mandatoryStops, provider: provider,
                         avoiding: [closureIncident.coordinate])
                 } else {
                     routes = try await provider.calculateRoutes(
-                        from: location, to: state.destination?.coordinate ?? route.coordinates.last!,
-                        through: stops.map(\.coordinate), mode: .car,
+                        from: location, to: destination,
+                        through: routedStops.map(\.coordinate), mode: .car,
                         preferences: state.routingPreferences, avoiding: [closureIncident.coordinate])
                 }
                 guard state.status == .navigating || state.status == .rerouting,

@@ -37,6 +37,46 @@ struct Destination: Identifiable, Codable, Equatable, Sendable {
     var name: String
     var coordinate: Coordinate
     var address: String? = nil
+    var poi: POIMetadata? = nil
+}
+
+enum RoutePointSource: String, Codable, Equatable, Sendable {
+    case currentLocation, search, mapSelection, poi, favorite, savedPlace, history
+}
+
+struct RoutePoint: Equatable, Sendable {
+    var coordinate: Coordinate
+    var name: String
+    var address: String?
+    var source: RoutePointSource
+    var poi: POIMetadata?
+
+    init(_ destination: Destination, source: RoutePointSource) {
+        coordinate = destination.coordinate
+        name = destination.name
+        address = destination.address
+        self.source = source
+        poi = destination.poi
+    }
+
+    var destination: Destination {
+        Destination(name: name, coordinate: coordinate, address: address, poi: poi)
+    }
+
+    var isCurrentLocation: Bool { source == .currentLocation }
+}
+
+struct RoutePlan: Equatable, Sendable {
+    var origin: RoutePoint
+    var destination: RoutePoint
+}
+
+struct POIMetadata: Codable, Equatable, Sendable {
+    var provider: PlaceProvider
+    var osmID: String?
+    var category: String?
+    var brand: String?
+    var operatorName: String?
 }
 
 nonisolated struct NavigationLocation {
@@ -45,6 +85,8 @@ nonisolated struct NavigationLocation {
     var course: CLLocationDirection
     var accuracy: CLLocationAccuracy
     var timestamp: Date
+    var speedAccuracy: CLLocationAccuracy = -1
+    var courseAccuracy: CLLocationAccuracy = -1
 }
 
 enum ManeuverKind: Int, Sendable {
@@ -194,7 +236,7 @@ struct EVChargingStop: Identifiable, Sendable {
     let publicAccess: Bool?
 }
 
-enum TransportMode: String, CaseIterable, Identifiable {
+enum TransportMode: String, CaseIterable, Identifiable, Sendable {
     case car, walking, bicycle, transit, parkRide
 
     static var configuredDefault: Self {
@@ -748,7 +790,7 @@ struct TransitVehicleFeed: Sendable {
     var nearbyDepartures: [TransitDeparture] = []
 }
 
-enum RouteColorPalette {
+nonisolated enum RouteColorPalette {
     static let activeLight: UInt32 = 0x248BFF
     static let activeDark: UInt32 = 0x2E95FF
     static let casingLight: UInt32 = 0x0B3158
@@ -770,6 +812,60 @@ struct RouteLegGeometry {
     let targetID: UUID?
     let active: [Coordinate]
     let continuation: [Coordinate]
+}
+
+struct RouteGeometrySplit {
+    let completed: [Coordinate]
+    let remaining: [Coordinate]
+}
+
+enum RouteGeometrySplitter {
+    static func length(of coordinates: [Coordinate]) -> Double {
+        zip(coordinates, coordinates.dropFirst())
+            .reduce(0) { $0 + $1.0.distance(to: $1.1) }
+    }
+
+    static func split(_ coordinates: [Coordinate], atDistance distance: Double) -> RouteGeometrySplit {
+        guard coordinates.count > 1 else {
+            return RouteGeometrySplit(completed: [], remaining: coordinates)
+        }
+
+        let target = max(0, distance.isFinite ? distance : 0)
+        let totalLength = length(of: coordinates)
+        guard target > 0 else {
+            return RouteGeometrySplit(completed: [], remaining: coordinates)
+        }
+        guard target < totalLength else {
+            return RouteGeometrySplit(completed: coordinates, remaining: [])
+        }
+
+        var traversed = 0.0
+        for index in 0..<(coordinates.count - 1) {
+            let start = coordinates[index]
+            let end = coordinates[index + 1]
+            let segmentLength = start.distance(to: end)
+            guard segmentLength > 0 else { continue }
+            if traversed + segmentLength >= target {
+                let fraction = (target - traversed) / segmentLength
+                let boundary = Coordinate(
+                    latitude: start.latitude + (end.latitude - start.latitude) * fraction,
+                    longitude: start.longitude + (end.longitude - start.longitude) * fraction)
+                var completed = Array(coordinates.prefix(index + 1))
+                if (completed.last?.distance(to: boundary) ?? .infinity) > 0.5 {
+                    completed.append(boundary)
+                }
+                var remaining = [boundary]
+                for coordinate in coordinates.dropFirst(index + 1) where
+                    (remaining.last?.distance(to: coordinate) ?? .infinity) > 0.5 {
+                    remaining.append(coordinate)
+                }
+                return RouteGeometrySplit(completed: completed, remaining: remaining)
+            }
+            traversed += segmentLength
+        }
+
+        return RouteGeometrySplit(completed: coordinates, remaining: [])
+    }
 }
 
 enum RouteMapGeometry {
@@ -865,6 +961,8 @@ struct RouteProgress {
     var remainingTime: TimeInterval
     var distanceToNextManeuver: Double
     var nextManeuver: Maneuver?
+    var geometryProgress: Double = 0
+    var geometryRouteID: UUID?
 }
 
 enum NavigationStatus: Equatable { case idle, destinationPreview, routeCalculating, routePreview, navigating, rerouting, arrived, error }

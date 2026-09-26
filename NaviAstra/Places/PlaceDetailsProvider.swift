@@ -1,6 +1,6 @@
 import Foundation
 
-enum PlaceProvider: String {
+enum PlaceProvider: String, Codable, Sendable {
     case openStreetMap
     case openFreeMap
     case mapKit
@@ -457,7 +457,7 @@ enum PlaceDetailsError: LocalizedError {
     }
 }
 
-struct OpenStreetMapObjectID {
+nonisolated struct OpenStreetMapObjectID {
     let type: String
     let value: Int64
 

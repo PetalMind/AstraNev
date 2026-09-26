@@ -35,6 +35,120 @@ struct CameraIntent: Equatable {
     var bearing: Double
     var padding: CameraPadding
     var bounds: [Coordinate] = []
+    var animationDuration: TimeInterval? = nil
+}
+
+enum WalkingCameraState: Equatable {
+    case overview, cruising, approachingTurn, maneuver, stopped
+}
+
+struct WalkingCameraSnapshot: Equatable {
+    var bearing: Double?
+    var stoppedDuration: TimeInterval
+}
+
+struct WalkingCameraProfile: Equatable {
+    var state: WalkingCameraState
+    var zoom: Double
+    var pitch: Double
+    var lookAhead: Double
+    var animationDuration: TimeInterval
+}
+
+/// Smooths pedestrian heading and selects a camera profile without putting
+/// walking-specific behavior in either map adapter.
+final class WalkingCameraController {
+    private var lastMovementAt: Date?
+    private var lastBearingUpdateAt: Date?
+    private(set) var filteredBearing: Double?
+
+    func reset() {
+        lastMovementAt = nil
+        lastBearingUpdateAt = nil
+        filteredBearing = nil
+    }
+
+    func update(location: NavigationLocation?, deviceHeading: Double?, now: Date = .now,
+                isNewLocationFix: Bool = true) {
+        guard let location else { return }
+        let speedIsUsable = location.speed.isFinite && location.speed >= 0 &&
+            (location.speedAccuracy < 0 || location.speedAccuracy <= 8)
+        let speed = speedIsUsable ? location.speed : 0
+        if isNewLocationFix && (speed > 0.8 || lastMovementAt == nil) { lastMovementAt = now }
+
+        let gpsCourseIsUsable = speed > 1.2 && location.course.isFinite &&
+            (0...360).contains(location.course) &&
+            (location.courseAccuracy < 0 || location.courseAccuracy <= 45)
+        let headingIsUsable = deviceHeading.map { $0.isFinite && (0...360).contains($0) } ?? false
+        let target = isNewLocationFix && gpsCourseIsUsable ? location.course :
+            (headingIsUsable ? deviceHeading : nil)
+        guard let target else { return }
+
+        guard let current = filteredBearing else {
+            filteredBearing = Self.normalized(target)
+            lastBearingUpdateAt = now
+            return
+        }
+        let elapsed = max(0, now.timeIntervalSince(lastBearingUpdateAt ?? now))
+        guard elapsed > 0 else { return }
+        let delta = Self.shortestAngle(from: current, to: target)
+        let lowPassDelta = delta * (1 - exp(-elapsed / 0.45))
+        let maximumDelta = 60 * elapsed
+        filteredBearing = Self.normalized(current + min(maximumDelta, max(-maximumDelta, lowPassDelta)))
+        lastBearingUpdateAt = now
+    }
+
+    func snapshot(at now: Date = .now) -> WalkingCameraSnapshot {
+        WalkingCameraSnapshot(bearing: filteredBearing,
+                              stoppedDuration: max(0, now.timeIntervalSince(lastMovementAt ?? now)))
+    }
+
+    static func profile(camera: NavigationCameraState, maneuverDistance: Double,
+                        stoppedDuration: TimeInterval) -> WalkingCameraProfile {
+        if stoppedDuration >= 3 {
+            return WalkingCameraProfile(state: .stopped, zoom: 17.8,
+                                        pitch: stoppedDuration >= 10 ? 12 : 25,
+                                        lookAhead: 20, animationDuration: 0.6)
+        }
+        if camera == .leavingManeuver {
+            return WalkingCameraProfile(state: .maneuver, zoom: 18.1, pitch: 27,
+                                        lookAhead: 20, animationDuration: 0.8)
+        }
+        if camera == .approachingDestination {
+            return WalkingCameraProfile(state: .approachingTurn, zoom: 17.5, pitch: 35,
+                                        lookAhead: 18, animationDuration: 0.6)
+        }
+        if camera == .maneuverNow || maneuverDistance <= 20 {
+            return WalkingCameraProfile(state: .maneuver, zoom: 18.1, pitch: 27,
+                                        lookAhead: max(5, min(18, maneuverDistance - 2)),
+                                        animationDuration: camera == .startingNavigation ? 0.8 : 0.55)
+        }
+        if maneuverDistance <= 50 {
+            return WalkingCameraProfile(state: .approachingTurn, zoom: 17.8, pitch: 32,
+                                        lookAhead: 18, animationDuration: 0.6)
+        }
+        if maneuverDistance <= 120 {
+            return WalkingCameraProfile(state: .approachingTurn, zoom: 17.5, pitch: 38,
+                                        lookAhead: 22, animationDuration: 0.6)
+        }
+        if maneuverDistance > 300 {
+            return WalkingCameraProfile(state: .cruising, zoom: 17.0, pitch: 43,
+                                        lookAhead: 25, animationDuration: 0.65)
+        }
+        return WalkingCameraProfile(state: .cruising, zoom: 17.2, pitch: 40,
+                                    lookAhead: 22, animationDuration: 0.6)
+    }
+
+    private static func shortestAngle(from current: Double, to target: Double) -> Double {
+        var delta = (target - current).truncatingRemainder(dividingBy: 360)
+        if delta > 180 { delta -= 360 }
+        if delta < -180 { delta += 360 }
+        return delta
+    }
+
+    private static func normalized(_ value: Double) -> Double {
+        (value + 360).truncatingRemainder(dividingBy: 360)
+    }
 }
 
 struct RouteRevealGeometry {
@@ -109,7 +223,9 @@ enum CameraPlanner {
                        destination: Destination?, route: NavigationRoute?,
                        alternatives: [NavigationRoute], progress: RouteProgress?,
                        previousBearing: Double = 0,
-                       precomputedRouteProjection: RouteProjection? = nil) -> CameraIntent? {
+                       precomputedRouteProjection: RouteProjection? = nil,
+                       transportMode: TransportMode = .car,
+                       walkingCamera: WalkingCameraSnapshot? = nil) -> CameraIntent? {
         guard let position = location?.coordinate ?? destination?.coordinate else { return nil }
         let speed = max(0, location?.speed ?? 0)
         switch camera {
@@ -143,56 +259,82 @@ enum CameraPlanner {
                 return (radians * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
             }
             let course = location.flatMap { $0.course >= 0 ? $0.course : nil } ?? previousBearing
-            let heading = camera == .startingNavigation || speed > 0.85
-                ? (roadHeading ?? course)
-                : previousBearing
+            let usesWalkingCamera = transportMode == .walking && camera.usesNavigationPerspective
+            let heading = usesWalkingCamera
+                ? (walkingCamera?.bearing ?? roadHeading ?? previousBearing)
+                : (camera == .startingNavigation || speed > 0.85
+                    ? (roadHeading ?? course)
+                    : previousBearing)
             let maneuverDistance = progress?.distanceToNextManeuver ?? .infinity
             let maneuver = progress?.nextManeuver
             let isRoundabout = maneuver?.kind.isRoundabout == true
             let isExit = maneuver?.kind.isExit == true
+            let walkingProfile = usesWalkingCamera
+                ? WalkingCameraController.profile(camera: camera, maneuverDistance: maneuverDistance,
+                                                  stoppedDuration: walkingCamera?.stoppedDuration ?? 0)
+                : nil
             let followLookAhead = min(350, max(80, speed * 8))
             let approachLookAhead = min(min(300, max(80, speed * 7)), maneuverDistance + 45)
             let lookAhead: Double
-            switch camera {
-            case .approachingDestination: lookAhead = 35
-            case .maneuverNow: lookAhead = maneuverDistance + 35
-            case .leavingManeuver: lookAhead = min(180, max(70, speed * 6))
-            case .approachingManeuver: lookAhead = isRoundabout ? min(130, maneuverDistance + 35) : approachLookAhead
-            case .startingNavigation, .followNavigation, .rerouting, .weakGPS:
-                lookAhead = isRoundabout ? min(130, followLookAhead) : followLookAhead
-            default: lookAhead = followLookAhead
-            }
-            let target = route.flatMap {
-                pointAhead(of: position, by: lookAhead, on: $0.coordinates, projection: routeProjection)
-            } ?? position
-            let zoom: Double
-            switch camera {
-            case .approachingDestination: zoom = isTransitRoute ? 16.7 : 16.3
-            case .maneuverNow: zoom = isTransitRoute ? 16.4 : 16.0
-            case .leavingManeuver: zoom = isTransitRoute ? 15.9 : 15.2
-            case .approachingManeuver:
-                if isRoundabout { zoom = isTransitRoute ? 15.6 : 15.0 }
-                else if isExit && maneuverDistance > 300 { zoom = isTransitRoute ? 15.8 : 14.6 }
-                else if maneuverDistance <= 100 { zoom = isTransitRoute ? 16.2 : 15.8 }
-                else { zoom = isTransitRoute ? 15.9 : 15.2 }
-            case .startingNavigation, .followNavigation, .rerouting, .weakGPS:
-                if isTransitRoute {
-                    zoom = isExit && maneuverDistance < 1_600 ? 15.8 : (speed > 25 ? 15.9 : 16.3)
-                } else {
-                    zoom = isExit && maneuverDistance < 1_600 ? 14.6 : (speed > 25 ? 14.2 : 15.6)
+            if let walkingProfile {
+                lookAhead = walkingProfile.lookAhead
+            } else {
+                switch camera {
+                case .approachingDestination: lookAhead = 35
+                case .maneuverNow: lookAhead = maneuverDistance + 35
+                case .leavingManeuver: lookAhead = min(180, max(70, speed * 6))
+                case .approachingManeuver:
+                    lookAhead = isRoundabout ? min(130, maneuverDistance + 35) : approachLookAhead
+                case .startingNavigation, .followNavigation, .rerouting, .weakGPS:
+                    lookAhead = isRoundabout ? min(130, followLookAhead) : followLookAhead
+                default: lookAhead = followLookAhead
                 }
-            default: zoom = 15.2
+            }
+            let target: Coordinate
+            if walkingProfile?.state == .stopped {
+                target = coordinateAhead(of: position, by: lookAhead, bearing: heading)
+            } else {
+                target = route.flatMap {
+                    pointAhead(of: position, by: lookAhead, on: $0.coordinates, projection: routeProjection)
+                } ?? position
+            }
+            let zoom: Double
+            if let walkingProfile {
+                zoom = walkingProfile.zoom
+            } else {
+                switch camera {
+                case .approachingDestination: zoom = isTransitRoute ? 16.7 : 16.3
+                case .maneuverNow: zoom = isTransitRoute ? 16.4 : 16.0
+                case .leavingManeuver: zoom = isTransitRoute ? 15.9 : 15.2
+                case .approachingManeuver:
+                    if isRoundabout { zoom = isTransitRoute ? 15.6 : 15.0 }
+                    else if isExit && maneuverDistance > 300 { zoom = isTransitRoute ? 15.8 : 14.6 }
+                    else if maneuverDistance <= 100 { zoom = isTransitRoute ? 16.2 : 15.8 }
+                    else { zoom = isTransitRoute ? 15.9 : 15.2 }
+                case .startingNavigation, .followNavigation, .rerouting, .weakGPS:
+                    if isTransitRoute {
+                        zoom = isExit && maneuverDistance < 1_600 ? 15.8 : (speed > 25 ? 15.9 : 16.3)
+                    } else {
+                        zoom = isExit && maneuverDistance < 1_600 ? 14.6 : (speed > 25 ? 14.2 : 15.6)
+                    }
+                default: zoom = 15.2
+                }
             }
             let pitch: Double
-            switch camera {
-            case .maneuverNow: pitch = 38
-            case .approachingManeuver, .leavingManeuver: pitch = 46
-            case .approachingDestination: pitch = 40
-            case .rerouting, .weakGPS: pitch = 42
-            default: pitch = 55
+            if let walkingProfile {
+                pitch = walkingProfile.pitch
+            } else {
+                switch camera {
+                case .maneuverNow: pitch = 38
+                case .approachingManeuver, .leavingManeuver: pitch = 46
+                case .approachingDestination: pitch = 40
+                case .rerouting, .weakGPS: pitch = 42
+                default: pitch = 55
+                }
             }
             return CameraIntent(target: target, zoom: zoom, pitch: pitch, bearing: heading,
-                                padding: .navigation)
+                                padding: .navigation,
+                                animationDuration: walkingProfile?.animationDuration)
         case .arrived:
             let points = [position, destination?.coordinate].compactMap { $0 }
             let bounds = points.count == 2 && points[0].distance(to: points[1]) >= 100 ? points : []
@@ -207,7 +349,8 @@ enum CameraPlanner {
               let coordinate = pointAhead(of: location.coordinate, by: min(15, elapsed) * location.speed,
                                           on: route.coordinates) else { return location }
         return NavigationLocation(coordinate: coordinate, speed: location.speed, course: location.course,
-                                  accuracy: location.accuracy + elapsed * 3, timestamp: location.timestamp)
+                                  accuracy: location.accuracy + elapsed * 3, timestamp: location.timestamp,
+                                  speedAccuracy: location.speedAccuracy, courseAccuracy: location.courseAccuracy)
     }
 
     static func revealedCoordinates(_ coordinates: [Coordinate], progress: Double) -> [Coordinate] {
@@ -252,5 +395,21 @@ enum CameraPlanner {
             current = next
         }
         return route.last
+    }
+
+    private static func coordinateAhead(of position: Coordinate, by meters: Double,
+                                        bearing: Double) -> Coordinate {
+        guard meters > 0 else { return position }
+        let angularDistance = meters / 6_371_000
+        let heading = bearing * .pi / 180
+        let latitude = position.latitude * .pi / 180
+        let longitude = position.longitude * .pi / 180
+        let destinationLatitude = asin(sin(latitude) * cos(angularDistance) +
+                                       cos(latitude) * sin(angularDistance) * cos(heading))
+        let destinationLongitude = longitude + atan2(
+            sin(heading) * sin(angularDistance) * cos(latitude),
+            cos(angularDistance) - sin(latitude) * sin(destinationLatitude))
+        return Coordinate(latitude: destinationLatitude * 180 / .pi,
+                          longitude: destinationLongitude * 180 / .pi)
     }
 }

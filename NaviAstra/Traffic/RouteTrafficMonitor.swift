@@ -1,12 +1,97 @@
 import Foundation
 
+nonisolated struct RouteTrafficFlowQuery: Sendable {
+    let distanceAlongRoute: Double
+    let coordinate: Coordinate
+}
+
+nonisolated struct RouteTrafficFlowSample: Sendable {
+    let distanceAlongRoute: Double
+    let flow: TrafficFlow
+}
+
+nonisolated struct RouteTrafficSegment: Equatable, Sendable, Identifiable {
+    let id: String
+    let routeID: UUID
+    let startDistance: Double
+    let endDistance: Double
+    let coordinates: [Coordinate]
+    let colorHex: UInt32
+}
+
 /// Selects a useful traffic horizon and queries small boxes along the active route corridor.
 struct RouteTrafficMonitor {
     static let lookAheadSeconds: TimeInterval = 25 * 60
     nonisolated static let corridorHalfWidthMeters = 900.0
     nonisolated static let querySegmentLengthMeters = 8_000.0
     nonisolated static let queryOverlapMeters = 1_000.0
-    static let routeMatchToleranceMeters = 140.0
+    nonisolated static let routeMatchToleranceMeters = 140.0
+    nonisolated static let maximumFlowSamples = 20
+    nonisolated static let flowSampleSpacingMeters = 900.0
+
+    nonisolated static func flowQueries(for routeCoordinates: [Coordinate], from startDistance: Double,
+                                        through endDistance: Double) -> [RouteTrafficFlowQuery] {
+        let routeLength = routeGeometryLength(routeCoordinates)
+        let start = max(0, startDistance)
+        let end = min(routeLength, endDistance)
+        guard routeCoordinates.count > 1, end > start else { return [] }
+        let requestedCount = Int(ceil((end - start) / flowSampleSpacingMeters)) + 1
+        let sampleCount = min(maximumFlowSamples, max(1, requestedCount))
+        let distances: [Double]
+        if sampleCount == 1 {
+            distances = [(start + end) / 2]
+        } else {
+            let spacing = (end - start) / Double(sampleCount - 1)
+            distances = (0..<sampleCount).map { start + Double($0) * spacing }
+        }
+        return distances.compactMap { distance in
+            guard let coordinate = coordinate(at: distance, in: routeCoordinates) else { return nil }
+            return RouteTrafficFlowQuery(distanceAlongRoute: distance, coordinate: coordinate)
+        }
+    }
+
+    nonisolated static func coloredSegments(on route: NavigationRoute, from startDistance: Double,
+                                            through endDistance: Double,
+                                            queries: [RouteTrafficFlowQuery],
+                                            samples: [RouteTrafficFlowSample]) -> [RouteTrafficSegment] {
+        guard queries.count > 0, !samples.isEmpty else { return [] }
+        let routeLength = routeGeometryLength(route.coordinates)
+        let start = max(0, startDistance)
+        let end = min(routeLength, endDistance)
+        guard end > start else { return [] }
+        let orderedQueries = queries.sorted { $0.distanceAlongRoute < $1.distanceAlongRoute }
+        let orderedSamples = samples.sorted { $0.distanceAlongRoute < $1.distanceAlongRoute }
+        return orderedSamples.compactMap { sample in
+            guard let index = orderedQueries.firstIndex(where: {
+                abs($0.distanceAlongRoute - sample.distanceAlongRoute) < 1
+            }) else { return nil }
+            let cellStart = index == 0 ? start
+                : (orderedQueries[index - 1].distanceAlongRoute + sample.distanceAlongRoute) / 2
+            let cellEnd = index == orderedQueries.count - 1 ? end
+                : (sample.distanceAlongRoute + orderedQueries[index + 1].distanceAlongRoute) / 2
+            let projections = sample.flow.coordinates.compactMap { coordinate -> RouteProjection? in
+                guard let projection = MapMatcher.project(coordinate, onto: route.coordinates),
+                      projection.distanceFromRoute <= routeMatchToleranceMeters,
+                      projection.alongRoute >= cellStart - 100,
+                      projection.alongRoute <= cellEnd + 100 else { return nil }
+                return projection
+            }
+            guard let first = projections.map(\.alongRoute).min(),
+                  let last = projections.map(\.alongRoute).max() else { return nil }
+            let clippedStart = max(start, max(cellStart, first))
+            let clippedEnd = min(end, min(cellEnd, last))
+            guard clippedEnd - clippedStart > 8 else { return nil }
+            let coordinates = coordinates(in: route.coordinates, from: clippedStart, through: clippedEnd)
+            guard coordinates.count > 1 else { return nil }
+            return RouteTrafficSegment(
+                id: "\(route.id.uuidString)-\(Int(clippedStart.rounded()))-\(Int(clippedEnd.rounded()))",
+                routeID: route.id,
+                startDistance: clippedStart,
+                endDistance: clippedEnd,
+                coordinates: coordinates,
+                colorHex: sample.flow.overlayColorHex)
+        }
+    }
 
     static func lookAheadDistance(for route: NavigationRoute, progress: RouteProgress?) -> Double {
         let remainingDistance = max(0, progress?.remainingDistance ?? route.distance)
@@ -114,6 +199,21 @@ struct RouteTrafficMonitor {
             if segmentStart >= end { break }
         }
         return result
+    }
+
+    private nonisolated static func coordinate(at distance: Double,
+                                               in routeCoordinates: [Coordinate]) -> Coordinate? {
+        guard routeCoordinates.count > 1 else { return routeCoordinates.first }
+        var distanceBeforeSegment = 0.0
+        for (first, second) in zip(routeCoordinates, routeCoordinates.dropFirst()) {
+            let segmentLength = first.distance(to: second)
+            if segmentLength > 0, distance <= distanceBeforeSegment + segmentLength {
+                let fraction = max(0, min(1, (distance - distanceBeforeSegment) / segmentLength))
+                return interpolate(first, second, fraction: fraction)
+            }
+            distanceBeforeSegment += segmentLength
+        }
+        return routeCoordinates.last
     }
 
     private nonisolated static func append(_ coordinate: Coordinate, to coordinates: inout [Coordinate]) {

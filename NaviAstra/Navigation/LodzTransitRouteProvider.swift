@@ -265,6 +265,7 @@ private actor LodzTransitRepository {
     private static let maximumAccessWalkDistance: Double = 10_000
     private static let maximumApproximateLocalWalkingCandidates = 12
     private static let maximumApproximateRailWalkingCandidates = 8
+    private static let maximumWalkingGeometryCandidates = 6
     private static let maximumCachedWalkingGeometries = 5_000
     private static let maximumCachedAccessEstimates = 10_000
 
@@ -462,11 +463,13 @@ private actor LodzTransitRepository {
             trace.recordDuration("TransitSearch", startedAt: searchStartedAt)
             trace.recordElapsedDuration("TimeToFirstRoute")
             await onProgress?(.enrichingGeometry)
-            let provisional = Self.selectRouteVariants(planned, limit: 3)
-            await onProvisionalRoutes?(provisional)
-            let routes = await resolveTransferWalks(in: planned, endpoint: walkingRoutingEndpoint,
+            let geometryCandidates = Self.selectRouteVariants(
+                planned, limit: Self.maximumWalkingGeometryCandidates)
+            let routes = await resolveTransferWalks(in: geometryCandidates, endpoint: walkingRoutingEndpoint,
                                                     planningID: planningID, trace: trace)
+            guard !routes.isEmpty else { throw TransitRoutingError.walkingUnavailable }
             trace.recordElapsedDuration("TimeToRouteReady")
+            await onProvisionalRoutes?(routes)
             await onProgress?(nil)
             return routes
         } catch {
@@ -977,10 +980,7 @@ private actor LodzTransitRepository {
                 walkingGeometry = TransitWalkingGeometry(coordinates: [from, to], duration: 0)
             } else {
                 let key = TransitWalkingGeometryKey(from: from, to: to)
-                guard let geometry = geometries[key] else {
-                    journey.legs[index].hasResolvedWalkingGeometry = false
-                    continue
-                }
+                guard let geometry = geometries[key] else { return nil }
                 walkingGeometry = geometry
             }
             if !leg.isTransfer && walkingGeometry.duration > Self.maximumAccessWalkTime {

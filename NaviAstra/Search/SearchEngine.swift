@@ -94,8 +94,8 @@ struct SearchEngine {
             center = try await resolve(location, near: center)
         }
         let searchCenter = center
-        let needsEstimates = (intent.intent != .address || intent.alongRoute)
-            && context.origin != nil && context.mode != .transit && context.mode != .parkRide
+        let routeOrigin = context.origin ?? searchCenter
+        let needsEstimates = routeOrigin != nil && context.mode != .transit && context.mode != .parkRide
         func ranked(_ candidates: [SearchResult]) -> [SearchResult] {
             var unique: [SearchResult] = []
             for result in candidates {
@@ -115,7 +115,12 @@ struct SearchEngine {
                 }
                 var value = result
                 value.straightDistance = searchCenter.map { $0.distance(to: result.destination.coordinate) }
-                value.travelEstimateStatus = needsEstimates ? .calculating : .notRequested
+                value.requiresRouteEstimate = needsEstimates
+                if needsEstimates {
+                    value.travelEstimateStatus = .calculating
+                } else {
+                    value.travelEstimateStatus = .notRequested
+                }
                 unique.append(value)
             }
             return unique.sorted { a, b in
@@ -132,7 +137,11 @@ struct SearchEngine {
         }
         func publish(_ candidates: [SearchResult]) {
             let results = Array(ranked(candidates).prefix(8))
-            if !results.isEmpty { onUpdate(results) }
+            guard !results.isEmpty else { return }
+            // Keep place rows out of the list until route values are ready, so they cannot be
+            // selected while only a straight-line distance is available.
+            if needsEstimates { return }
+            onUpdate(results)
         }
         var candidates: [SearchResult]
         if intent.intent == .address {
@@ -175,22 +184,50 @@ struct SearchEngine {
         // Along-route searches retain a wider candidate set to compare detours.
         var results = Array(ranked(candidates).prefix(intent.alongRoute ? 20 : 8))
         if !needsEstimates { return Array(results.prefix(8)) }
-        if let origin = context.origin, !results.isEmpty, context.mode != .transit, context.mode != .parkRide {
+        if let origin = routeOrigin, !results.isEmpty, context.mode != .transit, context.mode != .parkRide {
             do {
-                let targets = results.map { $0.destination.coordinate }
-                let rows = try await matrix.searchMatrix(sources: [origin], targets: targets, mode: context.mode, preferences: context.preferences)
-                for index in results.indices {
-                    results[index].travelTime = rows[0][index].time
-                    results[index].travelDistance = rows[0][index].distance.map { $0 * 1000 }
-                    results[index].travelEstimateStatus = results[index].travelTime == nil ? .unavailable : .notRequested
+                let poiIndexes = results.indices.filter { results[$0].isPOI }
+                let poiDestinations = poiIndexes.map { results[$0].navigationDestination }
+                let resolvedPOIs = await POIAccessResolver.shared.resolveMany(for: poiDestinations, mode: context.mode)
+                try Task.checkCancellation()
+                var poiCoordinates: [Int: Coordinate] = [:]
+                for (offset, index) in poiIndexes.enumerated() {
+                    if let target = resolvedPOIs[offset] {
+                        poiCoordinates[index] = target.coordinate
+                    } else {
+                        // Valhalla snaps the POI pin to its routable road point when OSM has no
+                        // explicit entrance or parking access point available.
+                        poiCoordinates[index] = results[index].destination.coordinate
+                    }
                 }
-                if intent.alongRoute, let target = context.routeTarget {
-                    // Compare the same routing model on both sides; never subtract a stale live ETA.
-                    let onward = try await matrix.searchMatrix(sources: [origin] + targets, targets: [target], mode: context.mode, preferences: context.preferences)
-                    if let baseline = onward[0][0].time {
-                        for index in results.indices {
-                            if let first = results[index].travelTime, let second = onward[index + 1][0].time {
-                                results[index].detour = max(0, first + second - baseline)
+                let routedTargets: [(index: Int, coordinate: Coordinate)] = results.indices.compactMap { index in
+                    if results[index].isPOI {
+                        guard let coordinate = poiCoordinates[index] else { return nil }
+                        return (index, coordinate)
+                    }
+                    return (index, results[index].destination.coordinate)
+                }
+                if !routedTargets.isEmpty {
+                    let coordinates = routedTargets.map { $0.coordinate }
+                    let rows = try await matrix.searchMatrix(sources: [origin], targets: coordinates,
+                                                             mode: context.mode, preferences: context.preferences)
+                    for (rowIndex, target) in routedTargets.enumerated() {
+                        results[target.index].travelTime = rows[0][rowIndex].time
+                        results[target.index].travelDistance = rows[0][rowIndex].distance.map { $0 * 1_000 }
+                        results[target.index].travelEstimateStatus = results[target.index].travelTime == nil
+                            || results[target.index].travelDistance == nil ? .unavailable : .notRequested
+                    }
+                    if intent.alongRoute, let routeTarget = context.routeTarget {
+                        // Compare the same routing model on both sides; never subtract a stale live ETA.
+                        let onward = try await matrix.searchMatrix(sources: [origin] + coordinates,
+                                                                    targets: [routeTarget], mode: context.mode,
+                                                                    preferences: context.preferences)
+                        if let baseline = onward[0][0].time {
+                            for (rowIndex, target) in routedTargets.enumerated() {
+                                if let first = results[target.index].travelTime,
+                                   let second = onward[rowIndex + 1][0].time {
+                                    results[target.index].detour = max(0, first + second - baseline)
+                                }
                             }
                         }
                     }

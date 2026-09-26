@@ -76,8 +76,17 @@ struct SearchResult: Identifiable {
     var detour: Double? = nil
     var detourDistance: Double? = nil
     var travelEstimateStatus: TravelEstimateStatus = .notRequested
+    var requiresRouteEstimate = false
 
     var id: UUID { destination.id }
+    var navigationDestination: Destination {
+        guard isPOI else { return destination }
+        var result = destination
+        result.poi = POIMetadata(provider: placeProvider, osmID: osmID,
+                                 category: category, brand: brand, operatorName: operatorName)
+        return result
+    }
+
     var placeIdentity: PlaceIdentity {
         let osmObject = placeProvider == .openStreetMap ? OpenStreetMapObjectID(osmID) : nil
         return PlaceIdentity(provider: placeProvider,
@@ -118,7 +127,8 @@ struct SearchResult: Identifiable {
         if merged.destination.address == nil, let address = other.destination.address {
             merged.destination = Destination(name: merged.destination.name,
                                              coordinate: merged.destination.coordinate,
-                                             address: address)
+                                             address: address,
+                                             poi: merged.destination.poi)
         }
         return merged
     }
@@ -138,6 +148,7 @@ struct SearchResult: Identifiable {
             if let distance = detourDistance {
                 return "\(String(format: "%.1f", distance / 1_000)) km od trasy • obliczanie czasu…"
             }
+            if requiresRouteEstimate { return "Obliczanie odległości trasy i czasu…" }
             if let straightDistance {
                 return "\(String(format: "%.1f", straightDistance / 1_000)) km w linii prostej • obliczanie czasu…"
             }
@@ -147,11 +158,13 @@ struct SearchResult: Identifiable {
             if let distance = detourDistance {
                 return "\(String(format: "%.1f", distance / 1_000)) km od trasy • objazd niedostępny"
             }
+            if requiresRouteEstimate { return "Odległość trasy i czas niedostępne" }
             if let straightDistance {
                 return "\(String(format: "%.1f", straightDistance / 1_000)) km w linii prostej • czas niedostępny"
             }
             return "Czas dojazdu niedostępny"
         }
+        if requiresRouteEstimate { return "Odległość trasy i czas niedostępne" }
         if let straightDistance {
             return "\(String(format: "%.1f", straightDistance / 1000)) km w linii prostej • ETA niedostępne"
         }

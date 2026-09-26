@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-struct TrafficFlow {
+nonisolated struct TrafficFlow: Sendable {
     let currentSpeedKph: Int
     let freeFlowSpeedKph: Int
     let confidence: Double?
@@ -287,9 +287,21 @@ struct TrafficIncident: Identifiable {
 struct TrafficSnapshot {
     let flow: TrafficFlow?
     let incidents: [TrafficIncident]
+    let routeFlowSegments: [RouteTrafficSegment]
     let updatedAt: Date
     let partialError: String?
     let incidentDataAvailable: Bool
+
+    init(flow: TrafficFlow?, incidents: [TrafficIncident],
+         routeFlowSegments: [RouteTrafficSegment] = [], updatedAt: Date,
+         partialError: String?, incidentDataAvailable: Bool) {
+        self.flow = flow
+        self.incidents = incidents
+        self.routeFlowSegments = routeFlowSegments
+        self.updatedAt = updatedAt
+        self.partialError = partialError
+        self.incidentDataAvailable = incidentDataAvailable
+    }
 }
 
 nonisolated struct TrafficBoundingBox: Equatable, Sendable {
@@ -319,6 +331,7 @@ enum TrafficTileStyle: String {
 protocol TrafficProvider {
     func snapshot(near: Coordinate, incidentRadiusMeters: Double) async throws -> TrafficSnapshot
     func incidents(in boxes: [TrafficBoundingBox]) async throws -> [TrafficIncident]
+    func routeFlowSamples(at queries: [RouteTrafficFlowQuery]) async -> [RouteTrafficFlowSample]
     func rasterFlowTileURLTemplate(style: TrafficTileStyle) -> String?
     func rasterIncidentTileURLTemplate(style: TrafficTileStyle) -> String?
 }
@@ -379,6 +392,42 @@ struct TomTomTrafficProvider: TrafficProvider {
                 }
             }
             return Array(unique.values)
+        }
+    }
+
+    func routeFlowSamples(at queries: [RouteTrafficFlowQuery]) async -> [RouteTrafficFlowSample] {
+        guard !queries.isEmpty else { return [] }
+        return await withTaskGroup(of: (Int, TrafficFlow?).self) { group in
+            var nextQuery = 0
+            for _ in 0..<min(4, queries.count) {
+                let queryIndex = nextQuery
+                let query = queries[queryIndex]
+                nextQuery += 1
+                group.addTask {
+                    guard let flow = try? await fetchFlow(near: query.coordinate),
+                          flow.coordinates.count > 1 else { return (queryIndex, nil) }
+                    return (queryIndex, flow)
+                }
+            }
+
+            var samples: [RouteTrafficFlowSample] = []
+            for await (queryIndex, flow) in group {
+                if let flow {
+                    samples.append(RouteTrafficFlowSample(distanceAlongRoute: queries[queryIndex].distanceAlongRoute,
+                                                          flow: flow))
+                }
+                if nextQuery < queries.count {
+                    let queryIndex = nextQuery
+                    let query = queries[queryIndex]
+                    nextQuery += 1
+                    group.addTask {
+                        guard let flow = try? await fetchFlow(near: query.coordinate),
+                              flow.coordinates.count > 1 else { return (queryIndex, nil) }
+                        return (queryIndex, flow)
+                    }
+                }
+            }
+            return samples.sorted { $0.distanceAlongRoute < $1.distanceAlongRoute }
         }
     }
 

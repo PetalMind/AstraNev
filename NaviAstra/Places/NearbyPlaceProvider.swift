@@ -178,9 +178,15 @@ struct OpenStreetMapNearbyPlaceProvider {
             let tags = element.tags ?? [:]
             let name = tags["name"] ?? tags["brand"] ?? tags["operator"] ?? category.fallbackName
             let id = "\(element.type ?? "poi")-\(element.id)"
+            let poiMetadata = element.type.map {
+                POIMetadata(provider: .openStreetMap, osmID: "\($0):\(element.id)",
+                            category: tags["amenity"] ?? tags["shop"] ?? tags["tourism"],
+                            brand: tags["brand"], operatorName: tags["operator"])
+            }
             let destination = Destination(name: name, coordinate: coordinate,
                                           address: [tags["addr:street"], tags["addr:housenumber"]]
-                                            .compactMap { $0 }.joined(separator: " ").nilIfEmpty)
+                                            .compactMap { $0 }.joined(separator: " ").nilIfEmpty,
+                                          poi: poiMetadata)
             found.append(NearbyPlaceCandidate(id: id, destination: destination,
                                                category: category, distanceFromRoute: pathDistance,
                                                osmCategory: tags["amenity"] ?? tags["shop"],

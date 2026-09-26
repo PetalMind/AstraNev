@@ -12,6 +12,14 @@ struct ContentView: View {
     @State private var mapPanelInset: CGFloat = 340
     @State private var mapHeaderInset: CGFloat = 100
     @State private var showSearch = false
+    @State private var showOriginPicker = false
+    @State private var openOriginSearchAfterPickerDismiss = false
+    @State private var openDestinationSearchAfterPlaceDismiss = false
+    @State private var selectingRouteOriginInSearch = false
+    @State private var selectingRouteOriginOnMap = false
+    @State private var pickedRouteOriginCoordinate: Coordinate?
+    @State private var pickedRouteOriginAddress: String?
+    @State private var routeOriginGeocodingTask: Task<Void, Never>?
     @State private var selectedMapPlaces: [SearchResult] = []
     @State private var selectedTransitSheet: TransitSheetSelection?
     @State private var selectedTransitStopID: String?
@@ -153,6 +161,36 @@ struct ContentView: View {
         engine.state.status == .navigating || engine.state.status == .rerouting
     }
 
+    private var usesFullBleedNavigationPanel: Bool {
+        #if os(iOS)
+        isNavigating || engine.state.status == .arrived
+        #else
+        false
+        #endif
+    }
+
+    private var arrivalShareURL: URL? {
+        guard let destination = engine.state.destination else { return nil }
+        var components = URLComponents(string: "https://maps.apple.com/")
+        var queryItems = [URLQueryItem]()
+        if let origin = engine.state.route?.coordinates.first {
+            queryItems.append(URLQueryItem(
+                name: "saddr",
+                value: "\(origin.latitude),\(origin.longitude)"))
+        }
+        queryItems.append(URLQueryItem(
+            name: "daddr",
+            value: "\(destination.coordinate.latitude),\(destination.coordinate.longitude)"))
+        switch engine.state.transportMode {
+        case .car, .parkRide: queryItems.append(URLQueryItem(name: "dirflg", value: "d"))
+        case .walking: queryItems.append(URLQueryItem(name: "dirflg", value: "w"))
+        case .bicycle: break
+        case .transit: queryItems.append(URLQueryItem(name: "dirflg", value: "r"))
+        }
+        components?.queryItems = queryItems
+        return components?.url
+    }
+
     private var availablePolishVoices: [AVSpeechSynthesisVoice] {
         AVSpeechSynthesisVoice.speechVoices()
             .filter { $0.language == "pl-PL" }
@@ -214,6 +252,19 @@ struct ContentView: View {
         }
     }
 
+    private var routeOriginPoint: RoutePoint? {
+        engine.state.routeOrigin ?? engine.state.location.map {
+            RoutePoint(Destination(name: "Twoja lokalizacja", coordinate: $0.coordinate),
+                       source: .currentLocation)
+        }
+    }
+
+    private var isRouteOriginAwayFromUser: Bool {
+        guard let origin = engine.state.routeOrigin, !origin.isCurrentLocation else { return false }
+        guard let location = engine.state.location else { return true }
+        return origin.coordinate.distance(to: location.coordinate) > 100
+    }
+
     private var pointSelectionHint: String {
         #if os(macOS)
         "Wyszukaj adres lub miejsce albo kliknij dwukrotnie mapę, aby wybrać punkt."
@@ -239,8 +290,21 @@ struct ContentView: View {
                          routePreviewExpanded: routePreviewExpanded,
                          viewportPadding: CameraPadding(top: Double(mapHeaderInset), left: 24,
                                                         bottom: Double(mapPanelInset), right: 24),
-                         onSearchSelect: { destination in selectDestination(destination) },
-                         onPlaceSelect: { presentMapPlaces($0) },
+                         onSearchSelect: { destination in
+                             if selectingRouteOriginOnMap {
+                                 applyRouteOrigin(destination, source: destination.poi == nil ? .search : .poi)
+                             } else {
+                                 selectDestination(destination)
+                             }
+                         },
+                         onPlaceSelect: { places in
+                             if selectingRouteOriginOnMap, let place = places.first {
+                                 engine.focusMap(on: place.destination.coordinate)
+                                 updatePickedRouteOrigin(place.destination.coordinate)
+                             } else {
+                                 presentMapPlaces(places)
+                             }
+                         },
                          onTransitStopSelect: { openTransitStop($0) },
                          onTransitVehicleSelect: { openTransitVehicle($0) },
                          onMapReady: revealMapSplash,
@@ -254,7 +318,12 @@ struct ContentView: View {
                                  discoveryDrawerCollapseRequest += 1
                              }
             }) { coordinate in
-                selectMapCoordinate(coordinate)
+                if selectingRouteOriginOnMap {
+                    engine.focusMap(on: coordinate)
+                    updatePickedRouteOrigin(coordinate)
+                } else {
+                    selectMapCoordinate(coordinate)
+                }
             }
             .ignoresSafeArea()
 
@@ -264,19 +333,28 @@ struct ContentView: View {
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
 
+            if selectingRouteOriginOnMap {
+                routeOriginMapPicker
+            } else {
             GeometryReader { geometry in
                 VStack(spacing: 12) {
                     header
+                        .padding(.horizontal, usesFullBleedNavigationPanel ? 16 : 0)
                         .onGeometryChange(for: CGFloat.self) { $0.size.height + geometry.safeAreaInsets.top + 20 } action: { mapHeaderInset = $0 }
 
                     if let message = engine.state.errorMessage ?? localData.errorMessage {
                         errorNotice(message)
+                            .padding(.horizontal, usesFullBleedNavigationPanel ? 16 : 0)
                     }
-                    if isNavigating { gpsStatusIndicator }
+                    if isNavigating {
+                        gpsStatusIndicator
+                            .padding(.horizontal, usesFullBleedNavigationPanel ? 16 : 0)
+                    }
 
                     Spacer(minLength: 16)
 
                     mapControl(compact: geometry.size.height < 500)
+                        .padding(.horizontal, usesFullBleedNavigationPanel ? 16 : 0)
 
                     Group {
                         if engine.state.status == .idle || (engine.state.status == .error && engine.state.destination == nil) {
@@ -287,7 +365,8 @@ struct ContentView: View {
                         } else {
                             ScrollView(.vertical) {
                                 activePanel
-                                    .padding(2)
+                                    .padding(.horizontal, usesFullBleedNavigationPanel ? 0 : 2)
+                                    .padding(.top, usesFullBleedNavigationPanel ? 0 : 2)
                                     .padding(.bottom, isTransitRoutePreview ? 76 : 0)
                                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { panelHeight = $0 }
                             }
@@ -305,13 +384,16 @@ struct ContentView: View {
                             }
                         }
                     }
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height + geometry.safeAreaInsets.bottom + 24 } action: { mapPanelInset = $0 }
+                    .onGeometryChange(for: CGFloat.self) {
+                        $0.size.height + geometry.safeAreaInsets.bottom + (usesFullBleedNavigationPanel ? 0 : 24)
+                    } action: { mapPanelInset = $0 }
                 }
                 .frame(maxWidth: 560)
-                .padding(.horizontal, 16)
+                .padding(.horizontal, usesFullBleedNavigationPanel ? 0 : 16)
                 .padding(.top, 8)
-                .padding(.bottom, 12)
+                .padding(.bottom, usesFullBleedNavigationPanel ? -geometry.safeAreaInsets.bottom : 12)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
             }
 
             if !isMapReady {
@@ -328,9 +410,19 @@ struct ContentView: View {
         }
         .preferredColorScheme(!mapCapabilities.supportsApplicationDarkMode || mapSettings.appearance == .auto ? nil :
                               (mapSettings.appearance == .night ? .dark : .light))
-        .sheet(isPresented: $showSearch) {
+        .sheet(isPresented: $showSearch, onDismiss: { selectingRouteOriginInSearch = false }) {
             searchSheet
                 .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showOriginPicker, onDismiss: {
+            guard openOriginSearchAfterPickerDismiss else { return }
+            openOriginSearchAfterPickerDismiss = false
+            selectingRouteOriginInSearch = true
+            showSearch = true
+        }) {
+            routeOriginPicker
+                .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
         .sheet(item: $selectedTransitSheet) { selection in
@@ -341,7 +433,11 @@ struct ContentView: View {
             .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: Binding(get: { !selectedMapPlaces.isEmpty },
-                                    set: { if !$0 { selectedMapPlaces = [] } })) {
+                                    set: { if !$0 { selectedMapPlaces = [] } }), onDismiss: {
+            guard openDestinationSearchAfterPlaceDismiss else { return }
+            openDestinationSearchAfterPlaceDismiss = false
+            presentSearch()
+        }) {
             NavigationStack {
                 Group {
                     if selectedMapPlaces.count > 1 {
@@ -369,15 +465,27 @@ struct ContentView: View {
                                 isSaved: localData.places.contains {
                                     $0.kind == .favorite && $0.destination.coordinate == result.destination.coordinate
                                 },
-                                onSave: { localData.add(result.destination) },
+                                onSave: { localData.add(result.navigationDestination) },
                                 isNavigating: isNavigating,
                                 primaryActionTitle: isNavigating ? "Dodaj przystanek" : "Wyznacz trasę",
+                                onRouteFromPlace: {
+                                    let point = result.navigationDestination
+                                    selectedMapPlaces = []
+                                    localData.recordSearch(point)
+                                    if engine.state.destination == nil {
+                                        openDestinationSearchAfterPlaceDismiss = true
+                                    }
+                                    Task {
+                                        await engine.setRouteOrigin(RoutePoint(
+                                            point, source: point.poi == nil ? .search : .poi))
+                                    }
+                                },
                                 onPlanRoute: {
                                     selectedMapPlaces = []
                                     if isNavigating {
-                                        Task { await engine.addWaypoint(result.destination) }
+                                        Task { await engine.addWaypoint(result.navigationDestination) }
                                     } else {
-                                        selectDestination(result.destination)
+                                        selectDestination(result.navigationDestination)
                                     }
                                 })
                                 .id(result.placeIdentity.cacheKey)
@@ -431,6 +539,10 @@ struct ContentView: View {
         }
         .onChange(of: engine.state.location?.coordinate) { _, _ in
             Task { await refreshQuickDestinationETAs() }
+        }
+        .onChange(of: engine.state.searchMapCenter) { _, center in
+            guard selectingRouteOriginOnMap, let center else { return }
+            updatePickedRouteOrigin(center)
         }
         .onChange(of: quickETADestinationFingerprint) { _, _ in
             Task { await refreshQuickDestinationETAs() }
@@ -644,6 +756,293 @@ struct ContentView: View {
         .accessibilityHint("Otwiera wyszukiwanie miejsca lub adresu")
     }
 
+    private var routeEndpointFields: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Button { showOriginPicker = true } label: {
+                    HStack(spacing: 11) {
+                        Image(systemName: routeOriginPoint?.isCurrentLocation == true
+                              ? "location.fill" : "a.circle.fill")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(routeOriginPoint?.isCurrentLocation == true ? .blue : .accentColor)
+                            .frame(width: 34, height: 34)
+                            .background(Color.primary.opacity(0.055), in: Circle())
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(routeOriginPoint?.name ?? "Twoja lokalizacja")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            Text("Punkt startowy")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Punkt startowy: \(routeOriginPoint?.name ?? "Twoja lokalizacja")")
+
+                Button(action: swapRouteEndpoints) {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 38, height: 38)
+                        .background(Color.accentColor.opacity(0.1), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Zamień punkt startowy i cel")
+                .disabled(engine.state.destination == nil || routeOriginPoint == nil)
+            }
+            .frame(minHeight: 48)
+
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.turn.down.right")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 34, height: 28)
+                Rectangle()
+                    .fill(Color.primary.opacity(0.08))
+                    .frame(height: 1)
+            }
+
+            Button(action: presentSearch) {
+                HStack(spacing: 11) {
+                    Image(systemName: "b.circle.fill")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 34, height: 34)
+                        .background(Color.accentColor.opacity(0.1), in: Circle())
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(engine.state.destination?.name ?? "Dokąd?")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text(engine.state.destination?.address ?? "Cel podróży")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(minHeight: 48)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Cel podróży: \(engine.state.destination?.name ?? "Wybierz miejsce")")
+        }
+        .padding(11)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+    }
+
+    private var routeOriginPicker: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Button {
+                        showOriginPicker = false
+                        Task { await engine.setRouteOrigin(nil) }
+                    } label: {
+                        Label("Moja lokalizacja", systemImage: "location.fill")
+                    }
+                    .foregroundStyle(.blue)
+                }
+
+                Section("Dodaj punkt startowy") {
+                    Button {
+                        openOriginSearchAfterPickerDismiss = true
+                        showOriginPicker = false
+                    } label: {
+                        Label("Wyszukaj miejsce", systemImage: "magnifyingglass")
+                    }
+                    Button(action: beginRouteOriginMapSelection) {
+                        Label("Wybierz na mapie", systemImage: "mappin.and.ellipse")
+                    }
+                }
+
+                if !localData.places.isEmpty {
+                    Section("Zapisane miejsca") {
+                        ForEach(localData.places) { place in
+                            Button {
+                                applyRouteOrigin(
+                                    place.destination,
+                                    source: place.kind == .favorite ? .favorite : .savedPlace)
+                            } label: {
+                                Label(place.destination.name,
+                                      systemImage: routeOriginSavedPlaceSymbol(place.kind))
+                            }
+                        }
+                    }
+                }
+
+                let recent = Array((localData.searches.map(\.destination) + recentDestinations)
+                    .reduce(into: [Destination]()) { values, destination in
+                        if !values.contains(where: { $0.coordinate == destination.coordinate }) {
+                            values.append(destination)
+                        }
+                    }.prefix(12))
+                if !recent.isEmpty {
+                    Section("Ostatnie miejsca") {
+                        ForEach(recent) { destination in
+                            Button {
+                                applyRouteOrigin(destination, source: .history)
+                            } label: {
+                                Label(destination.name, systemImage: "clock.arrow.circlepath")
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Punkt startowy")
+#if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+#endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Anuluj") { showOriginPicker = false }
+                }
+            }
+        }
+    }
+
+    private var routeOriginMapPicker: some View {
+        GeometryReader { geometry in
+            ZStack {
+                Image(systemName: "mappin.and.ellipse")
+                    .font(.system(size: 39, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .shadow(color: .black.opacity(0.28), radius: 5, y: 2)
+                    .offset(y: -18)
+                    .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                    .allowsHitTesting(false)
+
+                VStack(spacing: 0) {
+                    HStack {
+                        Button {
+                            selectingRouteOriginOnMap = false
+                            engine.state.routeOriginMapSelectionActive = false
+                            showOriginPicker = true
+                        } label: {
+                            Label("Wstecz", systemImage: "chevron.left")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        .buttonStyle(.borderedProminent)
+                        Spacer()
+                        Text("Wybierz punkt startu")
+                            .font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 9)
+                            .background(.regularMaterial, in: Capsule())
+                    }
+
+                    Spacer(minLength: 0)
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label(pickedRouteOriginAddress ?? "Przesuń mapę pod pinezkę",
+                              systemImage: pickedRouteOriginAddress == nil ? "location.magnifyingglass" : "mappin.and.ellipse")
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(2)
+                        if pickedRouteOriginCoordinate != nil {
+                            Text("Punkt pod pinezką na środku mapy")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Button(action: confirmRouteOriginMapSelection) {
+                            Label("Ustaw jako punkt startu", systemImage: "a.circle.fill")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity, minHeight: 46)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(pickedRouteOriginCoordinate == nil)
+                    }
+                    .padding(16)
+                    .frame(maxWidth: 560)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .padding(.horizontal, 16)
+                }
+                .padding(.top, max(12, geometry.safeAreaInsets.top + 8))
+                .padding(.bottom, max(12, geometry.safeAreaInsets.bottom + 10))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .ignoresSafeArea()
+    }
+
+    private func beginRouteOriginMapSelection() {
+        showOriginPicker = false
+        selectingRouteOriginOnMap = true
+        engine.state.routeOriginMapSelectionActive = true
+        let coordinate = engine.state.searchMapCenter ?? engine.state.location?.coordinate
+            ?? engine.state.destination?.coordinate
+        pickedRouteOriginCoordinate = coordinate
+        pickedRouteOriginAddress = nil
+        if let coordinate {
+            engine.focusMap(on: coordinate, zoom: 15.5)
+            updatePickedRouteOrigin(coordinate)
+        }
+    }
+
+    private func updatePickedRouteOrigin(_ coordinate: Coordinate) {
+        pickedRouteOriginCoordinate = coordinate
+        pickedRouteOriginAddress = nil
+        routeOriginGeocodingTask?.cancel()
+        routeOriginGeocodingTask = Task {
+            try? await Task.sleep(for: .milliseconds(420))
+            guard !Task.isCancelled,
+                  selectingRouteOriginOnMap,
+                  pickedRouteOriginCoordinate == coordinate else { return }
+            let address = await GUGiKAddressProvider().reverseGeocode(coordinate)
+            guard !Task.isCancelled,
+                  selectingRouteOriginOnMap,
+                  pickedRouteOriginCoordinate == coordinate else { return }
+            pickedRouteOriginAddress = address
+        }
+    }
+
+    private func confirmRouteOriginMapSelection() {
+        guard let coordinate = pickedRouteOriginCoordinate else { return }
+        let address = pickedRouteOriginAddress
+        let name = address?.components(separatedBy: ",").first ?? "Wybrany punkt"
+        let destination = Destination(name: name, coordinate: coordinate, address: address)
+        localData.recordSearch(destination)
+        selectingRouteOriginOnMap = false
+        engine.state.routeOriginMapSelectionActive = false
+        routeOriginGeocodingTask?.cancel()
+        Task { await engine.setRouteOrigin(RoutePoint(destination, source: .mapSelection)) }
+    }
+
+    private func applyRouteOrigin(_ destination: Destination, source: RoutePointSource) {
+        showOriginPicker = false
+        showSearch = false
+        selectingRouteOriginInSearch = false
+        selectingRouteOriginOnMap = false
+        engine.state.routeOriginMapSelectionActive = false
+        routeOriginGeocodingTask?.cancel()
+        if source == .search || source == .mapSelection || source == .poi {
+            localData.recordSearch(destination)
+        }
+        Task { await engine.setRouteOrigin(RoutePoint(destination, source: source)) }
+    }
+
+    private func swapRouteEndpoints() {
+        Task { await engine.swapRoutePoints() }
+    }
+
+    private func routeOriginSavedPlaceSymbol(_ kind: PlaceKind) -> String {
+        switch kind {
+        case .favorite: "star.fill"
+        case .home: "house.fill"
+        case .work: "briefcase.fill"
+        }
+    }
+
     private var maneuverCard: some View {
         let maneuver = engine.state.progress?.nextManeuver
         let maneuverDistance = engine.state.progress?.distanceToNextManeuver ?? .infinity
@@ -651,10 +1050,10 @@ struct ContentView: View {
             HStack(spacing: 12) {
                 Image(systemName: engine.state.transportMode == .parkRide
                       ? "parkingsign.circle.fill" : (maneuver?.iconName ?? "arrow.up"))
-                    .font(.system(size: 25, weight: .semibold))
+                    .font(.system(size: 27, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(width: 48, height: 48)
-                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 15))
+                    .frame(width: 52, height: 52)
+                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(engine.state.status == .rerouting
@@ -662,7 +1061,7 @@ struct ContentView: View {
                      : (engine.state.transportMode == .parkRide
                         ? distance(engine.state.progress?.remainingDistance ?? 0)
                         : (maneuverDistance <= 25 ? "TERAZ" : distance(maneuverDistance))))
-                        .font(.system(size: 23, weight: .bold, design: .rounded))
+                        .font(.system(size: 20, weight: .bold, design: .rounded))
                         .contentTransition(.numericText())
 
                     Text(engine.state.transportMode == .parkRide
@@ -681,7 +1080,15 @@ struct ContentView: View {
                 }
 
                 Spacer(minLength: 0)
-                laneGuidance
+                VStack(alignment: .trailing, spacing: 6) {
+                    if engine.state.transportMode != .parkRide,
+                       maneuverDistance.isFinite, maneuverDistance <= 25 {
+                        Text(distance(maneuverDistance))
+                            .font(.system(size: 15, weight: .medium, design: .rounded).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    laneGuidance
+                }
             }
 
             if engine.state.transportMode == .car, let incident = nextRouteTrafficIncident {
@@ -863,10 +1270,10 @@ struct ContentView: View {
                 .frame(width: 34, height: 4)
                 .frame(maxWidth: .infinity)
             HStack {
-                Image(systemName: "mappin.circle.fill")
+                Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
                     .font(.title2)
                     .foregroundStyle(Color.accentColor)
-                Text(engine.state.destination?.name ?? "Wybrane miejsce")
+                Text("Planowanie trasy")
                     .font(.headline)
                     .lineLimit(2)
                 Spacer()
@@ -878,12 +1285,7 @@ struct ContentView: View {
                 Button("Zamknij", systemImage: "xmark") { engine.stop() }
                     .labelStyle(.iconOnly)
             }
-            if let destination = engine.state.destination {
-                Text(destination.address ?? "\(destination.coordinate.latitude.formatted(.number.precision(.fractionLength(5)))), \(destination.coordinate.longitude.formatted(.number.precision(.fractionLength(5))))")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(destinationExpanded ? 3 : 1)
-            }
+            routeEndpointFields
             Button {
                 Task { await engine.planRoute() }
             } label: {
@@ -966,27 +1368,9 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .accessibilityLabel(routePreviewExpanded ? "Zwiń szczegóły trasy" : "Rozwiń szczegóły trasy")
 
-            HStack(spacing: 10) {
-                Button {
-                    showSearch = true
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "mappin.and.ellipse")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(Color.accentColor)
-                            .frame(width: 36, height: 36)
-                            .background(Color.accentColor.opacity(0.1), in: Circle())
-                        Text(engine.state.destination?.name ?? "Wyznaczanie trasy")
-                            .font(.headline)
-                            .lineLimit(1)
-                            .foregroundStyle(.primary)
-                        Spacer(minLength: 0)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Zmień cel podróży")
-
+            routeEndpointFields
+            HStack {
+                Spacer()
                 Button(action: toggleDestinationFavorite) {
                     Image(systemName: isDestinationFavorite ? "star.fill" : "star")
                         .font(.system(size: 17, weight: .medium))
@@ -997,6 +1381,30 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(isDestinationFavorite ? "Usuń cel z ulubionych" : "Zapisz cel w ulubionych")
+            }
+
+            if isRouteOriginAwayFromUser, let origin = engine.state.routeOrigin {
+                VStack(alignment: .leading, spacing: 8) {
+                    if let location = engine.state.location {
+                        Label("Start trasy: \(distance(origin.coordinate.distance(to: location.coordinate))) od Ciebie",
+                              systemImage: "location.north.line")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Label("Start trasy ustawiono poza bieżącą lokalizacją",
+                              systemImage: "location.north.line")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    Button {
+                        Task { await engine.setRouteOrigin(nil) }
+                    } label: {
+                        Label("Użyj mojej lokalizacji jako start", systemImage: "location.fill")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding(.top, 2)
             }
 
             transportSelector
@@ -1328,9 +1736,15 @@ struct ContentView: View {
 
     private var beginRouteButton: some View {
         Button {
-            engine.begin()
+            if isRouteOriginAwayFromUser {
+                navigateToRouteOrigin()
+            } else {
+                engine.begin()
+            }
         } label: {
-            Label("Rozpocznij", systemImage: engine.state.transportMode == .transit ? "tram.fill" : "location.fill")
+            Label(isRouteOriginAwayFromUser ? "Nawiguj do punktu startowego" : "Rozpocznij",
+                  systemImage: isRouteOriginAwayFromUser ? "location.magnifyingglass" :
+                    (engine.state.transportMode == .transit ? "tram.fill" : "location.fill"))
                 .font(.headline)
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
@@ -1342,6 +1756,14 @@ struct ContentView: View {
                   || engine.state.transitPlanningPhase == .enrichingGeometry)
         .opacity(engine.state.status == .routePreview
                  && engine.state.transitPlanningPhase != .enrichingGeometry ? 1 : 0.55)
+    }
+
+    private func navigateToRouteOrigin() {
+        guard let point = engine.state.routeOrigin, !point.isCurrentLocation else { return }
+        let originDestination = point.destination
+        engine.state.routeOrigin = nil
+        engine.selectDestination(originDestination)
+        Task { await engine.planRoute() }
     }
 
     private var transportSelector: some View {
@@ -1588,8 +2010,9 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Trasa")
                 .font(.subheadline.weight(.semibold))
-            Label(engine.state.location == nil ? "Pozycja niedostępna" : "Moja pozycja",
-                  systemImage: "location.fill")
+            Label(engine.state.routeOrigin?.name ??
+                  (engine.state.location == nil ? "Pozycja niedostępna" : "Moja lokalizacja"),
+                  systemImage: engine.state.routeOrigin?.isCurrentLocation == false ? "a.circle.fill" : "location.fill")
                 .font(.subheadline)
                 .foregroundStyle(engine.state.location == nil ? Color.secondary : Color.primary)
             Label(engine.state.destination?.name ?? "Cel podróży",
@@ -1677,7 +2100,6 @@ struct ContentView: View {
     private func discoveryPanel(compact: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             searchButton
-            nearbyTransitCard
             if !compact {
                 HStack(alignment: .firstTextBaseline) {
                     Text("Dokąd ruszamy?")
@@ -1725,6 +2147,7 @@ struct ContentView: View {
                 .scrollIndicators(.hidden)
                 .accessibilityLabel("Miejsca w pobliżu")
             }
+            nearbyTransitCard
         }
         .padding(18)
 
@@ -1947,6 +2370,253 @@ struct ContentView: View {
     }
 
     private var journeyPanel: some View {
+#if os(iOS)
+        journeyNavigationPanel
+#else
+        desktopJourneyPanel
+#endif
+    }
+
+    private var journeyNavigationPanel: some View {
+        let shape = UnevenRoundedRectangle(
+            cornerRadii: RectangleCornerRadii(topLeading: 42, bottomLeading: 0,
+                                              bottomTrailing: 0, topTrailing: 42),
+            style: .continuous)
+
+        return VStack(spacing: 0) {
+            Capsule()
+                .fill(Color.white.opacity(0.48))
+                .frame(width: 38, height: 4)
+                .padding(.top, 8)
+                .padding(.bottom, 12)
+
+            Button {
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
+                    navigationPanelExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 0) {
+                    journeySummaryMetric(value: time(engine.state.progress?.remainingTime ?? 0), caption: "do celu")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    journeySummaryMetric(value: distance(engine.state.progress?.remainingDistance ?? 0), caption: "pozostało")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    journeySummaryMetric(value: arrivalTime(engine.state.progress?.remainingTime ?? 0), caption: "przyjazd")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: navigationPanelExpanded ? "chevron.down" : "chevron.up")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.66))
+                        .padding(.leading, 8)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 20)
+            .accessibilityLabel(navigationPanelExpanded ? "Zwiń panel prowadzenia" : "Rozwiń panel prowadzenia")
+
+            if engine.state.transportMode == .transit, let transitLeg = activeTransitLeg {
+                Group {
+                    if transitLeg.mode == "WALK" {
+                        transitWalkNavigationCard(transitLeg)
+                    } else {
+                        transitNavigationCard(transitLeg)
+                    }
+                }
+                .padding(.top, 16)
+            } else {
+                journeyDestinationRow
+                    .padding(.horizontal, 18)
+                    .padding(.top, 16)
+            }
+
+            HStack(spacing: 8) {
+                journeyFooterAction(symbol: "xmark.circle", title: "Anuluj") {
+                    engine.stop()
+                }
+                journeyFooterAction(symbol: "arrow.triangle.branch", title: "Przegląd\ntrasy") {
+                    engine.showRouteOverview()
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
+                        navigationPanelExpanded = false
+                    }
+                }
+                journeyFooterAction(symbol: "list.bullet", title: "Zakończ", primary: true) {
+                    engine.stop()
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 12)
+            .padding(.bottom, 15)
+
+            if navigationPanelExpanded {
+                VStack(alignment: .leading, spacing: 10) {
+                    Rectangle()
+                        .fill(Color.white.opacity(0.11))
+                        .frame(height: 1)
+                    Text("W trakcie podróży")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 8)], spacing: 8) {
+                        Menu {
+                            Button("Paliwo", systemImage: NearbyPlaceCategory.fuel.symbol) { presentNearby(.fuel) }
+                            Button("Parking", systemImage: NearbyPlaceCategory.parking.symbol) { presentNearby(.parking) }
+                            Button("Ładowarki", systemImage: NearbyPlaceCategory.charging.symbol) { presentNearby(.charging) }
+                            Button("Jedzenie", systemImage: NearbyPlaceCategory.food.symbol) { presentNearby(.food) }
+                        } label: {
+                            journeyActionLabel("Po trasie", symbol: "magnifyingglass")
+                        }
+                        Button {
+                            addingWaypoint = true
+                            showSearch = true
+                        } label: {
+                            journeyActionLabel("Przystanek", symbol: "plus.circle")
+                        }
+                        .disabled(engine.state.waypoints.count >= 8)
+                        Button {
+                            engine.showRouteOverview()
+                            withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
+                                navigationPanelExpanded = false
+                            }
+                        } label: {
+                            journeyActionLabel("Cała trasa", symbol: "map")
+                        }
+                        Button {
+                            routingDraft = engine.state.routingPreferences
+                            showRouteSettings = true
+                        } label: {
+                            journeyActionLabel("Opcje trasy", symbol: "slider.horizontal.3")
+                        }
+                        journeyMapLayersMenu
+                        Button { showTrafficDetails = true } label: {
+                            journeyActionLabel("Ruch na żywo", symbol: "car.side")
+                        }
+                        Button { presentNearby(.parking, nearDestination: true) } label: {
+                            journeyActionLabel("Parking na miejscu", symbol: "parkingsign.circle")
+                        }
+                    }
+                    .buttonStyle(.plain)
+
+                    if engine.state.transportMode == .transit {
+                        transitJourneyTimeline
+                    } else if engine.state.transportMode == .parkRide {
+                        parkRideJourneyTimeline
+                    }
+                }
+                .padding(.horizontal, 18)
+                .padding(.bottom, 18)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
+        .background {
+            ZStack {
+                shape.fill(.ultraThinMaterial)
+                shape.fill(
+                    LinearGradient(
+                        colors: [Color(red: 0.12, green: 0.18, blue: 0.26).opacity(0.92),
+                                 Color(red: 0.045, green: 0.075, blue: 0.12).opacity(0.97)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing))
+            }
+        }
+        .overlay {
+            shape.strokeBorder(Color.white.opacity(0.11), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.32), radius: 22, y: -8)
+        .gesture(DragGesture(minimumDistance: 20).onEnded { value in
+            if value.translation.height < -35 {
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { navigationPanelExpanded = true }
+            } else if value.translation.height > 35 {
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { navigationPanelExpanded = false }
+            }
+        })
+    }
+
+    private var journeyDestinationRow: some View {
+        let currentLeg = currentJourneyLeg
+        return Button {
+            engine.showRouteOverview()
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "flag.checkered")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 32, height: 32)
+                    .background(Color.accentColor.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Teraz jedziesz do \(currentLeg?.current.name ?? engine.state.destination?.name ?? "celu")")
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .lineLimit(1)
+                    if let following = currentLeg?.following {
+                        Text("Po dotarciu: \(following.name)")
+                            .font(.caption)
+                            .foregroundStyle(Color.white.opacity(0.55))
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 13)
+            .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
+            .background(Color.white.opacity(0.065), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Pokaż trasę do \(currentLeg?.current.name ?? engine.state.destination?.name ?? "celu")")
+    }
+
+    private func journeySummaryMetric(value: String, caption: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(.system(size: 20, weight: .bold, design: .rounded).monospacedDigit())
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Text(caption)
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.56))
+                .lineLimit(1)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func journeyFooterAction(symbol: String, title: String, primary: Bool = false,
+                                     action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 7) {
+                Image(systemName: symbol)
+                    .font(.system(size: 19, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.8)
+            }
+            .foregroundStyle(primary ? Color.white : Color.white.opacity(0.67))
+            .frame(maxWidth: .infinity, minHeight: 60)
+            .padding(.horizontal, 7)
+            .background {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(primary ? Color(red: 0.05, green: 0.49, blue: 0.97) : Color.white.opacity(0.075))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(Color.white.opacity(primary ? 0.12 : 0.08), lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title.replacingOccurrences(of: "\n", with: " "))
+    }
+
+    private var desktopJourneyPanel: some View {
         VStack(spacing: 12) {
             Button {
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
@@ -2526,6 +3196,9 @@ struct ContentView: View {
     }
 
     private var arrivalCard: some View {
+#if os(iOS)
+        arrivalSuccessCard
+#else
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 11) {
                 Image(systemName: "checkmark")
@@ -2579,11 +3252,172 @@ struct ContentView: View {
         }
         .padding(17)
         .modifier(NavigationGlassSurface(radius: 25))
+#endif
+    }
+
+    private var arrivalSuccessCard: some View {
+        let shape = UnevenRoundedRectangle(
+            cornerRadii: RectangleCornerRadii(topLeading: 44, bottomLeading: 0,
+                                              bottomTrailing: 0, topTrailing: 44),
+            style: .continuous)
+
+        return VStack(spacing: 0) {
+            Capsule()
+                .fill(Color.white.opacity(0.48))
+                .frame(width: 38, height: 4)
+                .padding(.top, 8)
+
+            ArrivalCelebration()
+                .frame(height: 91)
+                .padding(.top, 1)
+
+            VStack(spacing: 2) {
+                Text("Dotarłeś do celu!")
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                Text(engine.state.lastTrip?.destination.name ?? engine.state.destination?.name ?? "Podróż zakończona")
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.58))
+                    .lineLimit(1)
+            }
+            .padding(.top, -3)
+
+            HStack(spacing: 0) {
+                arrivalMetric(symbol: "road.lanes",
+                              value: engine.state.lastTrip.map { distance($0.distanceMeters) } ?? "—",
+                              caption: "przejechano")
+                    .frame(maxWidth: .infinity)
+                Rectangle()
+                    .fill(Color.white.opacity(0.10))
+                    .frame(width: 1, height: 45)
+                arrivalMetric(symbol: "clock",
+                              value: engine.state.lastTrip.map { time($0.duration) } ?? "—",
+                              caption: "czas")
+                    .frame(maxWidth: .infinity)
+                Rectangle()
+                    .fill(Color.white.opacity(0.10))
+                    .frame(width: 1, height: 45)
+                arrivalMetric(symbol: "speedometer",
+                              value: engine.state.lastTrip.map { "\(Int($0.averageSpeedKph.rounded())) km/h" } ?? "—",
+                              caption: "średnio")
+                    .frame(maxWidth: .infinity)
+            }
+            .frame(height: 76)
+            .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 19, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 19, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.09), lineWidth: 1)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+
+            HStack(spacing: 7) {
+                Button {
+                    if !isDestinationFavorite, let destination = engine.state.destination {
+                        localData.add(destination, kind: .favorite)
+                    }
+                } label: {
+                    arrivalActionLabel(symbol: isDestinationFavorite ? "checkmark" : "star",
+                                       title: isDestinationFavorite ? "Zapisano" : "Zapisz\nmiejsce")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isDestinationFavorite ? "Miejsce zapisane w ulubionych" : "Zapisz miejsce")
+
+                arrivalShareAction
+
+                Button {
+                    engine.stop()
+                } label: {
+                    arrivalActionLabel(symbol: "paperplane.fill", title: "Zakończ", primary: true)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Zakończ nawigację")
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 14)
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
+        .background {
+            ZStack {
+                shape.fill(.ultraThinMaterial)
+                shape.fill(
+                    LinearGradient(
+                        colors: [Color(red: 0.12, green: 0.18, blue: 0.26).opacity(0.92),
+                                 Color(red: 0.045, green: 0.075, blue: 0.12).opacity(0.97)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing))
+            }
+        }
+        .overlay {
+            shape.strokeBorder(Color.white.opacity(0.11), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.32), radius: 22, y: -8)
+    }
+
+    private var arrivalShareAction: some View {
+        Group {
+            if let url = arrivalShareURL {
+                ShareLink(item: url) {
+                    arrivalActionLabel(symbol: "square.and.arrow.up", title: "Udostępnij\ntrasę")
+                }
+            } else {
+                arrivalActionLabel(symbol: "square.and.arrow.up", title: "Udostępnij\ntrasę")
+                    .opacity(0.55)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Udostępnij trasę")
+    }
+
+    private func arrivalMetric(symbol: String, value: String, caption: String) -> some View {
+        VStack(spacing: 2) {
+            Image(systemName: symbol)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.88))
+                .frame(height: 19)
+            Text(value)
+                .font(.system(size: 15, weight: .bold, design: .rounded).monospacedDigit())
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+            Text(caption)
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.56))
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func arrivalActionLabel(symbol: String, title: String, primary: Bool = false) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: symbol)
+                .font(.system(size: 19, weight: .semibold))
+                .frame(width: 22)
+            Text(title)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .multilineTextAlignment(.leading)
+                .lineLimit(2)
+                .minimumScaleFactor(0.8)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, minHeight: 55)
+        .background {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(primary ? Color(red: 0.05, green: 0.49, blue: 0.97) : Color.white.opacity(0.075))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(Color.white.opacity(primary ? 0.12 : 0.08), lineWidth: 1)
+        }
     }
 
     private var searchSheet: some View {
         DestinationSearchSheet(
             engine: engine,
+            selectingRouteOrigin: selectingRouteOriginInSearch,
             places: localData.places,
             recentDestinations: recentDestinations,
             recentSearches: localData.searches,
@@ -2598,7 +3432,10 @@ struct ContentView: View {
                 openTransitLine(line)
             },
             onSelectDestination: { destination, asStop in
-                if addingWaypoint || asStop {
+                if selectingRouteOriginInSearch {
+                    guard !asStop else { return }
+                    applyRouteOrigin(destination, source: destination.poi == nil ? .search : .poi)
+                } else if addingWaypoint || asStop {
                     localData.recordSearch(destination)
                     Task {
                         await engine.addWaypoint(destination)
@@ -3495,6 +4332,7 @@ struct ContentView: View {
     }
 
     private func presentSearch() {
+        selectingRouteOriginInSearch = false
         showSearch = true
     }
 
@@ -3556,13 +4394,41 @@ struct ContentView: View {
         let preferences = engine.state.routingPreferences
         let endpoint = URL(string: UserDefaults.standard.string(forKey: "routingServer") ??
                            "https://valhalla1.openstreetmap.de")!
-        let destinationCoordinate = result.destination.coordinate
-        let routeTarget = engine.state.waypoints.first?.coordinate ?? engine.state.destination?.coordinate
+        let activeWaypoint = engine.state.waypoints.first
+        let activeDestination = engine.state.destination
+        let activeNavigationTarget = engine.state.navigationTarget?.coordinate
         mapPlaceEstimateTask = Task {
             do {
+                let destinationCoordinate: Coordinate
+                if result.isPOI {
+                    destinationCoordinate = await POIAccessResolver.shared.resolve(
+                        for: result.navigationDestination, mode: mode)?.coordinate
+                        ?? result.destination.coordinate
+                } else {
+                    destinationCoordinate = result.destination.coordinate
+                }
                 let provider = ValhallaRouteProvider(endpoint: endpoint)
                 var updated = selected
-                if navigationActive, let routeTarget {
+                if navigationActive {
+                    let routeTarget: Coordinate?
+                    if let activeWaypoint {
+                        if activeWaypoint.poi != nil {
+                            routeTarget = await POIAccessResolver.shared.resolve(for: activeWaypoint, mode: mode)?.coordinate
+                                ?? activeWaypoint.coordinate
+                        } else {
+                            routeTarget = activeWaypoint.coordinate
+                        }
+                    } else if activeDestination?.poi != nil {
+                        routeTarget = activeNavigationTarget ?? activeDestination?.coordinate
+                    } else {
+                        routeTarget = activeDestination?.coordinate
+                    }
+                    guard let routeTarget else {
+                        guard selectedMapPlaces.first?.id == requestID else { return }
+                        updated.travelEstimateStatus = .unavailable
+                        selectedMapPlaces = [updated]
+                        return
+                    }
                     let rows = try await provider.searchMatrix(
                         sources: [origin, destinationCoordinate],
                         targets: [destinationCoordinate, routeTarget],
@@ -3679,6 +4545,62 @@ struct ContentView: View {
         let sign = seconds > 0 ? "+" : "−"
         return sign + time(abs(seconds))
     }
+}
+
+private struct ArrivalCelebration: View {
+    private let green = Color(red: 0.16, green: 0.82, blue: 0.36)
+    private let pieces = [
+        ArrivalConfettiPiece(id: 0, x: -128, y: -8, width: 10, height: 4, angle: -52, color: Color(red: 0.12, green: 0.61, blue: 1)),
+        ArrivalConfettiPiece(id: 1, x: -106, y: 25, width: 9, height: 4, angle: 38, color: Color(red: 0.97, green: 0.72, blue: 0.20)),
+        ArrivalConfettiPiece(id: 2, x: -88, y: -20, width: 9, height: 4, angle: 66, color: Color(red: 0.97, green: 0.31, blue: 0.58)),
+        ArrivalConfettiPiece(id: 3, x: -65, y: 19, width: 8, height: 4, angle: -40, color: Color(red: 0.13, green: 0.80, blue: 0.43)),
+        ArrivalConfettiPiece(id: 4, x: -41, y: -37, width: 9, height: 4, angle: 64, color: Color(red: 0.12, green: 0.61, blue: 1)),
+        ArrivalConfettiPiece(id: 5, x: -21, y: 28, width: 8, height: 4, angle: 26, color: Color(red: 0.97, green: 0.72, blue: 0.20)),
+        ArrivalConfettiPiece(id: 6, x: 21, y: -34, width: 8, height: 4, angle: 72, color: Color(red: 0.13, green: 0.80, blue: 0.43)),
+        ArrivalConfettiPiece(id: 7, x: 45, y: 31, width: 9, height: 4, angle: -43, color: Color(red: 0.97, green: 0.31, blue: 0.58)),
+        ArrivalConfettiPiece(id: 8, x: 66, y: -15, width: 9, height: 4, angle: 35, color: Color(red: 0.12, green: 0.61, blue: 1)),
+        ArrivalConfettiPiece(id: 9, x: 88, y: 17, width: 10, height: 4, angle: -62, color: Color(red: 0.97, green: 0.72, blue: 0.20)),
+        ArrivalConfettiPiece(id: 10, x: 108, y: -29, width: 9, height: 4, angle: 58, color: Color(red: 0.13, green: 0.80, blue: 0.43)),
+        ArrivalConfettiPiece(id: 11, x: 130, y: 9, width: 10, height: 4, angle: -18, color: Color(red: 0.97, green: 0.31, blue: 0.58))
+    ]
+
+    var body: some View {
+        ZStack {
+            ForEach(pieces) { piece in
+                Capsule()
+                    .fill(piece.color)
+                    .frame(width: piece.width, height: piece.height)
+                    .rotationEffect(.degrees(piece.angle))
+                    .offset(x: piece.x, y: piece.y)
+            }
+
+            Circle()
+                .stroke(green.opacity(0.13), lineWidth: 13)
+                .frame(width: 96, height: 96)
+            Circle()
+                .stroke(green.opacity(0.24), lineWidth: 8)
+                .frame(width: 75, height: 75)
+            Circle()
+                .fill(green)
+                .frame(width: 52, height: 52)
+                .shadow(color: green.opacity(0.42), radius: 11, y: 2)
+            Image(systemName: "checkmark")
+                .font(.system(size: 23, weight: .bold))
+                .foregroundStyle(.white)
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct ArrivalConfettiPiece: Identifiable {
+    let id: Int
+    let x: CGFloat
+    let y: CGFloat
+    let width: CGFloat
+    let height: CGFloat
+    let angle: Double
+    let color: Color
 }
 
 private struct NearbySearchRequest: Identifiable {
@@ -4029,9 +4951,9 @@ private struct NearbyPlacesSheet: View {
                             PlaceSearchResultRow(
                                 result: result, index: index + 1,
                                 isSaved: savedPlaces.contains { $0.kind == .favorite && $0.destination.coordinate == result.destination.coordinate },
-                                onSave: { onSave(result.destination) },
+                                onSave: { onSave(result.navigationDestination) },
                                 onSelect: {
-                                    onSelect(result.destination)
+                                    onSelect(result.navigationDestination)
                                     dismiss()
                                 },
                                 isNavigating: navigationActive,
@@ -4117,6 +5039,7 @@ private struct DestinationSearchSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let engine: NavigationEngine
+    let selectingRouteOrigin: Bool
     let places: [SavedPlace]
     let recentDestinations: [Destination]
     let recentSearches: [SearchHistoryEntry]
@@ -4154,7 +5077,8 @@ private struct DestinationSearchSheet: View {
             append(place.destination, subtitle: place.kind.title, symbol: symbol(for: place.kind), to: &matches)
         }
         for destination in recentDestinations where normalized(destination.name).contains(needle) {
-            append(destination, subtitle: "Ostatni cel", symbol: "clock.arrow.circlepath", to: &matches)
+            append(destination, subtitle: selectingRouteOrigin ? "Ostatnie miejsce" : "Ostatni cel",
+                   symbol: "clock.arrow.circlepath", to: &matches)
         }
         for item in recentSearches where normalized(item.destination.name).contains(needle) {
             append(item.destination, subtitle: "Ostatnie wyszukiwanie", symbol: "magnifyingglass", to: &matches)
@@ -4180,14 +5104,16 @@ private struct DestinationSearchSheet: View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 16) {
                 searchField
-                Picker("Rodzaj wyszukiwania", selection: $searchScope) {
-                    ForEach(DestinationSearchScope.allCases) { scope in
-                        Text(scope.rawValue).tag(scope)
+                if !selectingRouteOrigin {
+                    Picker("Rodzaj wyszukiwania", selection: $searchScope) {
+                        ForEach(DestinationSearchScope.allCases) { scope in
+                            Text(scope.rawValue).tag(scope)
+                        }
                     }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .onChange(of: searchScope) { _, _ in startSearch(query) }
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .onChange(of: searchScope) { _, _ in startSearch(query) }
 
                 HStack {
                     if let center = engine.state.searchMapCenter {
@@ -4237,7 +5163,7 @@ private struct DestinationSearchSheet: View {
             .padding(.top, 14)
             .frame(maxWidth: 620, maxHeight: .infinity, alignment: .top)
             .frame(maxWidth: .infinity)
-            .navigationTitle("Szukaj")
+            .navigationTitle(selectingRouteOrigin ? "Skąd zaczynasz?" : "Szukaj")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Zamknij") { dismiss() }
@@ -4245,6 +5171,10 @@ private struct DestinationSearchSheet: View {
             }
             .onAppear {
                 query = ""
+                if selectingRouteOrigin {
+                    searchScope = .places
+                    alongRoute = false
+                }
                 results = []
                 transitResults = TransitSearchResults(stops: [], lines: [])
                 searchError = nil
@@ -4314,8 +5244,23 @@ private struct DestinationSearchSheet: View {
                    let projection = MapMatcher.project(origin, onto: route.coordinates) {
                     remainingRoute = [projection.coordinate] + Array(route.coordinates.dropFirst(projection.segment + 1))
                 }
+                let routeTarget: Coordinate?
+                if let waypoint = state.waypoints.first {
+                    if waypoint.poi != nil {
+                        routeTarget = await POIAccessResolver.shared.resolve(for: waypoint,
+                                                                              mode: state.transportMode)?.coordinate
+                            ?? waypoint.coordinate
+                    } else {
+                        routeTarget = waypoint.coordinate
+                    }
+                } else if state.destination?.poi != nil {
+                    routeTarget = state.navigationTarget?.coordinate ?? state.destination?.coordinate
+                } else {
+                    routeTarget = state.destination?.coordinate
+                }
                 let context = SearchContext(origin: state.location?.coordinate, area: searchArea,
-                                            route: remainingRoute, routeTarget: state.waypoints.first?.coordinate ?? state.destination?.coordinate,
+                                            route: remainingRoute,
+                                            routeTarget: routeTarget,
                                             mode: state.transportMode, preferences: state.routingPreferences,
                                             localDestinations: places.map(\.destination) + recentSearches.map(\.destination))
                 let endpoint = URL(string: UserDefaults.standard.string(forKey: "routingServer") ?? "https://valhalla1.openstreetmap.de")!
@@ -4343,7 +5288,9 @@ private struct DestinationSearchSheet: View {
         HStack(spacing: 11) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(Color.accentColor)
-            TextField(searchScope == .places ? "Adres, marka lub kategoria" : "Linia lub przystanek", text: $query)
+            TextField(searchScope == .places
+                      ? (selectingRouteOrigin ? "Adres lub miejsce" : "Adres, marka lub kategoria")
+                      : "Linia lub przystanek", text: $query)
                 .focused($isSearchFocused)
                 .submitLabel(.search)
                 .autocorrectionDisabled()
@@ -4387,7 +5334,9 @@ private struct DestinationSearchSheet: View {
             VStack(alignment: .leading, spacing: 7) {
                 sectionHeading("Ostatnie")
                 ForEach(recentDestinations) { destination in
-                    destinationRow(destination, subtitle: "Ostatni cel", symbol: "clock.arrow.circlepath")
+                    destinationRow(destination,
+                                   subtitle: selectingRouteOrigin ? "Ostatnie miejsce" : "Ostatni cel",
+                                   symbol: "clock.arrow.circlepath")
                 }
             }
         }
@@ -4404,7 +5353,7 @@ private struct DestinationSearchSheet: View {
         }
 
         if places.isEmpty && recentDestinations.isEmpty && recentSearches.isEmpty {
-            ContentUnavailableView("Wpisz cel podróży",
+            ContentUnavailableView(selectingRouteOrigin ? "Wyszukaj punkt startowy" : "Wpisz cel podróży",
                                    systemImage: "magnifyingglass",
                                    description: Text(pointSelectionHint))
                 .frame(maxWidth: .infinity)
@@ -4480,7 +5429,7 @@ private struct DestinationSearchSheet: View {
                         result: result,
                         index: index + 1,
                         isSaved: places.contains { $0.kind == .favorite && $0.destination.coordinate == result.destination.coordinate },
-                        onSave: { onSavePlace(result.destination) },
+                        onSave: { onSavePlace(result.navigationDestination) },
                         onSelect: { selectResult(result) },
                         isNavigating: alongRoute || QueryClassifier().classify(query).alongRoute,
                         primaryActionTitle: alongRoute || QueryClassifier().classify(query).alongRoute ? "Dodaj przystanek" : "Wyznacz trasę")
@@ -4560,7 +5509,8 @@ private struct DestinationSearchSheet: View {
         searchTask?.cancel()
         isSearchFocused = false
         let asStop = alongRoute || QueryClassifier().classify(query).alongRoute
-        onSelectDestination(result.destination, asStop)
+        onSelectDestination(result.navigationDestination, asStop)
+        if selectingRouteOrigin { return }
         if !asStop, QueryClassifier().classify(query).intent == .coordinates,
            engine.state.destination?.id == result.destination.id {
             let destinationID = result.destination.id

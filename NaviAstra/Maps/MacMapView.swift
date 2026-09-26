@@ -6,6 +6,22 @@ import MapKit
 import QuartzCore
 import SwiftUI
 
+private extension MapPOICategory {
+    var mapKitCategories: [MKPointOfInterestCategory] {
+        switch self {
+        case .fuel: [.gasStation]
+        case .parking: [.parking]
+        case .charging: [.evCharger]
+        case .food: [.restaurant, .cafe, .bakery]
+        case .shopping: [.store]
+        case .health: [.hospital, .pharmacy]
+        case .attractions: [.museum, .theater, .park, .nationalPark]
+        case .transit: [.airport, .publicTransport]
+        case .lodging: [.hotel, .campground]
+        }
+    }
+}
+
 private final class TransitStopMapAnnotationView: MKAnnotationView {
     private var shownPresentation: TransitStopMapPresentation?
 
@@ -151,8 +167,9 @@ private final class TrafficMapAnnotationView: MKAnnotationView {
     }
 }
 
-private nonisolated enum MacRouteLineKind: Equatable {
+private nonisolated enum MacRouteLineKind: Hashable {
     case activeCasing, active, activeHighlight, future, alternative, traveled, traffic, departed, accuracy
+    case routeTraffic(color: UInt32)
     case incidentCasing, incident(color: UInt32)
     case journeyCasing(walking: Bool, cycling: Bool)
     case journeyLeg(color: UInt32, walking: Bool, cycling: Bool)
@@ -240,19 +257,27 @@ struct MapLibreView: NSViewRepresentable {
         context.coordinator.update(map)
     }
 
+    static func dismantleNSView(_ map: MKMapView, coordinator: Coordinator) {
+        coordinator.stopPuckRenderTimer()
+    }
+
     final class Coordinator: NSObject, MKMapViewDelegate, NSGestureRecognizerDelegate {
         var parent: MapLibreView
         weak var map: MKMapView?
         private var routeOverlays: [StyledOverlay] = []
         private var incidentOverlays: [String: [StyledOverlay]] = [:]
         private var incidentOverlayRenderItems: [MacIncidentLineRenderItem] = []
+        private var shownRouteTrafficSegments: [RouteTrafficSegment] = []
         private var traveledOverlay: StyledOverlay?
         private var trafficOverlay: StyledOverlay?
         private var accuracyHaloOverlay: StyledOverlay?
         private var accuracyHaloCenter: Coordinate?
         private var accuracyHaloRadius: Double?
         private var destinationPin: MKPointAnnotation?
+        private var routeOriginPin: MKPointAnnotation?
         private var positionPin: MKPointAnnotation?
+        private let puckEngine = NavigationPuckEngine()
+        private var puckRenderTimer: Timer?
         private var lastPositionMarkerAngle: Int?
         private var lastPositionMarkerIsNavigating: Bool?
         private var lastDestinationMarkerIsArrived: Bool?
@@ -278,11 +303,10 @@ struct MapLibreView: NSViewRepresentable {
         private var shownRouteIDs: [UUID]?
         private var shownActiveTargetID: UUID?
         private var shownRevealStep = 1_000
+        private var activeGeometryProgressRouteID: UUID?
+        private var activeGeometryProgressStep: Int?
         private var traveledRouteID: UUID?
-        private var traveledEnd: Coordinate?
-        private var projectionRouteID: UUID?
-        private var projectionLocation: Coordinate?
-        private var cachedRouteProjection: RouteProjection?
+        private var traveledProgressStep: Int?
         private var trafficCoordinates: [Coordinate]?
         private var trafficColorHex: UInt32?
         private var lastStatus: NavigationStatus?
@@ -343,7 +367,10 @@ struct MapLibreView: NSViewRepresentable {
             placeSearch?.cancel()
             let requestID = UUID()
             placeRequestID = requestID
-            let search = MKLocalSearch(request: MKLocalPointsOfInterestRequest(center: coordinate, radius: max(20, radius)))
+            let request = MKLocalPointsOfInterestRequest(center: coordinate, radius: max(20, radius))
+            let visibleCategories = parent.settings.visiblePOICategories.flatMap(\.mapKitCategories)
+            request.pointOfInterestFilter = MKPointOfInterestFilter(including: visibleCategories)
+            let search = MKLocalSearch(request: request)
             placeSearch = search
             search.start { [weak self, weak map] response, _ in
                 guard let self, let map, self.placeRequestID == requestID, let response else { return }
@@ -428,19 +455,7 @@ struct MapLibreView: NSViewRepresentable {
                                         incidentTemplate: isNavigating ? nil : incidentTemplate,
                                         visible: parent.settings.overlays.traffic)
             if lastPOICategories != parent.settings.visiblePOICategories {
-                let categories = parent.settings.visiblePOICategories.flatMap { category -> [MKPointOfInterestCategory] in
-                    switch category {
-                    case .fuel: [.gasStation]
-                    case .parking: [.parking]
-                    case .charging: [.evCharger]
-                    case .food: [.restaurant, .cafe, .bakery]
-                    case .shopping: [.store]
-                    case .health: [.hospital, .pharmacy]
-                    case .attractions: [.museum, .theater, .park, .nationalPark]
-                    case .transit: [.airport]
-                    case .lodging: [.hotel, .campground]
-                    }
-                }
+                let categories = parent.settings.visiblePOICategories.flatMap(\.mapKitCategories)
                 map.pointOfInterestFilter = MKPointOfInterestFilter(including: categories)
                 lastPOICategories = parent.settings.visiblePOICategories
             }
@@ -464,6 +479,9 @@ struct MapLibreView: NSViewRepresentable {
                 let previousActive = previousOverlays.first(where: { $0.routeID == oldActiveID && $0.kind == .active })
                 map.removeOverlays(routeOverlays.map(\.polyline))
                 routeOverlays.removeAll()
+                activeGeometryProgressRouteID = nil
+                activeGeometryProgressStep = nil
+                shownRouteTrafficSegments = []
                 for route in parent.state.alternatives {
                     let previousKind: MacRouteLineKind = route.id == oldActiveID ? .active : .alternative
                     let from = animateSelection ? previousStyle(for: route.id, kind: previousKind, in: previousOverlays) : nil
@@ -499,8 +517,10 @@ struct MapLibreView: NSViewRepresentable {
                 shownRevealStep = revealStep
             }
 
+            updateActiveRouteProgress(on: map)
             updateTraveledOverlay(on: map)
             updateTrafficOverlay(on: map)
+            updateRouteTrafficOverlays(on: map)
             if showsOnlyRouteEndpoints {
                 removeClosurePin(from: map)
             } else {
@@ -508,13 +528,30 @@ struct MapLibreView: NSViewRepresentable {
             }
             updateAccuracyHalo(on: map)
 
-            if let destination = parent.state.destination, parent.state.status != .idle {
+            if let destination = parent.state.destination, parent.state.status != .idle,
+               !parent.state.routeOriginMapSelectionActive {
                 if destinationPin == nil {
                     let pin = MKPointAnnotation(); pin.title = destination.name
                     destinationPin = pin; map.addAnnotation(pin)
                 }
                 destinationPin?.coordinate = destination.coordinate.cl
             } else if let pin = destinationPin { map.removeAnnotation(pin); destinationPin = nil }
+
+            if let origin = parent.state.routeOrigin, !origin.isCurrentLocation,
+               !parent.state.routeOriginMapSelectionActive,
+               parent.state.status != .idle {
+                if routeOriginPin == nil {
+                    let pin = MKPointAnnotation()
+                    routeOriginPin = pin
+                    map.addAnnotation(pin)
+                }
+                routeOriginPin?.title = "A · \(origin.name)"
+                routeOriginPin?.subtitle = origin.address
+                routeOriginPin?.coordinate = (parent.state.route?.coordinates.first ?? origin.coordinate).cl
+            } else if let pin = routeOriginPin {
+                map.removeAnnotation(pin)
+                routeOriginPin = nil
+            }
 
             let routeDistance = parent.state.progress?.traveledDistance ?? 0
             let incidents = parent.settings.overlays.traffic
@@ -573,37 +610,9 @@ struct MapLibreView: NSViewRepresentable {
             scheduleTransitAnnotationUpdate(on: map)
             updateSelectedTransitLine(on: map)
 
-            let puckLocation = parent.state.weakGPS ? parent.state.cameraLocation : parent.state.location
-            let isFollowingRoute = parent.state.status == .navigating || parent.state.status == .rerouting
-            if let location = puckLocation {
-                let coordinate: Coordinate
-                if isFollowingRoute, let route = parent.state.route {
-                    coordinate = projection(for: location.coordinate, on: route)?.coordinate ?? location.coordinate
-                } else {
-                    coordinate = location.coordinate
-                }
-                if positionPin == nil {
-                    let pin = MKPointAnnotation(); pin.title = "Twoja pozycja"
-                    positionPin = pin; map.addAnnotation(pin)
-                }
-                positionPin?.coordinate = coordinate.cl
-            }
+            updatePositionPuck(on: map)
 
             applyCameraIntent(to: map)
-
-            if let positionPin, let view = map.view(for: positionPin) {
-                view.centerOffset = isFollowingRoute ? CGPoint(x: 0, y: 16) : .zero
-                let relativeBearing = puckLocation.flatMap { location -> CLLocationDirection? in
-                    guard isFollowingRoute, location.course.isFinite, location.course >= 0 else { return nil }
-                    return location.course - map.camera.heading
-                }
-                let angle = relativeBearing.map { Int($0.rounded()) }
-                if lastPositionMarkerAngle != angle || lastPositionMarkerIsNavigating != isFollowingRoute {
-                    view.image = positionMarkerImage(navigating: isFollowingRoute, relativeBearing: relativeBearing)
-                    lastPositionMarkerAngle = angle
-                    lastPositionMarkerIsNavigating = isFollowingRoute
-                }
-            }
             if lastDestinationMarkerIsArrived != (parent.state.status == .arrived),
                let destinationPin, let view = map.view(for: destinationPin) {
                 view.image = destinationMarkerImage(arrived: parent.state.status == .arrived)
@@ -1082,6 +1091,14 @@ struct MapLibreView: NSViewRepresentable {
                 view.displayPriority = .required
                 return view
             }
+            if let routeOriginPin, annotation === routeOriginPin {
+                let marker = MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: "route-origin")
+                marker.glyphText = "A"
+                marker.markerTintColor = .systemBlue
+                marker.canShowCallout = true
+                marker.displayPriority = .required
+                return marker
+            }
             guard let pin = destinationPin, annotation === pin else { return nil }
             let identifier = "destination"
             let view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) ?? MKAnnotationView(annotation: annotation, reuseIdentifier: identifier)
@@ -1100,6 +1117,56 @@ struct MapLibreView: NSViewRepresentable {
                 return TrafficMapPresentation(shownRoadAlerts[index])
             }
             return nil
+        }
+
+        private func updatePositionPuck(on map: MKMapView) {
+            let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
+            puckEngine.update(location: parent.state.location,
+                              route: isNavigating ? parent.state.route : nil,
+                              isNavigating: isNavigating)
+            if isNavigating, parent.state.location != nil {
+                if puckRenderTimer == nil {
+                    let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+                        self?.renderPositionPuckFrame()
+                    }
+                    RunLoop.main.add(timer, forMode: .common)
+                    puckRenderTimer = timer
+                }
+            } else {
+                stopPuckRenderTimer()
+            }
+            renderPositionPuckFrame()
+        }
+
+        func stopPuckRenderTimer() {
+            puckRenderTimer?.invalidate()
+            puckRenderTimer = nil
+        }
+
+        private func renderPositionPuckFrame() {
+            guard let map, let frame = puckEngine.frame() else { return }
+            if positionPin == nil {
+                let pin = MKPointAnnotation()
+                pin.title = "Twoja pozycja"
+                positionPin = pin
+                map.addAnnotation(pin)
+            }
+            positionPin?.coordinate = frame.coordinate.cl
+            let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
+            updatePositionPuckStyle(on: map, isNavigating: isNavigating, bearing: frame.bearing)
+        }
+
+        private func updatePositionPuckStyle(on map: MKMapView, isNavigating: Bool,
+                                             bearing: CLLocationDirection?) {
+            guard let positionPin, let view = map.view(for: positionPin) else { return }
+            view.centerOffset = isNavigating ? CGPoint(x: 0, y: 16) : .zero
+            let relativeBearing = bearing.flatMap { isNavigating ? $0 - map.camera.heading : nil }
+            let angle = relativeBearing.map { Int($0.rounded()) }
+            if lastPositionMarkerAngle != angle || lastPositionMarkerIsNavigating != isNavigating {
+                view.image = positionMarkerImage(navigating: isNavigating, relativeBearing: relativeBearing)
+                lastPositionMarkerAngle = angle
+                lastPositionMarkerIsNavigating = isNavigating
+            }
         }
 
         private func positionMarkerImage(navigating: Bool, relativeBearing: CLLocationDirection?) -> NSImage {
@@ -1132,7 +1199,7 @@ struct MapLibreView: NSViewRepresentable {
         }
 
         private func destinationMarkerImage(arrived: Bool) -> NSImage? {
-            let symbol = NSImage(systemSymbolName: arrived ? "checkmark.circle.fill" : "mappin.circle.fill",
+            let symbol = NSImage(systemSymbolName: arrived ? "checkmark.circle.fill" : "b.circle.fill",
                                  accessibilityDescription: arrived ? "Dotarłeś do celu" : "Cel")
             return symbol?.withSymbolConfiguration(NSImage.SymbolConfiguration(
                 paletteColors: [arrived ? .systemGreen : .systemRed]))
@@ -1273,12 +1340,28 @@ struct MapLibreView: NSViewRepresentable {
         private func addJourneyLegs(_ legs: [JourneyLeg], routeID: UUID, transitionStyle: LineStyle?,
                                     to map: MKMapView) -> Bool {
             var didDrawLeg = false
+            let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
+            let journeyLength = legs.reduce(0.0) {
+                $0 + RouteGeometrySplitter.length(of: $1.coordinates)
+            }
+            let progressDistance = isNavigating
+                ? journeyLength * parent.state.routeGeometryProgress
+                : 0
+            var legStartDistance = 0.0
             for leg in legs where leg.coordinates.count > 1 {
+                let legLength = RouteGeometrySplitter.length(of: leg.coordinates)
+                let completedDistance = max(0, min(legLength, progressDistance - legStartDistance))
+                let split = RouteGeometrySplitter.split(leg.coordinates, atDistance: completedDistance)
+                if split.completed.count > 1 {
+                    addOverlay(split.completed, kind: .traveled, routeID: routeID, to: map)
+                    didDrawLeg = true
+                }
+
                 let mode = leg.mode.lowercased()
                 let walking = isWalkingLeg(mode)
                 let cycling = mode.contains("bicycle") || mode.contains("bike")
                 let color = walking ? RouteColorPalette.walking : cycling ? RouteColorPalette.cycling : RouteColorPalette.activeLight
-                let paths = walking ? RouteMapGeometry.dashedSegments(leg.coordinates) : [leg.coordinates]
+                let paths = walking ? RouteMapGeometry.dashedSegments(split.remaining) : [split.remaining]
                 for path in paths where path.count > 1 {
                     let kind = MacRouteLineKind.journeyLeg(color: color, walking: walking, cycling: cycling)
                     let casingKind = MacRouteLineKind.journeyCasing(walking: walking, cycling: cycling)
@@ -1289,6 +1372,7 @@ struct MapLibreView: NSViewRepresentable {
                     addOverlay(path, kind: kind, routeID: routeID, transitionFrom: transitionStyle, to: map)
                     didDrawLeg = true
                 }
+                legStartDistance += legLength
             }
             return didDrawLeg
         }
@@ -1363,51 +1447,97 @@ struct MapLibreView: NSViewRepresentable {
             map.addOverlay(polyline)
         }
 
+        private func updateActiveRouteProgress(on map: MKMapView) {
+            guard let route = parent.state.route,
+                  parent.state.status == .navigating || parent.state.status == .rerouting else {
+                activeGeometryProgressRouteID = nil
+                activeGeometryProgressStep = nil
+                return
+            }
+
+            if parent.state.transportMode == .transit, let journey = route.journey {
+                let stepLength = route.distance > 0 ? route.distance : journey.legs.reduce(0.0) {
+                    $0 + RouteGeometrySplitter.length(of: $1.coordinates)
+                }
+                let step = Int((stepLength * parent.state.routeGeometryProgress / 2).rounded(.down))
+                guard activeGeometryProgressRouteID != route.id || activeGeometryProgressStep != step else { return }
+                activeGeometryProgressRouteID = route.id
+                activeGeometryProgressStep = step
+                guard step > 0 else { return }
+                let journeyOverlays = routeOverlays.filter { overlay in
+                    guard overlay.routeID == route.id else { return false }
+                    switch overlay.kind {
+                    case .journeyCasing, .journeyLeg, .traveled: true
+                    default: false
+                    }
+                }
+                map.removeOverlays(journeyOverlays.map(\.polyline))
+                routeOverlays.removeAll { overlay in
+                    guard overlay.routeID == route.id else { return false }
+                    switch overlay.kind {
+                    case .journeyCasing, .journeyLeg, .traveled: true
+                    default: false
+                    }
+                }
+                _ = addJourneyLegs(journey.legs, routeID: route.id, transitionStyle: nil, to: map)
+                return
+            }
+
+            let stepLength = route.distance > 0 ? route.distance : RouteGeometrySplitter.length(of: route.coordinates)
+            let step = Int((stepLength * parent.state.routeGeometryProgress / 2).rounded(.down))
+            guard activeGeometryProgressRouteID != route.id || activeGeometryProgressStep != step else { return }
+            activeGeometryProgressRouteID = route.id
+            activeGeometryProgressStep = step
+            guard step > 0 else { return }
+
+            let activeKinds: Set<MacRouteLineKind> = [.active, .activeCasing, .activeHighlight]
+            let previousActive = routeOverlays.filter { $0.routeID == route.id && activeKinds.contains($0.kind) }
+            map.removeOverlays(previousActive.map(\.polyline))
+            routeOverlays.removeAll { $0.routeID == route.id && activeKinds.contains($0.kind) }
+
+            let activeLeg = activeRouteLegs(for: route).active
+            let routeLength = RouteGeometrySplitter.length(of: route.coordinates)
+            let progressDistance = routeLength * parent.state.routeGeometryProgress
+            let split = RouteGeometrySplitter.split(activeLeg, atDistance: progressDistance)
+            guard split.remaining.count > 1 else { return }
+            addOverlay(split.remaining, kind: .activeCasing, routeID: route.id, to: map)
+            addOverlay(split.remaining, kind: .active, routeID: route.id, to: map)
+            addOverlay(split.remaining, kind: .activeHighlight, routeID: route.id, to: map)
+        }
+
         private func updateTraveledOverlay(on map: MKMapView) {
             guard let route = parent.state.route,
                   parent.state.status == .navigating || parent.state.status == .rerouting,
-                  let location = parent.state.location,
-                  let projection = projection(for: location.coordinate, on: route),
-                  projection.distanceFromRoute <= max(100, location.accuracy * 2),
-                  projection.alongRoute > 15 else {
+                  !(parent.state.transportMode == .transit && route.journey != nil) else {
                 removeTraveledOverlay(from: map)
                 return
             }
 
-            if traveledRouteID == route.id, let traveledEnd, traveledEnd.distance(to: projection.coordinate) < 15 { return }
+            let fraction = parent.state.routeGeometryProgress
+            let stepLength = route.distance > 0 ? route.distance : RouteGeometrySplitter.length(of: route.coordinates)
+            let step = Int((stepLength * fraction / 2).rounded(.down))
+            if traveledRouteID == route.id, traveledProgressStep == step { return }
+            let progressDistance = RouteGeometrySplitter.length(of: route.coordinates) * fraction
+            let coordinates = RouteGeometrySplitter.split(route.coordinates, atDistance: progressDistance).completed
+            guard coordinates.count > 1 else {
+                removeTraveledOverlay(from: map)
+                return
+            }
             removeTraveledOverlay(from: map)
-            let coordinates = Array(route.coordinates.prefix(projection.segment + 1)) + [projection.coordinate]
-            guard coordinates.count > 1 else { return }
             var points = coordinates.map(\.cl)
             let polyline = MKPolyline(coordinates: &points, count: points.count)
-            let styled = StyledOverlay(polyline: polyline, coordinates: coordinates, kind: .traveled, routeID: route.id,
-                                       transitionFrom: nil, transitionStartedAt: nil)
-            traveledOverlay = styled
+            traveledOverlay = StyledOverlay(polyline: polyline, coordinates: coordinates, kind: .traveled,
+                                            routeID: route.id, transitionFrom: nil, transitionStartedAt: nil)
             traveledRouteID = route.id
-            traveledEnd = projection.coordinate
+            traveledProgressStep = step
             map.addOverlay(polyline)
-            if let trafficOverlay {
-                map.removeOverlay(trafficOverlay.polyline)
-                map.addOverlay(trafficOverlay.polyline)
-            }
         }
 
         private func removeTraveledOverlay(from map: MKMapView) {
             if let traveledOverlay { map.removeOverlay(traveledOverlay.polyline) }
             traveledOverlay = nil
             traveledRouteID = nil
-            traveledEnd = nil
-        }
-
-        private func projection(for location: Coordinate, on route: NavigationRoute) -> RouteProjection? {
-            if projectionRouteID == route.id, projectionLocation == location {
-                return cachedRouteProjection
-            }
-            let projection = MapMatcher.project(location, onto: route.coordinates)
-            projectionRouteID = route.id
-            projectionLocation = location
-            cachedRouteProjection = projection
-            return projection
+            traveledProgressStep = nil
         }
 
         private func updateTrafficOverlay(on map: MKMapView) {
@@ -1430,6 +1560,30 @@ struct MapLibreView: NSViewRepresentable {
             if trafficColorHex != flow.overlayColorHex {
                 trafficColorHex = flow.overlayColorHex
                 if let trafficOverlay { updateRenderer(for: trafficOverlay, on: map) }
+            }
+        }
+
+        private func updateRouteTrafficOverlays(on map: MKMapView) {
+            let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
+            let routeID = parent.state.route?.id
+            let segments = parent.settings.overlays.traffic && parent.state.transportMode == .car && isNavigating
+                ? (parent.state.traffic?.routeFlowSegments ?? []).filter { $0.routeID == routeID }
+                : []
+            guard segments != shownRouteTrafficSegments else { return }
+            let previousOverlays = routeOverlays.filter { overlay in
+                if case .routeTraffic = overlay.kind { return true }
+                return false
+            }
+            map.removeOverlays(previousOverlays.map(\.polyline))
+            routeOverlays.removeAll { overlay in
+                if case .routeTraffic = overlay.kind { return true }
+                return false
+            }
+            shownRouteTrafficSegments = segments
+            guard let routeID else { return }
+            for segment in segments {
+                addOverlay(segment.coordinates, kind: .routeTraffic(color: segment.colorHex),
+                           routeID: routeID, to: map)
             }
         }
 
@@ -1537,11 +1691,14 @@ struct MapLibreView: NSViewRepresentable {
             case .incident(let color):
                 return LineStyle(hex: color, opacity: 0.96, width: navigating ? 7 : 5)
             case .traveled:
-                return LineStyle(hex: RouteColorPalette.traveled, opacity: 0.44,
-                                 width: max(1, activeRouteWidth(navigating: navigating) - 1))
+                return LineStyle(hex: RouteColorPalette.traveled,
+                                 opacity: parent.state.status == .rerouting ? 0.16 : 0.4,
+                                 width: max(1, activeRouteWidth(navigating: navigating) * 0.75))
             case .traffic:
                 return LineStyle(hex: parent.state.traffic?.flow?.overlayColorHex ?? RouteColorPalette.trafficFree,
                                  opacity: 1, width: 4.5)
+            case .routeTraffic(let color):
+                return LineStyle(hex: color, opacity: 0.98, width: activeRouteWidth(navigating: navigating))
             case .departed:
                 return LineStyle(hex: dark ? RouteColorPalette.alternativeDark : RouteColorPalette.alternativeLight,
                                  opacity: 0, width: 6)
