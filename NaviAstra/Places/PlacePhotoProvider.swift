@@ -285,25 +285,21 @@ struct PlaceLookAroundPreview {
 @MainActor
 enum PlaceLookAroundProvider {
     static func preview(at coordinate: Coordinate) async -> PlaceLookAroundPreview? {
-        await withCheckedContinuation { continuation in
-            let request = MKLookAroundSceneRequest(coordinate: coordinate.cl)
-            request.getSceneWithCompletionHandler { scene, _ in
-                guard let scene else {
-                    continuation.resume(returning: nil)
-                    return
-                }
+        guard coordinate.latitude.isFinite, (-90...90).contains(coordinate.latitude),
+              coordinate.longitude.isFinite, (-180...180).contains(coordinate.longitude) else { return nil }
 
-                let options = MKLookAroundSnapshotter.Options()
-                options.size = CGSize(width: 1200, height: 675)
-                let snapshotter = MKLookAroundSnapshotter(scene: scene, options: options)
-                snapshotter.getSnapshotWithCompletionHandler { snapshot, _ in
-                    guard let snapshot else {
-                        continuation.resume(returning: nil)
-                        return
-                    }
-                    continuation.resume(returning: PlaceLookAroundPreview(scene: scene, image: snapshot.image))
-                }
-            }
+        do {
+            let request = MKLookAroundSceneRequest(coordinate: coordinate.cl)
+            guard let scene = try await request.scene else { return nil }
+            try Task.checkCancellation()
+
+            let options = MKLookAroundSnapshotter.Options()
+            options.size = CGSize(width: 1200, height: 675)
+            let snapshotter = MKLookAroundSnapshotter(scene: scene, options: options)
+            let snapshot = try await snapshotter.snapshot
+            return PlaceLookAroundPreview(scene: scene, image: snapshot.image)
+        } catch {
+            return nil
         }
     }
 }

@@ -93,7 +93,7 @@ Strefa czasowa pochodzi najpierw z wyniku MapKit. Jeśli POI ma tylko dane OSM, 
 
 W panelu stacji paliw przy trasie godziny są także używane w filtrach „otwarte teraz” i „całodobowe”. Filtr „otwarte teraz” przepuszcza tylko kandydatów, których zapis dał się zinterpretować jako otwarte i dla których strefa czasowa jest znana; brak strefy, godzin lub poprawnej interpretacji nie jest traktowany jako potwierdzenie otwarcia.
 
-Dołączony `opening_hours.js` jest wydaniem 3.14.0 na licencji LGPL-3.0-only; SunCalc jest na licencji BSD 2-Clause. Informacje i teksty obu licencji są w zasobach aplikacji w katalogu `NaviAstra`.
+Dołączony `opening_hours.js` jest wydaniem 3.14.0 na licencji LGPL-3.0-only; SunCalc jest na licencji BSD 2-Clause. Informacje i teksty obu licencji są w katalogu `NaviAstra/Resources/Vendor/OpeningHours`.
 
 ## Cache, odświeżanie i błędy
 
@@ -116,7 +116,7 @@ Najważniejsze miejsca w kodzie:
 - `NaviAstra/Places/PlacePhotoProvider.swift` — filtrowanie zdjęć, atrybucja Wikimedia i fallback Look Around;
 - `NaviAstra/Places/PlaceOpeningHours.swift` — adapter parsera składni OSM, kalendarz lokalny i tygodniowe przedziały;
 - `NaviAstra/Places/PlaceTimeZoneResolver.swift` — ustalanie strefy miejsca przez MapKit;
-- `NaviAstra/opening_hours.js` i `NaviAstra/suncalc.js` — lokalne zasoby parsera i obliczeń słońca;
+- `NaviAstra/Resources/Vendor/OpeningHours/opening_hours.js` i `NaviAstra/Resources/Vendor/OpeningHours/suncalc.js` — lokalne zasoby parsera i obliczeń słońca;
 - `NaviAstra/THIRD_PARTY_NOTICES.txt` — informacje o licencjach dołączonych bibliotek;
 - `NaviAstra/Places/PlaceDetailsView.swift` — prezentacja szczegółów oraz godzin;
 - `NaviAstra/Places/NearbyPlaceProvider.swift` — pobliskie kategorie i POI wyszukiwane wzdłuż trasy.

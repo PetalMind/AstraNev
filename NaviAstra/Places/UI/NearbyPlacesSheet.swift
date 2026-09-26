@@ -299,10 +299,6 @@ struct NearbyPlacesSheet: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
-                if category == .fuel {
-                    FuelPriceSummaryCard()
-                }
-
                 switch engine.state.nearbyStatus {
                 case .idle, .searching:
                     ProgressView(nearDestination

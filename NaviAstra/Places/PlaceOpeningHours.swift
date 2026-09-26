@@ -1,5 +1,4 @@
 import Foundation
-import JavaScriptCore
 
 struct PlaceOpeningHours {
     let rawValue: String
@@ -55,7 +54,7 @@ struct PlaceOpeningHours {
         }
     }
 
-    private func evaluate(at date: Date, calendar: Calendar) -> ParsedOpeningHours? {
+    private func evaluate(at date: Date, calendar: Calendar) -> OpeningHoursEvaluation? {
         let localCalendar = targetCalendar(from: calendar)
         guard let parserDate = Self.parserDate(for: date, targetCalendar: localCalendar) else { return nil }
         var weekCalendar = localCalendar
@@ -71,7 +70,7 @@ struct PlaceOpeningHours {
             dayRanges.append([parserStart.timeIntervalSince1970 * 1_000,
                               parserEnd.timeIntervalSince1970 * 1_000])
         }
-        guard var result = OSMOpeningHoursRuntime.evaluate(
+        guard var result = OpeningHoursEngine.shared.evaluate(
             rawValue: rawValue,
             nowMilliseconds: parserDate.timeIntervalSince1970 * 1_000,
             weekRanges: dayRanges,
@@ -124,115 +123,4 @@ struct PlaceOpeningHours {
         return formatter.string(from: date)
     }
 
-    fileprivate struct ParsedInterval: Decodable {
-        let startMilliseconds: Double
-        let endMilliseconds: Double
-        let unknown: Bool
-        let clippedStart: Bool
-        let clippedEnd: Bool
-
-        enum CodingKeys: String, CodingKey {
-            case startMilliseconds = "start"
-            case endMilliseconds = "end"
-            case unknown
-            case clippedStart
-            case clippedEnd
-        }
-
-        var start: Date { Date(timeIntervalSince1970: startMilliseconds / 1_000) }
-        var end: Date { Date(timeIntervalSince1970: endMilliseconds / 1_000) }
-    }
-
-    fileprivate struct ParsedOpeningHours: Decodable {
-        let open: Bool
-        let unknown: Bool
-        var nextChangeMilliseconds: Double?
-        let nextOpen: Bool?
-        let nextUnknown: Bool
-        let days: [[ParsedInterval]]
-
-        var nextChange: Date? {
-            guard let nextChangeMilliseconds else { return nil }
-            return Date(timeIntervalSince1970: nextChangeMilliseconds / 1_000)
-        }
-    }
-}
-
-private enum OSMOpeningHoursRuntime {
-    private static let lock = NSRecursiveLock()
-    private static let context: JSContext? = {
-        let context = JSContext()
-        guard let context,
-              let sunCalcURL = Bundle.main.url(forResource: "suncalc", withExtension: "js"),
-              let openingHoursURL = Bundle.main.url(forResource: "opening_hours", withExtension: "js"),
-              let sunCalc = try? String(contentsOf: sunCalcURL, encoding: .utf8),
-              let openingHours = try? String(contentsOf: openingHoursURL, encoding: .utf8) else { return nil }
-        context.evaluateScript(sunCalc)
-        context.evaluateScript(openingHours)
-        context.evaluateScript(Self.wrapper)
-        guard context.exception == nil,
-              context.evaluateScript("typeof opening_hours === 'function'")?.toBool() == true else { return nil }
-        return context
-    }()
-
-    static func evaluate(rawValue: String, nowMilliseconds: Double, weekRanges: [[Double]],
-                         coordinate: Coordinate?, countryCode: String?,
-                         systemTimeZoneIdentifier: String) -> PlaceOpeningHours.ParsedOpeningHours? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let context else { return nil }
-        var input: [String: Any] = [
-            "raw": rawValue,
-            "now": nowMilliseconds,
-            "weekRanges": weekRanges,
-            "systemTimeZone": systemTimeZoneIdentifier
-        ]
-        if let coordinate {
-            var location: [String: Any] = ["lat": coordinate.latitude, "lon": coordinate.longitude]
-            if let countryCode, countryCode.count == 2 {
-                location["address"] = ["country_code": countryCode.lowercased(), "state": ""]
-            }
-            input["location"] = location
-        }
-        context.setObject(input, forKeyedSubscript: "__naviOpeningHoursInput" as NSString)
-        guard let json = context.evaluateScript("JSON.stringify(__naviParseOpeningHours(__naviOpeningHoursInput))")?.toString(),
-              let data = json.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(PlaceOpeningHours.ParsedOpeningHours.self, from: data)
-    }
-
-    private static let wrapper = #"""
-    globalThis.__naviParseOpeningHours = function(input) {
-        try {
-            const hours = new opening_hours(input.raw, input.location || null);
-            const now = new Date(input.now);
-            const next = hours.getNextChange(now, new Date(input.now + 14 * 24 * 60 * 60 * 1000));
-            const nextOpen = next ? hours.getState(new Date(next.getTime() + 1000)) : null;
-            const nextUnknown = next ? hours.getUnknown(new Date(next.getTime() + 1000)) : false;
-            const days = input.weekRanges.map(function(range) {
-                const from = new Date(range[0]);
-                const to = new Date(range[1]);
-                const intervals = hours.getOpenIntervals(from, to);
-                return intervals.map(function(interval) {
-                    return {
-                        start: interval[0].getTime(),
-                        end: interval[1].getTime(),
-                        unknown: interval[2],
-                        clippedStart: interval[0].getTime() <= from.getTime(),
-                        clippedEnd: interval[1].getTime() >= to.getTime()
-                    };
-                });
-            });
-            return {
-                open: hours.getState(now),
-                unknown: hours.getUnknown(now),
-                nextChange: next ? next.getTime() : null,
-                nextOpen: nextOpen,
-                nextUnknown: nextUnknown,
-                days: days
-            };
-        } catch (error) {
-            return { error: String(error) };
-        }
-    };
-    """#
 }

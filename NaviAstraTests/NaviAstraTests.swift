@@ -110,6 +110,122 @@ struct NaviAstraTests {
         #expect(progress == nil)
     }
 
+    @Test @MainActor func routeProgressTrackerKeepsDisplayedProgressMonotonic() {
+        var tracker = RouteProgressTracker()
+        let routeID = UUID()
+
+        #expect(tracker.displayedGeometryProgress(routeID: routeID, candidate: 0.6,
+                                                  canAdvance: true,
+                                                  isNavigationActive: true) == 0.6)
+        #expect(tracker.displayedGeometryProgress(routeID: routeID, candidate: 0.25,
+                                                  canAdvance: true,
+                                                  isNavigationActive: true) == 0.6)
+        #expect(tracker.displayedGeometryProgress(routeID: routeID, candidate: 0.9,
+                                                  canAdvance: false,
+                                                  isNavigationActive: true) == 0.6)
+        #expect(tracker.displayedGeometryProgress(routeID: UUID(), candidate: 0.2,
+                                                  canAdvance: true,
+                                                  isNavigationActive: true) == 0.2)
+    }
+
+    @Test @MainActor func routeProgressTrackerUsesAccuracyThresholdForGeometryAdvance() {
+        var tracker = RouteProgressTracker()
+        let route = route(from: Coordinate(latitude: 0, longitude: 0),
+                          to: Coordinate(latitude: 0, longitude: 0.02),
+                          expectedTravelTime: 1_000)
+        let timestamp = Date()
+        let withinThreshold = NavigationLocation(
+            coordinate: Coordinate(latitude: 0.0003, longitude: 0.005),
+            speed: 0, course: -1, accuracy: 10, timestamp: timestamp)
+        let outsideThreshold = NavigationLocation(
+            coordinate: Coordinate(latitude: 0.0004, longitude: 0.005),
+            speed: 0, course: -1, accuracy: 10, timestamp: timestamp)
+        let scaledThreshold = NavigationLocation(
+            coordinate: Coordinate(latitude: 0.0008, longitude: 0.005),
+            speed: 0, course: -1, accuracy: 60, timestamp: timestamp)
+        let outsideScaledThreshold = NavigationLocation(
+            coordinate: Coordinate(latitude: 0.00083, longitude: 0.005),
+            speed: 0, course: -1, accuracy: 60, timestamp: timestamp)
+
+        let accepted = tracker.measureRoadProgress(route: route, location: withinThreshold,
+                                                   previousMatch: nil, previousTimestamp: nil)
+        let held = tracker.measureRoadProgress(route: route, location: outsideThreshold,
+                                               previousMatch: nil, previousTimestamp: nil)
+        let acceptedWithScaledAccuracy = tracker.measureRoadProgress(
+            route: route, location: scaledThreshold, previousMatch: nil, previousTimestamp: nil)
+        let heldWithScaledAccuracy = tracker.measureRoadProgress(
+            route: route, location: outsideScaledThreshold,
+            previousMatch: nil, previousTimestamp: nil)
+
+        #expect((accepted?.projection.distanceFromRoute ?? .infinity) <= 40)
+        #expect(accepted?.canAdvanceGeometryProgress == true)
+        #expect((held?.projection.distanceFromRoute ?? 0) > 40)
+        #expect(held?.canAdvanceGeometryProgress == false)
+        #expect((acceptedWithScaledAccuracy?.projection.distanceFromRoute ?? .infinity) <= 90)
+        #expect(acceptedWithScaledAccuracy?.canAdvanceGeometryProgress == true)
+        #expect((heldWithScaledAccuracy?.projection.distanceFromRoute ?? 0) > 90)
+        #expect(heldWithScaledAccuracy?.canAdvanceGeometryProgress == false)
+    }
+
+    @Test @MainActor func routeProgressTrackerMeasuresDistanceToNextManeuver() {
+        var tracker = RouteProgressTracker()
+        let coordinates = (0...3).map { index in
+            Coordinate(latitude: 0, longitude: Double(index) * 0.001)
+        }
+        let distance = zip(coordinates, coordinates.dropFirst())
+            .reduce(0.0) { $0 + $1.0.distance(to: $1.1) }
+        let route = NavigationRoute(
+            coordinates: coordinates,
+            distance: distance,
+            expectedTravelTime: 300,
+            maneuvers: [Maneuver(shapeIndex: 3, instruction: "Skręć w prawo",
+                                 type: ManeuverKind.right.rawValue)])
+        let location = NavigationLocation(
+            coordinate: Coordinate(latitude: 0, longitude: 0.0015),
+            speed: 0, course: -1, accuracy: 5, timestamp: Date())
+
+        let measurement = tracker.measureRoadProgress(route: route, location: location,
+                                                     previousMatch: nil, previousTimestamp: nil)
+        let expectedDistance = Coordinate(latitude: 0, longitude: 0.0015)
+            .distance(to: coordinates[3])
+
+        #expect(measurement?.nextManeuver?.shapeIndex == 3)
+        #expect(abs((measurement?.distanceToNextManeuver ?? .infinity) - expectedDistance) < 1)
+    }
+
+    @Test @MainActor func routeProgressTrackerInvalidationRebuildsRouteCacheAndResetsProgress() {
+        var tracker = RouteProgressTracker()
+        var route = self.route(from: Coordinate(latitude: 0, longitude: 0),
+                               to: Coordinate(latitude: 0, longitude: 0.004),
+                               expectedTravelTime: 600)
+        let location = NavigationLocation(
+            coordinate: Coordinate(latitude: 0, longitude: 0.001),
+            speed: 0, course: -1, accuracy: 5, timestamp: Date())
+        let initial = tracker.measureRoadProgress(route: route, location: location,
+                                                  previousMatch: nil, previousTimestamp: nil)
+        let initialLength = initial?.geometryLength ?? 0
+
+        #expect(tracker.displayedGeometryProgress(routeID: route.id, candidate: 0.7,
+                                                  canAdvance: true,
+                                                  isNavigationActive: true) == 0.7)
+
+        route.coordinates = [Coordinate(latitude: 0, longitude: 0),
+                             Coordinate(latitude: 0, longitude: 0.008)]
+        route.distance = route.coordinates[0].distance(to: route.coordinates[1])
+        let cached = tracker.measureRoadProgress(route: route, location: location,
+                                                 previousMatch: nil, previousTimestamp: nil)
+        tracker.invalidateRoadGeometry()
+        tracker.resetDisplayedGeometryProgress()
+        let rebuilt = tracker.measureRoadProgress(route: route, location: location,
+                                                  previousMatch: nil, previousTimestamp: nil)
+
+        #expect(abs((cached?.geometryLength ?? 0) - initialLength) < 1)
+        #expect((rebuilt?.geometryLength ?? 0) > initialLength * 1.9)
+        #expect(tracker.displayedGeometryProgress(routeID: route.id, candidate: 0.2,
+                                                  canAdvance: true,
+                                                  isNavigationActive: true) == 0.2)
+    }
+
     @Test @MainActor func routeTrafficLookAheadUsesTravelTimeAndRoadSpeed() {
         let cityRoute = route(from: Coordinate(latitude: 0, longitude: 0),
                               to: Coordinate(latitude: 0, longitude: 0.8),

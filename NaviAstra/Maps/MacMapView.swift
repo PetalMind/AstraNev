@@ -22,151 +22,6 @@ private extension MapPOICategory {
     }
 }
 
-private final class TransitStopMapAnnotationView: MKAnnotationView {
-    private var shownPresentation: TransitStopMapPresentation?
-
-    func render(_ presentation: TransitStopMapPresentation) {
-        guard shownPresentation != presentation else { return }
-        shownPresentation = presentation
-        subviews.forEach { $0.removeFromSuperview() }
-        let iconWidth = presentation.modes.count > 1
-            ? CGFloat(presentation.modes.count) * 15 + 12 : CGFloat(presentation.markerSize)
-        let iconHeight = CGFloat(presentation.markerSize)
-        let titleHeight: CGFloat = presentation.name == nil ? 0 : 16
-        let badgeHeight: CGFloat = presentation.showsAlightingBadge ? 17 : 0
-        let titleWidth = presentation.name.map { CGFloat(min(170, max(60, $0.count * 7))) } ?? 0
-        let contentWidth = max(iconWidth, titleWidth)
-        frame = NSRect(x: 0, y: 0, width: contentWidth,
-                       height: iconHeight + titleHeight + badgeHeight
-                         + (titleHeight > 0 || badgeHeight > 0 ? 3 : 0))
-        wantsLayer = true
-        layer?.shadowColor = NSColor.black.cgColor
-        layer?.shadowOpacity = 0.12
-        layer?.shadowRadius = 2
-        if presentation.isActive && !presentation.isAlighting {
-            let pulse = CABasicAnimation(keyPath: "shadowRadius")
-            pulse.fromValue = 1.5
-            pulse.toValue = 4
-            pulse.duration = 1.8
-            pulse.autoreverses = true
-            pulse.repeatCount = .infinity
-            layer?.add(pulse, forKey: "transit-active-stop-pulse")
-        }
-
-        let capsule = NSView(frame: NSRect(x: (contentWidth - iconWidth) / 2,
-                                           y: frame.height - iconHeight,
-                                           width: iconWidth, height: iconHeight))
-        capsule.wantsLayer = true
-        capsule.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-        capsule.layer?.cornerRadius = presentation.isMultimodal || presentation.modes.contains(.rail)
-            ? iconHeight / 2 : 8
-        capsule.layer?.borderWidth = presentation.isActive || presentation.isAlighting ? 3
-            : presentation.isSelected || presentation.isOnRoute ? 2.5 : 1.5
-        let accent: NSColor = presentation.isAlighting ? .systemPurple
-            : presentation.isActive ? .systemOrange
-            : presentation.isSelected ? .systemBlue
-            : presentation.isOnRoute ? .systemTeal
-            : transitMarkerColor(for: presentation.modes.first)
-        capsule.layer?.borderColor = accent.cgColor
-        addSubview(capsule)
-        alphaValue = CGFloat(presentation.opacity)
-
-        let imageSize: CGFloat = presentation.modes.count > 1 ? 13 : min(19, iconHeight * 0.58)
-        let spacing: CGFloat = 1
-        let symbolsWidth = CGFloat(presentation.modes.count) * imageSize
-            + CGFloat(max(0, presentation.modes.count - 1)) * spacing
-        var x = (iconWidth - symbolsWidth) / 2
-        for mode in presentation.modes {
-            let image = NSImageView(frame: NSRect(x: x, y: (iconHeight - imageSize) / 2,
-                                                  width: imageSize, height: imageSize))
-            image.image = NSImage(systemSymbolName: mode.symbolName, accessibilityDescription: mode.title)?
-                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: imageSize, weight: .semibold))
-            image.contentTintColor = transitMarkerColor(for: mode)
-            image.imageScaling = .scaleProportionallyUpOrDown
-            capsule.addSubview(image)
-            x += imageSize + spacing
-        }
-
-        if presentation.showsAlightingBadge {
-            let badge = NSTextField(labelWithString: "WYSIĄDŹ")
-            badge.frame = NSRect(x: (contentWidth - 64) / 2, y: titleHeight + 1, width: 64, height: 14)
-            badge.alignment = .center
-            badge.font = .systemFont(ofSize: 8, weight: .bold)
-            badge.textColor = .white
-            badge.wantsLayer = true
-            badge.layer?.backgroundColor = NSColor.systemPurple.cgColor
-            badge.layer?.cornerRadius = 6
-            addSubview(badge)
-        }
-        if let name = presentation.name {
-            let label = NSTextField(labelWithString: name)
-            label.frame = NSRect(x: 0, y: 0, width: contentWidth, height: titleHeight)
-            label.alignment = .center
-            label.font = .systemFont(ofSize: 10, weight: .semibold)
-            label.textColor = .labelColor
-            label.lineBreakMode = .byTruncatingTail
-            label.wantsLayer = true
-            label.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.94).cgColor
-            label.layer?.cornerRadius = 5
-            addSubview(label)
-        }
-        setAccessibilityLabel(presentation.accessibilityLabel)
-        setAccessibilityRole(.button)
-    }
-
-    private func transitMarkerColor(for mode: TransitStopMode?) -> NSColor {
-        guard let mode else { return .systemBlue }
-        return NSColor(calibratedRed: CGFloat((mode.accentHex >> 16) & 0xff) / 255,
-                       green: CGFloat((mode.accentHex >> 8) & 0xff) / 255,
-                       blue: CGFloat(mode.accentHex & 0xff) / 255, alpha: 1)
-    }
-}
-
-private final class TrafficMapAnnotationView: MKAnnotationView {
-    func render(presentation: TrafficMapPresentation, clusterCount: Int? = nil) {
-        subviews.forEach { $0.removeFromSuperview() }
-        let size = CGFloat(clusterCount == nil ? presentation.markerSize : 38)
-        frame = NSRect(x: 0, y: 0, width: size, height: size)
-        wantsLayer = true
-        let color = NSColor(calibratedRed: CGFloat((presentation.colorHex >> 16) & 0xff) / 255,
-                            green: CGFloat((presentation.colorHex >> 8) & 0xff) / 255,
-                            blue: CGFloat(presentation.colorHex & 0xff) / 255, alpha: 1)
-        layer?.backgroundColor = color.cgColor
-        layer?.cornerRadius = size / 2
-        layer?.borderWidth = presentation.isCritical ? 2.5 : 1.5
-        layer?.borderColor = (presentation.isCritical ? NSColor.systemRed : NSColor.white).cgColor
-        layer?.shadowColor = (presentation.isCritical ? NSColor.systemRed : color).cgColor
-        layer?.shadowOpacity = presentation.isCritical ? 0.48 : 0.24
-        layer?.shadowRadius = presentation.isCritical ? 5 : 3
-
-        if let clusterCount {
-            let label = NSTextField(labelWithString: String(clusterCount))
-            label.frame = NSRect(x: 0, y: 0, width: size, height: size)
-            label.alignment = .center
-            label.font = .boldSystemFont(ofSize: 15)
-            label.textColor = .white
-            addSubview(label)
-            setAccessibilityLabel("\(clusterCount) zdarzeń drogowych")
-        } else {
-            let glyphSize = size * 0.54
-            let image = NSImageView(frame: NSRect(x: (size - glyphSize) / 2,
-                                                  y: (size - glyphSize) / 2,
-                                                  width: glyphSize, height: glyphSize))
-            image.image = NSImage(systemSymbolName: presentation.symbolName,
-                                  accessibilityDescription: "Zdarzenie drogowe")?
-                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: glyphSize * 0.78,
-                                                                     weight: .semibold))
-            image.contentTintColor = .white
-            image.imageScaling = .scaleProportionallyUpOrDown
-            addSubview(image)
-        }
-        canShowCallout = true
-        clusteringIdentifier = clusterCount == nil ? "traffic-events" : nil
-        displayPriority = .defaultHigh
-        setAccessibilityRole(.button)
-    }
-}
-
 private nonisolated enum MacRouteLineKind: Hashable {
     case activeCasing, active, activeHighlight, future, alternative, traveled, traffic, departed, accuracy
     case routeTraffic(color: UInt32)
@@ -204,28 +59,30 @@ private struct TransitStopRenderKey: Equatable {
 
 /// The iOS MapLibre binary has no macOS slice. This adapter renders the shared navigation state.
 struct MapLibreView: NSViewRepresentable {
-    let state: NavigationState
-    let transitVehicles: [TransitVehicle]
-    let transitStops: [TransitStop]
-    let selectedTransitStopID: String?
-    let selectedTransitRouteID: String?
-    let selectedTransitTripID: String?
-    let selectedTransitTripStopIDs: Set<String>
-    let activeTransitStopID: String?
-    let alightingTransitStopID: String?
-    let transitLineCoordinates: [Coordinate]
-    let transitLineColor: UInt32?
-    let settings: MapSettings
-    let isSearchPresented: Bool
-    let routePreviewExpanded: Bool
-    let viewportPadding: CameraPadding
-    let onSearchSelect: (Destination) -> Void
-    let onPlaceSelect: ([SearchResult]) -> Void
-    let onTransitStopSelect: (TransitStop) -> Void
-    let onTransitVehicleSelect: (TransitVehicle) -> Void
-    let onMapReady: () -> Void
-    let onMapPan: () -> Void
-    let onLongPress: (Coordinate) -> Void
+    let scene: MapScene
+
+    var state: NavigationState { scene.navigationState }
+    var transitVehicles: [TransitVehicle] { scene.transit.vehicles }
+    var transitStops: [TransitStop] { scene.transit.stops }
+    var selectedTransitStopID: String? { scene.transit.selectedStopID }
+    var selectedTransitRouteID: String? { scene.transit.selectedRouteID }
+    var selectedTransitTripID: String? { scene.transit.selectedTripID }
+    var selectedTransitTripStopIDs: Set<String> { scene.transit.selectedTripStopIDs }
+    var activeTransitStopID: String? { scene.transit.activeStopID }
+    var alightingTransitStopID: String? { scene.transit.alightingStopID }
+    var transitLineCoordinates: [Coordinate] { scene.transit.lineCoordinates }
+    var transitLineColor: UInt32? { scene.transit.lineColor }
+    var settings: MapSettings { scene.settings }
+    var isSearchPresented: Bool { scene.isSearchPresented }
+    var routePreviewExpanded: Bool { scene.routePreviewExpanded }
+    var viewportPadding: CameraPadding { scene.viewportPadding }
+    var onSearchSelect: (Destination) -> Void { scene.commands.onSearchSelect }
+    var onPlaceSelect: ([SearchResult]) -> Void { scene.commands.onPlaceSelect }
+    var onTransitStopSelect: (TransitStop) -> Void { scene.commands.onTransitStopSelect }
+    var onTransitVehicleSelect: (TransitVehicle) -> Void { scene.commands.onTransitVehicleSelect }
+    var onMapReady: () -> Void { scene.commands.onMapReady }
+    var onMapPan: () -> Void { scene.commands.onMapPan }
+    var onLongPress: (Coordinate) -> Void { scene.commands.onLongPress }
     @Environment(\.colorScheme) private var colorScheme
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -895,7 +752,7 @@ struct MapLibreView: NSViewRepresentable {
                 effectiveIntent.bounds = route.coordinates
             }
             programmaticCamera = true
-            CameraAnimator.apply(effectiveIntent, state: cameraState, to: map)
+            MacMapCameraAnimator.apply(effectiveIntent, state: cameraState, to: map)
             lastViewportPadding = parent.viewportPadding
             lastMapSize = map.bounds.size
             lastIntent = intent
@@ -1776,45 +1633,6 @@ struct MapLibreView: NSViewRepresentable {
             let hex: UInt32
             let opacity: CGFloat
             let width: CGFloat
-        }
-    }
-}
-private enum CameraAnimator {
-    static func apply(_ intent: CameraIntent, state: NavigationCameraState, to map: MKMapView) {
-        if !intent.bounds.isEmpty, state == .destinationPreview || state == .routeOverview || state == .arrived {
-            let camera = map.camera
-            camera.pitch = CGFloat(intent.pitch)
-            camera.heading = intent.bearing
-            map.setCamera(camera, animated: false)
-            let rect = intent.bounds.map { MKMapPoint($0.cl) }.reduce(MKMapRect.null) {
-                $0.union(MKMapRect(x: $1.x, y: $1.y, width: 1, height: 1))
-            }
-            map.setVisibleMapRect(rect,
-                edgePadding: NSEdgeInsets(top: CGFloat(intent.padding.top), left: CGFloat(intent.padding.left),
-                                          bottom: CGFloat(intent.padding.bottom), right: CGFloat(intent.padding.right)), animated: true)
-            return
-        }
-        let camera = map.camera
-        camera.centerCoordinate = intent.target.cl
-        camera.pitch = CGFloat(intent.pitch)
-        camera.heading = intent.bearing
-        camera.centerCoordinateDistance = max(150, 40_000_000 / pow(2, intent.zoom))
-        if state == .browse {
-            // MapKit has no padded setCamera overload. Fit a north-up local rectangle
-            // into the unobscured viewport instead of the whole window.
-            let point = MKMapPoint(intent.target.cl)
-            let metersPerPoint = MKMetersPerMapPointAtLatitude(intent.target.latitude)
-            let width = camera.centerCoordinateDistance / max(0.001, metersPerPoint)
-            let availableWidth = max(100, Double(map.bounds.width) - intent.padding.left - intent.padding.right)
-            let availableHeight = max(100, Double(map.bounds.height) - intent.padding.top - intent.padding.bottom)
-            let height = width * availableHeight / availableWidth
-            map.setVisibleMapRect(MKMapRect(x: point.x - width / 2, y: point.y - height / 2,
-                                           width: width, height: height),
-                                  edgePadding: NSEdgeInsets(top: intent.padding.top, left: intent.padding.left,
-                                                            bottom: intent.padding.bottom, right: intent.padding.right),
-                                  animated: true)
-        } else {
-            map.setCamera(camera, animated: true)
         }
     }
 }
