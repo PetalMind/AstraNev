@@ -7,111 +7,105 @@ import UIKit
 extension ContentView {
     var journeyPanel: some View {
 #if os(iOS)
-        journeyNavigationPanel
+        journeyNavigationPanel()
 #else
         desktopJourneyPanel
 #endif
     }
 
-    var journeyNavigationPanel: some View {
-        let shape = UnevenRoundedRectangle(
-            cornerRadii: RectangleCornerRadii(topLeading: 42, bottomLeading: 0,
-                                              bottomTrailing: 0, topTrailing: 42),
-            style: .continuous)
-
-        return VStack(spacing: 0) {
-            Capsule()
-                .fill(Color.white.opacity(0.48))
-                .frame(width: 38, height: 4)
-                .frame(maxWidth: .infinity, minHeight: 32)
-                .contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 20).onEnded { value in
-                    if value.translation.height < -35 {
-                        withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { navigationPanelExpanded = true }
-                    } else if value.translation.height > 35 {
-                        withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { navigationPanelExpanded = false }
+    func journeyNavigationPanel(maxHeight: CGFloat = 560) -> some View {
+        NavigationBottomSheet(detent: $navigationPanelDetent,
+                              maximumHeight: maxHeight,
+                              accessibilityLabel: "Panel prowadzenia",
+                              isDragging: $isMapBottomSheetDragging) { detent, progress in
+            VStack(spacing: 0) {
+                Button {
+                    navigationPanelDetent = switch detent {
+                    case .peek: .medium
+                    case .medium: .expanded
+                    case .expanded: .medium
                     }
-                })
-                .padding(.top, 8)
-                .padding(.bottom, 12)
-
-            Button {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
-                    navigationPanelExpanded.toggle()
+                } label: {
+                    HStack(spacing: 0) {
+                        journeySummaryMetric(value: time(navigationStore.state.progress?.remainingTime ?? 0), caption: "do celu")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        journeySummaryMetric(value: distance(navigationStore.state.progress?.remainingDistance ?? 0), caption: "pozostało")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        journeySummaryMetric(value: arrivalTime(navigationStore.state.progress?.remainingTime ?? 0), caption: navigationArrivalCaption)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Image(systemName: detent == .expanded ? "chevron.down" : "chevron.up")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.white.opacity(0.66))
+                            .padding(.leading, 8)
+                    }
+                    .contentShape(Rectangle())
                 }
-            } label: {
-                HStack(spacing: 0) {
-                    journeySummaryMetric(value: time(navigationStore.state.progress?.remainingTime ?? 0), caption: "do celu")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    journeySummaryMetric(value: distance(navigationStore.state.progress?.remainingDistance ?? 0), caption: "pozostało")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    journeySummaryMetric(value: arrivalTime(navigationStore.state.progress?.remainingTime ?? 0), caption: navigationArrivalCaption)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Image(systemName: navigationPanelExpanded ? "chevron.down" : "chevron.up")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(0.66))
-                        .padding(.leading, 8)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 20)
-            .accessibilityLabel(navigationPanelExpanded ? "Zwiń panel prowadzenia" : "Rozwiń panel prowadzenia")
+                .buttonStyle(.plain)
+                .padding(.horizontal, 18)
+                .padding(.top, 4)
+                .accessibilityLabel(detent == .expanded ? "Zwiń panel prowadzenia" : "Rozwiń panel prowadzenia")
 
-            if navigationStore.state.transportMode == .transit, let transitLeg = activeTransitLeg {
-                Group {
-                    if transitLeg.mode == "WALK" {
-                        transitWalkNavigationCard(transitLeg)
+                if detent != .peek {
+                    if navigationStore.state.transportMode == .transit, let transitLeg = activeTransitLeg {
+                        Group {
+                            if transitLeg.mode == "WALK" {
+                                transitWalkNavigationCard(transitLeg)
+                            } else {
+                                transitNavigationCard(transitLeg)
+                            }
+                        }
+                        .padding(.horizontal, 18)
+                        .padding(.top, 16)
                     } else {
-                        transitNavigationCard(transitLeg)
+                        journeyDestinationRow
+                            .padding(.horizontal, 18)
+                            .padding(.top, 16)
                     }
                 }
-                .padding(.top, 16)
-            } else {
-                journeyDestinationRow
+
+                if detent == .expanded {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Rectangle()
+                            .fill(Color.white.opacity(0.11))
+                            .frame(height: 1)
+                        Text("W trakcie podróży")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.9))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        journeyActionsGrid
+
+                        if navigationStore.state.transportMode == .transit {
+                            transitJourneyTimeline
+                        } else if navigationStore.state.transportMode == .parkRide {
+                            parkRideJourneyTimeline
+                        }
+                    }
                     .padding(.horizontal, 18)
-                    .padding(.top, 16)
+                    .padding(.top, 14)
+                    .padding(.bottom, 18)
+                }
             }
-
-            HStack(spacing: 8) {
-                journeyFooterAction(symbol: "arrow.triangle.branch", title: "Przegląd\ntrasy") {
-                    navigationStore.showRouteOverview()
-                    withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
-                        navigationPanelExpanded = false
+            .padding(.bottom, 10)
+            .opacity(detent == .peek ? 1 : max(0.82, progress))
+        } footer: { detent, _ in
+            if detent == .peek {
+                EmptyView()
+            } else {
+                HStack(spacing: 8) {
+                    journeyFooterAction(symbol: "arrow.triangle.branch", title: "Przegląd\ntrasy") {
+                        navigationStore.showRouteOverview()
+                        navigationPanelDetent = .medium
                     }
-                }
-                journeyFooterAction(symbol: "stop.circle.fill", title: "Zakończ\nnawigację", destructive: true) {
-                    navigationStore.stop()
-                }
-            }
-            .padding(.horizontal, 18)
-            .padding(.top, 12)
-            .padding(.bottom, 15)
-
-            if navigationPanelExpanded {
-                VStack(alignment: .leading, spacing: 10) {
-                    Rectangle()
-                        .fill(Color.white.opacity(0.11))
-                        .frame(height: 1)
-                    Text("W trakcie podróży")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.9))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                    journeyActionsGrid
-
-                    if navigationStore.state.transportMode == .transit {
-                        transitJourneyTimeline
-                    } else if navigationStore.state.transportMode == .parkRide {
-                        parkRideJourneyTimeline
+                    journeyFooterAction(symbol: "stop.circle.fill", title: "Zakończ\nnawigację", destructive: true) {
+                        navigationStore.stop()
                     }
                 }
                 .padding(.horizontal, 18)
-                .padding(.bottom, 18)
+                .padding(.top, 8)
+                .padding(.bottom, 14)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .top)
-        .modifier(NavigationGlassPanelSurface(shape: shape))
     }
 
     var journeyDestinationRow: some View {
@@ -476,7 +470,11 @@ extension ContentView {
             if let leg = nextRide, let tripID = leg.tripID,
                let serviceDate = leg.serviceDate, let sequence = leg.transitStops.first?.sequence {
                 let tripDetails = await transitStore.tripDetails(
-                    tripID: tripID, serviceDate: serviceDate, fromStopSequence: sequence)
+                    tripID: tripID, serviceDate: serviceDate, fromStopSequence: sequence,
+                    scheduleShiftSeconds: leg.scheduleShiftSeconds,
+                    frequencyStartSeconds: leg.frequencyStartSeconds,
+                    frequencyHeadwaySeconds: leg.frequencyHeadwaySeconds,
+                    isFrequencyEstimate: leg.isFrequencyEstimate)
                 guard !Task.isCancelled else { return }
                 navigationStore.updateTransitTripDetails(tripDetails, tripID: tripID)
                 let lineDetails: TransitLineDetails?
@@ -680,6 +678,11 @@ extension ContentView {
         VStack(alignment: .leading, spacing: 8) {
             if let journey = navigationStore.state.route?.journey {
                 transitFreshnessIndicator(for: journey)
+                if let headway = journey.frequencyEstimateHeadwaySeconds {
+                    Label("Odjazdy orientacyjne co \(max(1, Int((Double(headway) / 60).rounded()))) min",
+                          systemImage: "clock.badge.questionmark")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
 
             if stops.isEmpty {
@@ -830,6 +833,11 @@ extension ContentView {
                     Text("Etapy podróży")
                         .font(.subheadline.weight(.semibold))
                     transitFreshnessIndicator(for: journey)
+                    if let headway = journey.frequencyEstimateHeadwaySeconds {
+                        Label("Odjazdy orientacyjne co \(max(1, Int((Double(headway) / 60).rounded()))) min",
+                              systemImage: "clock.badge.questionmark")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     HStack(alignment: .top, spacing: 8) {
                         metric(value: time(journey.arrival.timeIntervalSince(journey.departure)), caption: "całość")
                         if journey.walkingDuration > 0 {

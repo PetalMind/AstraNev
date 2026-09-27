@@ -13,6 +13,7 @@ final class MapStore {
     var mapBuildingsVisible: Bool { didSet { persist(mapBuildingsVisible, forKey: "mapBuildingsVisible") } }
     var mapTransitVisible: Bool { didSet { persist(mapTransitVisible, forKey: "mapTransitVisible") } }
     var mapCyclingVisible: Bool { didSet { persist(mapCyclingVisible, forKey: "mapCyclingVisible") } }
+    var cyclingPathsStatus: OSMCyclingPathsStatus = .disabled
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private var isReloading = false

@@ -33,8 +33,11 @@ extension NavigationSession {
                 for (stop, target) in zip(chargingStops, chargingTargets) where stop.poi != nil {
                     state.waypointNavigationTargets[stop.id] = target
                 }
+            } else {
+                clearEVChargingStops()
             }
             state.route = firstRoute; state.routeOptions = routes
+            state.pendingWaypointIDs = []
             if usesRoadVoiceGuidance { loadRoadData(for: firstRoute) }
             tripSession?.rerouteCount += 1
             invalidateTraffic()
@@ -56,15 +59,28 @@ extension NavigationSession {
     }
 
     func unvisitedStops(from origin: Coordinate) -> [Destination] {
-        let stops = state.waypoints + state.evChargingStops
-        guard let route = state.route,
-              let current = MapMatcher.project(origin, onto: route.coordinates) else { return stops }
-        return stops.compactMap { stop -> (Destination, Double)? in
-            let coordinate = state.waypointNavigationTargets[stop.id]?.coordinate ?? stop.coordinate
-            guard let projection = MapMatcher.project(coordinate, onto: route.coordinates),
-                  projection.alongRoute > current.alongRoute + 50 else { return nil }
-            return (stop, projection.alongRoute)
-        }.sorted { $0.1 < $1.1 }.map { $0.0 }
+        let evStops = state.transportMode == .car && state.routingPreferences.evPlanningEnabled
+            ? state.evChargingStops : []
+        let stops = state.waypoints + evStops
+        let route = state.route
+        let matchedProgress = state.routeMatch.flatMap { match -> Double? in
+            guard let route, match.routeID == route.id,
+                  let location = state.location,
+                  match.locationTimestamp == location.timestamp,
+                  location.coordinate.distance(to: origin) <= max(100, location.accuracy * 2),
+                  match.match.confidence > 0,
+                  match.match.projection.distanceFromRoute <= max(40, location.accuracy * 1.5) else {
+                return nil
+            }
+            return match.match.projection.alongRoute
+        }
+        return RemainingRouteWaypointPlanner.remainingStops(
+            from: origin,
+            routeCoordinates: state.route?.coordinates,
+            currentAlongRoute: matchedProgress,
+            stops: stops,
+            routedCoordinates: state.waypointNavigationTargets.mapValues(\.coordinate),
+            priorityWaypointIDs: state.pendingWaypointIDs)
     }
     func calculateRoutes(from: Coordinate, to: Coordinate, through: [Coordinate]? = nil,
                                  commitEVStops: Bool = true) async throws -> [NavigationRoute] {
@@ -277,7 +293,8 @@ extension NavigationSession {
                                      walkingDuration: journey.walkingDuration,
                                      waitingDuration: journey.waitingDuration,
                                      transferCount: journey.transferCount,
-                                     realtimeFreshness: journey.realtimeFreshness)
+                                     realtimeFreshness: journey.realtimeFreshness,
+                                     frequencyEstimateHeadwaySeconds: journey.frequencyEstimateHeadwaySeconds)
                 ))
             }
         }
@@ -348,8 +365,8 @@ extension NavigationSession {
             return baseRoutes
         }
 
-        let chargers = try await OpenStreetMapNearbyPlaceProvider().search(.charging, along: baseRoute.coordinates,
-                                                                           radius: 1_200)
+        let chargers = try await OpenStreetMapNearbyPlaceProvider().search(
+            .charging, along: baseRoute.coordinates, radius: 1_200, resultLimit: 1_000)
         let eligibleChargers = chargers.filter { candidate in
             guard let station = candidate.chargingStation,
                   station.availability != .unavailable,
@@ -530,9 +547,12 @@ extension NavigationSession {
                     for (stop, target) in zip(chargingStops, chargingTargets) where stop.poi != nil {
                         self.state.waypointNavigationTargets[stop.id] = target
                     }
+                } else {
+                    self.clearEVChargingStops()
                 }
                 self.state.route = alternative
                 self.state.routeOptions = routes
+                self.state.pendingWaypointIDs = []
                 self.rerouteController.markClosureRerouted(closureIncident.id)
                 self.loadRoadData(for: alternative)
                 self.tripSession?.rerouteCount += 1
@@ -585,5 +605,50 @@ extension NavigationSession {
             .min(by: { $0.distanceFromRoute < $1.distanceFromRoute }),
               projection.distanceFromRoute <= RouteTrafficMonitor.routeMatchToleranceMeters else { return nil }
         return projection.alongRoute
+    }
+
+    func clearEVChargingStops() {
+        let chargingStopIDs = Set(state.evChargingStops.map(\.id))
+        state.evChargingStops = []
+        state.waypointNavigationTargets = state.waypointNavigationTargets.filter {
+            !chargingStopIDs.contains($0.key)
+        }
+    }
+}
+
+nonisolated enum RemainingRouteWaypointPlanner {
+    static func remainingStops(from origin: Coordinate, routeCoordinates: [Coordinate]?,
+                               currentAlongRoute: Double? = nil,
+                               stops: [Destination], routedCoordinates: [UUID: Coordinate],
+                               priorityWaypointIDs: [UUID] = []) -> [Destination] {
+        guard let routeCoordinates, routeCoordinates.count > 1 else { return stops }
+        let currentPosition = currentAlongRoute.flatMap { $0.isFinite ? $0 : nil }
+            ?? MapMatcher.project(origin, onto: routeCoordinates)?.alongRoute
+        guard let currentPosition else { return stops }
+        let priority = priorityWaypointIDs.enumerated().reduce(into: [UUID: Int]()) { ranks, item in
+            if ranks[item.element] == nil { ranks[item.element] = item.offset }
+        }
+        return stops.enumerated().compactMap { index, waypoint ->
+            (Destination, routePosition: Double, priority: Int?, inputOrder: Int)? in
+            let coordinate = routedCoordinates[waypoint.id] ?? waypoint.coordinate
+            guard let projection = MapMatcher.project(coordinate, onto: routeCoordinates),
+                  priority[waypoint.id] != nil || projection.alongRoute > currentPosition + 50 else {
+                return nil
+            }
+            return (waypoint, projection.alongRoute, priority[waypoint.id], index)
+        }.sorted { lhs, rhs in
+            switch (lhs.priority, rhs.priority) {
+            case let (left?, right?):
+                if left != right { return left < right }
+                return lhs.inputOrder < rhs.inputOrder
+            case (.some, .none):
+                return true
+            case (.none, .some):
+                return false
+            case (.none, .none):
+                if lhs.routePosition != rhs.routePosition { return lhs.routePosition < rhs.routePosition }
+                return lhs.inputOrder < rhs.inputOrder
+            }
+        }.map(\.0)
     }
 }

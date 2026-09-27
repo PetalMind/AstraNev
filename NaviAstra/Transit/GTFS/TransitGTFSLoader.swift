@@ -6,13 +6,13 @@ nonisolated struct LoadedTransitDatabase: Sendable {
 }
 
 nonisolated struct PersistedTransitDatabase: Codable, Sendable {
-    static let currentSchemaVersion = 4
+    static let currentSchemaVersion = 9
     let schemaVersion: Int
     let database: GTFSDatabase
 }
 
 nonisolated struct PersistedTransferGraph: Codable, Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 3
     let schemaVersion: Int
     let fingerprint: String
     let storedAt: Date
@@ -71,7 +71,7 @@ nonisolated enum TransitGTFSLoader {
             return LoadedTransitDatabase(database: existingDatabase, wasCached: true)
         }
         trace?.setCount("compiledScheduleFingerprintHit", value: 0)
-        let transferCacheURL = cacheDirectory.appendingPathComponent("transit-transfer-graph-v1.plist")
+        let transferCacheURL = cacheDirectory.appendingPathComponent("transit-transfer-graph-v2.plist")
         func makeDatabase(_ inputFeeds: [GTFSInputFeed], fingerprint: String? = nil) throws -> GTFSDatabase {
             let fingerprint = fingerprint ?? TransitFeedFingerprint.make(inputFeeds)
             let cachedFootpaths = readTransferGraph(at: transferCacheURL, fingerprint: fingerprint)

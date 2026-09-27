@@ -41,6 +41,7 @@ final class NavigationState {
     var waypoints: [Destination] = []
     var evChargingStops: [Destination] = []
     var waypointNavigationTargets: [UUID: POINavigationTarget] = [:]
+    var pendingWaypointIDs: [UUID] = []
     var routingPreferences = RoutingPreferences()
     var progress: RouteProgress?
     var routeMatch: NavigationRouteMatch?

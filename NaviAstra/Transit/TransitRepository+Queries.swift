@@ -30,8 +30,8 @@ extension TransitRepository {
         let realtime = await loadRealtime()
         let routeIDs = Set(cityStopIDs.flatMap { database.routeIDsByStop[$0] ?? [] })
         return Array(realtime.alerts.filter {
-            $0.isActive(at: Date()) && (($0.routeIDs.isEmpty && $0.stopIDs.isEmpty)
-                || !$0.stopIDs.isDisjoint(with: cityStopIDs) || !$0.routeIDs.isDisjoint(with: routeIDs))
+            $0.isActive(at: Date())
+                && $0.applies(routeIDs: routeIDs, stopIDs: cityStopIDs, tripIDs: [])
         }.map(\.message).filter { !$0.isEmpty }.prefix(3))
     }
 
@@ -106,59 +106,91 @@ extension TransitRepository {
               let trip = database.tripsByID[departure.tripID],
               let route = database.routes[departure.routeID] else { return nil }
         let realtime = await loadRealtime()
-        let vehicle = vehiclesSnapshot.first {
+        let vehicle = departure.frequencyStartSeconds == nil ? vehiclesSnapshot.first {
             $0.tripID == departure.tripID && ($0.serviceDate == nil || $0.serviceDate == departure.serviceDate)
-        }
+        } : nil
         return makeTripDetails(database: database, realtime: realtime, trip: trip, route: route,
                                serviceDate: departure.serviceDate, startSequence: departure.stopSequence,
-                               rawVehicle: vehicle)
+                               rawVehicle: vehicle,
+                               scheduleShiftSeconds: departure.scheduleShiftSeconds,
+                               frequencyStartSeconds: departure.frequencyStartSeconds,
+                               frequencyHeadwaySeconds: departure.frequencyHeadwaySeconds,
+                               isFrequencyEstimate: departure.isFrequencyEstimate)
     }
 
     func tripDetails(tripID: String, serviceDate: String,
                      fromStopSequence: Int) async -> TransitTripDetails? {
+        await tripDetails(tripID: tripID, serviceDate: serviceDate,
+                          fromStopSequence: fromStopSequence, scheduleShiftSeconds: 0,
+                          frequencyStartSeconds: nil, frequencyHeadwaySeconds: nil)
+    }
+
+    func tripDetails(tripID: String, serviceDate: String, fromStopSequence: Int,
+                     scheduleShiftSeconds: Int, frequencyStartSeconds: Int?,
+                     frequencyHeadwaySeconds: Int?) async -> TransitTripDetails? {
         guard let database = try? await loadDatabase(),
               let trip = database.tripsByID[tripID],
               let route = database.routes[trip.routeID] else { return nil }
         let realtime = await loadRealtime()
-        let vehicle = vehiclesSnapshot.first {
+        let vehicle = frequencyStartSeconds == nil ? vehiclesSnapshot.first {
             $0.tripID == tripID && ($0.serviceDate == nil || $0.serviceDate == serviceDate)
-        }
+        } : nil
         return makeTripDetails(database: database, realtime: realtime, trip: trip, route: route,
                                serviceDate: serviceDate, startSequence: fromStopSequence,
-                               rawVehicle: vehicle)
+                               rawVehicle: vehicle, scheduleShiftSeconds: scheduleShiftSeconds,
+                               frequencyStartSeconds: frequencyStartSeconds,
+                               frequencyHeadwaySeconds: frequencyHeadwaySeconds)
     }
 
     func makeTripDetails(database: GTFSDatabase, realtime: GTFSRealtimeSnapshot,
                                  trip: GTFSTrip, route: GTFSRoute, serviceDate: String,
-                                 startSequence: Int?, rawVehicle: GTFSRealtimeVehicle?) -> TransitTripDetails? {
-        guard let start = GTFSDate.date(from: serviceDate) else { return nil }
+                                 startSequence: Int?, rawVehicle: GTFSRealtimeVehicle?,
+                                 scheduleShiftSeconds: Int = 0, frequencyStartSeconds: Int? = nil,
+                                 frequencyHeadwaySeconds: Int? = nil,
+                                 isFrequencyEstimate: Bool = false) -> TransitTripDetails? {
+        guard let start = GTFSDate.serviceStart(from: serviceDate) else { return nil }
         var previousDelay: Int?
+        var hasNoRealtimeDataFromHere = false
         let predicted = trip.stopTimes.compactMap { stop -> TransitJourneyStop? in
             guard let definition = database.stopByID[stop.stopID] else { return nil }
-            let scheduledArrival = start.addingTimeInterval(TimeInterval(stop.arrivalSeconds))
-            let scheduledDeparture = start.addingTimeInterval(TimeInterval(stop.departureSeconds))
+            let scheduledArrival = start.addingTimeInterval(TimeInterval(stop.arrivalSeconds
+                                                                          + scheduleShiftSeconds))
+            let scheduledDeparture = start.addingTimeInterval(TimeInterval(stop.departureSeconds
+                                                                           + scheduleShiftSeconds))
             let update = realtime.update(tripID: trip.id, serviceDate: serviceDate,
-                                         stopID: stop.stopID, stopSequence: stop.sequence)
-            let arrivalDelay = update?.arrivalDelay
-                ?? update?.arrivalTime.map { Int($0.timeIntervalSince(scheduledArrival).rounded()) }
-            let departureDelay = update?.departureDelay
-                ?? update?.departureTime.map { Int($0.timeIntervalSince(scheduledDeparture).rounded()) }
+                                         stopID: stop.stopID, stopSequence: stop.sequence,
+                                         frequencyStartSeconds: frequencyStartSeconds)
+            if update?.hasNoData == true {
+                hasNoRealtimeDataFromHere = true
+                previousDelay = nil
+            }
+            let timingUpdate = hasNoRealtimeDataFromHere || update?.hasUsableTiming == false
+                ? nil : update
+            let arrivalDelay = timingUpdate?.arrivalDelay
+                ?? timingUpdate?.arrivalTime.map { Int($0.timeIntervalSince(scheduledArrival).rounded()) }
+            let departureDelay = timingUpdate?.departureDelay
+                ?? timingUpdate?.departureTime.map { Int($0.timeIntervalSince(scheduledDeparture).rounded()) }
             if let delay = departureDelay ?? arrivalDelay { previousDelay = delay }
-            return TransitJourneyStop(id: "\(trip.id)-\(stop.sequence)",
+            let stopPrefix = frequencyStartSeconds.map { "\(trip.id)-freq-\($0)" } ?? trip.id
+            return TransitJourneyStop(id: "\(stopPrefix)-\(stop.sequence)",
                                       stopID: stop.stopID, name: definition.name,
                                       coordinate: definition.coordinate,
-                                      arrival: update?.arrivalTime ?? scheduledArrival.addingTimeInterval(TimeInterval(arrivalDelay ?? previousDelay ?? 0)),
-                                      departure: update?.departureTime ?? scheduledDeparture.addingTimeInterval(TimeInterval(departureDelay ?? previousDelay ?? 0)),
+                                      arrival: timingUpdate?.arrivalTime ?? scheduledArrival.addingTimeInterval(TimeInterval(arrivalDelay ?? previousDelay ?? 0)),
+                                      departure: timingUpdate?.departureTime ?? scheduledDeparture.addingTimeInterval(TimeInterval(departureDelay ?? previousDelay ?? 0)),
                                       delaySeconds: departureDelay ?? arrivalDelay ?? previousDelay,
-                                      hasRealtime: update != nil || previousDelay != nil,
-                                      sequence: stop.sequence)
+                                      hasRealtime: update?.isSkipped == true
+                                        || (timingUpdate != nil && !hasNoRealtimeDataFromHere)
+                                        || previousDelay != nil,
+                                      sequence: stop.sequence,
+                                      isSkipped: update?.isSkipped == true)
         }
         let vehicleSequence = rawVehicle?.currentStopSequence
             ?? rawVehicle?.currentStopID.flatMap { stopID in
                 trip.stopTimes.first(where: { $0.stopID == stopID })?.sequence
             }
         let currentStopIdentifier = (vehicleSequence ?? startSequence).map { sequence in
-            "\(trip.id)-\(sequence)"
+            let stopPrefix = frequencyStartSeconds.map { "\(trip.id)-freq-\($0)" } ?? trip.id
+            return "\(stopPrefix)-\(sequence)"
         }
         let currentIndex = currentStopIdentifier.flatMap { identifier in
             predicted.firstIndex(where: { stop in stop.id == identifier })
@@ -169,8 +201,8 @@ extension TransitRepository {
         let nextStops = Array(predicted.dropFirst(min(currentIndex + 1, predicted.count)))
         let stopIDs = Set(trip.stopTimes.dropFirst(min(currentIndex, trip.stopTimes.count)).map(\.stopID))
         let alert = route.mode == "RAIL" ? nil : realtime.alerts.first {
-            $0.isActive(at: Date()) && (($0.routeIDs.isEmpty && $0.stopIDs.isEmpty)
-                || $0.routeIDs.contains(route.id) || !$0.stopIDs.isDisjoint(with: stopIDs))
+            $0.isActive(at: Date())
+                && $0.applies(routeIDs: [route.id], stopIDs: stopIDs, tripIDs: [trip.id])
         }?.message
         let vehicle: TransitVehicle? = rawVehicle.map { raw in
             TransitVehicle(id: raw.id, line: trip.displayLine(for: route), mode: route.mode,
@@ -186,7 +218,9 @@ extension TransitRepository {
         return TransitTripDetails(tripID: trip.id, line: trip.displayLine(for: route), mode: route.mode,
                                   destination: trip.headsign, currentStopName: current, currentStopID: currentStopID,
                                   pastStops: pastStops, nextStops: nextStops, vehicle: vehicle,
-                                  activeAlert: alert, colorHex: route.colorHex, coordinates: coordinates)
+                                  activeAlert: alert, colorHex: route.colorHex, coordinates: coordinates,
+                                  frequencyHeadwaySeconds: frequencyHeadwaySeconds,
+                                  isFrequencyEstimate: isFrequencyEstimate)
     }
 
     func vehiclePositions(near coordinate: Coordinate) async -> TransitVehicleFeed {

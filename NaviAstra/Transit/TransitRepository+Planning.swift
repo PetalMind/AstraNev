@@ -7,7 +7,8 @@ extension TransitRepository {
                          onProvisionalRoutes: TransitProvisionalRoutesHandler?,
                          arrivalDeadline: Date? = nil,
                          shouldContinue: TransitPlanningContinuation? = nil,
-                         planningContext: TransitPlanningContext? = nil) async throws -> [NavigationRoute] {
+                         planningContext: TransitPlanningContext? = nil,
+                         cancellationToken: TransitPlanningCancellationToken? = nil) async throws -> [NavigationRoute] {
         nextPlanningID &+= 1
         let planningID = nextPlanningID
         let regionID = region.id
@@ -22,7 +23,7 @@ extension TransitRepository {
         let context: TransitPlanningContext
         let reusingPlanningContext: Bool
         if let planningContext {
-            try await checkPlanningContinuation(shouldContinue)
+            try await checkPlanningContinuation(shouldContinue, cancellationToken: cancellationToken)
             context = planningContext
             reusingPlanningContext = true
             await onProgress?(.searchingConnections)
@@ -34,12 +35,12 @@ extension TransitRepository {
                 walkingRoutingEndpoint: walkingRoutingEndpoint,
                 planningID: planningID, trace: trace,
                 activeScheduleCache: nil, onProgress: onProgress,
-                shouldContinue: shouldContinue)
+                shouldContinue: shouldContinue, cancellationToken: cancellationToken)
         }
         let snapshot = context.snapshot
         let database = snapshot.database
         let usingCachedSchedule = context.usingCachedSchedule
-        try await checkPlanningContinuation(shouldContinue)
+        try await checkPlanningContinuation(shouldContinue, cancellationToken: cancellationToken)
 
         let searchInterval = TransitSignposting.begin("TransitSearch", planningID: planningID)
         let searchStartedAt = ProcessInfo.processInfo.systemUptime
@@ -51,12 +52,17 @@ extension TransitRepository {
             : TransitRoutingError.noJourneyBeforeArrivalDeadline
         do {
             let searchWindows = Self.stagedDepartureWindows
-            let coarseResultLimit = 15
+            // Exact street routing can reorder candidates substantially, so resolve
+            // walking options for a wider pool before truncating to user-visible routes.
+            let coarseResultLimit = 60
             let exactResultLimit = 15
             for (stageIndex, departureWindow) in searchWindows.enumerated() {
-                try await checkPlanningContinuation(shouldContinue)
+                try await checkPlanningContinuation(shouldContinue, cancellationToken: cancellationToken)
                 trace.setCount("searchWindowStage", value: stageIndex + 1)
                 let scheduleSearchWindow = departureWindow
+                let stageScheduleCache = activeScheduleCache ?? TransitActiveScheduleCache(
+                    coverageStart: departingAt,
+                    coverageEnd: departingAt.addingTimeInterval(scheduleSearchWindow))
                 // Grow the origin search area with the departure window. Building the
                 // 18-hour neighborhood up front includes many stops that the 2-hour
                 // stage cannot use and needlessly feeds them into every planning pass.
@@ -66,31 +72,38 @@ extension TransitRepository {
                 guard !originWalks.isEmpty else { continue }
                 let coarseRoutes: [NavigationRoute]
                 do {
-                    coarseRoutes = try await Task.detached(priority: .userInitiated) {
+                    let planningTask = Task.detached(priority: .userInitiated) {
                         try Self.plan(snapshot: snapshot, from: from, to: to,
                                       departingAt: departingAt,
                                       departureSearchWindow: scheduleSearchWindow,
                                       arrivalDeadline: arrivalDeadline,
-                                      activeScheduleCache: activeScheduleCache,
+                                      activeScheduleCache: stageScheduleCache,
                                       originWalks: originWalks,
                                       destinationWalksByStopID: nil,
                                       usingCachedSchedule: usingCachedSchedule,
                                       resultLimit: coarseResultLimit,
-                                      planningID: planningID, trace: trace, regionID: regionID)
-                    }.value
+                                      planningID: planningID, trace: trace, regionID: regionID,
+                                      cancellationToken: cancellationToken)
+                    }
+                    coarseRoutes = try await withTaskCancellationHandler {
+                        try await planningTask.value
+                    } onCancel: {
+                        planningTask.cancel()
+                    }
                 } catch TransitRoutingError.noJourney {
                     continue
                 } catch {
                     lastPlanningError = error
                     throw error
                 }
-                try await checkPlanningContinuation(shouldContinue)
+                try await checkPlanningContinuation(shouldContinue, cancellationToken: cancellationToken)
 
                 if !didRecordTimeToFirstRoute {
                     trace.recordElapsedDuration("TimeToFirstRoute")
                     didRecordTimeToFirstRoute = true
                     await onProvisionalRoutes?(coarseRoutes)
                 }
+                try await checkPlanningContinuation(shouldContinue, cancellationToken: cancellationToken)
 
                 let originStopIDs = Set(coarseRoutes.compactMap { $0.journey?.originAccessStopID })
                 let destinationStopIDs = Set(coarseRoutes.compactMap { $0.journey?.destinationAccessStopID })
@@ -109,7 +122,7 @@ extension TransitRepository {
                                                                    planningID: planningID, trace: trace)
                 let (exactOriginWalks, exactDestinationApproaches) = try await (
                     exactOriginRequest, exactDestinationRequest)
-                try await checkPlanningContinuation(shouldContinue)
+                try await checkPlanningContinuation(shouldContinue, cancellationToken: cancellationToken)
                 let exactDestinationWalks = exactDestinationApproaches.map { option in
                     TransitWalkOption(stop: option.stop, distance: option.distance,
                                       duration: option.duration,
@@ -121,24 +134,30 @@ extension TransitRepository {
                     grouping: exactDestinationWalks, by: { $0.stop.id })
                 let exactRoutes: [NavigationRoute]
                 do {
-                    exactRoutes = try await Task.detached(priority: .userInitiated) {
+                    let planningTask = Task.detached(priority: .userInitiated) {
                         try Self.plan(snapshot: snapshot, from: from, to: to,
                                       departingAt: departingAt,
                                       departureSearchWindow: scheduleSearchWindow,
                                       arrivalDeadline: arrivalDeadline,
-                                      activeScheduleCache: activeScheduleCache,
+                                      activeScheduleCache: stageScheduleCache,
                                       originWalks: exactOriginWalks,
                                       destinationWalksByStopID: exactDestinationWalksByStopID,
                                       usingCachedSchedule: usingCachedSchedule,
                                       resultLimit: exactResultLimit,
-                                      planningID: planningID, trace: trace, regionID: regionID)
-                    }.value
+                                      planningID: planningID, trace: trace, regionID: regionID,
+                                      cancellationToken: cancellationToken)
+                    }
+                    exactRoutes = try await withTaskCancellationHandler {
+                        try await planningTask.value
+                    } onCancel: {
+                        planningTask.cancel()
+                    }
                 } catch TransitRoutingError.noJourney {
                     continue
                 } catch TransitRoutingError.outsideCoverage {
                     continue
                 }
-                try await checkPlanningContinuation(shouldContinue)
+                try await checkPlanningContinuation(shouldContinue, cancellationToken: cancellationToken)
                 for route in exactRoutes {
                     let signature = TransitCandidateRanker.transitSignature(route)
                     guard !signature.isEmpty else { continue }
@@ -176,7 +195,7 @@ extension TransitRepository {
             let routes = await resolveTransferWalks(in: geometryCandidates,
                                                     endpoint: walkingRoutingEndpoint,
                                                     planningID: planningID, trace: trace)
-            try await checkPlanningContinuation(shouldContinue)
+            try await checkPlanningContinuation(shouldContinue, cancellationToken: cancellationToken)
             guard !routes.isEmpty else { throw TransitRoutingError.walkingUnavailable }
             trace.recordElapsedDuration("TimeToRouteReady")
             await onProvisionalRoutes?(routes)
@@ -192,7 +211,8 @@ extension TransitRepository {
     func calculateRoutesArrivingBy(from: Coordinate, to: Coordinate, deadline: Date,
                                    walkingRoutingEndpoint: URL,
                                    onProgress: TransitPlanningProgressHandler?,
-                                   shouldContinue: @escaping TransitPlanningContinuation) async throws
+                                   shouldContinue: @escaping TransitPlanningContinuation,
+                                   cancellationToken: TransitPlanningCancellationToken? = nil) async throws
         -> [NavigationRoute] {
         nextPlanningID &+= 1
         let planningID = nextPlanningID
@@ -214,14 +234,14 @@ extension TransitRepository {
             walkingRoutingEndpoint: walkingRoutingEndpoint,
             planningID: planningID, trace: trace,
             activeScheduleCache: scheduleCache, onProgress: onProgress,
-            shouldContinue: shouldContinue)
+            shouldContinue: shouldContinue, cancellationToken: cancellationToken)
 
         var lowerDeparture = coverageStart
         var upperDeparture = deadline
         var bestRoutes: [NavigationRoute] = []
         var iterations = 0
         for _ in 0..<10 {
-            try await checkPlanningContinuation(shouldContinue)
+            try await checkPlanningContinuation(shouldContinue, cancellationToken: cancellationToken)
             let interval = upperDeparture.timeIntervalSince(lowerDeparture)
             guard interval > 60 else { break }
             let departure = lowerDeparture.addingTimeInterval(interval / 2)
@@ -232,7 +252,7 @@ extension TransitRepository {
                     walkingRoutingEndpoint: walkingRoutingEndpoint,
                     onProgress: onProgress, onProvisionalRoutes: nil,
                     arrivalDeadline: deadline, shouldContinue: shouldContinue,
-                    planningContext: context)
+                    planningContext: context, cancellationToken: cancellationToken)
                 let eligible = candidates.filter {
                     ($0.journey?.arrival ?? .distantFuture) <= deadline
                 }.sorted(by: TransitCandidateRanker.latestDepartureComesBefore)
@@ -252,7 +272,7 @@ extension TransitRepository {
                 upperDeparture = departure
             }
         }
-        try await checkPlanningContinuation(shouldContinue)
+        try await checkPlanningContinuation(shouldContinue, cancellationToken: cancellationToken)
         trace.setCount("arrivalByIterations", value: iterations)
         guard !bestRoutes.isEmpty else {
             throw TransitRoutingError.noJourneyBeforeArrivalDeadline
@@ -269,9 +289,10 @@ extension TransitRepository {
         trace: TransitPlanningTrace,
         activeScheduleCache: TransitActiveScheduleCache?,
         onProgress: TransitPlanningProgressHandler?,
-        shouldContinue: TransitPlanningContinuation?
+        shouldContinue: TransitPlanningContinuation?,
+        cancellationToken: TransitPlanningCancellationToken? = nil
     ) async throws -> TransitPlanningContext {
-        try await checkPlanningContinuation(shouldContinue)
+        try await checkPlanningContinuation(shouldContinue, cancellationToken: cancellationToken)
         await onProgress?(.loadingSchedule)
         let database: GTFSDatabase
         do {
@@ -283,7 +304,7 @@ extension TransitRepository {
             }
             database = try await loadDatabase(planningID: planningID, trace: trace)
         }
-        try await checkPlanningContinuation(shouldContinue)
+        try await checkPlanningContinuation(shouldContinue, cancellationToken: cancellationToken)
         loadedDatabaseFingerprint = database.feedFingerprint
         guard walkingRoutingEndpoint.scheme == "https" else { throw RoutingError.invalidEndpoint }
         let pedestrianCacheStartedAt = ProcessInfo.processInfo.systemUptime
@@ -292,23 +313,34 @@ extension TransitRepository {
         await onProgress?(.searchingConnections)
 
         let realtime = await loadRealtimeForRoutePlanning(planningID: planningID, trace: trace)
-        try await checkPlanningContinuation(shouldContinue)
+        try await checkPlanningContinuation(shouldContinue, cancellationToken: cancellationToken)
         let snapshotStartedAt = ProcessInfo.processInfo.systemUptime
-        let snapshot = await Task.detached(priority: .userInitiated) {
+        let snapshotTask = Task.detached(priority: .userInitiated) {
             TransitSnapshot(database: database, realtime: realtime, departure: departingAt,
-                            maximumDepartureWindow: maximumDepartureWindow)
-        }.value
+                            maximumDepartureWindow: maximumDepartureWindow,
+                            cancellationToken: cancellationToken)
+        }
+        let snapshot = await withTaskCancellationHandler {
+            await snapshotTask.value
+        } onCancel: {
+            snapshotTask.cancel()
+        }
         trace.recordDuration("TransitSnapshotBuild", startedAt: snapshotStartedAt)
+        try await checkPlanningContinuation(shouldContinue, cancellationToken: cancellationToken)
         return TransitPlanningContext(snapshot: snapshot,
                                       usingCachedSchedule: databaseWasCached,
                                       activeScheduleCache: activeScheduleCache)
     }
 
-    func checkPlanningContinuation(_ continuation: TransitPlanningContinuation?) async throws {
+    func checkPlanningContinuation(_ continuation: TransitPlanningContinuation?,
+                                  cancellationToken: TransitPlanningCancellationToken? = nil) async throws {
         try Task.checkCancellation()
+        try cancellationToken?.checkCancellation()
         if let continuation {
             guard await continuation() else { throw CancellationError() }
         }
+        try Task.checkCancellation()
+        try cancellationToken?.checkCancellation()
     }
 
     func loadRealtimeForRoutePlanning(planningID: UInt64,
@@ -935,9 +967,11 @@ extension TransitRepository {
             journey.legs[index].coordinates = walkingGeometry.coordinates
             journey.legs[index].hasResolvedWalkingGeometry = true
             journey.legs[index].walkingTimeIsApproximate = false
+            journey.legs[index].walkingDuration = walkingGeometry.duration
             journey.legs[index].departure = transferDeparture
             journey.legs[index].arrival = transferDeparture.addingTimeInterval(
-                walkingGeometry.duration + (leg.isTransfer ? leg.minimumTransferTime : 0))
+                leg.isTransfer ? max(walkingGeometry.duration, leg.minimumTransferTime)
+                    : walkingGeometry.duration)
             if nextRide == nil,
                journey.legs.indices.contains(index + 1),
                journey.legs[index + 1].mode == "WALK" {
@@ -972,9 +1006,7 @@ extension TransitRepository {
         let rideDuration = journey.legs.filter { $0.mode != "WALK" }
             .reduce(0.0) { $0 + $1.arrival.timeIntervalSince($1.departure) }
         journey.walkingDuration = journey.legs.filter { $0.mode == "WALK" }
-            .reduce(0.0) {
-                $0 + max(0, $1.arrival.timeIntervalSince($1.departure) - $1.minimumTransferTime)
-            }
+            .reduce(0.0) { $0 + $1.plannedWalkingDuration }
         journey.waitingDuration = max(0, journey.arrival.timeIntervalSince(journey.departure)
             - rideDuration - journey.walkingDuration)
         resolved.journey = journey

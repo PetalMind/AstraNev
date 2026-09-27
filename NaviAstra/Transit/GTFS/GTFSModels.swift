@@ -18,7 +18,18 @@ nonisolated struct GTFSRoute: Codable, Sendable {
     let type: Int
     let colorHex: UInt32
     var displayName: String { shortName.isEmpty ? (longName.isEmpty ? "MPK" : longName) : shortName }
-    var mode: String { type == 0 ? "TRAM" : type == 2 ? "RAIL" : "BUS" }
+    var mode: String {
+        switch type {
+        case 0, 900..<1_000:
+            return "TRAM"
+        // Extended GTFS types 100–199 are rail services; 400–499 cover
+        // metro and other urban rail services.
+        case 1, 2, 100..<200, 400..<500:
+            return "RAIL"
+        default:
+            return "BUS"
+        }
+    }
 
     var carrierLabel: String {
         let normalized = TransitSearchText.normalize(agencyName)
@@ -60,6 +71,29 @@ nonisolated struct GTFSTripStop: Codable, Sendable {
     let arrivalSeconds: Int
     let departureSeconds: Int
     let shapeDistance: Double?
+    let pickupType: Int
+    let dropOffType: Int
+
+    init(stopID: String, sequence: Int, arrivalSeconds: Int, departureSeconds: Int,
+         shapeDistance: Double?, pickupType: Int = 0, dropOffType: Int = 0) {
+        self.stopID = stopID
+        self.sequence = sequence
+        self.arrivalSeconds = arrivalSeconds
+        self.departureSeconds = departureSeconds
+        self.shapeDistance = shapeDistance
+        self.pickupType = pickupType
+        self.dropOffType = dropOffType
+    }
+
+    var allowsPickup: Bool { pickupType != 1 }
+    var allowsDropOff: Bool { dropOffType != 1 }
+}
+
+nonisolated struct GTFSTripFrequency: Codable, Sendable {
+    let startSeconds: Int
+    let endSeconds: Int
+    let headwaySeconds: Int
+    let exactTimes: Bool
 }
 
 nonisolated struct GTFSTripPatternKey: Hashable, Comparable {
@@ -126,6 +160,17 @@ nonisolated struct GTFSServiceTripGroup: Codable, Sendable {
     let serviceIndex: Int
     let tripIndices: [Int]
     let maximumScheduledDurationSeconds: Int
+    let scheduledTripIndices: [Int]?
+    let frequencyTripIndices: [Int]?
+
+    init(serviceIndex: Int, tripIndices: [Int], maximumScheduledDurationSeconds: Int,
+         scheduledTripIndices: [Int]? = nil, frequencyTripIndices: [Int]? = nil) {
+        self.serviceIndex = serviceIndex
+        self.tripIndices = tripIndices
+        self.maximumScheduledDurationSeconds = maximumScheduledDurationSeconds
+        self.scheduledTripIndices = scheduledTripIndices
+        self.frequencyTripIndices = frequencyTripIndices
+    }
 }
 
 nonisolated struct GTFSRoutePattern: Codable, Sendable {

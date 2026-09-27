@@ -90,6 +90,93 @@ struct NaviAstraTests {
         #expect(SpeedLimitParser.parse("signals") == nil)
     }
 
+    @Test func gtfsRouteModeRecognizesStandardAndExtendedTypes() {
+        func route(type: Int) -> GTFSRoute {
+            GTFSRoute(id: "route-\(type)", shortName: "", longName: "", agencyName: "",
+                      type: type, colorHex: 0)
+        }
+
+        #expect(route(type: 0).mode == "TRAM")
+        #expect(route(type: 1).mode == "RAIL")
+        #expect(route(type: 2).mode == "RAIL")
+        #expect(route(type: 100).mode == "RAIL")
+        #expect(route(type: 102).mode == "RAIL")
+        #expect(route(type: 199).mode == "RAIL")
+        #expect(route(type: 400).mode == "RAIL")
+        #expect(route(type: 401).mode == "RAIL")
+        #expect(route(type: 405).mode == "RAIL")
+        #expect(route(type: 499).mode == "RAIL")
+        #expect(route(type: 900).mode == "TRAM")
+        #expect(route(type: 906).mode == "TRAM")
+        #expect(route(type: 999).mode == "TRAM")
+        #expect(route(type: 3).mode == "BUS")
+        #expect(route(type: 399).mode == "BUS")
+        #expect(route(type: 200).mode == "BUS")
+        #expect(route(type: 899).mode == "BUS")
+        #expect(route(type: 1_000).mode == "BUS")
+    }
+
+    @Test func activeRerouteRetainsNewWaypointBehindCurrentPosition() {
+        let route = [Coordinate(latitude: 0, longitude: 0),
+                     Coordinate(latitude: 0, longitude: 0.01)]
+        let origin = Coordinate(latitude: 0, longitude: 0.006)
+        let newWaypoint = Destination(name: "Nowy przystanek",
+                                      coordinate: Coordinate(latitude: 0, longitude: 0.002))
+        let existingWaypoint = Destination(name: "Dalszy przystanek",
+                                           coordinate: Coordinate(latitude: 0, longitude: 0.009))
+        let stops = RemainingRouteWaypointPlanner.remainingStops(
+            from: origin, routeCoordinates: route,
+            stops: [newWaypoint, existingWaypoint], routedCoordinates: [:],
+            priorityWaypointIDs: [newWaypoint.id])
+
+        #expect(stops.map(\.id) == [newWaypoint.id, existingWaypoint.id])
+    }
+
+    @Test func remainingStopsUsesMatchedProgressOnLoopingRoute() {
+        let route = [Coordinate(latitude: 0, longitude: 0),
+                     Coordinate(latitude: 0, longitude: 0.01),
+                     Coordinate(latitude: 0.01, longitude: 0.01),
+                     Coordinate(latitude: 0.01, longitude: 0),
+                     Coordinate(latitude: 0, longitude: 0),
+                     Coordinate(latitude: -0.01, longitude: 0)]
+        let origin = route[4]
+        let passedWaypoint = Destination(name: "Miniony przystanek", coordinate: route[3])
+        let matchedProgress = RouteProgressGeometry(coordinates: Array(route.prefix(5))).length
+
+        #expect((MapMatcher.project(origin, onto: route)?.alongRoute ?? .infinity) < matchedProgress)
+        let stops = RemainingRouteWaypointPlanner.remainingStops(
+            from: origin, routeCoordinates: route, currentAlongRoute: matchedProgress,
+            stops: [passedWaypoint], routedCoordinates: [:])
+
+        #expect(stops.isEmpty)
+    }
+
+    @Test func chargingSearchLimitRetainsStationsAcrossTheWholeRoute() {
+        let station = ChargingStationCapabilities(connectorTypes: ["ccs"], maximumPowerKW: 150,
+                                                  chargingPointCount: 4, publicAccess: true,
+                                                  availability: .available)
+        let earlyCandidates = (0..<1_000).map { index in
+            NearbyPlaceCandidate(
+                id: "early-\(index)",
+                destination: Destination(name: "Wczesna stacja \(index)",
+                                         coordinate: Coordinate(latitude: 0, longitude: Double(index) * 0.0002),
+                                         poi: nil),
+                category: .charging, distanceFromRoute: Double(index), distanceToRoute: 20,
+                chargingStation: station)
+        }
+        let lateCandidate = NearbyPlaceCandidate(
+            id: "late", destination: Destination(name: "Późna stacja",
+                                                   coordinate: Coordinate(latitude: 1, longitude: 1)),
+            category: .charging, distanceFromRoute: 99_000, distanceToRoute: 20,
+            chargingStation: station)
+
+        let selected = OpenStreetMapNearbyPlaceProvider.distributedRouteCandidates(
+            earlyCandidates + [lateCandidate], routeLength: 100_000, resultLimit: 1_000)
+
+        #expect(selected.contains(where: { $0.id == "late" }))
+        #expect(selected.count <= 1_000)
+    }
+
     @Test func PolishLegalDefaultsUseMappedRoadClassAndLaneContext() {
         #expect(SpeedLimitParser.parse(nil, tags: ["source:maxspeed": "PL:urban"]) == 50)
         #expect(SpeedLimitParser.parse(nil, tags: ["source:maxspeed": "PL:rural",

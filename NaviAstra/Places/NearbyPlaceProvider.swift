@@ -203,11 +203,22 @@ struct OpenStreetMapNearbyPlaceProvider {
                                                chargingStation: category == .charging
                                                    ? Self.chargingCapabilities(from: tags) : nil))
         }
-        var unique: [NearbyPlaceCandidate] = []
-        for candidate in found.sorted(by: { $0.distanceFromRoute < $1.distanceFromRoute }) {
-            guard !unique.contains(where: { $0.destination.coordinate.distance(to: candidate.destination.coordinate) < 15 }) else { continue }
-            unique.append(candidate)
-            if unique.count >= max(1, min(resultLimit, 100)) { break }
+        var unique: [NearbyPlaceCandidate]
+        if category == .charging, let referenceRoute, resultLimit > 25 {
+            let routeLength = zip(referenceRoute, referenceRoute.dropFirst())
+                .reduce(0.0) { $0 + $1.0.distance(to: $1.1) }
+            unique = Self.distributedRouteCandidates(found, routeLength: routeLength,
+                                                     resultLimit: resultLimit)
+        } else {
+            var nearby: [NearbyPlaceCandidate] = []
+            for candidate in found.sorted(by: { $0.distanceFromRoute < $1.distanceFromRoute }) {
+                guard !nearby.contains(where: {
+                    $0.destination.coordinate.distance(to: candidate.destination.coordinate) < 15
+                }) else { continue }
+                nearby.append(candidate)
+                if nearby.count >= max(1, min(resultLimit, 1_000)) { break }
+            }
+            unique = nearby
         }
         if unique.contains(where: { $0.openingHours != nil }) {
             let timezoneCoordinate = referenceRoute == nil ? centers.first : unique.first(where: { $0.openingHours != nil })?.destination.coordinate
@@ -230,6 +241,51 @@ struct OpenStreetMapNearbyPlaceProvider {
             return (id: "\(type):\(element.id)", name: name, tags: tags)
         })
         return unique
+    }
+
+    static func distributedRouteCandidates(_ candidates: [NearbyPlaceCandidate],
+                                           routeLength: Double,
+                                           resultLimit: Int) -> [NearbyPlaceCandidate] {
+        let limit = max(1, min(resultLimit, 1_000))
+        let bucketCount = min(100, max(1, (limit + 9) / 10))
+        let candidatesPerBucket = (limit + bucketCount - 1) / bucketCount
+        let length = routeLength.isFinite ? max(1, routeLength) : 1
+        let ordered = candidates.sorted { lhs, rhs in
+            func hasUsableChargingData(_ candidate: NearbyPlaceCandidate) -> Bool {
+                guard let station = candidate.chargingStation else { return false }
+                return station.availability != .unavailable && station.publicAccess != false
+                    && (station.maximumPowerKW ?? 0) > 0 && !station.connectorTypes.isEmpty
+            }
+            let lhsUsable = hasUsableChargingData(lhs)
+            let rhsUsable = hasUsableChargingData(rhs)
+            if lhsUsable != rhsUsable { return lhsUsable }
+            let lhsPower = lhs.chargingStation?.maximumPowerKW ?? 0
+            let rhsPower = rhs.chargingStation?.maximumPowerKW ?? 0
+            if lhsPower != rhsPower { return lhsPower > rhsPower }
+            if lhs.distanceToRoute != rhs.distanceToRoute {
+                return lhs.distanceToRoute < rhs.distanceToRoute
+            }
+            if lhs.distanceFromRoute != rhs.distanceFromRoute {
+                return lhs.distanceFromRoute < rhs.distanceFromRoute
+            }
+            return lhs.id < rhs.id
+        }
+
+        var bucketCounts = Array(repeating: 0, count: bucketCount)
+        var selected: [NearbyPlaceCandidate] = []
+        for candidate in ordered {
+            let progress = candidate.distanceFromRoute.isFinite
+                ? min(length, max(0, candidate.distanceFromRoute)) : 0
+            let bucket = min(bucketCount - 1, Int(progress / length * Double(bucketCount)))
+            guard bucketCounts[bucket] < candidatesPerBucket,
+                  !selected.contains(where: {
+                      $0.destination.coordinate.distance(to: candidate.destination.coordinate) < 15
+                  }) else { continue }
+            selected.append(candidate)
+            bucketCounts[bucket] += 1
+            if selected.count >= limit { break }
+        }
+        return selected.sorted { $0.distanceFromRoute < $1.distanceFromRoute }
     }
 
     private static func fuelTypes(from tags: [String: String]) -> [String] {

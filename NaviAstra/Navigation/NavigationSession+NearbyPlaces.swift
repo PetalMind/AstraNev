@@ -251,6 +251,7 @@ extension NavigationSession {
             state.waypoints = []
             state.evChargingStops = []
             state.waypointNavigationTargets = [:]
+            state.pendingWaypointIDs = []
             await preview(destination)
             return
         }
@@ -274,10 +275,8 @@ extension NavigationSession {
             }
             return
         }
-        if active, let location = state.location?.coordinate {
-            state.waypoints.insert(destination, at: 0)
-            tripSession?.waypoints.insert(destination, at: 0)
-            await reroute(from: location)
+        if active {
+            await addWaypoint(destination)
         } else {
             await preview(destination)
         }

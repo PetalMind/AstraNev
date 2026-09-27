@@ -38,7 +38,7 @@ struct ContentView: View {
     @State var favoriteName = ""
     @State var isSavingPlace = false
     @State var destinationExpanded = false
-    @State var routePreviewExpanded = false
+    @State var routePreviewDetent: NavigationBottomSheetDetent = .medium
     @State var isJourneyTimePickerPresented = false
     @State var favoritePulseScale: CGFloat = 1
     @State var showFavoriteRemovalConfirmation = false
@@ -58,7 +58,9 @@ struct ContentView: View {
     @State var trafficConfigured = TrafficCredential.read() != nil
     @State var isMapReady = false
     @State var discoveryDrawerCollapseRequest = 0
-    @State var navigationPanelExpanded = false
+    @State var discoverySheetDetent: NavigationBottomSheetDetent = .medium
+    @State var navigationPanelDetent: NavigationBottomSheetDetent = .medium
+    @State var isMapBottomSheetDragging = false
     @State var expandedTransitStopsLegID: UUID?
     @State var expandedTransitTimelineLegID: UUID?
     @State var quickETAEstimates: [String: PlaceRouteEstimate] = [:]
@@ -68,6 +70,16 @@ struct ContentView: View {
     @State var quickETAInFlight = false
     @AppStorage("speedWarningsEnabled") var speedWarningsEnabled = true
     @AppStorage("defaultTransportMode") var defaultTransportMode = TransportMode.car.rawValue
+
+    var routePreviewExpanded: Bool {
+        get { routePreviewDetent == .expanded }
+        nonmutating set { routePreviewDetent = newValue ? .expanded : .medium }
+    }
+
+    var navigationPanelExpanded: Bool {
+        get { navigationPanelDetent == .expanded }
+        nonmutating set { navigationPanelDetent = newValue ? .expanded : .medium }
+    }
 
     init(dependencies: AppDependencies) {
         _navigationStore = State(initialValue: dependencies.navigationStore)

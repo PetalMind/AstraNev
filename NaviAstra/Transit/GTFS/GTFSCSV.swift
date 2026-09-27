@@ -2,7 +2,7 @@ import Foundation
 
 nonisolated enum GTFSCSV {
     private static let optionalFilenames: Set<String> = [
-        "agency.txt", "attributions.txt", "calendar.txt", "calendar_dates.txt", "feed_info.txt",
+        "agency.txt", "attributions.txt", "calendar.txt", "calendar_dates.txt", "feed_info.txt", "frequencies.txt",
         "shapes.txt", "transfers.txt", "pathways.txt"
     ]
 
@@ -163,5 +163,11 @@ nonisolated enum GTFSCSV {
         let (total, secondsOverflow) = withMinutes.addingReportingOverflow(seconds)
         guard !hourOverflow, !minuteOverflow, !additionOverflow, !secondsOverflow else { return nil }
         return total
+    }
+
+    static func serviceTimeString(_ seconds: Int) -> String {
+        let total = max(0, seconds)
+        return String(format: "%02d:%02d:%02d", total / 3_600,
+                      (total % 3_600) / 60, total % 60)
     }
 }

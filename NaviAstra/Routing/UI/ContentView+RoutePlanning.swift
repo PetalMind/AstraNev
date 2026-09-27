@@ -37,66 +37,81 @@ extension ContentView {
     }
 
     func routePlanningSheet(maxHeight: CGFloat, bottomInset: CGFloat) -> some View {
-        let shape = UnevenRoundedRectangle(
-            cornerRadii: RectangleCornerRadii(topLeading: 40, bottomLeading: 0,
-                                              bottomTrailing: 0, topTrailing: 40),
-            style: .continuous)
+        NavigationBottomSheet(detent: $routePreviewDetent,
+                              maximumHeight: maxHeight,
+                              accessibilityLabel: "Podgląd trasy",
+                              isDragging: $isMapBottomSheetDragging) { detent, progress in
+            Group {
+                if detent == .peek {
+                    routePlanningPeek
+                } else {
+                    VStack(spacing: 10) {
+                        routePlanningEndpoints
+                        routePlanningTransportSelector
 
-        return VStack(spacing: 0) {
-            routePlanningDragHandle
-
-            ScrollView(.vertical) {
-                VStack(spacing: 10) {
-                    routePlanningEndpoints
-                    routePlanningTransportSelector
-
-                    if navigationStore.state.transportMode == .transit || navigationStore.state.transportMode == .parkRide {
-                        journeyTimeControl
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-
-                    if let route = navigationStore.state.route {
-                        routePlanningOverview(route)
-                        routePlanningAlternatives(for: route)
-                        if routePreviewExpanded {
-                            routePlanningDetails(for: route)
-                                .transition(.opacity.combined(with: .move(edge: .top)))
+                        if navigationStore.state.transportMode == .transit || navigationStore.state.transportMode == .parkRide {
+                            journeyTimeControl
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                    } else {
-                        routePlanningUnavailable
+
+                        if let route = navigationStore.state.route {
+                            routePlanningOverview(route)
+                            routePlanningAlternatives(for: route)
+                            if detent == .expanded {
+                                routePlanningDetails(for: route)
+                                    .transition(.opacity.combined(with: .move(edge: .top)))
+                            }
+                        } else {
+                            routePlanningUnavailable
+                        }
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 11)
             }
-            .scrollIndicators(.hidden)
-            .frame(maxHeight: .infinity, alignment: .top)
-
-            routePlanningFooter(bottomInset: bottomInset)
+            .padding(.horizontal, 16)
+            .padding(.bottom, detent == .peek ? 0 : 11)
+            .opacity(detent == .peek ? 1 : max(0.82, progress))
+        } footer: { detent, _ in
+            if detent == .peek {
+                EmptyView()
+            } else {
+                routePlanningFooter(bottomInset: bottomInset)
+            }
         }
         .frame(maxWidth: 560)
-        .frame(height: maxHeight, alignment: .top)
         .frame(maxWidth: .infinity)
-        .modifier(NavigationGlassPanelSurface(shape: shape))
     }
 
-    private var routePlanningDragHandle: some View {
-        ZStack {
-            Capsule()
-                .fill(Color.white.opacity(0.48))
-                .frame(width: 38, height: 4)
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: 34)
-        .contentShape(Rectangle())
-        .accessibilityHidden(true)
-        .gesture(DragGesture(minimumDistance: 20).onEnded { value in
-            if value.translation.height < -35 {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { routePreviewExpanded = true }
-            } else if value.translation.height > 35 {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { routePreviewExpanded = false }
+    private var routePlanningPeek: some View {
+        Button {
+            routePreviewDetent = .medium
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(navigationStore.state.destination?.name ?? "Podgląd trasy")
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    if let route = navigationStore.state.route {
+                        Text("\(time(route.expectedTravelTime)) · \(distance(route.distance))")
+                            .font(.system(size: 12, weight: .medium, design: .rounded).monospacedDigit())
+                            .foregroundStyle(Color.white.opacity(0.66))
+                            .lineLimit(1)
+                    } else {
+                        Text("Trasa jest przygotowywana")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Color.white.opacity(0.66))
+                    }
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.7))
             }
-        })
+            .contentShape(Rectangle())
+            .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Rozwiń podgląd trasy")
     }
 
     private var routePlanningEndpoints: some View {
@@ -703,16 +718,22 @@ extension ContentView {
 
     private func routePlanningFooter(bottomInset: CGFloat) -> some View {
         HStack(spacing: 8) {
-            Button {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
-                    routePreviewExpanded.toggle()
-                }
+            Button(role: .destructive) {
+                navigationStore.stop()
             } label: {
-                routePlanningFooterLabel(symbol: routePreviewExpanded ? "chevron.down" : "map",
-                                         title: routePreviewExpanded ? "Zwiń" : "Szczegóły\ntrasy")
+                VStack(spacing: 5) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 17, weight: .semibold))
+                    Text("Anuluj")
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, minHeight: 59)
+                .background(Color.red, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(routePreviewExpanded ? "Zwiń szczegóły trasy" : "Szczegóły trasy")
+            .accessibilityLabel("Anuluj trasę")
 
             Group {
                 if let url = routePlanningShareURL {

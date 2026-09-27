@@ -31,12 +31,13 @@ extension ContentView {
             onTransitStopSelect: { openTransitStop($0) },
             onTransitVehicleSelect: { openTransitVehicle($0) },
             onParkedCarSelect: { openParkedCarDetails() },
+            onCyclingPathsStatus: { mapStore.cyclingPathsStatus = $0 },
             onMapReady: revealMapSplash,
             onMapPan: {
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
-                    routePreviewExpanded = false
+                    routePreviewDetent = .peek
                     destinationExpanded = false
-                    navigationPanelExpanded = false
+                    navigationPanelDetent = .peek
                 }
                 if navigationState.destination == nil {
                     discoveryDrawerCollapseRequest += 1
@@ -75,6 +76,7 @@ extension ContentView {
             settings: navigationMapSettings,
             isSearchPresented: appRouter.sheet == .search,
             routePreviewExpanded: routePreviewExpanded,
+            isBottomSheetDragging: isMapBottomSheetDragging,
             viewportPadding: CameraPadding(top: Double(mapHeaderInset), left: 24,
                                            bottom: Double(mapPanelInset), right: 24),
             commands: commands
@@ -98,6 +100,15 @@ extension ContentView {
         return status == .idle || (status == .error && navigationStore.state.destination == nil)
     }
 
+    private var isMapBottomSheetExpanded: Bool {
+#if os(iOS)
+        if shouldShowDiscoveryDrawer { return discoverySheetDetent == .expanded }
+        if isIOSRoutePlanningPreview { return routePreviewDetent == .expanded }
+        if isNavigating { return navigationPanelDetent == .expanded }
+#endif
+        return false
+    }
+
     private func mapControlStack(in geometry: GeometryProxy) -> some View {
         VStack(spacing: 12) {
             header
@@ -110,15 +121,17 @@ extension ContentView {
                 errorNotice(message)
                     .padding(.horizontal, usesFullBleedNavigationPanel ? 16 : 0)
             }
-            if isNavigating {
+            if isNavigating && !isMapBottomSheetExpanded {
                 gpsStatusIndicator
                     .padding(.horizontal, usesFullBleedNavigationPanel ? 16 : 0)
             }
 
             Spacer(minLength: 16)
 
-            mapControl(compact: geometry.size.height < 500)
-                .padding(.horizontal, usesFullBleedNavigationPanel ? 16 : 0)
+            if !isMapBottomSheetExpanded {
+                mapControl(compact: geometry.size.height < 500)
+                    .padding(.horizontal, usesFullBleedNavigationPanel ? 16 : 0)
+            }
 
             navigationMapPanel(in: geometry)
                 .onGeometryChange(for: CGFloat.self) {
@@ -137,29 +150,45 @@ extension ContentView {
     private func navigationMapPanel(in geometry: GeometryProxy) -> some View {
         if shouldShowDiscoveryDrawer {
             DiscoveryDrawer(
-                maximumHeight: max(160, geometry.size.height - mapHeaderInset -
-                                   (geometry.size.height < 500 ? 100 : 160)),
-                collapseRequest: discoveryDrawerCollapseRequest) { compact in
+                maximumHeight: max(160, min(geometry.size.height * 0.88,
+                                            geometry.size.height - mapHeaderInset - 28)),
+                collapseRequest: discoveryDrawerCollapseRequest,
+                detent: $discoverySheetDetent,
+                isDragging: $isMapBottomSheetDragging) { compact in
                     discoveryPanel(compact: compact)
                 }
         } else if isIOSRoutePlanningPreview {
             routePlanningSheet(
-                maxHeight: min(geometry.size.height * 0.70,
-                               max(220, geometry.size.height - mapHeaderInset - 108)),
+                maxHeight: min(geometry.size.height * 0.88,
+                               max(220, geometry.size.height - mapHeaderInset - 28)),
                 bottomInset: geometry.safeAreaInsets.bottom)
         } else {
-            ScrollView(.vertical) {
-                activePanel
-                    .padding(.horizontal, usesFullBleedNavigationPanel ? 0 : 2)
-                    .padding(.top, usesFullBleedNavigationPanel ? 0 : 2)
-                    .padding(.bottom, isTransitRoutePreview && !usesFullBleedNavigationPanel ? 76 : 0)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { panelHeight = $0 }
+#if os(iOS)
+            if isNavigating {
+                journeyNavigationPanel(
+                    maxHeight: min(geometry.size.height * 0.88,
+                                   max(220, geometry.size.height - mapHeaderInset - 28)))
+            } else {
+                activeScrollableMapPanel(in: geometry)
             }
-            .scrollIndicators(.hidden)
-            .frame(height: min(panelHeight, geometry.size.height *
-                               (geometry.size.height < 500 ? 0.48 : 0.64)))
-            .overlay(alignment: .bottom) { transitPreviewBeginRouteOverlay }
+#else
+            activeScrollableMapPanel(in: geometry)
+#endif
         }
+    }
+
+    private func activeScrollableMapPanel(in geometry: GeometryProxy) -> some View {
+        ScrollView(.vertical) {
+            activePanel
+                .padding(.horizontal, usesFullBleedNavigationPanel ? 0 : 2)
+                .padding(.top, usesFullBleedNavigationPanel ? 0 : 2)
+                .padding(.bottom, isTransitRoutePreview && !usesFullBleedNavigationPanel ? 76 : 0)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { panelHeight = $0 }
+        }
+        .scrollIndicators(.hidden)
+        .frame(height: min(panelHeight, geometry.size.height *
+                           (geometry.size.height < 500 ? 0.48 : 0.64)))
+        .overlay(alignment: .bottom) { transitPreviewBeginRouteOverlay }
     }
 
     private func nearbyPlacesSheet(for request: NearbySearchRequest) -> some View {
@@ -187,6 +216,7 @@ extension ContentView {
             mapCanvas
             mapTopGradient
             mapInteractionLayer
+            cyclingMapAttribution
             mapLoadingOverlay
             parkedCarActionOverlay
             parkedCarToastOverlay
@@ -196,6 +226,23 @@ extension ContentView {
     private var mapCanvas: some View {
         MapLibreView(scene: navigationMapScene)
             .ignoresSafeArea()
+    }
+
+    @ViewBuilder
+    private var cyclingMapAttribution: some View {
+        if case .loaded = mapStore.cyclingPathsStatus {
+            Link("© OpenStreetMap contributors",
+                 destination: URL(string: "https://www.openstreetmap.org/copyright")!)
+                .font(.system(size: 10, weight: .medium))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(.regularMaterial, in: Capsule())
+                .frame(maxWidth: 560, maxHeight: .infinity, alignment: .bottomLeading)
+                .padding(.leading, 18)
+                .padding(.bottom, mapPanelInset + 9)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                .zIndex(2)
+        }
     }
 
     private var mapTopGradient: some View {

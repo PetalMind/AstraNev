@@ -18,17 +18,34 @@ nonisolated struct GTFSRealtimeSnapshot {
                                              sourceUpdatedAt: [:])
 
     func update(tripID: String, serviceDate: String, stopID: String,
-                stopSequence: Int? = nil) -> GTFSStopTimeUpdate? {
+                stopSequence: Int? = nil, frequencyStartSeconds: Int? = nil) -> GTFSStopTimeUpdate? {
         let datedUpdates = updates[tripID]?[serviceDate]
-        if let update = datedUpdates?[stopID] { return update }
-        if let stopSequence, let update = datedUpdates?["sequence:\(stopSequence)"] { return update }
         let undatedUpdates = updates[tripID]?[""]
-        return undatedUpdates?[stopID]
-            ?? stopSequence.flatMap { undatedUpdates?["sequence:\($0)"] }
+        if let frequencyStartSeconds {
+            let prefix = "frequency:\(frequencyStartSeconds):"
+            if let stopSequence,
+               let update = datedUpdates?[prefix + "sequence:\(stopSequence)"] { return update }
+            if let update = datedUpdates?[prefix + stopID] { return update }
+            if let stopSequence,
+               let update = undatedUpdates?[prefix + "sequence:\(stopSequence)"] { return update }
+            return undatedUpdates?[prefix + stopID]
+        }
+        if let stopSequence, let update = datedUpdates?["sequence:\(stopSequence)"] { return update }
+        if let update = datedUpdates?[stopID] { return update }
+        return stopSequence.flatMap { undatedUpdates?["sequence:\($0)"] }
+            ?? undatedUpdates?[stopID]
     }
 
     func isCanceled(tripID: String, serviceDate: String) -> Bool {
         canceledTrips.contains("\(tripID)|\(serviceDate)") || canceledTrips.contains("\(tripID)|")
+    }
+
+    func isCanceled(tripID: String, serviceDate: String, frequencyStartSeconds: Int?) -> Bool {
+        if isCanceled(tripID: tripID, serviceDate: serviceDate) { return true }
+        guard let frequencyStartSeconds else { return false }
+        let startTime = GTFSCSV.serviceTimeString(frequencyStartSeconds)
+        return canceledTrips.contains("\(tripID)|\(serviceDate)|\(startTime)")
+            || canceledTrips.contains("\(tripID)||\(startTime)")
     }
 
     static func tripUpdates(from data: Data, prefix: String = "") throws -> GTFSRealtimeSnapshot {
@@ -44,11 +61,22 @@ nonisolated struct GTFSRealtimeSnapshot {
                 guard let entity = try parseTripUpdateEntity(bytes) else { continue }
                 let dateKey = entity.serviceDate ?? ""
                 if entity.canceled {
-                    canceled.insert("\(prefix)\(entity.tripID)|\(dateKey)")
+                    let normalizedStart = entity.startTime.flatMap(GTFSCSV.serviceSeconds)
+                        .map(GTFSCSV.serviceTimeString)
+                    let frequencyKey = normalizedStart.map { "|\($0)" } ?? ""
+                    canceled.insert("\(prefix)\(entity.tripID)|\(dateKey)\(frequencyKey)")
                 } else {
-                    for (stopID, update) in entity.stopUpdates {
-                        let namespacedStopID = stopID.hasPrefix("sequence:") ? stopID : prefix + stopID
-                        updates[prefix + entity.tripID, default: [:]][dateKey, default: [:]][namespacedStopID] = update
+                    let frequencyPrefix: String
+                    if let startTime = entity.startTime {
+                        guard let startSeconds = GTFSCSV.serviceSeconds(startTime) else { continue }
+                        frequencyPrefix = "frequency:\(startSeconds):"
+                    } else {
+                        frequencyPrefix = ""
+                    }
+                    for (key, update) in entity.stopUpdates {
+                        let stopKey = key.hasPrefix("sequence:") ? key : prefix + key
+                        let namespacedKey = frequencyPrefix + stopKey
+                        updates[prefix + entity.tripID, default: [:]][dateKey, default: [:]][namespacedKey] = update
                     }
                 }
             default:
@@ -103,7 +131,8 @@ nonisolated struct GTFSRealtimeSnapshot {
     }
 
     private static func parseTripUpdateEntity(_ data: Data) throws
-        -> (tripID: String, serviceDate: String?, canceled: Bool, stopUpdates: [(String, GTFSStopTimeUpdate)])? {
+        -> (tripID: String, serviceDate: String?, startTime: String?, canceled: Bool,
+            stopUpdates: [(String, GTFSStopTimeUpdate)])? {
         var entityReader = ProtoReader(data: data)
         var tripUpdateData: Data?
         while let field = try entityReader.next() {
@@ -117,6 +146,7 @@ nonisolated struct GTFSRealtimeSnapshot {
         var reader = ProtoReader(data: tripUpdateData)
         var tripID: String?
         var serviceDate: String?
+        var startTime: String?
         var relationship: UInt64 = 0
         var stopUpdates: [(String, GTFSStopTimeUpdate)] = []
         while let field = try reader.next() {
@@ -124,38 +154,43 @@ nonisolated struct GTFSRealtimeSnapshot {
                 let descriptor = try parseTripDescriptor(bytes)
                 tripID = descriptor.tripID
                 serviceDate = descriptor.serviceDate
+                startTime = descriptor.startTime
                 relationship = descriptor.relationship
             } else if field.number == 2, let bytes = field.bytes,
-                      let update = try parseStopTimeUpdate(bytes) {
-                stopUpdates.append(update)
+                      let updates = try parseStopTimeUpdate(bytes) {
+                stopUpdates.append(contentsOf: updates)
             }
         }
         guard let tripID, !tripID.isEmpty else { return nil }
-        return (tripID, serviceDate, relationship == 3, stopUpdates)
+        return (tripID, serviceDate, startTime, relationship == 3, stopUpdates)
     }
 
     private static func parseTripDescriptor(_ data: Data) throws
-        -> (tripID: String?, serviceDate: String?, relationship: UInt64, routeID: String?) {
+        -> (tripID: String?, serviceDate: String?, startTime: String?,
+            relationship: UInt64, routeID: String?) {
         var reader = ProtoReader(data: data)
         var tripID: String?
         var serviceDate: String?
+        var startTime: String?
         var relationship: UInt64 = 0
         var routeID: String?
         while let field = try reader.next() {
             if field.number == 1, let bytes = field.bytes { tripID = String(data: bytes, encoding: .utf8) }
+            if field.number == 2, let bytes = field.bytes { startTime = String(data: bytes, encoding: .utf8) }
             if field.number == 3, let bytes = field.bytes { serviceDate = String(data: bytes, encoding: .utf8) }
             if field.number == 4, let value = field.varint { relationship = value }
             if field.number == 5, let bytes = field.bytes { routeID = String(data: bytes, encoding: .utf8) }
         }
-        return (tripID, serviceDate, relationship, routeID)
+        return (tripID, serviceDate, startTime, relationship, routeID)
     }
 
-    private static func parseStopTimeUpdate(_ data: Data) throws -> (String, GTFSStopTimeUpdate)? {
+    private static func parseStopTimeUpdate(_ data: Data) throws -> [(String, GTFSStopTimeUpdate)]? {
         var reader = ProtoReader(data: data)
         var stopID: String?
         var stopSequence: Int?
         var arrival: GTFSStopTimeEvent?
         var departure: GTFSStopTimeEvent?
+        var relationship = GTFSStopTimeRelationship.scheduled
         while let field = try reader.next() {
             if field.number == 1, let value = field.varint, value <= UInt64(Int.max) {
                 stopSequence = Int(value)
@@ -163,11 +198,17 @@ nonisolated struct GTFSRealtimeSnapshot {
             if field.number == 2, let bytes = field.bytes { arrival = try parseEvent(bytes) }
             if field.number == 3, let bytes = field.bytes { departure = try parseEvent(bytes) }
             if field.number == 4, let bytes = field.bytes { stopID = String(data: bytes, encoding: .utf8) }
+            if field.number == 5, let value = field.varint, value <= UInt64(Int.max) {
+                relationship = GTFSStopTimeRelationship(rawValue: Int(value)) ?? .unknown
+            }
         }
-        let key = stopID.flatMap { $0.isEmpty ? nil : $0 } ?? stopSequence.map { "sequence:\($0)" }
-        guard let key else { return nil }
-        return (key, GTFSStopTimeUpdate(arrivalTime: arrival?.time, departureTime: departure?.time,
-                                           arrivalDelay: arrival?.delay, departureDelay: departure?.delay))
+        let update = GTFSStopTimeUpdate(arrivalTime: arrival?.time, departureTime: departure?.time,
+                                        arrivalDelay: arrival?.delay, departureDelay: departure?.delay,
+                                        scheduleRelationship: relationship)
+        var keyedUpdates: [(String, GTFSStopTimeUpdate)] = []
+        if let stopSequence { keyedUpdates.append(("sequence:\(stopSequence)", update)) }
+        if let stopID, !stopID.isEmpty { keyedUpdates.append((stopID, update)) }
+        return keyedUpdates.isEmpty ? nil : keyedUpdates
     }
 
     private static func parseEvent(_ data: Data) throws -> GTFSStopTimeEvent {
@@ -191,8 +232,9 @@ nonisolated struct GTFSRealtimeSnapshot {
             guard field.number == 5, let bytes = field.bytes else { continue }
             let alert = try parseAlert(bytes)
             guard !alert.message.isEmpty else { continue }
-            return GTFSAlert(message: alert.message, routeIDs: alert.routeIDs,
-                             stopIDs: alert.stopIDs, activePeriods: alert.activePeriods)
+            return GTFSAlert(message: alert.message, selectors: alert.selectors,
+                             hasInformedEntities: alert.hasInformedEntities,
+                             activePeriods: alert.activePeriods)
         }
         return nil
     }
@@ -284,12 +326,13 @@ nonisolated struct GTFSRealtimeSnapshot {
     }
 
     private static func parseAlert(_ data: Data) throws
-        -> (message: String, routeIDs: Set<String>, stopIDs: Set<String>, activePeriods: [GTFSAlertPeriod]) {
+        -> (message: String, selectors: [GTFSAlertSelector], hasInformedEntities: Bool,
+            activePeriods: [GTFSAlertPeriod]) {
         var reader = ProtoReader(data: data)
         var header = ""
         var description = ""
-        var routeIDs: Set<String> = []
-        var stopIDs: Set<String> = []
+        var selectors: [GTFSAlertSelector] = []
+        var hasInformedEntities = false
         var activePeriods: [GTFSAlertPeriod] = []
         while let field = try reader.next() {
             if field.number == 1, let bytes = field.bytes {
@@ -298,13 +341,12 @@ nonisolated struct GTFSRealtimeSnapshot {
             if field.number == 10, let bytes = field.bytes { header = try parseTranslatedString(bytes) }
             if field.number == 11, let bytes = field.bytes { description = try parseTranslatedString(bytes) }
             if field.number == 5, let bytes = field.bytes {
-                let selector = try parseEntitySelector(bytes)
-                if let routeID = selector.routeID { routeIDs.insert(routeID) }
-                if let stopID = selector.stopID { stopIDs.insert(stopID) }
+                hasInformedEntities = true
+                selectors.append(try parseEntitySelector(bytes))
             }
         }
         let message = [header, description].filter { !$0.isEmpty }.joined(separator: ": ")
-        return (message, routeIDs, stopIDs, activePeriods)
+        return (message, selectors, hasInformedEntities, activePeriods)
     }
 
     private static func parseAlertPeriod(_ data: Data) throws -> GTFSAlertPeriod {
@@ -318,15 +360,35 @@ nonisolated struct GTFSRealtimeSnapshot {
         return GTFSAlertPeriod(start: start, end: end)
     }
 
-    private static func parseEntitySelector(_ data: Data) throws -> (routeID: String?, stopID: String?) {
+    private static func parseEntitySelector(_ data: Data) throws -> GTFSAlertSelector {
         var reader = ProtoReader(data: data)
         var routeID: String?
         var stopID: String?
+        var tripID: String?
+        var hasUnsupportedConstraint = false
         while let field = try reader.next() {
-            if field.number == 2, let bytes = field.bytes { routeID = String(data: bytes, encoding: .utf8) }
-            if field.number == 5, let bytes = field.bytes { stopID = String(data: bytes, encoding: .utf8) }
+            switch (field.number, field.bytes) {
+            case (2, let bytes?):
+                routeID = String(data: bytes, encoding: .utf8)
+            case (4, let bytes?):
+                var tripReader = ProtoReader(data: bytes)
+                while let tripField = try tripReader.next() {
+                    if tripField.number == 1, let id = tripField.bytes {
+                        tripID = String(data: id, encoding: .utf8)
+                    } else if tripField.number == 5, let id = tripField.bytes {
+                        routeID = String(data: id, encoding: .utf8)
+                    } else {
+                        hasUnsupportedConstraint = true
+                    }
+                }
+            case (5, let bytes?):
+                stopID = String(data: bytes, encoding: .utf8)
+            default:
+                hasUnsupportedConstraint = true
+            }
         }
-        return (routeID, stopID)
+        return GTFSAlertSelector(routeID: routeID, stopID: stopID, tripID: tripID,
+                                 hasUnsupportedConstraint: hasUnsupportedConstraint)
     }
 
     private static func parseTranslatedString(_ data: Data) throws -> String {
@@ -368,6 +430,21 @@ nonisolated struct GTFSStopTimeUpdate {
     let departureTime: Date?
     let arrivalDelay: Int?
     let departureDelay: Int?
+    let scheduleRelationship: GTFSStopTimeRelationship
+
+    var isSkipped: Bool { scheduleRelationship == .skipped }
+    var hasNoData: Bool { scheduleRelationship == .noData }
+    var hasUsableTiming: Bool {
+        scheduleRelationship == .scheduled || scheduleRelationship == .unscheduled
+    }
+}
+
+nonisolated enum GTFSStopTimeRelationship: Int, Equatable, Sendable {
+    case scheduled = 0
+    case skipped = 1
+    case noData = 2
+    case unscheduled = 3
+    case unknown = 255
 }
 
 nonisolated struct GTFSStopTimeEvent {
@@ -377,13 +454,31 @@ nonisolated struct GTFSStopTimeEvent {
 
 nonisolated struct GTFSAlert {
     let message: String
-    let routeIDs: Set<String>
-    let stopIDs: Set<String>
+    let selectors: [GTFSAlertSelector]
+    let hasInformedEntities: Bool
     let activePeriods: [GTFSAlertPeriod]
+
+    func applies(routeIDs: Set<String>, stopIDs: Set<String>, tripIDs: Set<String>) -> Bool {
+        guard hasInformedEntities else { return true }
+        return selectors.contains { selector in
+            guard !selector.hasUnsupportedConstraint else { return false }
+            if let routeID = selector.routeID, !routeIDs.contains(routeID) { return false }
+            if let stopID = selector.stopID, !stopIDs.contains(stopID) { return false }
+            if let tripID = selector.tripID, !tripIDs.contains(tripID) { return false }
+            return selector.routeID != nil || selector.stopID != nil || selector.tripID != nil
+        }
+    }
 
     func isActive(at date: Date) -> Bool {
         activePeriods.isEmpty || activePeriods.contains { $0.contains(date) }
     }
+}
+
+nonisolated struct GTFSAlertSelector: Sendable {
+    let routeID: String?
+    let stopID: String?
+    let tripID: String?
+    let hasUnsupportedConstraint: Bool
 }
 
 nonisolated struct GTFSAlertPeriod {

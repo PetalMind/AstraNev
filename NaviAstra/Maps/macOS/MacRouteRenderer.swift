@@ -395,7 +395,7 @@ final class MacRouteRenderer {
             guard step > 0 else { return }
             let journeyOverlays = routeOverlays.filter { overlay in
                 guard overlay.routeID == route.id else { return false }
-                switch overlay.kind {
+                return switch overlay.kind {
                 case .journeyCasing, .journeyLeg, .traveled: true
                 default: false
                 }
@@ -403,7 +403,7 @@ final class MacRouteRenderer {
             map.removeOverlays(journeyOverlays.map(\.polyline))
             routeOverlays.removeAll { overlay in
                 guard overlay.routeID == route.id else { return false }
-                switch overlay.kind {
+                return switch overlay.kind {
                 case .journeyCasing, .journeyLeg, .traveled: true
                 default: false
                 }

@@ -198,6 +198,11 @@ struct TransitDetailsSheet: View {
                 Label("Dane z rozkładu", systemImage: "clock")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            if let headway = tripDetails.frequencyHeadwaySeconds {
+                Label("\(tripDetails.isFrequencyEstimate ? "Odjazdy orientacyjne" : "Kursy") co \(max(1, Int((Double(headway) / 60).rounded()))) min",
+                      systemImage: tripDetails.isFrequencyEstimate ? "clock.badge.questionmark" : "clock")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
             if vehicle != nil {
                 ForEach(tripDetails.pastStops) { stop in
                     HStack(spacing: 9) {
@@ -236,6 +241,8 @@ struct TransitDetailsSheet: View {
                         if let delay = stop.delaySeconds, abs(delay) >= 30 {
                             Text(delayLabel(delay)).font(.caption.weight(.semibold))
                                 .foregroundStyle(delayColor(delay))
+                        } else if stop.isSkipped {
+                            Text("pomijany").font(.caption.weight(.medium)).foregroundStyle(.secondary)
                         } else if stop.hasRealtime {
                             Text("live").font(.caption.weight(.medium)).foregroundStyle(.secondary)
                         }

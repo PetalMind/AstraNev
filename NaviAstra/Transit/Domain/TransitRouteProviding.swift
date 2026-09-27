@@ -14,12 +14,30 @@ protocol TransitRouteProviding: Sendable {
         onProvisionalRoutes: TransitProvisionalRoutesHandler?
     ) async throws -> [NavigationRoute]
 
+    func calculateRoutes(
+        from: Coordinate,
+        to: Coordinate,
+        departingAt: Date,
+        onProgress: TransitPlanningProgressHandler?,
+        onProvisionalRoutes: TransitProvisionalRoutesHandler?,
+        cancellationToken: TransitPlanningCancellationToken?
+    ) async throws -> [NavigationRoute]
+
     func calculateRoutesArrivingBy(
         from: Coordinate,
         to: Coordinate,
         deadline: Date,
         onProgress: TransitPlanningProgressHandler?,
         shouldContinue: @escaping TransitPlanningContinuation
+    ) async throws -> [NavigationRoute]
+
+    func calculateRoutesArrivingBy(
+        from: Coordinate,
+        to: Coordinate,
+        deadline: Date,
+        onProgress: TransitPlanningProgressHandler?,
+        shouldContinue: @escaping TransitPlanningContinuation,
+        cancellationToken: TransitPlanningCancellationToken?
     ) async throws -> [NavigationRoute]
 }
 
@@ -38,6 +56,9 @@ protocol TransitDataProviding: Sendable {
     func tripDetails(for departure: TransitDeparture) async -> TransitTripDetails?
     func tripDetails(tripID: String, serviceDate: String,
                      fromStopSequence: Int) async -> TransitTripDetails?
+    func tripDetails(tripID: String, serviceDate: String, fromStopSequence: Int,
+                     scheduleShiftSeconds: Int, frequencyStartSeconds: Int?,
+                     frequencyHeadwaySeconds: Int?, isFrequencyEstimate: Bool) async -> TransitTripDetails?
 }
 
 extension TransitDataProviding {
@@ -55,6 +76,34 @@ extension TransitDataProviding {
 }
 
 extension TransitRouteProviding {
+    func calculateRoutes(from: Coordinate, to: Coordinate, departingAt: Date,
+                         onProgress: TransitPlanningProgressHandler?,
+                         onProvisionalRoutes: TransitProvisionalRoutesHandler?,
+                         cancellationToken: TransitPlanningCancellationToken?) async throws -> [NavigationRoute] {
+        try cancellationToken?.checkCancellation()
+        let routes = try await calculateRoutes(from: from, to: to, parkRide: false,
+                                               departingAt: departingAt, onProgress: onProgress,
+                                               onProvisionalRoutes: onProvisionalRoutes)
+        try cancellationToken?.checkCancellation()
+        return routes
+    }
+
+    func calculateRoutesArrivingBy(
+        from: Coordinate,
+        to: Coordinate,
+        deadline: Date,
+        onProgress: TransitPlanningProgressHandler?,
+        shouldContinue: @escaping TransitPlanningContinuation,
+        cancellationToken: TransitPlanningCancellationToken?
+    ) async throws -> [NavigationRoute] {
+        try cancellationToken?.checkCancellation()
+        let routes = try await calculateRoutesArrivingBy(from: from, to: to, deadline: deadline,
+                                                         onProgress: onProgress,
+                                                         shouldContinue: shouldContinue)
+        try cancellationToken?.checkCancellation()
+        return routes
+    }
+
     func usingWalkingRoutingEndpoint(_ endpoint: URL) -> TransitRouteProviding {
         self
     }

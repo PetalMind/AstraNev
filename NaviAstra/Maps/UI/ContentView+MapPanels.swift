@@ -234,11 +234,43 @@ extension ContentView {
                 Toggle("Wyróżnij kolej i tramwaje", isOn: $mapStore.mapTransitVisible)
             }
             if mapCapabilities.supportsCyclingOverlay {
-                Toggle("Trasy rowerowe", isOn: $mapStore.mapCyclingVisible)
+                Toggle("Ścieżki rowerowe", isOn: $mapStore.mapCyclingVisible)
+                if mapStore.mapCyclingVisible {
+                    cyclingPathsStatusLabel
+                }
             }
             if mapCapabilities.supports3DBuildings {
                 Toggle("Budynki 3D", isOn: $mapStore.mapBuildingsVisible)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var cyclingPathsStatusLabel: some View {
+        switch mapStore.cyclingPathsStatus {
+        case .disabled:
+            EmptyView()
+        case .zoomIn:
+            Label("Zbliż mapę, aby pobrać dane", systemImage: "plus.magnifyingglass")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .loading:
+            Label("Pobieranie ścieżek z OSM…", systemImage: "arrow.triangle.2.circlepath")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .loaded(count: 0, truncated: _):
+            Label("Brak oznaczonych ścieżek w tym widoku", systemImage: "info.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .loaded(let count, let truncated):
+            Label(truncated ? "OpenStreetMap · ponad \(count) odc." : "OpenStreetMap · \(count) odc.",
+                  systemImage: "bicycle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .unavailable:
+            Label("Dane OpenStreetMap są niedostępne", systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.orange)
         }
     }
 

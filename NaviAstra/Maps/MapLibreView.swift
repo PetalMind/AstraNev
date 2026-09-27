@@ -58,12 +58,14 @@ struct MapLibreView: UIViewRepresentable {
     var settings: MapSettings { scene.settings }
     var isSearchPresented: Bool { scene.isSearchPresented }
     var routePreviewExpanded: Bool { scene.routePreviewExpanded }
+    var isBottomSheetDragging: Bool { scene.isBottomSheetDragging }
     var viewportPadding: CameraPadding { scene.viewportPadding }
     var onSearchSelect: (Destination) -> Void { scene.commands.onSearchSelect }
     var onPlaceSelect: ([SearchResult]) -> Void { scene.commands.onPlaceSelect }
     var onTransitStopSelect: (TransitStop) -> Void { scene.commands.onTransitStopSelect }
     var onTransitVehicleSelect: (TransitVehicle) -> Void { scene.commands.onTransitVehicleSelect }
     var onParkedCarSelect: () -> Void { scene.commands.onParkedCarSelect }
+    var onCyclingPathsStatus: (OSMCyclingPathsStatus) -> Void { scene.commands.onCyclingPathsStatus }
     var onMapReady: () -> Void { scene.commands.onMapReady }
     var onMapPan: () -> Void { scene.commands.onMapPan }
     var onLongPress: (Coordinate) -> Void { scene.commands.onLongPress }
@@ -109,6 +111,7 @@ struct MapLibreView: UIViewRepresentable {
 
     static func dismantleUIView(_ map: MLNMapView, coordinator: Coordinator) {
         coordinator.stopPuckDisplayLink()
+        coordinator.stopCyclingPathUpdates()
     }
 
     final class Coordinator: NSObject, MLNMapViewDelegate, UIGestureRecognizerDelegate {
@@ -133,6 +136,10 @@ struct MapLibreView: UIViewRepresentable {
         private let routeLayerRenderer = RouteLayerRenderer()
         private let transitStopRenderer = TransitStopLayerRenderer()
         private var transitLine: MLNPolyline?
+        private var cyclingPathLines: [MLNPolyline] = []
+        private var cyclingPathQueryID: String?
+        private var cyclingPathTask: Task<Void, Never>?
+        private var cyclingPathStatus: OSMCyclingPathsStatus = .disabled
         private var shownTransitRouteID: String?
         private var shownTransitLineCoordinates: [Coordinate] = []
         private var closurePin: MLNPointAnnotation?
@@ -317,6 +324,7 @@ struct MapLibreView: UIViewRepresentable {
 
         func mapViewDidBecomeIdle(_ mapView: MLNMapView) {
             updatePOIDensity(on: mapView)
+            updateCyclingPaths(on: mapView)
             applyCameraIntent(to: mapView)
             parent.onMapReady()
         }
@@ -390,6 +398,7 @@ struct MapLibreView: UIViewRepresentable {
             }
             updatePOIDensity(on: map)
             updatePOIMarkerAppearance(on: map)
+            updateCyclingPaths(on: map)
             let routeLayerContext = RouteLayerRenderContext(state: parent.state, settings: parent.settings,
                                                            colorScheme: parent.colorScheme, previousStatus: lastStatus)
             routeLayerRenderer.updateRoutes(on: map, context: routeLayerContext)
@@ -634,8 +643,12 @@ struct MapLibreView: UIViewRepresentable {
             let newOverview = cameraState == .routeOverview && lastOverviewRouteID != routeID &&
                 lastStatus != .routePreview
             let routePreviewPaddingChanged = lastViewportPadding != parent.viewportPadding || lastMapSize != map.bounds.size
+            let followsSheetGesture = parent.isBottomSheetDragging && routePreviewPaddingChanged
             var effectiveIntent = intent
             effectiveIntent.padding = parent.viewportPadding
+            if followsSheetGesture {
+                effectiveIntent.animationDuration = 0
+            }
             if parent.state.transportMode == .walking && cameraState.usesNavigationPerspective {
                 // Lower the camera focal point so the puck sits below center while
                 // the camera target stays on the route ahead.
@@ -652,8 +665,14 @@ struct MapLibreView: UIViewRepresentable {
             if intent == lastIntent && !enteringOverview && !newOverview && !cameraCommandChanged &&
                !routePreviewPaddingChanged && !cameraModeChanged && !cameraStateChanged { return }
             if cameraAnimationInFlight {
-                cameraUpdatePending = true
-                return
+                if followsSheetGesture {
+                    cameraAnimationGeneration &+= 1
+                    cameraAnimationInFlight = false
+                    cameraUpdatePending = false
+                } else {
+                    cameraUpdatePending = true
+                    return
+                }
             }
             if cameraMode == .flat && !cameraState.usesNavigationPerspective {
                 effectiveIntent.pitch = 0
@@ -667,7 +686,7 @@ struct MapLibreView: UIViewRepresentable {
             programmaticCamera = true
             cameraAnimationGeneration &+= 1
             let generation = cameraAnimationGeneration
-            cameraAnimationInFlight = true
+            cameraAnimationInFlight = !followsSheetGesture
             let started = MapLibreCameraAnimator.apply(
                 effectiveIntent, state: cameraState, to: map,
                 completionHandler: { [weak self, weak map] in
@@ -1039,6 +1058,7 @@ struct MapLibreView: UIViewRepresentable {
             updateTrafficEventPins(on: mapView,
                                    routeDistance: parent.state.progress?.traveledDistance ?? 0)
             scheduleTransitAnnotationUpdate(on: mapView)
+            updateCyclingPaths(on: mapView)
         }
 
         private func updateIncidentPins(on map: MLNMapView) {
@@ -1152,6 +1172,10 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MLNMapView, strokeColorForShapeAnnotation annotation: MLNShape) -> UIColor {
+            if let line = annotation as? MLNPolyline, cyclingPathLines.contains(where: { $0 === line }) {
+                return parent.colorScheme == .dark ? UIColor(red: 0.39, green: 0.91, blue: 0.66, alpha: 0.95)
+                    : UIColor(red: 0.03, green: 0.56, blue: 0.37, alpha: 0.94)
+            }
             if let transitLine, transitLine === annotation, let color = parent.transitLineColor {
                 return self.color(hex: color, opacity: 0.9)
             }
@@ -1163,11 +1187,87 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MLNMapView, lineWidthForPolylineAnnotation annotation: MLNPolyline) -> CGFloat {
+            if cyclingPathLines.contains(where: { $0 === annotation }) { return 4 }
             if let transitLine, transitLine === annotation { return 5 }
             let context = RouteLayerRenderContext(state: parent.state, settings: parent.settings,
                                                   colorScheme: parent.colorScheme, previousStatus: lastStatus)
             return routeLinePresentation(for: annotation, context: context)?.width ?? 2
         }
+
+        func stopCyclingPathUpdates() {
+            cyclingPathTask?.cancel()
+            cyclingPathTask = nil
+        }
+
+        private func updateCyclingPaths(on map: MLNMapView) {
+            guard parent.settings.overlays.cycling else {
+                stopCyclingPathUpdates()
+                cyclingPathQueryID = nil
+                if !cyclingPathLines.isEmpty {
+                    map.removeAnnotations(cyclingPathLines)
+                    cyclingPathLines = []
+                }
+                setCyclingPathStatus(.disabled)
+                return
+            }
+
+            let visibleBounds = map.visibleCoordinateBounds
+            let center = Coordinate(latitude: map.centerCoordinate.latitude,
+                                    longitude: map.centerCoordinate.longitude)
+            guard let query = OSMCyclingQuery.visible(
+                center: center,
+                latitudeDelta: visibleBounds.ne.latitude - visibleBounds.sw.latitude,
+                longitudeDelta: visibleBounds.ne.longitude - visibleBounds.sw.longitude
+            ) else {
+                stopCyclingPathUpdates()
+                cyclingPathQueryID = "zoomed-out"
+                if !cyclingPathLines.isEmpty {
+                    map.removeAnnotations(cyclingPathLines)
+                    cyclingPathLines = []
+                }
+                setCyclingPathStatus(.zoomIn)
+                return
+            }
+            guard cyclingPathQueryID != query.id else { return }
+
+            cyclingPathQueryID = query.id
+            cyclingPathTask?.cancel()
+            map.removeAnnotations(cyclingPathLines)
+            cyclingPathLines = []
+            setCyclingPathStatus(.loading)
+            cyclingPathTask = Task { [weak self, weak map] in
+                do {
+                    try await Task.sleep(nanoseconds: 350_000_000)
+                    let result = try await OSMCyclingPathProvider.shared.paths(in: query)
+                    guard !Task.isCancelled, let self, let map,
+                          self.cyclingPathQueryID == query.id,
+                          self.parent.settings.overlays.cycling else { return }
+                    map.removeAnnotations(self.cyclingPathLines)
+                    self.cyclingPathLines = result.paths.map { path in
+                        var points = path.coordinates.map(\.cl)
+                        let line = MLNPolyline(coordinates: &points, count: UInt(points.count))
+                        line.title = "Ścieżka OSM · © OpenStreetMap contributors"
+                        return line
+                    }
+                    map.addAnnotations(self.cyclingPathLines)
+                    self.setCyclingPathStatus(.loaded(count: result.paths.count,
+                                                      truncated: result.truncated))
+                } catch {
+                    guard !Task.isCancelled, let self, let map,
+                          self.cyclingPathQueryID == query.id else { return }
+                    map.removeAnnotations(self.cyclingPathLines)
+                    self.cyclingPathLines = []
+                    self.setCyclingPathStatus(.unavailable)
+                }
+            }
+        }
+
+        private func setCyclingPathStatus(_ status: OSMCyclingPathsStatus) {
+            guard cyclingPathStatus != status else { return }
+            cyclingPathStatus = status
+            parent.onCyclingPathsStatus(status)
+        }
+
         private func updateAccuracyHalo(on map: MLNMapView) {
             guard let location = parent.state.location,
                   Date().timeIntervalSince(location.timestamp) >= 0,

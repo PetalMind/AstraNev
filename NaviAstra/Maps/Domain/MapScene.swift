@@ -19,6 +19,7 @@ struct MapSceneCommands {
     let onTransitStopSelect: (TransitStop) -> Void
     let onTransitVehicleSelect: (TransitVehicle) -> Void
     let onParkedCarSelect: () -> Void
+    let onCyclingPathsStatus: (OSMCyclingPathsStatus) -> Void
     let onMapReady: () -> Void
     let onMapPan: () -> Void
     let onLongPress: (Coordinate) -> Void
@@ -32,6 +33,7 @@ struct MapScene {
     let settings: MapSettings
     let isSearchPresented: Bool
     let routePreviewExpanded: Bool
+    let isBottomSheetDragging: Bool
     let viewportPadding: CameraPadding
     let commands: MapSceneCommands
 }

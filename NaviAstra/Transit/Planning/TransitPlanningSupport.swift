@@ -11,6 +11,27 @@ typealias TransitPlanningProgressHandler = @MainActor @Sendable (TransitPlanning
 typealias TransitProvisionalRoutesHandler = @MainActor @Sendable ([NavigationRoute]) async -> Void
 typealias TransitPlanningContinuation = @MainActor @Sendable () async -> Bool
 
+nonisolated final class TransitPlanningCancellationToken: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+
+    func checkCancellation() throws {
+        if Task.isCancelled || isCancelled { throw CancellationError() }
+    }
+}
+
 nonisolated enum TransitSignposting {
     static let log = OSLog(subsystem: "STDMSolution.NaviAstra", category: "TransitPlanning")
 
@@ -144,6 +165,7 @@ nonisolated final class TransitPlanningTrace: @unchecked Sendable {
             + "departureDominated=\(count("departureTripsDominated")), "
             + "arrivalByIterations=\(count("arrivalByIterations")), "
             + "stopsWithDepartures=\(count("stopsWithDepartures")), candidates=\(count("candidates")), "
+            + "candidatesRetained=\(count("candidatesRetained")), "
             + "uniqueRoutes=\(count("uniqueRoutes")), walkingSegments=\(count("walkingSegments")), "
             + "rounds=\(count("roundsExecuted")), matrixCalls=\(count("matrixCalls")), "
             + "matrixTargets=\(count("matrixTargetsSent")), matrixHTTPErrorCount=\(count("matrixHTTPErrorCount")), "

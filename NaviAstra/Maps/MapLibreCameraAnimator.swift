@@ -17,10 +17,11 @@ enum MapLibreCameraAnimator {
             let lats = validBounds.map(\.latitude), lons = validBounds.map(\.longitude)
             let bounds = MLNCoordinateBounds(sw: CLLocationCoordinate2D(latitude: lats.min()!, longitude: lons.min()!),
                                              ne: CLLocationCoordinate2D(latitude: lats.max()!, longitude: lons.max()!))
+            let animated = intent.animationDuration.map { $0 > 0 } ?? true
             map.setVisibleCoordinateBounds(bounds,
                 edgePadding: UIEdgeInsets(top: CGFloat(intent.padding.top), left: CGFloat(intent.padding.left),
                                           bottom: CGFloat(intent.padding.bottom), right: CGFloat(intent.padding.right)),
-                animated: true, completionHandler: completionHandler)
+                animated: animated, completionHandler: completionHandler)
             return true
         }
         let camera = map.camera

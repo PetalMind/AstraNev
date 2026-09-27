@@ -110,9 +110,9 @@ extension ContentView {
                 unavailableToggle("Transport publiczny", reason: "Brak niezależnej warstwy u obecnego dostawcy mapy.")
             }
             if mapCapabilities.supportsCyclingOverlay {
-                Toggle("Trasy rowerowe", isOn: $mapStore.mapCyclingVisible)
+                Toggle("Ścieżki rowerowe (OSM)", isOn: $mapStore.mapCyclingVisible)
             } else {
-                unavailableToggle("Trasy rowerowe", reason: "Brak niezależnej warstwy u obecnego dostawcy mapy.")
+                unavailableToggle("Ścieżki rowerowe (OSM)", reason: "Brak niezależnej warstwy u obecnego dostawcy mapy.")
             }
         }
     }

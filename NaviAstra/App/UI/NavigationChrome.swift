@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 /// Shared floating surfaces. Keep nested content opaque enough for map legibility.
 struct NavigationGlassSurface: ViewModifier {
@@ -64,91 +67,295 @@ struct NavigationGlassPanelSurface: ViewModifier {
     }
 }
 
-/// Three resting heights, with scrolling confined to the content and dragging to the handle.
-struct DiscoveryDrawer<Content: View>: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var maximumHeight: CGFloat
-    var collapseRequest: Int
-    @ViewBuilder var content: (Bool) -> Content
-    @State private var detent = 1
-    @GestureState private var translation: CGFloat = 0
+enum NavigationBottomSheetDetent: Int, CaseIterable {
+    case peek
+    case medium
+    case expanded
 
-    private var heights: [CGFloat] {
-        let maximum = max(140, maximumHeight)
-        let candidates = [min(140, maximum), min(360, maximum), maximum]
-        var uniqueHeights: [CGFloat] = []
-        for candidate in candidates {
-            if uniqueHeights.last.map({ abs($0 - candidate) > 1 }) ?? true {
-                uniqueHeights.append(candidate)
-            }
-        }
-        return uniqueHeights
-    }
-    private var selectedDetent: Int { min(max(detent, 0), heights.count - 1) }
-    private var detentNames: [String] {
-        switch heights.count {
-        case 1: ["Zwinięty"]
-        case 2: ["Zwinięty", "Rozwinięty"]
-        default: ["Zwinięty", "Średni", "Rozwinięty"]
+    var title: String {
+        switch self {
+        case .peek: "Zwinięty"
+        case .medium: "Średni"
+        case .expanded: "Rozwinięty"
         }
     }
+}
+
+enum NavigationBottomSheetAppearance: Equatable {
+    case navigation
+    case discovery
+}
+
+private struct NavigationBottomSheetScrollOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+/// A map-attached sheet with shared detents, drag physics, and scroll handoff.
+struct NavigationBottomSheet<Content: View, Footer: View>: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Binding private var detent: NavigationBottomSheetDetent
+    @Binding private var isDragging: Bool
+    private let maximumHeight: CGFloat
+    private let accessibilityLabel: String
+    private let appearance: NavigationBottomSheetAppearance
+    private let content: (NavigationBottomSheetDetent, CGFloat) -> Content
+    private let footer: (NavigationBottomSheetDetent, CGFloat) -> Footer
+    private let scrollSpaceName = UUID().uuidString
+    @State private var scrollOffset: CGFloat = 0
+    @State private var dragStartHeight: CGFloat?
+    @State private var dragStartTranslation: CGFloat?
+    @State private var interactiveHeight: CGFloat?
+    @State private var ownsCurrentDrag = false
+
+    init(detent: Binding<NavigationBottomSheetDetent>,
+         maximumHeight: CGFloat,
+         accessibilityLabel: String,
+         appearance: NavigationBottomSheetAppearance = .navigation,
+         isDragging: Binding<Bool>,
+         @ViewBuilder content: @escaping (NavigationBottomSheetDetent, CGFloat) -> Content,
+         @ViewBuilder footer: @escaping (NavigationBottomSheetDetent, CGFloat) -> Footer) {
+        self._detent = detent
+        self.maximumHeight = maximumHeight
+        self.accessibilityLabel = accessibilityLabel
+        self.appearance = appearance
+        self._isDragging = isDragging
+        self.content = content
+        self.footer = footer
+    }
+
+    private var expandedHeight: CGFloat { max(140, maximumHeight) }
+
+    private var detentHeights: [CGFloat] {
+        let expanded = expandedHeight
+        if expanded < 240 {
+            return [max(42, expanded * 0.28), expanded * 0.62, expanded]
+        }
+        let peek = min(132, max(96, expanded * 0.18))
+        let medium = min(expanded - 1, max(peek + 40, expanded * 0.48))
+        return [peek, medium, expanded]
+    }
+
+    private var selectedIndex: Int {
+        min(max(detent.rawValue, 0), detentHeights.count - 1)
+    }
+
+    private var restingHeight: CGFloat { detentHeights[selectedIndex] }
+
     private var height: CGFloat {
-        let baseHeight = heights[selectedDetent] - translation
-        let minimumHeight = heights[0]
-        let maximumHeight = heights[heights.count - 1]
-        return min(maximumHeight, max(minimumHeight, baseHeight))
+        interactiveHeight ?? restingHeight
     }
+
+    private var progress: CGFloat {
+        let range = max(1, detentHeights.last! - detentHeights[0])
+        return min(1, max(0, (height - detentHeights[0]) / range))
+    }
+
+    private var cornerRadius: CGFloat { 32 - 12 * progress }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Button {
-                let nextDetent = selectedDetent == heights.count - 1
-                    ? max(0, selectedDetent - 1)
-                    : selectedDetent + 1
-                settle(at: nextDetent)
-            } label: {
-                ZStack {
-                    Capsule()
-                        .fill(Color.secondary.opacity(0.4))
-                        .frame(width: 38, height: 5)
-                    Image(systemName: selectedDetent == heights.count - 1 ? "chevron.down" : "chevron.up")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .padding(.trailing, 18)
-                }
-                .frame(maxWidth: .infinity, minHeight: 40)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Panel eksploracji")
-            .accessibilityValue(detentNames[selectedDetent])
-            .accessibilityAdjustableAction { direction in
-                settle(at: direction == .increment
-                       ? min(heights.count - 1, selectedDetent + 1)
-                       : max(0, selectedDetent - 1))
-            }
-            .highPriorityGesture(DragGesture(minimumDistance: 6)
-                .updating($translation) { value, state, _ in state = value.translation.height }
-                .onEnded { value in
-                    let projected = heights[selectedDetent] - value.predictedEndTranslation.height
-                    let closest = heights.indices.min {
-                        abs(heights[$0] - projected) < abs(heights[$1] - projected)
-                    } ?? selectedDetent
-                    settle(at: closest)
-                })
-            ScrollView { content(selectedDetent == 0) }
-                .scrollIndicators(.hidden)
-        }
-        .frame(height: height, alignment: .top)
-        .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
-        .modifier(NavigationGlassSurface(radius: 30))
-        .onChange(of: collapseRequest) { _, _ in settle(at: 0) }
+        styledSheet
     }
 
-    private func settle(at value: Int) {
-        withAnimation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.88)) {
-            detent = min(max(value, 0), heights.count - 1)
+    @ViewBuilder
+    private var styledSheet: some View {
+        if appearance == .navigation {
+            sheetBody.modifier(NavigationGlassPanelSurface(shape: sheetShape))
+        } else {
+            sheetBody.modifier(NavigationGlassSurface(radius: cornerRadius))
+        }
+    }
+
+    private var sheetBody: some View {
+        VStack(spacing: 0) {
+            dragHandle
+
+            ScrollViewReader { proxy in
+                ScrollView(.vertical) {
+                    VStack(spacing: 0) {
+                        GeometryReader { geometry in
+                            Color.clear.preference(
+                                key: NavigationBottomSheetScrollOffsetKey.self,
+                                value: geometry.frame(in: .named(scrollSpaceName)).minY)
+                        }
+                        .frame(height: 1)
+                        .id("navigation-bottom-sheet-scroll-top")
+
+                        content(detent, progress)
+                    }
+                }
+                .coordinateSpace(name: scrollSpaceName)
+                .scrollIndicators(.hidden)
+                .scrollBounceBehavior(.basedOnSize)
+                .scrollDisabled(detent != .expanded)
+                .simultaneousGesture(dragGesture(fromContent: true))
+                .onPreferenceChange(NavigationBottomSheetScrollOffsetKey.self) { minY in
+                    scrollOffset = max(0, -minY)
+                }
+                .onChange(of: detent) { _, newValue in
+                    guard newValue != .expanded else { return }
+                    scrollOffset = 0
+                    proxy.scrollTo("navigation-bottom-sheet-scroll-top", anchor: .top)
+                }
+            }
+
+            footer(detent, progress)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: height, alignment: .top)
+        .clipShape(sheetShape)
+        .animation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.86), value: detent)
+    }
+
+    private var dragHandle: some View {
+        Button(action: advanceDetent) {
+            ZStack {
+                Capsule()
+                    .fill(Color.white.opacity(0.55 + 0.25 * min(1, abs(height - restingHeight) / 30)))
+                    .frame(width: 38, height: 5)
+                    .scaleEffect(x: isDragging ? 1.06 : 1, y: 1, anchor: .center)
+                Image(systemName: selectedIndex == detentHeights.count - 1 ? "chevron.down" : "chevron.up")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(appearance == .navigation ? Color.white.opacity(0.48) : Color.secondary.opacity(0.5))
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .padding(.trailing, 18)
+            }
+            .frame(maxWidth: .infinity, minHeight: 60)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(detent.title)
+        .accessibilityAdjustableAction { direction in
+            moveDetent(to: direction == .increment
+                       ? min(detentHeights.count - 1, selectedIndex + 1)
+                       : max(0, selectedIndex - 1))
+        }
+        .highPriorityGesture(dragGesture(fromContent: false))
+    }
+
+    private var sheetShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            cornerRadii: RectangleCornerRadii(topLeading: cornerRadius, bottomLeading: 0,
+                                              bottomTrailing: 0, topTrailing: cornerRadius),
+            style: .continuous)
+    }
+
+    private func dragGesture(fromContent: Bool) -> some Gesture {
+        DragGesture(minimumDistance: 7)
+            .onChanged { value in
+                guard abs(value.translation.height) > abs(value.translation.width) else { return }
+                if dragStartHeight == nil {
+                    let isPullingUp = value.translation.height < 0
+                    let canExpand = selectedIndex < detentHeights.count - 1
+                    guard !fromContent || (scrollOffset <= 1 && (!isPullingUp || canExpand)) else { return }
+                    dragStartHeight = restingHeight
+                    dragStartTranslation = value.translation.height
+                    ownsCurrentDrag = true
+                }
+                guard ownsCurrentDrag,
+                      let startHeight = self.dragStartHeight,
+                      let startTranslation = self.dragStartTranslation else { return }
+                let translationSinceCapture = value.translation.height - startTranslation
+                interactiveHeight = rubberBanded(startHeight - translationSinceCapture)
+                isDragging = true
+            }
+            .onEnded { value in
+                guard ownsCurrentDrag,
+                      let startHeight = self.dragStartHeight,
+                      let startTranslation = self.dragStartTranslation else {
+                    resetDrag()
+                    return
+                }
+
+                let projectedHeight = startHeight - (value.predictedEndTranslation.height - startTranslation)
+                let velocity = -(value.predictedEndTranslation.height - value.translation.height) / 0.25
+                var targetIndex = nearestDetent(to: projectedHeight)
+                if velocity > 650 {
+                    targetIndex = min(detentHeights.count - 1, selectedIndex + 1)
+                } else if velocity < -650 {
+                    targetIndex = max(0, selectedIndex - 1)
+                }
+                ownsCurrentDrag = false
+                dragStartHeight = nil
+                dragStartTranslation = nil
+                moveDetent(to: targetIndex)
+            }
+    }
+
+    private func rubberBanded(_ rawHeight: CGFloat) -> CGFloat {
+        let minimum = detentHeights[0]
+        let maximum = detentHeights.last!
+        if rawHeight < minimum { return minimum - min(42, (minimum - rawHeight) * 0.24) }
+        if rawHeight > maximum { return maximum + min(42, (rawHeight - maximum) * 0.24) }
+        return rawHeight
+    }
+
+    private func nearestDetent(to height: CGFloat) -> Int {
+        detentHeights.indices.min { abs(detentHeights[$0] - height) < abs(detentHeights[$1] - height) }
+            ?? selectedIndex
+    }
+
+    private func advanceDetent() {
+        moveDetent(to: selectedIndex == detentHeights.count - 1
+                   ? max(0, selectedIndex - 1)
+                   : selectedIndex + 1)
+    }
+
+    private func moveDetent(to index: Int) {
+        let boundedIndex = min(max(index, 0), detentHeights.count - 1)
+        let nextDetent = NavigationBottomSheetDetent(rawValue: boundedIndex) ?? .expanded
+        if nextDetent != detent { selectionHaptic() }
+        isDragging = true
+        withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.86),
+                      completionCriteria: .logicallyComplete) {
+            detent = nextDetent
+            interactiveHeight = nil
+        } completion: {
+            isDragging = false
+        }
+    }
+
+    private func resetDrag() {
+        isDragging = false
+        ownsCurrentDrag = false
+        dragStartHeight = nil
+        dragStartTranslation = nil
+        interactiveHeight = nil
+    }
+
+    private func selectionHaptic() {
+#if os(iOS)
+        UISelectionFeedbackGenerator().selectionChanged()
+#endif
+    }
+}
+
+/// Discovery shares the map sheet physics while keeping its compact search surface.
+struct DiscoveryDrawer<Content: View>: View {
+    var maximumHeight: CGFloat
+    var collapseRequest: Int
+    @Binding var detent: NavigationBottomSheetDetent
+    @Binding var isDragging: Bool
+    @ViewBuilder var content: (Bool) -> Content
+
+    var body: some View {
+        NavigationBottomSheet(detent: $detent,
+                              maximumHeight: maximumHeight,
+                              accessibilityLabel: "Panel eksploracji",
+                              appearance: .discovery,
+                              isDragging: $isDragging) { selectedDetent, _ in
+            content(selectedDetent == .peek)
+                .padding(.horizontal, 18)
+                .padding(.vertical, selectedDetent == .peek ? 4 : 18)
+        } footer: { _, _ in
+            EmptyView()
+        }
+        .onChange(of: collapseRequest) { _, _ in
+            withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) { detent = .peek }
         }
     }
 }

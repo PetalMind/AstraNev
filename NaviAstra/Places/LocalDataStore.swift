@@ -308,7 +308,10 @@ final class LocalDataStore {
         let matchingPlaces = places.filter { $0.sourceContactIdentifier == contactReference }
         guard !matchingPlaces.isEmpty,
               matchingPlaces.contains(where: {
-                  $0.destination.coordinate != destination.coordinate || $0.destination.address != destination.address
+                  $0.destination.name != destination.name
+                      || $0.destination.coordinate != destination.coordinate
+                      || $0.destination.address != destination.address
+                      || $0.destination.poi != destination.poi
               }) else { return false }
         let updated = places.map { place in
             guard place.sourceContactIdentifier == contactReference else { return place }

@@ -320,30 +320,15 @@ extension ContentView {
 
     var desktopRoutePreviewCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Button {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
-                    routePreviewExpanded.toggle()
-                }
+            Button(role: .destructive) {
+                navigationStore.stop()
             } label: {
-                HStack {
-                    Text(routePreviewExpanded ? "Zwiń szczegóły" : "Szczegóły trasy")
-                    Spacer()
-                    Image(systemName: routePreviewExpanded ? "chevron.down" : "chevron.up")
-                }
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(minHeight: 44)
-                .contentShape(Rectangle())
+                Label("Anuluj", systemImage: "xmark")
+                    .font(.caption.weight(.semibold))
             }
-            .buttonStyle(.plain)
-            .simultaneousGesture(DragGesture(minimumDistance: 20).onEnded { value in
-                if value.translation.height < -35 {
-                    withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { routePreviewExpanded = true }
-                } else if value.translation.height > 35 {
-                    withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { routePreviewExpanded = false }
-                }
-            })
-            .accessibilityLabel(routePreviewExpanded ? "Zwiń szczegóły trasy" : "Rozwiń szczegóły trasy")
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .accessibilityLabel("Anuluj trasę")
 
             routeEndpointFields
             HStack {
@@ -459,6 +444,11 @@ extension ContentView {
                         .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                         Text("Pojazdami \(transitMetricTime(rideDuration)) · pieszo \(transitMetricTime(journey.walkingDuration)) · czekanie \(transitMetricTime(journey.waitingDuration)) · przesiadki: \(journey.transferCount)")
                             .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                        if let headway = journey.frequencyEstimateHeadwaySeconds {
+                            Label("Odjazdy orientacyjne co \(max(1, Int((Double(headway) / 60).rounded()))) min",
+                                  systemImage: "clock.badge.questionmark")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
                         Button {
                             Task { await navigationStore.loadLaterTransitConnections(after: firstRide.departure) }
                         } label: {

@@ -121,10 +121,15 @@ import AppKit
 
 extension PlacePOIMapPalette {
     static func accentColor(dark: Bool) -> NSColor {
-        let appearance = NSAppearance(named: dark ? .darkAqua : .aqua) ?? .current
-        return NSColor(named: NSColor.Name("AccentColor"))?.resolvedColor(with: appearance)
-            ?? NSColor(srgbRed: CGFloat(8) / 255, green: CGFloat(124) / 255,
-                       blue: CGFloat(243) / 255, alpha: 1)
+        let appearance = NSAppearance(named: dark ? .darkAqua : .aqua) ?? NSAppearance.currentDrawing()
+        let fallback = NSColor(srgbRed: CGFloat(8) / 255, green: CGFloat(124) / 255,
+                               blue: CGFloat(243) / 255, alpha: 1)
+        guard let namedColor = NSColor(named: NSColor.Name("AccentColor")) else { return fallback }
+        var resolvedColor: NSColor?
+        appearance.performAsCurrentDrawingAppearance {
+            resolvedColor = namedColor.usingColorSpace(.deviceRGB)
+        }
+        return resolvedColor ?? fallback
     }
 }
 #endif

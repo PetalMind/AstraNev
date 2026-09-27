@@ -30,6 +30,18 @@ struct TransitRouteProvider: TransitRouteProviding, TransitDataProviding {
                                                     onProvisionalRoutes: onProvisionalRoutes)
     }
 
+    func calculateRoutes(from: Coordinate, to: Coordinate, departingAt: Date,
+                         onProgress: TransitPlanningProgressHandler?,
+                         onProvisionalRoutes: TransitProvisionalRoutesHandler?,
+                         cancellationToken: TransitPlanningCancellationToken?) async throws
+        -> [NavigationRoute] {
+        try await repository.calculateRoutes(
+            from: from, to: to, departingAt: departingAt,
+            walkingRoutingEndpoint: walkingRoutingEndpoint,
+            onProgress: onProgress, onProvisionalRoutes: onProvisionalRoutes,
+            cancellationToken: cancellationToken)
+    }
+
     func calculateRoutesArrivingBy(
         from: Coordinate,
         to: Coordinate,
@@ -41,6 +53,21 @@ struct TransitRouteProvider: TransitRouteProviding, TransitDataProviding {
             from: from, to: to, deadline: deadline,
             walkingRoutingEndpoint: walkingRoutingEndpoint,
             onProgress: onProgress, shouldContinue: shouldContinue)
+    }
+
+    func calculateRoutesArrivingBy(
+        from: Coordinate,
+        to: Coordinate,
+        deadline: Date,
+        onProgress: TransitPlanningProgressHandler?,
+        shouldContinue: @escaping TransitPlanningContinuation,
+        cancellationToken: TransitPlanningCancellationToken?
+    ) async throws -> [NavigationRoute] {
+        try await repository.calculateRoutesArrivingBy(
+            from: from, to: to, deadline: deadline,
+            walkingRoutingEndpoint: walkingRoutingEndpoint,
+            onProgress: onProgress, shouldContinue: shouldContinue,
+            cancellationToken: cancellationToken)
     }
 
     func vehiclePositions(near coordinate: Coordinate) async -> TransitVehicleFeed {
@@ -86,5 +113,17 @@ struct TransitRouteProvider: TransitRouteProviding, TransitDataProviding {
     func tripDetails(tripID: String, serviceDate: String, fromStopSequence: Int) async -> TransitTripDetails? {
         await repository.tripDetails(tripID: tripID, serviceDate: serviceDate,
                                      fromStopSequence: fromStopSequence)
+    }
+
+    func tripDetails(tripID: String, serviceDate: String, fromStopSequence: Int,
+                     scheduleShiftSeconds: Int, frequencyStartSeconds: Int?,
+                     frequencyHeadwaySeconds: Int?, isFrequencyEstimate: Bool) async -> TransitTripDetails? {
+        var details = await repository.tripDetails(tripID: tripID, serviceDate: serviceDate,
+                                                   fromStopSequence: fromStopSequence,
+                                                   scheduleShiftSeconds: scheduleShiftSeconds,
+                                                   frequencyStartSeconds: frequencyStartSeconds,
+                                                   frequencyHeadwaySeconds: frequencyHeadwaySeconds)
+        details?.isFrequencyEstimate = isFrequencyEstimate
+        return details
     }
 }

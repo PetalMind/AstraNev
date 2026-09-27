@@ -10,6 +10,15 @@ extension NavigationSession {
         requestGeneration += 1
         let generation = requestGeneration
         let mode = state.transportMode
+        let transitCancellationToken = mode == .transit
+            ? TransitPlanningCancellationToken() : nil
+        transitPlanningCancellationToken = transitCancellationToken
+        defer {
+            if let transitCancellationToken,
+               self.transitPlanningCancellationToken === transitCancellationToken {
+                self.transitPlanningCancellationToken = nil
+            }
+        }
         guard let origin = await resolvedRouteOriginCoordinate(for: mode),
               generation == requestGeneration else {
             guard generation == requestGeneration else { return }
@@ -59,7 +68,8 @@ extension NavigationSession {
                         onProgress: onProgress,
                         shouldContinue: { [weak self] in
                             self?.requestGeneration == generation
-                        })
+                        },
+                        cancellationToken: transitCancellationToken)
                     onProvisionalTransitRoutes(routes, generation: generation)
                 } else {
                     let departure = requestedJourneyTimeMode == .departAt ? requestedJourneyTime : Date()
@@ -68,7 +78,8 @@ extension NavigationSession {
                         onProgress: onProgress,
                         onProvisionalRoutes: { [weak self] routes in
                             self?.onProvisionalTransitRoutes(routes, generation: generation)
-                        })
+                        },
+                        cancellationToken: transitCancellationToken)
                 }
             } else if state.transportMode == .parkRide {
                 let departure = requestedJourneyTimeMode == .departAt ? requestedJourneyTime : Date()

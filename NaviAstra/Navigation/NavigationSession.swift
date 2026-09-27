@@ -30,8 +30,19 @@ final class NavigationSession {
     var navigationTransitionTask: Task<Void, Never>?
     var routeProvider: RouteProvider
     var transitProvider: TransitRouteProviding
-    var requestGeneration = 0
-    var laterTransitRequestGeneration = 0
+    var transitPlanningCancellationToken: TransitPlanningCancellationToken?
+    var transitRefreshCancellationToken: TransitPlanningCancellationToken?
+    var laterTransitPlanningCancellationToken: TransitPlanningCancellationToken?
+    var requestGeneration = 0 {
+        didSet {
+            transitPlanningCancellationToken?.cancel()
+            transitRefreshCancellationToken?.cancel()
+            laterTransitPlanningCancellationToken?.cancel()
+        }
+    }
+    var laterTransitRequestGeneration = 0 {
+        didSet { laterTransitPlanningCancellationToken?.cancel() }
+    }
     var nearbySearchID = UUID()
     var trafficGeneration = 0
     var trafficRouteSelectionGeneration = 0
@@ -410,6 +421,7 @@ final class NavigationSession {
         state.waypoints = []
         state.evChargingStops = []
         state.waypointNavigationTargets = [:]
+        state.pendingWaypointIDs = []
         state.weakGPS = false
         state.gpsQuality = .noSignal
         mapCameraController.setCurrentManeuver(nil)

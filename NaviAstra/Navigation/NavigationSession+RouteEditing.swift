@@ -49,6 +49,7 @@ extension NavigationSession {
         state.waypoints = []
         state.evChargingStops = []
         state.waypointNavigationTargets = [:]
+        state.pendingWaypointIDs = []
         state.status = .destinationPreview
         refreshEnergyPolicy()
         state.cameraState = .destinationPreview
@@ -121,10 +122,17 @@ extension NavigationSession {
         }
         guard !state.waypoints.contains(where: { $0.coordinate == destination.coordinate }) else { return }
         let isActiveTrip = state.status == .navigating || state.status == .rerouting
+        let activeOrigin = isActiveTrip ? state.location?.coordinate : nil
+        if isActiveTrip, activeOrigin == nil {
+            state.errorMessage = "Poczekaj na ustalenie pozycji GPS, aby dodać przystanek do aktywnej trasy."
+            return
+        }
         if isActiveTrip {
             state.waypoints.insert(destination, at: 0)
+            state.pendingWaypointIDs.removeAll { $0 == destination.id }
+            state.pendingWaypointIDs.insert(destination.id, at: 0)
             tripSession?.waypoints.insert(destination, at: 0)
-            if let origin = state.location?.coordinate { await reroute(from: origin) }
+            if let activeOrigin { await reroute(from: activeOrigin) }
             return
         }
 
@@ -134,6 +142,7 @@ extension NavigationSession {
 
     func removeWaypoint(_ id: UUID) async {
         state.waypoints.removeAll { $0.id == id }
+        state.pendingWaypointIDs.removeAll { $0 == id }
         state.evChargingStops = []
         if let final = state.destination { await preview(final) }
     }
@@ -151,6 +160,8 @@ extension NavigationSession {
         guard sourceIndex != boundedTarget else { return }
         let waypoint = state.waypoints.remove(at: sourceIndex)
         state.waypoints.insert(waypoint, at: boundedTarget)
+        let pendingWaypointIDs = Set(state.pendingWaypointIDs)
+        state.pendingWaypointIDs = state.waypoints.map(\.id).filter { pendingWaypointIDs.contains($0) }
         state.evChargingStops = []
         if let final = state.destination { await preview(final) }
     }

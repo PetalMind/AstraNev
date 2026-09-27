@@ -5,6 +5,7 @@ import MapKit
 
 enum MacMapCameraAnimator {
     static func apply(_ intent: CameraIntent, state: NavigationCameraState, to map: MKMapView) {
+        let animated = intent.animationDuration.map { $0 > 0 } ?? true
         if !intent.bounds.isEmpty, state == .destinationPreview || state == .routeOverview || state == .arrived {
             let camera = map.camera
             camera.pitch = CGFloat(intent.pitch)
@@ -15,7 +16,7 @@ enum MacMapCameraAnimator {
             }
             map.setVisibleMapRect(rect,
                 edgePadding: NSEdgeInsets(top: CGFloat(intent.padding.top), left: CGFloat(intent.padding.left),
-                                          bottom: CGFloat(intent.padding.bottom), right: CGFloat(intent.padding.right)), animated: true)
+                                          bottom: CGFloat(intent.padding.bottom), right: CGFloat(intent.padding.right)), animated: animated)
             return
         }
         let camera = map.camera
@@ -36,9 +37,9 @@ enum MacMapCameraAnimator {
                                            width: width, height: height),
                                   edgePadding: NSEdgeInsets(top: intent.padding.top, left: intent.padding.left,
                                                             bottom: intent.padding.bottom, right: intent.padding.right),
-                                  animated: true)
+                                  animated: animated)
         } else {
-            map.setCamera(camera, animated: true)
+            map.setCamera(camera, animated: animated)
         }
     }
 }

@@ -67,13 +67,13 @@ enum ActiveMapProvider {
         #if os(macOS)
         MapProviderCapabilities(supportsSatellite: true, supportsTerrain: true,
                                 supportsPOIToggle: true, supports3DBuildings: true,
-                                supportsTransitOverlay: false, supportsCyclingOverlay: false,
+                                supportsTransitOverlay: false, supportsCyclingOverlay: true,
                                 supportsApplicationDarkMode: true, supportsMapDarkStyle: true,
                                 supportsTrafficOverlay: true, supports3DCamera: true)
         #else
         MapProviderCapabilities(supportsSatellite: false, supportsTerrain: false,
                                 supportsPOIToggle: true, supports3DBuildings: true,
-                                supportsTransitOverlay: true, supportsCyclingOverlay: false,
+                                supportsTransitOverlay: true, supportsCyclingOverlay: true,
                                 supportsApplicationDarkMode: true, supportsMapDarkStyle: true,
                                 supportsTrafficOverlay: true, supports3DCamera: true)
         #endif

@@ -40,16 +40,18 @@ struct MapLibreView: NSViewRepresentable {
     var settings: MapSettings { scene.settings }
     var isSearchPresented: Bool { scene.isSearchPresented }
     var routePreviewExpanded: Bool { scene.routePreviewExpanded }
+    var isBottomSheetDragging: Bool { scene.isBottomSheetDragging }
     var viewportPadding: CameraPadding { scene.viewportPadding }
     var onSearchSelect: (Destination) -> Void { scene.commands.onSearchSelect }
     var onPlaceSelect: ([SearchResult]) -> Void { scene.commands.onPlaceSelect }
     var onTransitStopSelect: (TransitStop) -> Void { scene.commands.onTransitStopSelect }
     var onTransitVehicleSelect: (TransitVehicle) -> Void { scene.commands.onTransitVehicleSelect }
     var onParkedCarSelect: () -> Void { scene.commands.onParkedCarSelect }
+    var onCyclingPathsStatus: (OSMCyclingPathsStatus) -> Void { scene.commands.onCyclingPathsStatus }
     var onMapReady: () -> Void { scene.commands.onMapReady }
     var onMapPan: () -> Void { scene.commands.onMapPan }
     var onLongPress: (Coordinate) -> Void { scene.commands.onLongPress }
-    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorScheme) var colorScheme
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -83,6 +85,7 @@ struct MapLibreView: NSViewRepresentable {
 
     static func dismantleNSView(_ map: MKMapView, coordinator: Coordinator) {
         coordinator.stopPuckRenderTimer()
+        coordinator.stopCyclingPathUpdates()
     }
 
     final class Coordinator: NSObject, MKMapViewDelegate, NSGestureRecognizerDelegate {
@@ -100,6 +103,10 @@ struct MapLibreView: NSViewRepresentable {
         private var transitVehiclePins: [String: MKPointAnnotation] = [:]
         private let transitStopRenderer = MacTransitStopRenderer()
         private var transitLineOverlay: MKPolyline?
+        private var cyclingPathOverlays: [MKPolyline] = []
+        private var cyclingPathQueryID: String?
+        private var cyclingPathTask: Task<Void, Never>?
+        private var cyclingPathStatus: OSMCyclingPathsStatus = .disabled
         private var trafficRasterOverlays: [String: MKTileOverlay] = [:]
         private var trafficRasterTemplates: [String: String] = [:]
         private var shownTransitRouteID: String?
@@ -225,6 +232,7 @@ struct MapLibreView: NSViewRepresentable {
 
         func update(_ map: MKMapView) {
             routeRenderer.updateContext(parent)
+            updateCyclingPaths(on: map)
             let results = showsOnlyRouteEndpoints ? [] : Array(parent.state.searchResults.prefix(8))
             if searchIDs != results.map(\.id) {
                 map.removeAnnotations(searchPins)
@@ -509,6 +517,9 @@ struct MapLibreView: NSViewRepresentable {
             let routePreviewPaddingChanged = lastViewportPadding != parent.viewportPadding || lastMapSize != map.bounds.size
             var effectiveIntent = intent
             effectiveIntent.padding = parent.viewportPadding
+            if parent.isBottomSheetDragging && routePreviewPaddingChanged {
+                effectiveIntent.animationDuration = 0
+            }
             // Keep a usable map viewport even when the drawer is fully expanded.
             effectiveIntent.padding.bottom = min(effectiveIntent.padding.bottom,
                 max(0, Double(map.bounds.height) - effectiveIntent.padding.top - 100))
@@ -791,7 +802,7 @@ struct MapLibreView: NSViewRepresentable {
         private func updatePositionPuck(on map: MKMapView) {
             let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
             let activeRoute = isNavigating ? parent.state.route : nil
-            let matchedRoute = parent.state.routeMatch.flatMap { match in
+            let matchedRoute: NavigationRouteMatch? = parent.state.routeMatch.flatMap { match -> NavigationRouteMatch? in
                 guard let activeRoute,
                       match.routeID == activeRoute.id,
                       match.locationTimestamp == parent.state.location?.timestamp else { return nil }
@@ -892,6 +903,7 @@ struct MapLibreView: NSViewRepresentable {
                 parent.onMapPan()
             }
             scheduleTransitAnnotationUpdate(on: mapView)
+            updateCyclingPaths(on: mapView)
         }
 
         func mapViewDidFinishRenderingMap(_ mapView: MKMapView, fullyRendered: Bool) {
@@ -903,6 +915,16 @@ struct MapLibreView: NSViewRepresentable {
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let tileOverlay = overlay as? MKTileOverlay {
                 return MKTileOverlayRenderer(tileOverlay: tileOverlay)
+            }
+            if let line = cyclingPathOverlays.first(where: { $0 === overlay }) {
+                let renderer = MKPolylineRenderer(polyline: line)
+                renderer.strokeColor = parent.colorScheme == .dark
+                    ? NSColor(calibratedRed: 0.39, green: 0.91, blue: 0.66, alpha: 0.95)
+                    : NSColor(calibratedRed: 0.03, green: 0.56, blue: 0.37, alpha: 0.94)
+                renderer.lineWidth = 4
+                renderer.lineCap = .round
+                renderer.lineJoin = .round
+                return renderer
             }
             if let transitLineOverlay, overlay === transitLineOverlay {
                 let renderer = MKPolylineRenderer(polyline: transitLineOverlay)
@@ -919,6 +941,79 @@ struct MapLibreView: NSViewRepresentable {
             let renderer = MKPolylineRenderer(polyline: line)
             routeRenderer.configure(renderer, for: line)
             return renderer
+        }
+
+        func stopCyclingPathUpdates() {
+            cyclingPathTask?.cancel()
+            cyclingPathTask = nil
+        }
+
+        private func updateCyclingPaths(on map: MKMapView) {
+            guard parent.settings.overlays.cycling else {
+                stopCyclingPathUpdates()
+                cyclingPathQueryID = nil
+                if !cyclingPathOverlays.isEmpty {
+                    map.removeOverlays(cyclingPathOverlays)
+                    cyclingPathOverlays = []
+                }
+                setCyclingPathStatus(.disabled)
+                return
+            }
+
+            let region = map.region
+            let center = Coordinate(latitude: region.center.latitude, longitude: region.center.longitude)
+            guard let query = OSMCyclingQuery.visible(
+                center: center,
+                latitudeDelta: region.span.latitudeDelta,
+                longitudeDelta: region.span.longitudeDelta
+            ) else {
+                stopCyclingPathUpdates()
+                cyclingPathQueryID = "zoomed-out"
+                if !cyclingPathOverlays.isEmpty {
+                    map.removeOverlays(cyclingPathOverlays)
+                    cyclingPathOverlays = []
+                }
+                setCyclingPathStatus(.zoomIn)
+                return
+            }
+            guard cyclingPathQueryID != query.id else { return }
+
+            cyclingPathQueryID = query.id
+            cyclingPathTask?.cancel()
+            map.removeOverlays(cyclingPathOverlays)
+            cyclingPathOverlays = []
+            setCyclingPathStatus(.loading)
+            cyclingPathTask = Task { [weak self, weak map] in
+                do {
+                    try await Task.sleep(nanoseconds: 350_000_000)
+                    let result = try await OSMCyclingPathProvider.shared.paths(in: query)
+                    guard !Task.isCancelled, let self, let map,
+                          self.cyclingPathQueryID == query.id,
+                          self.parent.settings.overlays.cycling else { return }
+                    map.removeOverlays(self.cyclingPathOverlays)
+                    self.cyclingPathOverlays = result.paths.map { path in
+                        var coordinates = path.coordinates.map(\.cl)
+                        let line = MKPolyline(coordinates: &coordinates, count: coordinates.count)
+                        line.title = "Ścieżka OSM · © OpenStreetMap contributors"
+                        return line
+                    }
+                    map.addOverlays(self.cyclingPathOverlays, level: .aboveRoads)
+                    self.setCyclingPathStatus(.loaded(count: result.paths.count,
+                                                      truncated: result.truncated))
+                } catch {
+                    guard !Task.isCancelled, let self, let map,
+                          self.cyclingPathQueryID == query.id else { return }
+                    map.removeOverlays(self.cyclingPathOverlays)
+                    self.cyclingPathOverlays = []
+                    self.setCyclingPathStatus(.unavailable)
+                }
+            }
+        }
+
+        private func setCyclingPathStatus(_ status: OSMCyclingPathsStatus) {
+            guard cyclingPathStatus != status else { return }
+            cyclingPathStatus = status
+            parent.onCyclingPathsStatus(status)
         }
 
         private func updateTrafficRasterOverlays(on map: MKMapView, flowTemplate: String?,

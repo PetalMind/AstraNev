@@ -18,6 +18,7 @@ struct Journey: Sendable {
     var waitingDuration: TimeInterval = 0
     var transferCount: Int = 0
     var realtimeFreshness: TransitRealtimeFreshness = .unavailable
+    var frequencyEstimateHeadwaySeconds: Int? = nil
     var railwayScheduleAttribution: String? = nil
     var originAccessStopID: String? = nil
     var destinationAccessStopID: String? = nil
@@ -41,8 +42,17 @@ struct JourneyLeg: Identifiable, Sendable {
     var transitStops: [TransitJourneyStop] = []
     var isTransfer = false
     var minimumTransferTime: TimeInterval = 0
+    var walkingDuration: TimeInterval? = nil
+    var scheduleShiftSeconds: Int = 0
+    var frequencyStartSeconds: Int? = nil
+    var frequencyHeadwaySeconds: Int? = nil
+    var isFrequencyEstimate = false
     var hasResolvedWalkingGeometry = false
     var walkingTimeIsApproximate = false
+
+    var plannedWalkingDuration: TimeInterval {
+        walkingDuration ?? max(0, arrival.timeIntervalSince(departure) - minimumTransferTime)
+    }
 }
 
 struct TransitJourneyStop: Identifiable, Equatable, Sendable {
@@ -55,6 +65,7 @@ struct TransitJourneyStop: Identifiable, Equatable, Sendable {
     let delaySeconds: Int?
     let hasRealtime: Bool
     let sequence: Int
+    var isSkipped = false
 }
 
 struct TransitNavigationProgress: Equatable, Sendable {
@@ -381,6 +392,10 @@ struct TransitDeparture: Identifiable, Equatable, Sendable {
     let colorHex: UInt32
     let stopSequence: Int
     let serviceDate: String
+    var scheduleShiftSeconds: Int = 0
+    var frequencyStartSeconds: Int? = nil
+    var frequencyHeadwaySeconds: Int? = nil
+    var isFrequencyEstimate: Bool = false
 }
 
 struct TransitLineSearchResult: Identifiable, Equatable, Sendable {
@@ -419,6 +434,8 @@ struct TransitTripDetails: Equatable, Sendable {
     let activeAlert: String?
     let colorHex: UInt32
     let coordinates: [Coordinate]
+    var frequencyHeadwaySeconds: Int? = nil
+    var isFrequencyEstimate = false
 }
 
 struct TransitVehicle: Identifiable, Equatable, Sendable {

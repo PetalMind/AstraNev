@@ -129,6 +129,17 @@ final class TransitStore {
                                      fromStopSequence: fromStopSequence)
     }
 
+    func tripDetails(tripID: String, serviceDate: String, fromStopSequence: Int,
+                     scheduleShiftSeconds: Int, frequencyStartSeconds: Int?,
+                     frequencyHeadwaySeconds: Int?, isFrequencyEstimate: Bool) async -> TransitTripDetails? {
+        return await repository.tripDetails(tripID: tripID, serviceDate: serviceDate,
+                                            fromStopSequence: fromStopSequence,
+                                            scheduleShiftSeconds: scheduleShiftSeconds,
+                                            frequencyStartSeconds: frequencyStartSeconds,
+                                            frequencyHeadwaySeconds: frequencyHeadwaySeconds,
+                                            isFrequencyEstimate: isFrequencyEstimate)
+    }
+
     func departures(at stopIDs: [String]) async -> [TransitDeparture] {
         await repository.departures(at: stopIDs)
     }

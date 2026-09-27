@@ -11,10 +11,15 @@ extension NavigationSession {
         let generation = requestGeneration
         laterTransitRequestGeneration += 1
         let laterGeneration = laterTransitRequestGeneration
+        let cancellationToken = TransitPlanningCancellationToken()
+        laterTransitPlanningCancellationToken = cancellationToken
         state.isLoadingLaterTransitRoutes = true
         state.laterTransitRoutes = []
         state.didSearchLaterTransitRoutes = false
         defer {
+            if laterTransitPlanningCancellationToken === cancellationToken {
+                laterTransitPlanningCancellationToken = nil
+            }
             if laterGeneration == laterTransitRequestGeneration {
                 state.isLoadingLaterTransitRoutes = false
             }
@@ -25,7 +30,9 @@ extension NavigationSession {
             let routes = try await transitProvider.calculateRoutes(
                 from: origin,
                 to: routeTarget,
-                departingAt: departure.addingTimeInterval(1))
+                departingAt: departure.addingTimeInterval(1),
+                onProgress: nil, onProvisionalRoutes: nil,
+                cancellationToken: cancellationToken)
             guard generation == requestGeneration,
                   laterGeneration == laterTransitRequestGeneration,
                   state.status == .routePreview,
@@ -101,18 +108,29 @@ extension NavigationSession {
 
         transitPlanRefreshInFlight = true
         lastTransitPlanRefresh = Date()
-        defer { transitPlanRefreshInFlight = false }
-
+        let generation = requestGeneration
         let expectedStatus = state.status
         let expectedDestinationID = destination.id
         let expectedRouteID = state.route?.id
         let previousRoute = state.route
         let previousOptions = state.routeOptions
+        let cancellationToken = TransitPlanningCancellationToken()
+        transitRefreshCancellationToken = cancellationToken
+        defer {
+            if transitRefreshCancellationToken === cancellationToken {
+                transitRefreshCancellationToken = nil
+            }
+            transitPlanRefreshInFlight = false
+        }
         do {
             let routeTarget = destinationRouteCoordinate(for: destination)
             let routes = try await transitProvider.calculateRoutes(from: origin, to: routeTarget,
-                                                                    departingAt: Date())
+                                                                    departingAt: Date(),
+                                                                    onProgress: nil,
+                                                                    onProvisionalRoutes: nil,
+                                                                    cancellationToken: cancellationToken)
             guard !Task.isCancelled,
+                  generation == requestGeneration,
                   state.transportMode == .transit,
                   state.status == expectedStatus,
                   state.destination?.id == expectedDestinationID,

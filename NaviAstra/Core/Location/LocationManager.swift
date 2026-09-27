@@ -53,10 +53,13 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
 
     func stop() {
         manager.stopUpdatingLocation()
+#if os(iOS)
         manager.stopUpdatingHeading()
+#endif
     }
 
     func setHeadingUpdatesEnabled(_ enabled: Bool) {
+#if os(iOS)
         guard enabled, CLLocationManager.headingAvailable() else {
             manager.stopUpdatingHeading()
             headingUpdatesEnabled = false
@@ -65,11 +68,18 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
         guard !headingUpdatesEnabled else { return }
         headingUpdatesEnabled = true
         manager.startUpdatingHeading()
+#else
+        headingUpdatesEnabled = false
+#endif
     }
 
     private var canUseLocationServices: Bool {
+#if os(macOS)
+        manager.authorizationStatus == .authorizedAlways
+#else
         manager.authorizationStatus == .authorizedWhenInUse ||
             manager.authorizationStatus == .authorizedAlways
+#endif
     }
 
     private func configure(_ policy: LocationPolicy) {
