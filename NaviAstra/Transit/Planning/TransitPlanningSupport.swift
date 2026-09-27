@@ -9,6 +9,7 @@ nonisolated enum TransitPlanningPhase: Equatable, Sendable {
 
 typealias TransitPlanningProgressHandler = @MainActor @Sendable (TransitPlanningPhase?) async -> Void
 typealias TransitProvisionalRoutesHandler = @MainActor @Sendable ([NavigationRoute]) async -> Void
+typealias TransitPlanningContinuation = @MainActor @Sendable () async -> Bool
 
 nonisolated enum TransitSignposting {
     static let log = OSLog(subsystem: "STDMSolution.NaviAstra", category: "TransitPlanning")
@@ -68,6 +69,13 @@ nonisolated final class TransitPlanningTrace: @unchecked Sendable {
         lock.unlock()
     }
 
+    func addDuration(_ name: String, startedAt: TimeInterval) {
+        let milliseconds = max(0, (ProcessInfo.processInfo.systemUptime - startedAt) * 1_000)
+        lock.lock()
+        durations[name, default: 0] += milliseconds
+        lock.unlock()
+    }
+
     func setValue(_ name: String, value: String) {
         lock.lock()
         values[name] = value
@@ -110,19 +118,31 @@ nonisolated final class TransitPlanningTrace: @unchecked Sendable {
         }
         let total = Int(((ProcessInfo.processInfo.systemUptime - startedAt) * 1_000).rounded())
         var summary = "total=\(total)ms gtfsLoad=\(duration("GTFSLoad")) indexBuild=\(duration("ScheduleIndexBuild")) "
+            + "cityArchive=\(duration("CityArchiveResolve")) cityDownload=\(duration("CityArchiveDownload")) "
+            + "railArchive=\(duration("RailwayArchiveResolve")) railDownload=\(duration("RailwayArchiveDownload")) "
+            + "feedFingerprint=\(duration("GTFSFingerprint")) "
+            + "archiveIndex=\(duration("GTFSArchiveIndex")) csvStops=\(duration("GTFSCSV_stops.txt")) "
+            + "csvStopTimes=\(duration("GTFSCSV_stop_times.txt")) csvTrips=\(duration("GTFSCSV_trips.txt")) "
+            + "csvShapes=\(duration("GTFSCSV_shapes.txt")) "
+            + "pedestrianCache=\(duration("PedestrianCacheLoad")) "
             + "realtimeWait=\(duration("RealtimeWait")) realtimeFetch=\(duration("RealtimeBackgroundFetch")) "
             + "nearbyStopsMax=\(duration("NearbyStops")) "
             + "walkingMatrixMax=\(duration("WalkingMatrix")) transitSearch=\(duration("TransitSearch")) "
             + "candidateRanking=\(duration("CandidateRanking")) geometryFetch=\(duration("GeometryFetch")) "
             + "snapshotBuild=\(duration("TransitSnapshotBuild")) "
+            + "activeInstanceBuild=\(duration("ActiveInstanceBuild")) "
             + "timeToStaticCandidates=\(duration("TimeToStaticCandidates")) "
             + "timeToFirstRoute=\(duration("TimeToFirstRoute")) "
             + "timeToRouteReady=\(duration("TimeToRouteReady")) "
             + "counts[nearbyStops=\(count("nearbyStops")), tripDaysExamined=\(count("tripDaysExamined")), "
-            + "activeTrips=\(count("activeTrips")), activeRoutes=\(count("activeRoutes")), "
+            + "scheduleTripRowsVisited=\(count("scheduleTripRowsVisited")), "
+            + "activeTrips=\(count("activeTrips")), instancesBuilt=\(count("activeTripInstancesBuilt")), "
+            + "activeScheduleCacheHits=\(count("activeScheduleCacheHits")), "
+            + "activeRoutes=\(count("activeRoutes")), "
             + "routesTouched=\(count("routesTouched")), activePatterns=\(count("activePatterns")), "
             + "markedStops=\(count("markedStops")), departureScans=\(count("departureTripsScanned")), "
             + "departureDominated=\(count("departureTripsDominated")), "
+            + "arrivalByIterations=\(count("arrivalByIterations")), "
             + "stopsWithDepartures=\(count("stopsWithDepartures")), candidates=\(count("candidates")), "
             + "uniqueRoutes=\(count("uniqueRoutes")), walkingSegments=\(count("walkingSegments")), "
             + "rounds=\(count("roundsExecuted")), matrixCalls=\(count("matrixCalls")), "
@@ -131,17 +151,23 @@ nonisolated final class TransitPlanningTrace: @unchecked Sendable {
             + "matrixHTTPErrorStatus=\(count("matrixHTTPErrorStatus")), "
             + "matrixFallbackCount=\(count("matrixFallbackCount")), fallbackRequestCount=\(count("fallbackRequestCount")), "
             + "approximateFallbackStops=\(count("approximateFallbackStops")), "
+            + "exactAccessCacheHits=\(count("exactAccessCacheHits")), "
             + "matrixReachable=\(count("matrixReachableTargets")), matrixUnreachable=\(count("matrixUnreachableTargets")), "
-            + "matrixOverWalkLimit=\(count("matrixOverWalkLimit")), matrixShapesReturned=\(count("matrixShapesReturned")), "
+            + "matrixShapesReturned=\(count("matrixShapesReturned")), "
             + "matrixShapeHitRate=\(shapeHitRate), "
             + "geometryCacheHits=\(count("geometryCacheHits")), geometryRequests=\(count("geometryRequests")), "
             + "accessCacheHits=\(count("persistentAccessCacheHits")), "
             + "searchWindowStage=\(count("searchWindowStage")), "
+            + "cityFeedBytes=\(count("cityArchiveBytes")), railFeedBytes=\(count("railwayArchiveBytes")), "
+            + "cityFeedCached=\(count("cityArchiveCached")), railFeedCached=\(count("railwayArchiveCached")), "
             + "realtimeAgeSeconds=\(count("realtimeAgeSeconds")), realtimeFreshness=\(value("realtimeFreshness")), "
             + "realtimeUsed=\(value("realtimeUsed")), realtimeRefreshDeferred=\(count("realtimeRefreshDeferred"))]"
-        summary += "compiledIndexLoad=\(duration("CompiledIndexLoad")) compiledIndexHit=\(count("compiledIndexHit")) "
+        summary += "compiledIndexLoad=\(duration("CompiledIndexLoad")) "
+            + "compiledIndexMigration=\(duration("CompiledIndexMigration")) "
+            + "compiledIndexHit=\(count("compiledIndexHit")) "
+            + "compiledIndexCandidateHit=\(count("compiledIndexCandidateHit")) "
+            + "scheduleFingerprintHit=\(count("compiledScheduleFingerprintHit")) "
             + "transferGraphCacheHit=\(count("transferGraphCacheHit")) "
-            + "flatTripServiceIndexHit=\(count("flatTripServiceIndexHit")) "
         TransitSignposting.summary(summary, planningID: planningID)
     }
 }
@@ -179,7 +205,7 @@ nonisolated enum TransitRoutingError: LocalizedError {
         case .railwayFeedUnavailable:
             "Krajowy rozkład kolejowy jest chwilowo niedostępny. Spróbuj ponownie za chwilę."
         case .outsideCoverage:
-            "Wybierz początek i cel, z których można dojść do stacji lub przystanku w 30 minut pieszo."
+            "Pobrany rozkład nie zawiera obsługiwanego przystanku dla początku lub celu podróży."
         }
     }
 }

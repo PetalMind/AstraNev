@@ -103,7 +103,7 @@ extension ContentView {
         }
         .frame(maxWidth: .infinity, alignment: .top)
         .modifier(NavigationGlassPanelSurface(shape: shape))
-        .gesture(DragGesture(minimumDistance: 20).onEnded { value in
+        .simultaneousGesture(DragGesture(minimumDistance: 20).onEnded { value in
             if value.translation.height < -35 {
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { navigationPanelExpanded = true }
             } else if value.translation.height > 35 {
@@ -198,7 +198,7 @@ extension ContentView {
                 Menu {
                     ForEach(activeJourneyNearbyCategories) { category in
                         Button(category.title, systemImage: category.symbol) {
-                            presentNearby(category)
+                            presentNearbyAfterMenuDismissal(category)
                         }
                     }
                 } label: {
@@ -329,7 +329,7 @@ extension ContentView {
         }
         .padding(14)
         .modifier(NavigationGlassSurface(radius: 23))
-        .gesture(DragGesture(minimumDistance: 20).onEnded { value in
+        .simultaneousGesture(DragGesture(minimumDistance: 20).onEnded { value in
             if value.translation.height < -35 {
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { navigationPanelExpanded = true }
             } else if value.translation.height > 35 {

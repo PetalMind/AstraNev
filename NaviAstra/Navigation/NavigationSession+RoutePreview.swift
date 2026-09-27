@@ -54,46 +54,12 @@ extension NavigationSession {
                     self.state.transitPlanningPhase = phase
                 }
                 if requestedJourneyTimeMode == .arriveBy {
-                    let deadline = requestedJourneyTime
-                    var lowerDeparture = deadline.addingTimeInterval(-18 * 60 * 60)
-                    var upperDeparture = deadline
-                    var bestRoutes: [NavigationRoute] = []
-                    for _ in 0..<10 {
-                        guard generation == requestGeneration else { throw CancellationError() }
-                        let interval = upperDeparture.timeIntervalSince(lowerDeparture)
-                        guard interval > 60 else { break }
-                        let departure = lowerDeparture.addingTimeInterval(interval / 2)
-                        do {
-                            let candidates = try await transitProvider.calculateRoutes(
-                                from: origin, to: routeDestination, departingAt: departure,
-                                onProgress: onProgress)
-                            let eligible = candidates.filter { ($0.journey?.arrival ?? .distantFuture) <= deadline }
-                                .sorted {
-                                    let firstDeparture = $0.journey?.legs.first(where: { $0.mode != "WALK" })?.departure ?? .distantPast
-                                    let secondDeparture = $1.journey?.legs.first(where: { $0.mode != "WALK" })?.departure ?? .distantPast
-                                    if firstDeparture != secondDeparture { return firstDeparture > secondDeparture }
-                                    return ($0.journey?.arrival ?? .distantFuture) < ($1.journey?.arrival ?? .distantFuture)
-                                }
-                            if let latest = eligible.first {
-                                let latestDeparture = latest.journey?.legs.first(where: { $0.mode != "WALK" })?.departure ?? .distantPast
-                                let previousBestDeparture = bestRoutes.first?.journey?.legs
-                                    .first(where: { $0.mode != "WALK" })?.departure ?? .distantPast
-                                let latestArrival = latest.journey?.arrival ?? .distantFuture
-                                let previousBestArrival = bestRoutes.first?.journey?.arrival ?? .distantFuture
-                                if latestDeparture > previousBestDeparture
-                                    || (latestDeparture == previousBestDeparture && latestArrival < previousBestArrival) {
-                                    bestRoutes = eligible
-                                }
-                                lowerDeparture = departure
-                            } else {
-                                upperDeparture = departure
-                            }
-                        } catch TransitRoutingError.noJourney {
-                            upperDeparture = departure
-                        }
-                    }
-                    guard !bestRoutes.isEmpty else { throw TransitRoutingError.noJourneyBeforeArrivalDeadline }
-                    routes = bestRoutes
+                    routes = try await transitProvider.calculateRoutesArrivingBy(
+                        from: origin, to: routeDestination, deadline: requestedJourneyTime,
+                        onProgress: onProgress,
+                        shouldContinue: { [weak self] in
+                            self?.requestGeneration == generation
+                        })
                     onProvisionalTransitRoutes(routes, generation: generation)
                 } else {
                     let departure = requestedJourneyTimeMode == .departAt ? requestedJourneyTime : Date()

@@ -1,5 +1,4 @@
 import Foundation
-import CryptoKit
 
 nonisolated struct GTFSStopPrediction {
     let stopID: String
@@ -14,13 +13,69 @@ nonisolated struct GTFSTripInstance {
     let route: GTFSRoute
     let serviceDate: String
     let times: [GTFSStopPrediction]
-    let patternKey: String
 }
 
 nonisolated struct TransitBoardingDeparture {
     let instanceIndex: Int
-    let stopIndex: Int
     let time: Date
+}
+
+nonisolated final class TransitActiveScheduleCache: @unchecked Sendable {
+    private struct EnvelopeKey: Hashable {
+        let patternID: Int
+        let stopIndex: Int
+        let departureCount: Int
+    }
+
+    struct PatternSchedule {
+        let instances: [GTFSTripInstance]
+        let departuresByStopIndex: [[TransitBoardingDeparture]]
+    }
+
+    let coverageStart: Date
+    let coverageEnd: Date
+    private let lock = NSLock()
+    private var schedulesByPatternID: [Int: PatternSchedule] = [:]
+    private var arrivalEnvelopes: [EnvelopeKey: [[Int]]] = [:]
+
+    init(coverageStart: Date, coverageEnd: Date) {
+        self.coverageStart = coverageStart
+        self.coverageEnd = coverageEnd
+    }
+
+    func schedule(for patternID: Int) -> PatternSchedule? {
+        lock.lock()
+        defer { lock.unlock() }
+        return schedulesByPatternID[patternID]
+    }
+
+    func store(_ schedule: PatternSchedule, for patternID: Int) {
+        lock.lock()
+        schedulesByPatternID[patternID] = schedule
+        lock.unlock()
+    }
+
+    func arrivalEnvelope(for patternID: Int, stopIndex: Int,
+                         departureCount: Int) -> [[Int]]? {
+        lock.lock()
+        defer { lock.unlock() }
+        return arrivalEnvelopes[EnvelopeKey(patternID: patternID, stopIndex: stopIndex,
+                                            departureCount: departureCount)]
+    }
+
+    func storeArrivalEnvelope(_ envelope: [[Int]], for patternID: Int, stopIndex: Int,
+                              departureCount: Int) {
+        lock.lock()
+        arrivalEnvelopes[EnvelopeKey(patternID: patternID, stopIndex: stopIndex,
+                                     departureCount: departureCount)] = envelope
+        lock.unlock()
+    }
+}
+
+nonisolated struct TransitPlanningContext: Sendable {
+    let snapshot: TransitSnapshot
+    let usingCachedSchedule: Bool
+    let activeScheduleCache: TransitActiveScheduleCache?
 }
 
 nonisolated struct TransitWalkOption: Sendable {
@@ -106,6 +161,7 @@ nonisolated final class TransitPathLabel {
     let currentStopID: String
     let initialWalkingSeconds: Double
     let walkingSeconds: Double
+    let rideSeconds: Double
     let rideCount: Int
     let transferCount: Int
     let transferDepth: Int
@@ -116,12 +172,14 @@ nonisolated final class TransitPathLabel {
     let transfer: TransitFootpath?
 
     init(arrival: Date, currentStopID: String, initialWalkingSeconds: Double, walkingSeconds: Double,
+         rideSeconds: Double,
          rideCount: Int, transferCount: Int, transferDepth: Int, lastLegWasTransfer: Bool, initialStopID: String,
          parent: TransitPathLabel?, ride: TransitRide?, transfer: TransitFootpath? = nil) {
         self.arrival = arrival
         self.currentStopID = currentStopID
         self.initialWalkingSeconds = initialWalkingSeconds
         self.walkingSeconds = walkingSeconds
+        self.rideSeconds = rideSeconds
         self.rideCount = rideCount
         self.transferCount = transferCount
         self.transferDepth = transferDepth
@@ -152,61 +210,14 @@ nonisolated struct TransitBitSet: Sendable {
     }
 }
 
-nonisolated struct TransitFlatTripServiceIndex: Sendable {
-    static let headerByteCount = 44
-    private static let magic = Array("NATIDX01".utf8)
-    private let data: Data
-
-    init?(data: Data, fingerprint: String, tripCount: Int) {
-        guard tripCount >= 0, tripCount <= (Int.max - Self.headerByteCount) / 4,
-              data.count == Self.headerByteCount + tripCount * 4,
-              Array(data.prefix(Self.magic.count)) == Self.magic,
-              Array(data[8..<40]) == Self.fingerprintBytes(fingerprint),
-              Self.readUInt32(data, at: 40) == UInt32(clamping: tripCount) else { return nil }
-        self.data = data
-    }
-
-    func serviceIndex(at tripIndex: Int) -> Int {
-        guard tripIndex >= 0,
-              Self.headerByteCount + (tripIndex + 1) * 4 <= data.count else { return -1 }
-        let value = Self.readUInt32(data, at: Self.headerByteCount + tripIndex * 4)
-        return value == UInt32.max ? -1 : Int(value)
-    }
-
-    static func header(fingerprint: String, tripCount: Int) -> Data {
-        var data = Data(magic)
-        data.append(contentsOf: fingerprintBytes(fingerprint))
-        append(UInt32(clamping: tripCount), to: &data)
-        return data
-    }
-
-    static func append(_ value: UInt32, to data: inout Data) {
-        for shift in stride(from: 0, through: 24, by: 8) {
-            data.append(UInt8(truncatingIfNeeded: value >> UInt32(shift)))
-        }
-    }
-
-    private static func fingerprintBytes(_ fingerprint: String) -> [UInt8] {
-        Array(SHA256.hash(data: Data(fingerprint.utf8)))
-    }
-
-    private static func readUInt32(_ data: Data, at offset: Int) -> UInt32 {
-        UInt32(data[offset])
-            | (UInt32(data[offset + 1]) << 8)
-            | (UInt32(data[offset + 2]) << 16)
-            | (UInt32(data[offset + 3]) << 24)
-    }
-}
-
 nonisolated struct TransitSnapshot: Sendable {
     let database: GTFSDatabase
     let realtime: GTFSRealtimeSnapshot
-    let activeTripBitsByServiceDate: [String: TransitBitSet]
+    let activeServiceBitsByServiceDate: [String: TransitBitSet]
     let serviceDates: [String]
 
     init(database: GTFSDatabase, realtime: GTFSRealtimeSnapshot,
-         departure: Date, maximumDepartureWindow: TimeInterval,
-         flatTripServiceIndex: TransitFlatTripServiceIndex?) {
+         departure: Date, maximumDepartureWindow: TimeInterval) {
         self.database = database
         self.realtime = realtime
         var calendar = Calendar(identifier: .gregorian)
@@ -215,9 +226,7 @@ nonisolated struct TransitSnapshot: Sendable {
         let finalDay = calendar.startOfDay(for: departure.addingTimeInterval(maximumDepartureWindow))
         let offsets = -1...(finalDay > today ? 1 : 0)
         var serviceDates: [String] = []
-        var tripBitsByDate: [String: TransitBitSet] = [:]
-        let serviceIndexByID = Dictionary(uniqueKeysWithValues: database.serviceIDs.enumerated()
-            .map { ($1, $0) })
+        var serviceBitsByDate: [String: TransitBitSet] = [:]
 
         for offset in offsets {
             guard let serviceDay = calendar.date(byAdding: .day, value: offset, to: today) else { continue }
@@ -233,65 +242,94 @@ nonisolated struct TransitSnapshot: Sendable {
                     activeServices.insert(serviceIndex)
                 }
             }
-            var bits = TransitBitSet(count: database.trips.count)
-            for tripIndex in database.trips.indices {
-                let serviceIndex = flatTripServiceIndex?.serviceIndex(at: tripIndex)
-                    ?? serviceIndexByID[database.trips[tripIndex].serviceID]
-                    ?? -1
-                if activeServices.contains(serviceIndex) { bits.insert(tripIndex) }
-            }
             serviceDates.append(date)
-            tripBitsByDate[date] = bits
+            serviceBitsByDate[date] = activeServices
         }
         self.serviceDates = serviceDates
-        activeTripBitsByServiceDate = tripBitsByDate
+        activeServiceBitsByServiceDate = serviceBitsByDate
     }
 
     func activeInstances(for pattern: GTFSRoutePattern,
                          after departure: Date,
-                         maximumDeparture: Date) -> [GTFSTripInstance] {
+                         maximumDeparture: Date,
+        trace: TransitPlanningTrace? = nil) -> [GTFSTripInstance] {
         guard let route = database.routes[pattern.routeID] else { return [] }
+        guard let tripsByService = pattern.tripsByService else { return [] }
         var instances: [GTFSTripInstance] = []
+        var tripRowsVisited = 0
         for serviceDate in serviceDates {
             guard let serviceDay = GTFSDate.date(from: serviceDate),
-                  let tripBits = activeTripBitsByServiceDate[serviceDate] else { continue }
-            for tripIndex in pattern.tripIndices where tripBits.contains(tripIndex) {
-                guard database.trips.indices.contains(tripIndex) else { continue }
-                let trip = database.trips[tripIndex]
-                guard let firstStop = trip.stopTimes.first, let lastStop = trip.stopTimes.last,
-                      serviceDay.addingTimeInterval(TimeInterval(lastStop.arrivalSeconds))
-                        > departure.addingTimeInterval(-3_600),
-                      serviceDay.addingTimeInterval(TimeInterval(firstStop.departureSeconds))
-                        < maximumDeparture,
-                      !realtime.isCanceled(tripID: trip.id, serviceDate: serviceDate) else { continue }
+                  let activeServices = activeServiceBitsByServiceDate[serviceDate] else { continue }
+            for group in tripsByService where activeServices.contains(group.serviceIndex) {
+                let departureSeconds = departure.timeIntervalSince(serviceDay)
+                let maximumDepartureSeconds = maximumDeparture.timeIntervalSince(serviceDay)
+                let earliestPossibleFirstDeparture = Int(floor(departureSeconds - 3_600))
+                    - group.maximumScheduledDurationSeconds
+                let firstDepartureAtOrAfter = Int(ceil(maximumDepartureSeconds))
+                let lowerIndex = Self.tripIndexBoundary(
+                    in: group.tripIndices, for: earliestPossibleFirstDeparture,
+                    upperBound: true, trips: database.trips)
+                let upperIndex = Self.tripIndexBoundary(
+                    in: group.tripIndices, for: firstDepartureAtOrAfter,
+                    upperBound: false, trips: database.trips)
+                guard lowerIndex < upperIndex else { continue }
+                tripRowsVisited += upperIndex - lowerIndex
+                for tripIndex in group.tripIndices[lowerIndex..<upperIndex] {
+                    guard database.trips.indices.contains(tripIndex) else { continue }
+                    let trip = database.trips[tripIndex]
+                    guard let firstStop = trip.stopTimes.first, let lastStop = trip.stopTimes.last,
+                          serviceDay.addingTimeInterval(TimeInterval(lastStop.arrivalSeconds))
+                            > departure.addingTimeInterval(-3_600),
+                          serviceDay.addingTimeInterval(TimeInterval(firstStop.departureSeconds))
+                            < maximumDeparture,
+                          !realtime.isCanceled(tripID: trip.id, serviceDate: serviceDate) else { continue }
 
-                var previousDelay: Int?
-                let times = trip.stopTimes.map { stop -> GTFSStopPrediction in
-                    let scheduledArrival = serviceDay.addingTimeInterval(TimeInterval(stop.arrivalSeconds))
-                    let scheduledDeparture = serviceDay.addingTimeInterval(TimeInterval(stop.departureSeconds))
-                    let update = realtime.update(tripID: trip.id, serviceDate: serviceDate,
-                                                 stopID: stop.stopID, stopSequence: stop.sequence)
-                    let arrivalDelay = update?.arrivalDelay
-                        ?? update?.arrivalTime.map { Int($0.timeIntervalSince(scheduledArrival).rounded()) }
-                    let departureDelay = update?.departureDelay
-                        ?? update?.departureTime.map { Int($0.timeIntervalSince(scheduledDeparture).rounded()) }
-                    if let delay = departureDelay ?? arrivalDelay { previousDelay = delay }
-                    let arrival = update?.arrivalTime
-                        ?? scheduledArrival.addingTimeInterval(TimeInterval(arrivalDelay ?? previousDelay ?? 0))
-                    let leave = update?.departureTime
-                        ?? scheduledDeparture.addingTimeInterval(TimeInterval(departureDelay ?? previousDelay ?? 0))
-                    return GTFSStopPrediction(stopID: stop.stopID, arrival: arrival, departure: leave,
-                                              delaySeconds: departureDelay ?? arrivalDelay ?? previousDelay,
-                                              hasRealtime: update != nil || previousDelay != nil)
+                    var previousDelay: Int?
+                    let times = trip.stopTimes.map { stop -> GTFSStopPrediction in
+                        let scheduledArrival = serviceDay.addingTimeInterval(TimeInterval(stop.arrivalSeconds))
+                        let scheduledDeparture = serviceDay.addingTimeInterval(TimeInterval(stop.departureSeconds))
+                        let update = realtime.update(tripID: trip.id, serviceDate: serviceDate,
+                                                     stopID: stop.stopID, stopSequence: stop.sequence)
+                        let arrivalDelay = update?.arrivalDelay
+                            ?? update?.arrivalTime.map { Int($0.timeIntervalSince(scheduledArrival).rounded()) }
+                        let departureDelay = update?.departureDelay
+                            ?? update?.departureTime.map { Int($0.timeIntervalSince(scheduledDeparture).rounded()) }
+                        if let delay = departureDelay ?? arrivalDelay { previousDelay = delay }
+                        let arrival = update?.arrivalTime
+                            ?? scheduledArrival.addingTimeInterval(TimeInterval(arrivalDelay ?? previousDelay ?? 0))
+                        let leave = update?.departureTime
+                            ?? scheduledDeparture.addingTimeInterval(TimeInterval(departureDelay ?? previousDelay ?? 0))
+                        return GTFSStopPrediction(stopID: stop.stopID, arrival: arrival, departure: leave,
+                                                  delaySeconds: departureDelay ?? arrivalDelay ?? previousDelay,
+                                                  hasRealtime: update != nil || previousDelay != nil)
+                    }
+                    guard let first = times.first, let last = times.last,
+                          last.arrival > departure.addingTimeInterval(-3_600),
+                          first.departure < maximumDeparture else { continue }
+                    instances.append(GTFSTripInstance(trip: trip, route: route,
+                                                      serviceDate: serviceDate, times: times))
                 }
-                guard let first = times.first, let last = times.last,
-                      last.arrival > departure.addingTimeInterval(-3_600),
-                      first.departure < maximumDeparture else { continue }
-                instances.append(GTFSTripInstance(trip: trip, route: route,
-                                                  serviceDate: serviceDate, times: times,
-                                                  patternKey: trip.patternKey))
             }
         }
+        trace?.addCount("scheduleTripRowsVisited", value: tripRowsVisited)
         return instances
+    }
+
+    private static func tripIndexBoundary(in tripIndices: [Int], for departureSeconds: Int,
+                                          upperBound: Bool, trips: [GTFSTrip]) -> Int {
+        var lower = 0
+        var upper = tripIndices.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            let firstDeparture = trips[tripIndices[middle]].stopTimes.first?.departureSeconds ?? Int.min
+            let advances = firstDeparture < departureSeconds
+                || (upperBound && firstDeparture == departureSeconds)
+            if advances {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
+        }
+        return lower
     }
 }

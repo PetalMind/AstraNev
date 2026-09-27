@@ -13,6 +13,14 @@ protocol TransitRouteProviding: Sendable {
         onProgress: TransitPlanningProgressHandler?,
         onProvisionalRoutes: TransitProvisionalRoutesHandler?
     ) async throws -> [NavigationRoute]
+
+    func calculateRoutesArrivingBy(
+        from: Coordinate,
+        to: Coordinate,
+        deadline: Date,
+        onProgress: TransitPlanningProgressHandler?,
+        shouldContinue: @escaping TransitPlanningContinuation
+    ) async throws -> [NavigationRoute]
 }
 
 protocol TransitDataProviding: Sendable {
@@ -73,5 +81,47 @@ extension TransitRouteProviding {
         try await calculateRoutes(from: from, to: to, parkRide: false,
                                   departingAt: departingAt, onProgress: onProgress,
                                   onProvisionalRoutes: onProvisionalRoutes)
+    }
+
+    func calculateRoutesArrivingBy(
+        from: Coordinate,
+        to: Coordinate,
+        deadline: Date,
+        onProgress: TransitPlanningProgressHandler?,
+        shouldContinue: @escaping TransitPlanningContinuation
+    ) async throws -> [NavigationRoute] {
+        var lowerDeparture = deadline.addingTimeInterval(-18 * 60 * 60)
+        var upperDeparture = deadline
+        var bestRoutes: [NavigationRoute] = []
+        for _ in 0..<10 {
+            guard await shouldContinue() else { throw CancellationError() }
+            let interval = upperDeparture.timeIntervalSince(lowerDeparture)
+            guard interval > 60 else { break }
+            let departure = lowerDeparture.addingTimeInterval(interval / 2)
+            do {
+                let candidates = try await calculateRoutes(
+                    from: from, to: to, parkRide: false, departingAt: departure,
+                    onProgress: onProgress, onProvisionalRoutes: nil)
+                let eligible = candidates.filter { ($0.journey?.arrival ?? .distantFuture) <= deadline }
+                    .sorted(by: TransitCandidateRanker.latestDepartureComesBefore)
+                if let latest = eligible.first {
+                    if bestRoutes.first.map({
+                        TransitCandidateRanker.latestDepartureComesBefore(latest, $0)
+                    }) ?? true {
+                        bestRoutes = eligible
+                    }
+                    lowerDeparture = departure
+                } else {
+                    upperDeparture = departure
+                }
+            } catch TransitRoutingError.noJourney {
+                upperDeparture = departure
+            } catch TransitRoutingError.noJourneyBeforeArrivalDeadline {
+                upperDeparture = departure
+            }
+        }
+        guard await shouldContinue() else { throw CancellationError() }
+        guard !bestRoutes.isEmpty else { throw TransitRoutingError.noJourneyBeforeArrivalDeadline }
+        return bestRoutes
     }
 }

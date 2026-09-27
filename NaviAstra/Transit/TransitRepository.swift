@@ -2,17 +2,9 @@ import Foundation
 
 actor TransitRepository {
     static let maximumDepartureSearchWindow: TimeInterval = 18 * 60 * 60
-    static let maximumJourneyDuration: TimeInterval = 18 * 60 * 60
     static let stagedDepartureWindows: [TimeInterval] = [2, 6, 18].map { $0 * 60 * 60 }
-    static let maximumAccessWalkTime: TimeInterval = 30 * 60
     // Conservative client batch size; the server's Valhalla max_locations is configuration-specific.
     static let walkingMatrixBatchSize = 20
-    static let maximumLocalWalkingCandidates = walkingMatrixBatchSize * 4
-    static let maximumRailWalkingCandidates = walkingMatrixBatchSize * 2
-    static let maximumAccessWalkDistance: Double = 10_000
-    static let maximumApproximateLocalWalkingCandidates = 12
-    static let maximumApproximateRailWalkingCandidates = 8
-    static let maximumWalkingGeometryCandidates = 6
     static let maximumCachedWalkingGeometries = 5_000
     static let maximumCachedAccessEstimates = 10_000
 
@@ -33,6 +25,9 @@ actor TransitRepository {
         self.region = region
     }
     var compiledDatabaseURL: URL {
+        cacheDirectory.appendingPathComponent("compiled-transit-index-v4.plist")
+    }
+    var legacyCompiledDatabaseURL: URL {
         cacheDirectory.appendingPathComponent("compiled-transit-index-v3.plist")
     }
     var database: GTFSDatabase?
@@ -53,8 +48,5 @@ actor TransitRepository {
     var pedestrianCacheLoaded = false
     var pedestrianCacheWriteTask: Task<Void, Never>?
     var loadedDatabaseFingerprint: String?
-    var flatTripServiceIndex: TransitFlatTripServiceIndex?
-    var flatTripServiceFingerprint: String?
-    var flatTripServiceBuildTask: Task<Void, Never>?
 
 }

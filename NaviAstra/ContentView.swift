@@ -39,6 +39,7 @@ struct ContentView: View {
     @State var isSavingPlace = false
     @State var destinationExpanded = false
     @State var routePreviewExpanded = false
+    @State var isJourneyTimePickerPresented = false
     @State var favoritePulseScale: CGFloat = 1
     @State var showFavoriteRemovalConfirmation = false
     @State var selectedParkedCar: ParkedCar?

@@ -4,32 +4,42 @@ extension TransitRepository {
     static func plan(snapshot: TransitSnapshot,
                              from origin: Coordinate, to destination: Coordinate,
                              departingAt: Date, departureSearchWindow: TimeInterval,
-                             maximumJourneyDuration: TimeInterval,
+                             arrivalDeadline: Date? = nil,
+                             activeScheduleCache: TransitActiveScheduleCache? = nil,
                              originWalks: [TransitWalkOption],
-                             destinationWalks: [TransitWalkOption],
+                             destinationWalksByStopID: [String: [TransitWalkOption]]?,
                              usingCachedSchedule: Bool, resultLimit: Int,
                              planningID: UInt64, trace: TransitPlanningTrace,
                              regionID: String) throws -> [NavigationRoute] {
         let database = snapshot.database
         let realtime = snapshot.realtime
-        guard !originWalks.isEmpty, !destinationWalks.isEmpty else {
+        guard !originWalks.isEmpty, !database.servedStopIDs.isEmpty else {
             if !database.railwayFeedAvailable { throw TransitRoutingError.railwayFeedUnavailable }
             throw TransitRoutingError.outsideCoverage
         }
 
         var instances: [GTFSTripInstance] = []
-        var departuresByPatternStop: [Int: [[TransitBoardingDeparture]]] = [:]
+        var departuresByPatternStop: [Int: [ArraySlice<TransitBoardingDeparture>]] = [:]
+        var arrivalEnvelopeByPatternStop: [Int: [Int: [[Int]]]] = [:]
+        var patternInstanceBaseByID: [Int: Int] = [:]
         var activeRouteIDs: Set<String> = []
         var touchedPatternIDs: Set<Int> = []
 
         let stopByID = database.stopByID
-        let destinationWalksByStopID = Dictionary(grouping: destinationWalks, by: { $0.stop.id })
+        let requestedLatestDeparture = departingAt.addingTimeInterval(departureSearchWindow)
+        let latestDeparture = arrivalDeadline.map { min(requestedLatestDeparture, $0) }
+            ?? requestedLatestDeparture
         var initial: [String: [TransitPathLabel]] = [:]
         for access in originWalks {
+            let accessArrival = departingAt.addingTimeInterval(access.duration)
+            // An approach that reaches its stop after the last permitted boarding time
+            // cannot seed any route in this search window.
+            guard accessArrival <= latestDeparture else { continue }
             let label = TransitPathLabel(arrival: departingAt.addingTimeInterval(access.duration),
                                          currentStopID: access.stop.id,
                                          initialWalkingSeconds: access.duration,
-                                         walkingSeconds: access.duration, rideCount: 0,
+                                         walkingSeconds: access.duration, rideSeconds: 0,
+                                         rideCount: 0,
                                          transferCount: 0, transferDepth: 0,
                                          lastLegWasTransfer: false, initialStopID: access.stop.id,
                                          parent: nil, ride: nil)
@@ -38,15 +48,16 @@ extension TransitRepository {
 
         var layers: [[String: [TransitPathLabel]]] = [initial]
         var candidates: [TransitPlanCandidate] = []
+        var approximateDestinationWalksByStopID: [String: TransitWalkOption] = [:]
         var roundsExecuted = 0
         var departureTripsScanned = 0
         var departureTripsDominated = 0
-        let latestDeparture = departingAt.addingTimeInterval(departureSearchWindow)
-        let latestArrival = departingAt.addingTimeInterval(maximumJourneyDuration)
-        for ridesUsed in 1...4 {
+        var ridesUsed = 1
+        while true {
             guard let previous = layers.last else { break }
             roundsExecuted = ridesUsed
-            let boardingLabels = transferClosure(previous, database: database)
+            let boardingLabels = transferClosure(previous, database: database,
+                                                 latestBoardingTime: latestDeparture)
             let markedStops = Set(boardingLabels.keys)
             let patternsToScan = Set(markedStops.flatMap { database.routePatternIDsByStop[$0] ?? [] })
                 .sorted()
@@ -56,96 +67,234 @@ extension TransitRepository {
                 let pattern = database.routePatterns[patternID]
                 touchedPatternIDs.insert(patternID)
                 if departuresByPatternStop[patternID] == nil {
-                    let patternInstances = snapshot.activeInstances(
-                        for: pattern, after: departingAt,
-                        maximumDeparture: departingAt.addingTimeInterval(Self.maximumDepartureSearchWindow))
+                    var sharedSchedule = activeScheduleCache?.schedule(for: patternID)
+                    if sharedSchedule != nil {
+                        trace.addCount("activeScheduleCacheHits", value: 1)
+                    }
+                    if sharedSchedule == nil, let activeScheduleCache {
+                        let instancesStartedAt = ProcessInfo.processInfo.systemUptime
+                        let patternInstances = snapshot.activeInstances(
+                            for: pattern, after: activeScheduleCache.coverageStart,
+                            maximumDeparture: activeScheduleCache.coverageEnd, trace: trace)
+                        trace.addDuration("ActiveInstanceBuild", startedAt: instancesStartedAt)
+                        trace.addCount("activeTripInstancesBuilt", value: patternInstances.count)
+                        var indexedDepartures = Array(
+                            repeating: [TransitBoardingDeparture](), count: pattern.stopIDs.count)
+                        for (instanceIndex, instance) in patternInstances.enumerated() {
+                            for stopIndex in instance.times.indices
+                                where stopIndex < indexedDepartures.count
+                                    && instance.times[stopIndex].departure <= activeScheduleCache.coverageEnd {
+                                indexedDepartures[stopIndex].append(
+                                    TransitBoardingDeparture(instanceIndex: instanceIndex,
+                                                             time: instance.times[stopIndex].departure))
+                            }
+                        }
+                        for stopIndex in indexedDepartures.indices {
+                            indexedDepartures[stopIndex].sort { $0.time < $1.time }
+                        }
+                        let builtSchedule = TransitActiveScheduleCache.PatternSchedule(
+                            instances: patternInstances, departuresByStopIndex: indexedDepartures)
+                        activeScheduleCache.store(builtSchedule, for: patternID)
+                        sharedSchedule = builtSchedule
+                    }
+                    let patternInstances: [GTFSTripInstance]
+                    let departuresByStopIndex: [ArraySlice<TransitBoardingDeparture>]
+                    if let sharedSchedule {
+                        patternInstances = sharedSchedule.instances
+                        departuresByStopIndex = sharedSchedule.departuresByStopIndex.map { departures in
+                            let endIndex = upperBound(in: departures, for: latestDeparture)
+                            return departures[..<endIndex]
+                        }
+                    } else {
+                        let instancesStartedAt = ProcessInfo.processInfo.systemUptime
+                        patternInstances = snapshot.activeInstances(
+                            for: pattern, after: departingAt,
+                            maximumDeparture: latestDeparture, trace: trace)
+                        trace.addDuration("ActiveInstanceBuild", startedAt: instancesStartedAt)
+                        trace.addCount("activeTripInstancesBuilt", value: patternInstances.count)
+                        var indexedDepartures = Array(
+                            repeating: [TransitBoardingDeparture](), count: pattern.stopIDs.count)
+                        for (instanceIndex, instance) in patternInstances.enumerated() {
+                            for stopIndex in instance.times.indices
+                                where stopIndex < indexedDepartures.count
+                                    && instance.times[stopIndex].departure <= latestDeparture {
+                                indexedDepartures[stopIndex].append(
+                                    TransitBoardingDeparture(instanceIndex: instanceIndex,
+                                                             time: instance.times[stopIndex].departure))
+                            }
+                        }
+                        for stopIndex in indexedDepartures.indices {
+                            indexedDepartures[stopIndex].sort { $0.time < $1.time }
+                        }
+                        departuresByStopIndex = indexedDepartures.map { ArraySlice($0) }
+                    }
                     let firstInstanceIndex = instances.count
+                    patternInstanceBaseByID[patternID] = firstInstanceIndex
                     instances.append(contentsOf: patternInstances)
                     activeRouteIDs.insert(pattern.routeID)
-                    var departuresByStopIndex = Array(
-                        repeating: [TransitBoardingDeparture](), count: pattern.stopIDs.count)
-                    for (offset, instance) in patternInstances.enumerated() {
-                        let instanceIndex = firstInstanceIndex + offset
-                        for stopIndex in instance.times.indices where stopIndex < departuresByStopIndex.count {
-                            departuresByStopIndex[stopIndex].append(
-                                TransitBoardingDeparture(instanceIndex: instanceIndex,
-                                                         stopIndex: stopIndex,
-                                                         time: instance.times[stopIndex].departure))
-                        }
-                    }
-                    for stopIndex in departuresByStopIndex.indices {
-                        departuresByStopIndex[stopIndex].sort { $0.time < $1.time }
-                    }
                     departuresByPatternStop[patternID] = departuresByStopIndex
                 }
 
                 guard let departuresByStopIndex = departuresByPatternStop[patternID] else { continue }
+                guard let instanceBase = patternInstanceBaseByID[patternID] else { continue }
                 for stopIndex in pattern.stopIDs.indices {
                     let stopID = pattern.stopIDs[stopIndex]
                     guard let labels = boardingLabels[stopID],
                           departuresByStopIndex.indices.contains(stopIndex) else { continue }
                     let departures = departuresByStopIndex[stopIndex]
                     guard !departures.isEmpty else { continue }
+                    let arrivalEnvelopeByDownstreamStop: [[Int]]
+                    if let cached = arrivalEnvelopeByPatternStop[patternID]?[stopIndex]
+                        ?? activeScheduleCache?.arrivalEnvelope(for: patternID, stopIndex: stopIndex,
+                                                                 departureCount: departures.count) {
+                        arrivalEnvelopeByDownstreamStop = cached
+                    } else {
+                        // For each downstream stop, build a compact suffix minimum over
+                        // trips ordered by departure at this boarding stop. A label only
+                        // needs the best-arriving trip it can still catch; scanning every
+                        // departure again for every label repeats dominated work.
+                        var envelopes = Array(repeating: [Int](), count: pattern.stopIDs.count)
+                        for downstreamIndex in (stopIndex + 1)..<pattern.stopIDs.count {
+                            var isFIFO = true
+                            var previousArrival: Date?
+                            for departure in departures {
+                                departureTripsScanned += 1
+                                let instance = instances[instanceBase + departure.instanceIndex]
+                                guard instance.times.indices.contains(downstreamIndex) else {
+                                    isFIFO = false
+                                    break
+                                }
+                                let arrival = instance.times[downstreamIndex].arrival
+                                if let previousArrival, arrival < previousArrival {
+                                    isFIFO = false
+                                    break
+                                }
+                                previousArrival = arrival
+                            }
+                            if isFIFO {
+                                // FIFO timetables need no per-trip breakpoint storage:
+                                // the first departure that can be caught arrives first.
+                                envelopes[downstreamIndex] = [-2]
+                                continue
+                            }
+
+                            var bestDepartureBreakpoints: [Int] = []
+                            var bestDepartureIndex = -1
+                            var bestArrival = Date.distantFuture
+                            for departureIndex in departures.indices.reversed() {
+                                departureTripsScanned += 1
+                                let departure = departures[departureIndex]
+                                let instance = instances[instanceBase + departure.instanceIndex]
+                                guard instance.times.indices.contains(downstreamIndex) else {
+                                    continue
+                                }
+                                let arrival = instance.times[downstreamIndex].arrival
+                                // Prefer the earlier departure when arrival times tie,
+                                // matching the prior forward scan's strict improvement.
+                                if bestDepartureIndex == -1 || arrival <= bestArrival {
+                                    bestArrival = arrival
+                                    bestDepartureIndex = departureIndex
+                                    bestDepartureBreakpoints.append(departureIndex)
+                                }
+                            }
+                            envelopes[downstreamIndex] = Array(bestDepartureBreakpoints.reversed())
+                        }
+                        var patternEnvelopes = arrivalEnvelopeByPatternStop[patternID] ?? [:]
+                        patternEnvelopes[stopIndex] = envelopes
+                        arrivalEnvelopeByPatternStop[patternID] = patternEnvelopes
+                        activeScheduleCache?.storeArrivalEnvelope(
+                            envelopes, for: patternID, stopIndex: stopIndex,
+                            departureCount: departures.count)
+                        arrivalEnvelopeByDownstreamStop = envelopes
+                    }
                     for label in labels {
                         let transferBuffer = label.rideCount > 0 && !label.lastLegWasTransfer ? 60.0 : 0
                         let minimumDeparture = label.arrival.addingTimeInterval(transferBuffer)
                         let startIndex = lowerBound(in: departures, for: minimumDeparture)
                         guard startIndex < departures.count else { continue }
-                        var bestArrivalByDownstreamIndex: [Int: Date] = [:]
-                        var improvedDownstreamIndices: [Int] = []
-                        let firstInstance = instances[departures[startIndex].instanceIndex]
-                        improvedDownstreamIndices.reserveCapacity(firstInstance.times.count - stopIndex - 1)
-                        for departureIndex in startIndex..<departures.count {
-                            let departure = departures[departureIndex]
-                            if departure.time > latestDeparture { break }
-                            departureTripsScanned += 1
-                            let instance = instances[departure.instanceIndex]
-                            improvedDownstreamIndices.removeAll(keepingCapacity: true)
-                            for downstreamIndex in (stopIndex + 1)..<instance.times.count {
-                                let arrival = instance.times[downstreamIndex].arrival
-                                if arrival > latestArrival { break }
-                                if arrival < (bestArrivalByDownstreamIndex[downstreamIndex] ?? .distantFuture) {
-                                    improvedDownstreamIndices.append(downstreamIndex)
+                        for downstreamIndex in (stopIndex + 1)..<pattern.stopIDs.count {
+                            guard arrivalEnvelopeByDownstreamStop.indices.contains(downstreamIndex) else { continue }
+                            let breakpoints = arrivalEnvelopeByDownstreamStop[downstreamIndex]
+                            let bestDepartureIndex: Int
+                            if breakpoints.count == 1 && breakpoints[0] == -2 {
+                                bestDepartureIndex = startIndex
+                            } else {
+                                var lower = 0
+                                var upper = breakpoints.count
+                                while lower < upper {
+                                    let middle = lower + (upper - lower) / 2
+                                    if breakpoints[middle] < startIndex {
+                                        lower = middle + 1
+                                    } else {
+                                        upper = middle
+                                    }
                                 }
+                                guard lower < breakpoints.count else { continue }
+                                bestDepartureIndex = breakpoints[lower]
                             }
-                            guard !improvedDownstreamIndices.isEmpty else {
-                                departureTripsDominated += 1
-                                continue
-                            }
-                            for downstreamIndex in improvedDownstreamIndices {
-                                let downstream = instance.times[downstreamIndex]
-                                bestArrivalByDownstreamIndex[downstreamIndex] = downstream.arrival
-                                let ride = TransitRide(instanceIndex: departure.instanceIndex,
-                                                       boardIndex: stopIndex,
-                                                       alightIndex: downstreamIndex)
-                                let next = TransitPathLabel(arrival: downstream.arrival,
-                                                            currentStopID: downstream.stopID,
-                                                            initialWalkingSeconds: label.initialWalkingSeconds,
-                                                            walkingSeconds: label.walkingSeconds,
-                                                            rideCount: ridesUsed,
-                                                            transferCount: max(0, ridesUsed - 1),
-                                                            transferDepth: 0, lastLegWasTransfer: false,
-                                                            initialStopID: label.initialStopID,
-                                                            parent: label, ride: ride)
-                                insertPareto(next, at: downstream.stopID, in: &current)
-                            }
+                            departureTripsDominated += departures.count - startIndex - 1
+                            let departure = departures[bestDepartureIndex]
+                            let instance = instances[instanceBase + departure.instanceIndex]
+                            guard instance.times.indices.contains(downstreamIndex) else { continue }
+                            let downstream = instance.times[downstreamIndex]
+                            if let arrivalDeadline, downstream.arrival > arrivalDeadline { continue }
+                            let ride = TransitRide(instanceIndex: instanceBase + departure.instanceIndex,
+                                                   boardIndex: stopIndex,
+                                                   alightIndex: downstreamIndex)
+                            let rideSeconds = max(0, downstream.arrival.timeIntervalSince(
+                                instance.times[stopIndex].departure))
+                            let next = TransitPathLabel(arrival: downstream.arrival,
+                                                        currentStopID: downstream.stopID,
+                                                        initialWalkingSeconds: label.initialWalkingSeconds,
+                                                        walkingSeconds: label.walkingSeconds,
+                                                        rideSeconds: label.rideSeconds + rideSeconds,
+                                                        rideCount: ridesUsed,
+                                                        transferCount: max(0, ridesUsed - 1),
+                                                        transferDepth: 0, lastLegWasTransfer: false,
+                                                        initialStopID: label.initialStopID,
+                                                        parent: label, ride: ride)
+                            insertPareto(next, at: downstream.stopID, in: &current)
                         }
                     }
                 }
             }
             layers.append(current)
             let alightingLabels = transferClosure(current, database: database)
-            for (stopID, labels) in alightingLabels where stopByID[stopID] != nil {
+            for (stopID, labels) in alightingLabels
+                where database.servedStopIDs.contains(stopID) && stopByID[stopID] != nil {
+                let destinationOptions: [TransitWalkOption]
+                if let destinationWalksByStopID {
+                    destinationOptions = destinationWalksByStopID[stopID] ?? []
+                } else if let cachedOption = approximateDestinationWalksByStopID[stopID] {
+                    destinationOptions = [cachedOption]
+                } else if let stop = stopByID[stopID] {
+                    // Coarse egress estimates are cheap and only needed for stops
+                    // actually reached by the current transit search. This avoids
+                    // building an option for every served stop in the feed.
+                    let straightLineDistance = stop.coordinate.distance(to: destination)
+                    let estimatedDistance = straightLineDistance * 1.5
+                    let option = TransitWalkOption(
+                        stop: stop, distance: estimatedDistance,
+                        duration: estimatedDistance / 0.9,
+                        coordinates: [stop.coordinate, destination],
+                        hasResolvedGeometry: false, isApproximate: true)
+                    approximateDestinationWalksByStopID[stopID] = option
+                    destinationOptions = [option]
+                } else {
+                    destinationOptions = []
+                }
+                guard !destinationOptions.isEmpty else { continue }
                 for label in labels {
-                    for access in destinationWalksByStopID[stopID] ?? [] {
+                    for access in destinationOptions {
                         let arrival = label.arrival.addingTimeInterval(access.duration)
-                        guard arrival <= latestArrival else { continue }
+                        if let arrivalDeadline, arrival > arrivalDeadline { continue }
                         candidates.append(TransitPlanCandidate(
                             label: label, destinationWalk: access, arrival: arrival))
                     }
                 }
             }
             if current.isEmpty { break }
+            ridesUsed += 1
         }
 
         trace.setCount("roundsExecuted", value: roundsExecuted)
@@ -169,16 +318,12 @@ extension TransitRepository {
         let rankingInterval = TransitSignposting.begin("CandidateRanking", planningID: planningID)
         trace.setCount("candidates", value: candidates.count)
         TransitSignposting.event("StaticCandidateCount", value: candidates.count, planningID: planningID)
-        let rankedCandidates = candidates
-            .map { candidate in
-                (candidate: candidate,
-                 cost: TransitCandidateRanker.candidateCost(candidate, departingAt: departingAt, instances: instances))
-            }
-            .sorted { $0.cost < $1.cost }
+        let rankedCandidates = TransitCandidateRanker.bestCandidates(
+            candidates, departingAt: departingAt, limit: max(resultLimit * 4, resultLimit))
         TransitSignposting.end("CandidateRanking", identifier: rankingInterval, planningID: planningID)
         trace.recordDuration("CandidateRanking", startedAt: rankingStartedAt)
         var routes: [NavigationRoute] = []
-        for rankedCandidate in rankedCandidates.prefix(max(resultLimit * 4, resultLimit)) {
+        for rankedCandidate in rankedCandidates {
             let candidate = rankedCandidate.candidate
             if let route = makeRoute(candidate: candidate, database: database, realtime: realtime,
                                      instances: instances, stopByID: stopByID,
@@ -220,11 +365,13 @@ extension TransitRepository {
             existing.arrival <= candidate.arrival
                 && existing.walkingSeconds <= candidate.walkingSeconds
                 && existing.transferCount <= candidate.transferCount
+                && (existing.lastLegWasTransfer || !candidate.lastLegWasTransfer)
         }) else { return false }
         labels.removeAll { existing in
             candidate.arrival <= existing.arrival
                 && candidate.walkingSeconds <= existing.walkingSeconds
                 && candidate.transferCount <= existing.transferCount
+                && (candidate.lastLegWasTransfer || !existing.lastLegWasTransfer)
         }
         labels.append(candidate)
         labelsByStop[stopID] = labels
@@ -237,22 +384,34 @@ extension TransitRepository {
     }
 
     static func transferClosure(_ labels: [String: [TransitPathLabel]],
-                                        database: GTFSDatabase) -> [String: [TransitPathLabel]] {
-        var reachable = labels
-        var queue = labels.values.flatMap { $0 }
+                                database: GTFSDatabase,
+                                latestBoardingTime: Date? = nil) -> [String: [TransitPathLabel]] {
+        let boardingSeeds: [String: [TransitPathLabel]]
+        if let latestBoardingTime {
+            boardingSeeds = labels.compactMapValues { labels in
+                let eligible = labels.filter { $0.arrival <= latestBoardingTime }
+                return eligible.isEmpty ? nil : eligible
+            }
+        } else {
+            boardingSeeds = labels
+        }
+        var reachable = boardingSeeds
+        var queue = boardingSeeds.values.flatMap { $0 }
         var cursor = 0
         while cursor < queue.count {
             let label = queue[cursor]
             cursor += 1
-            guard label.transferDepth < 12, label.walkingSeconds < 1_800 else { continue }
+            if let latestBoardingTime, label.arrival > latestBoardingTime { continue }
             for transfer in database.footpathsByStopID[label.currentStopID] ?? [] {
                 let walkingSeconds = label.walkingSeconds + transfer.walkingDuration
-                guard walkingSeconds <= 1_800 else { continue }
+                let arrival = label.arrival.addingTimeInterval(
+                    transfer.walkingDuration + transfer.minimumTransferTime)
+                if let latestBoardingTime, arrival > latestBoardingTime { continue }
                 let next = TransitPathLabel(
-                    arrival: label.arrival.addingTimeInterval(transfer.walkingDuration + transfer.minimumTransferTime),
+                    arrival: arrival,
                     currentStopID: transfer.toStopID,
                     initialWalkingSeconds: label.initialWalkingSeconds,
-                    walkingSeconds: walkingSeconds,
+                    walkingSeconds: walkingSeconds, rideSeconds: label.rideSeconds,
                     rideCount: label.rideCount, transferCount: label.transferCount,
                     transferDepth: label.transferDepth + 1, lastLegWasTransfer: true,
                     initialStopID: label.initialStopID, parent: label, ride: nil, transfer: transfer)
@@ -264,26 +423,28 @@ extension TransitRepository {
         return reachable
     }
 
-    static func nearestStops(to coordinate: Coordinate,
-                                     stopByID: [String: GTFSStop],
-                                     spatialIndex: TransitStopSpatialIndex,
-                                     maximumDistance: Double, localLimit: Int,
-                                     railwayLimit: Int) -> [(GTFSStop, Double)] {
-        let nearby = spatialIndex.nearbyStopIDs(to: coordinate, within: maximumDistance)
-            .compactMap { stopByID[$0] }
-            .compactMap { stop -> (GTFSStop, Double)? in
-            let distance = coordinate.distance(to: stop.coordinate)
-            return distance <= maximumDistance ? (stop, distance) : nil
-        }.sorted { $0.1 < $1.1 }
-        let local = Array(nearby.filter { !$0.0.id.hasPrefix("rail/") }.prefix(localLimit))
-        let railway = Array(nearby.filter { $0.0.id.hasPrefix("rail/") }.prefix(railwayLimit))
-        let prioritizedLocalCount = min(12, local.count)
-        let prioritizedRailwayCount = min(8, railway.count)
-        let prioritized = (Array(local.prefix(prioritizedLocalCount))
-            + Array(railway.prefix(prioritizedRailwayCount))).sorted { $0.1 < $1.1 }
-        let remaining = (Array(local.dropFirst(prioritizedLocalCount))
-            + Array(railway.dropFirst(prioritizedRailwayCount))).sorted { $0.1 < $1.1 }
-        return prioritized + remaining
+    static func walkingAccessCandidates(from coordinate: Coordinate,
+                                        database: GTFSDatabase,
+                                        maximumStraightLineDistance: Double? = nil,
+                                        includingStopIDs: Set<String> = [],
+                                        sortByDistance: Bool = true) -> [(GTFSStop, Double)] {
+        let candidates: [(GTFSStop, Double)]
+        if let maximumStraightLineDistance {
+            let nearbyIDs = Set(database.stopSpatialIndex.nearbyStopIDs(
+                to: coordinate, within: maximumStraightLineDistance))
+                .union(includingStopIDs)
+            candidates = nearbyIDs.compactMap { database.stopByID[$0] }
+                .map { ($0, coordinate.distance(to: $0.coordinate)) }
+                .filter { $0.1 <= maximumStraightLineDistance || includingStopIDs.contains($0.0.id) }
+        } else {
+            candidates = database.stopsForSearch
+                .map { ($0, coordinate.distance(to: $0.coordinate)) }
+        }
+        guard sortByDistance else { return candidates }
+        return candidates.sorted {
+            if $0.1 == $1.1 { return $0.0.id < $1.0.id }
+            return $0.1 < $1.1
+        }
     }
 
     static func publicStop(_ stop: GTFSStop, database: GTFSDatabase) -> TransitStop {
@@ -362,12 +523,22 @@ extension TransitRepository {
         return result.sorted { $0.estimatedDeparture < $1.estimatedDeparture }.prefix(limit).map { $0 }
     }
 
-    static func lowerBound(in departures: [TransitBoardingDeparture], for time: Date) -> Int {
+    static func lowerBound(in departures: ArraySlice<TransitBoardingDeparture>, for time: Date) -> Int {
         var lower = 0
         var upper = departures.count
         while lower < upper {
             let middle = (lower + upper) / 2
             if departures[middle].time < time { lower = middle + 1 } else { upper = middle }
+        }
+        return lower
+    }
+
+    static func upperBound(in departures: [TransitBoardingDeparture], for time: Date) -> Int {
+        var lower = 0
+        var upper = departures.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if departures[middle].time <= time { lower = middle + 1 } else { upper = middle }
         }
         return lower
     }
@@ -435,7 +606,7 @@ extension TransitRepository {
                       last.arrival > departure.addingTimeInterval(-3_600),
                       first.departure < departure.addingTimeInterval(maximumDepartureSearchWindow) else { continue }
                 instances.append(GTFSTripInstance(trip: trip, route: route, serviceDate: dateString,
-                                                  times: times, patternKey: trip.patternKey))
+                                                  times: times))
             }
         }
         return instances

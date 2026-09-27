@@ -237,6 +237,13 @@ extension ContentView {
         placeStore.nearbyRequest = NearbySearchRequest(category: category, nearDestination: nearDestination)
     }
 
+    func presentNearbyAfterMenuDismissal(_ category: NearbyPlaceCategory, nearDestination: Bool = false) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            presentNearby(category, nearDestination: nearDestination)
+        }
+    }
+
     func selectDestination(_ destination: Destination, recordSearch: Bool = true) {
         appRouter.dismiss(.search)
         if recordSearch { placeStore.recordSearch(destination) }

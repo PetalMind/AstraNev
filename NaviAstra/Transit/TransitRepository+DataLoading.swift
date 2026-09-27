@@ -10,16 +10,39 @@ extension TransitRepository {
         database = nil
         let compiledIndexStartedAt = ProcessInfo.processInfo.systemUptime
         let compiledIndexInterval = TransitSignposting.begin("CompiledIndexLoad", planningID: planningID)
-        let persisted = Self.readCompiledDatabase(at: compiledDatabaseURL)
+        let persistedCandidate = Self.readCompiledDatabase(
+            at: compiledDatabaseURL,
+            expectedSchemaVersion: PersistedTransitDatabase.currentSchemaVersion,
+            maximumAge: 30 * 24 * 60 * 60)
+            ?? Self.readCompiledDatabase(at: legacyCompiledDatabaseURL,
+                                         expectedSchemaVersion: 3,
+                                         maximumAge: 30 * 24 * 60 * 60)
+        let persisted = persistedCandidate.flatMap { candidate in
+            (0..<86_400).contains(Date().timeIntervalSince(candidate.modifiedAt)) ? candidate : nil
+        }
         TransitSignposting.end("CompiledIndexLoad", identifier: compiledIndexInterval, planningID: planningID)
         trace?.recordDuration("CompiledIndexLoad", startedAt: compiledIndexStartedAt)
         trace?.setCount("compiledIndexHit", value: persisted.map { _ in 1 } ?? 0)
+        trace?.setCount("compiledIndexCandidateHit", value: persistedCandidate.map { _ in 1 } ?? 0)
         if let persisted {
-            database = persisted.database
+            let loadedDatabase: GTFSDatabase
+            if persisted.database.requiresPatternServiceIndexUpgrade {
+                let migrationStartedAt = ProcessInfo.processInfo.systemUptime
+                loadedDatabase = await Task.detached(priority: .utility) {
+                    persisted.database.upgradingPatternServiceIndexes()
+                }.value
+                trace?.recordDuration("CompiledIndexMigration", startedAt: migrationStartedAt)
+                Self.persistCompiledDatabase(loadedDatabase, to: compiledDatabaseURL,
+                                             planningID: planningID, trace: trace,
+                                             preserveModifiedAt: persisted.modifiedAt)
+            } else {
+                loadedDatabase = persisted.database
+            }
+            database = loadedDatabase
             databaseWasCached = true
             databaseLoadedAt = persisted.modifiedAt
             TransitSignposting.event("CompiledIndexCacheHit", value: 1, planningID: planningID)
-            return persisted.database
+            return loadedDatabase
         }
 
         let loadTask: Task<LoadedTransitDatabase, Error>
@@ -30,90 +53,89 @@ extension TransitRepository {
             let feedURL = staticFeedURL
             let railwayURL = railwayFeedURL
             let cityFeedFilename = region.staticFeedFilename
+            let previousDatabase = persistedCandidate?.database
             loadTask = Task.detached(priority: .utility) {
                 try await TransitGTFSLoader.load(cacheDirectory: directory, feedURL: feedURL,
                                                  railwayFeedURL: railwayURL,
                                                  cityFeedFilename: cityFeedFilename,
-                                                 planningID: planningID, trace: trace)
+                                                 planningID: planningID, trace: trace,
+                                                 existingDatabase: previousDatabase)
             }
             databaseLoadTask = loadTask
         }
         do {
             let loaded = try await loadTask.value
-            database = loaded.database
+            let loadedDatabase: GTFSDatabase
+            if loaded.database.requiresPatternServiceIndexUpgrade {
+                let migrationStartedAt = ProcessInfo.processInfo.systemUptime
+                loadedDatabase = await Task.detached(priority: .utility) {
+                    loaded.database.upgradingPatternServiceIndexes()
+                }.value
+                trace?.recordDuration("CompiledIndexMigration", startedAt: migrationStartedAt)
+            } else {
+                loadedDatabase = loaded.database
+            }
+            database = loadedDatabase
             databaseWasCached = loaded.wasCached
             databaseLoadedAt = Date()
             databaseLoadTask = nil
-            let compiledIndex = PersistedTransitDatabase(
-                schemaVersion: PersistedTransitDatabase.currentSchemaVersion,
-                database: loaded.database
-            )
-            let indexURL = compiledDatabaseURL
-            Task.detached(priority: .utility) {
-                let startedAt = ProcessInfo.processInfo.systemUptime
-                let interval = TransitSignposting.begin("CompiledIndexPersist", planningID: planningID)
-                defer {
-                    TransitSignposting.end("CompiledIndexPersist", identifier: interval, planningID: planningID)
-                    trace?.recordDuration("CompiledIndexPersist", startedAt: startedAt)
-                }
-                do {
-                    let encoder = PropertyListEncoder()
-                    encoder.outputFormat = .binary
-                    let data = try encoder.encode(compiledIndex)
-                    try data.write(to: indexURL, options: .atomic)
-                    TransitSignposting.event("CompiledIndexPersisted", value: data.count, planningID: planningID)
-                } catch {
-                    TransitSignposting.event("CompiledIndexPersistFailed", value: 1, planningID: planningID)
-                }
-            }
-            return loaded.database
+            Self.persistCompiledDatabase(loadedDatabase, to: compiledDatabaseURL,
+                                         planningID: planningID, trace: trace)
+            return loadedDatabase
         } catch {
             databaseLoadTask = nil
             throw error
         }
     }
 
-    static func readCompiledDatabase(at url: URL) -> (database: GTFSDatabase, modifiedAt: Date)? {
+    static func readCompiledDatabase(at url: URL,
+                                     expectedSchemaVersion: Int,
+                                     maximumAge: TimeInterval = 86_400) -> (database: GTFSDatabase, modifiedAt: Date)? {
         do {
             guard let modifiedAt = try url.resourceValues(forKeys: [.contentModificationDateKey])
                 .contentModificationDate else { return nil }
             let age = Date().timeIntervalSince(modifiedAt)
-            guard (0..<86_400).contains(age) else { return nil }
+            guard (0..<maximumAge).contains(age) else { return nil }
             let data = try Data(contentsOf: url, options: .mappedIfSafe)
             let index = try PropertyListDecoder().decode(PersistedTransitDatabase.self, from: data)
-            guard index.schemaVersion == PersistedTransitDatabase.currentSchemaVersion,
-                  !index.database.stops.isEmpty, !index.database.trips.isEmpty else { return nil }
+            guard index.schemaVersion == expectedSchemaVersion,
+                  !index.database.stops.isEmpty, !index.database.trips.isEmpty,
+                  !index.database.routePatterns.contains(where: {
+                      $0.tripsByService == nil && $0.tripIndices == nil
+                  }) else { return nil }
             return (index.database, modifiedAt)
         } catch {
             return nil
         }
     }
 
-    static func readFlatTripServiceIndex(
-        database: GTFSDatabase, at url: URL
-    ) -> TransitFlatTripServiceIndex? {
-        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
-        return TransitFlatTripServiceIndex(data: data, fingerprint: database.feedFingerprint,
-                                           tripCount: database.trips.count)
-    }
-
-    static func createFlatTripServiceIndex(database: GTFSDatabase, at url: URL) {
-        var data = TransitFlatTripServiceIndex.header(fingerprint: database.feedFingerprint,
-                                                      tripCount: database.trips.count)
-        data.reserveCapacity(TransitFlatTripServiceIndex.headerByteCount + database.trips.count * 4)
-        let serviceIndexByID = Dictionary(uniqueKeysWithValues: database.serviceIDs.enumerated()
-            .map { ($1, $0) })
-        for trip in database.trips {
-            let serviceIndex = serviceIndexByID[trip.serviceID] ?? -1
-            let encodedServiceIndex = serviceIndex >= 0 ? UInt32(clamping: serviceIndex) : UInt32.max
-            TransitFlatTripServiceIndex.append(encodedServiceIndex, to: &data)
-        }
-        do {
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
-                                                    withIntermediateDirectories: true)
-            try data.write(to: url, options: .atomic)
-        } catch {
-            // The planner uses the in-memory service map if the flat index cannot be persisted.
+    static func persistCompiledDatabase(_ database: GTFSDatabase, to url: URL,
+                                        planningID: UInt64?, trace: TransitPlanningTrace?,
+                                        preserveModifiedAt: Date? = nil) {
+        let compiledIndex = PersistedTransitDatabase(
+            schemaVersion: PersistedTransitDatabase.currentSchemaVersion,
+            database: database
+        )
+        Task.detached(priority: .utility) {
+            let startedAt = ProcessInfo.processInfo.systemUptime
+            let interval = TransitSignposting.begin("CompiledIndexPersist", planningID: planningID)
+            defer {
+                TransitSignposting.end("CompiledIndexPersist", identifier: interval, planningID: planningID)
+                trace?.recordDuration("CompiledIndexPersist", startedAt: startedAt)
+            }
+            do {
+                let encoder = PropertyListEncoder()
+                encoder.outputFormat = .binary
+                let data = try encoder.encode(compiledIndex)
+                try data.write(to: url, options: .atomic)
+                if let preserveModifiedAt {
+                    try? FileManager.default.setAttributes([.modificationDate: preserveModifiedAt],
+                                                           ofItemAtPath: url.path)
+                }
+                TransitSignposting.event("CompiledIndexPersisted", value: data.count, planningID: planningID)
+            } catch {
+                TransitSignposting.event("CompiledIndexPersistFailed", value: 1, planningID: planningID)
+            }
         }
     }
 

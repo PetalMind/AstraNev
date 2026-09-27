@@ -4,7 +4,10 @@ extension TransitRepository {
     func calculateRoutes(from: Coordinate, to: Coordinate, departingAt: Date,
                          walkingRoutingEndpoint: URL,
                          onProgress: TransitPlanningProgressHandler?,
-                         onProvisionalRoutes: TransitProvisionalRoutesHandler?) async throws -> [NavigationRoute] {
+                         onProvisionalRoutes: TransitProvisionalRoutesHandler?,
+                         arrivalDeadline: Date? = nil,
+                         shouldContinue: TransitPlanningContinuation? = nil,
+                         planningContext: TransitPlanningContext? = nil) async throws -> [NavigationRoute] {
         nextPlanningID &+= 1
         let planningID = nextPlanningID
         let regionID = region.id
@@ -16,82 +19,63 @@ extension TransitRepository {
             trace.emitSummary(planningID: planningID)
         }
 
-        await onProgress?(.loadingSchedule)
-        let database: GTFSDatabase
-        do {
-            let startedAt = ProcessInfo.processInfo.systemUptime
-            let databaseInterval = TransitSignposting.begin("GTFSLoad", planningID: planningID)
-            defer {
-                TransitSignposting.end("GTFSLoad", identifier: databaseInterval, planningID: planningID)
-                trace.recordDuration("GTFSLoad", startedAt: startedAt)
-            }
-            database = try await loadDatabase(planningID: planningID, trace: trace)
-        }
-        loadedDatabaseFingerprint = database.feedFingerprint
-        guard walkingRoutingEndpoint.scheme == "https" else { throw RoutingError.invalidEndpoint }
-        await loadPersistentPedestrianCacheIfNeeded()
-        let flatTripServiceIndexURL = cacheDirectory.appendingPathComponent("active-trip-services-v1.flat")
-        let tripServiceIndex: TransitFlatTripServiceIndex?
-        if flatTripServiceFingerprint == database.feedFingerprint,
-           let flatTripServiceIndex {
-            tripServiceIndex = flatTripServiceIndex
-        } else if let mappedIndex = Self.readFlatTripServiceIndex(
-            database: database, at: flatTripServiceIndexURL) {
-            tripServiceIndex = mappedIndex
-            flatTripServiceIndex = mappedIndex
-            flatTripServiceFingerprint = database.feedFingerprint
+        let context: TransitPlanningContext
+        let reusingPlanningContext: Bool
+        if let planningContext {
+            try await checkPlanningContinuation(shouldContinue)
+            context = planningContext
+            reusingPlanningContext = true
+            await onProgress?(.searchingConnections)
         } else {
-            tripServiceIndex = nil
-            flatTripServiceIndex = nil
-            flatTripServiceFingerprint = database.feedFingerprint
-            if flatTripServiceBuildTask == nil {
-                flatTripServiceBuildTask = Task(priority: .utility) {
-                    await Task.detached(priority: .utility) {
-                        Self.createFlatTripServiceIndex(database: database, at: flatTripServiceIndexURL)
-                    }.value
-                    self.flatTripServiceBuildTask = nil
-                }
-            }
+            reusingPlanningContext = false
+            context = try await preparePlanningContext(
+                departingAt: departingAt,
+                maximumDepartureWindow: Self.maximumDepartureSearchWindow,
+                walkingRoutingEndpoint: walkingRoutingEndpoint,
+                planningID: planningID, trace: trace,
+                activeScheduleCache: nil, onProgress: onProgress,
+                shouldContinue: shouldContinue)
         }
-        trace.setCount("flatTripServiceIndexHit", value: tripServiceIndex.map { _ in 1 } ?? 0)
-        await onProgress?(.searchingConnections)
-
-        // Coarse access estimates bound the stop set before any exact routing request is sent.
-        async let realtimeRequest = loadRealtimeForRoutePlanning(planningID: planningID, trace: trace)
-        let originWalks = coarseWalkingOptions(from: from, database: database, trace: trace)
-        let destinationApproaches = coarseWalkingOptions(from: to, database: database, trace: trace)
-        let destinationWalks = destinationApproaches.map { option in
-            TransitWalkOption(stop: option.stop, distance: option.distance, duration: option.duration,
-                              coordinates: Array(option.coordinates.reversed()),
-                              hasResolvedGeometry: false, isApproximate: true)
-        }
-        let realtime = await realtimeRequest
-        let snapshotStartedAt = ProcessInfo.processInfo.systemUptime
-        let snapshot = await Task.detached(priority: .userInitiated) {
-            TransitSnapshot(database: database, realtime: realtime, departure: departingAt,
-                            maximumDepartureWindow: Self.maximumDepartureSearchWindow,
-                            flatTripServiceIndex: tripServiceIndex)
-        }.value
-        trace.recordDuration("TransitSnapshotBuild", startedAt: snapshotStartedAt)
-        let usingCachedSchedule = databaseWasCached
+        let snapshot = context.snapshot
+        let database = snapshot.database
+        let usingCachedSchedule = context.usingCachedSchedule
+        try await checkPlanningContinuation(shouldContinue)
 
         let searchInterval = TransitSignposting.begin("TransitSearch", planningID: planningID)
         let searchStartedAt = ProcessInfo.processInfo.systemUptime
+        let activeScheduleCache = context.activeScheduleCache
         var routePool: [String: NavigationRoute] = [:]
-        var lastPlanningError: Error = TransitRoutingError.noJourney
+        var didRecordTimeToFirstRoute = false
+        var lastPlanningError: Error = arrivalDeadline == nil
+            ? TransitRoutingError.noJourney
+            : TransitRoutingError.noJourneyBeforeArrivalDeadline
         do {
-            for (stageIndex, departureWindow) in Self.stagedDepartureWindows.enumerated() {
-                try Task.checkCancellation()
+            let searchWindows = Self.stagedDepartureWindows
+            let coarseResultLimit = 15
+            let exactResultLimit = 15
+            for (stageIndex, departureWindow) in searchWindows.enumerated() {
+                try await checkPlanningContinuation(shouldContinue)
                 trace.setCount("searchWindowStage", value: stageIndex + 1)
+                let scheduleSearchWindow = departureWindow
+                // Grow the origin search area with the departure window. Building the
+                // 18-hour neighborhood up front includes many stops that the 2-hour
+                // stage cannot use and needlessly feeds them into every planning pass.
+                let originWalks = coarseWalkingOptions(
+                    from: from, database: database, endpoint: walkingRoutingEndpoint,
+                    trace: trace, maximumWalkingDuration: departureWindow)
+                guard !originWalks.isEmpty else { continue }
                 let coarseRoutes: [NavigationRoute]
                 do {
                     coarseRoutes = try await Task.detached(priority: .userInitiated) {
                         try Self.plan(snapshot: snapshot, from: from, to: to,
                                       departingAt: departingAt,
-                                      departureSearchWindow: departureWindow,
-                                      maximumJourneyDuration: Self.maximumJourneyDuration,
-                                      originWalks: originWalks, destinationWalks: destinationWalks,
-                                      usingCachedSchedule: usingCachedSchedule, resultLimit: 15,
+                                      departureSearchWindow: scheduleSearchWindow,
+                                      arrivalDeadline: arrivalDeadline,
+                                      activeScheduleCache: activeScheduleCache,
+                                      originWalks: originWalks,
+                                      destinationWalksByStopID: nil,
+                                      usingCachedSchedule: usingCachedSchedule,
+                                      resultLimit: coarseResultLimit,
                                       planningID: planningID, trace: trace, regionID: regionID)
                     }.value
                 } catch TransitRoutingError.noJourney {
@@ -99,6 +83,13 @@ extension TransitRepository {
                 } catch {
                     lastPlanningError = error
                     throw error
+                }
+                try await checkPlanningContinuation(shouldContinue)
+
+                if !didRecordTimeToFirstRoute {
+                    trace.recordElapsedDuration("TimeToFirstRoute")
+                    didRecordTimeToFirstRoute = true
+                    await onProvisionalRoutes?(coarseRoutes)
                 }
 
                 let originStopIDs = Set(coarseRoutes.compactMap { $0.journey?.originAccessStopID })
@@ -118,6 +109,7 @@ extension TransitRepository {
                                                                    planningID: planningID, trace: trace)
                 let (exactOriginWalks, exactDestinationApproaches) = try await (
                     exactOriginRequest, exactDestinationRequest)
+                try await checkPlanningContinuation(shouldContinue)
                 let exactDestinationWalks = exactDestinationApproaches.map { option in
                     TransitWalkOption(stop: option.stop, distance: option.distance,
                                       duration: option.duration,
@@ -125,16 +117,20 @@ extension TransitRepository {
                                       hasResolvedGeometry: option.hasResolvedGeometry,
                                       isApproximate: option.isApproximate)
                 }
+                let exactDestinationWalksByStopID = Dictionary(
+                    grouping: exactDestinationWalks, by: { $0.stop.id })
                 let exactRoutes: [NavigationRoute]
                 do {
                     exactRoutes = try await Task.detached(priority: .userInitiated) {
                         try Self.plan(snapshot: snapshot, from: from, to: to,
                                       departingAt: departingAt,
-                                      departureSearchWindow: departureWindow,
-                                      maximumJourneyDuration: Self.maximumJourneyDuration,
+                                      departureSearchWindow: scheduleSearchWindow,
+                                      arrivalDeadline: arrivalDeadline,
+                                      activeScheduleCache: activeScheduleCache,
                                       originWalks: exactOriginWalks,
-                                      destinationWalks: exactDestinationWalks,
-                                      usingCachedSchedule: usingCachedSchedule, resultLimit: 15,
+                                      destinationWalksByStopID: exactDestinationWalksByStopID,
+                                      usingCachedSchedule: usingCachedSchedule,
+                                      resultLimit: exactResultLimit,
                                       planningID: planningID, trace: trace, regionID: regionID)
                     }.value
                 } catch TransitRoutingError.noJourney {
@@ -142,37 +138,176 @@ extension TransitRepository {
                 } catch TransitRoutingError.outsideCoverage {
                     continue
                 }
+                try await checkPlanningContinuation(shouldContinue)
                 for route in exactRoutes {
                     let signature = TransitCandidateRanker.transitSignature(route)
                     guard !signature.isEmpty else { continue }
-                    if let old = routePool[signature],
-                       TransitCandidateRanker.generalizedCost(old) <= TransitCandidateRanker.generalizedCost(route) { continue }
+                    if let old = routePool[signature] {
+                        let routeIsBetter: Bool
+                        routeIsBetter = TransitCandidateRanker.generalizedCost(route)
+                            < TransitCandidateRanker.generalizedCost(old)
+                        if !routeIsBetter { continue }
+                    }
                     routePool[signature] = route
                 }
-                if stageIndex < Self.stagedDepartureWindows.count - 1 && routePool.count >= 3 { break }
+                if !routePool.isEmpty {
+                    if arrivalDeadline == nil, onProvisionalRoutes != nil {
+                        let provisional = routePool.values.sorted {
+                            TransitCandidateRanker.generalizedCost($0)
+                                < TransitCandidateRanker.generalizedCost($1)
+                        }.prefix(15).map { $0 }
+                        await onProvisionalRoutes?(provisional)
+                        await onProgress?(.searchingConnections)
+                    }
+                }
+                if stageIndex < Self.stagedDepartureWindows.count - 1,
+                   routePool.count >= 3 { break }
             }
             guard !routePool.isEmpty else { throw lastPlanningError }
-            let planned = routePool.values.sorted {
+            let orderedRoutes = routePool.values.sorted {
                 TransitCandidateRanker.generalizedCost($0) < TransitCandidateRanker.generalizedCost($1)
-            }.prefix(15).map { $0 }
+            }
+            let planned = Array(orderedRoutes.prefix(15))
             trace.recordElapsedDuration("TimeToStaticCandidates")
             TransitSignposting.end("TransitSearch", identifier: searchInterval, planningID: planningID)
             trace.recordDuration("TransitSearch", startedAt: searchStartedAt)
-            trace.recordElapsedDuration("TimeToFirstRoute")
             await onProgress?(.enrichingGeometry)
-            let geometryCandidates = Self.selectRouteVariants(
-                planned, limit: Self.maximumWalkingGeometryCandidates)
-            let routes = await resolveTransferWalks(in: geometryCandidates, endpoint: walkingRoutingEndpoint,
+            let geometryCandidates = Self.selectRouteVariants(planned, limit: planned.count)
+            let routes = await resolveTransferWalks(in: geometryCandidates,
+                                                    endpoint: walkingRoutingEndpoint,
                                                     planningID: planningID, trace: trace)
+            try await checkPlanningContinuation(shouldContinue)
             guard !routes.isEmpty else { throw TransitRoutingError.walkingUnavailable }
             trace.recordElapsedDuration("TimeToRouteReady")
             await onProvisionalRoutes?(routes)
-            await onProgress?(nil)
+            if !reusingPlanningContext { await onProgress?(nil) }
             return routes
         } catch {
             TransitSignposting.end("TransitSearch", identifier: searchInterval, planningID: planningID)
             trace.recordDuration("TransitSearch", startedAt: searchStartedAt)
             throw error
+        }
+    }
+
+    func calculateRoutesArrivingBy(from: Coordinate, to: Coordinate, deadline: Date,
+                                   walkingRoutingEndpoint: URL,
+                                   onProgress: TransitPlanningProgressHandler?,
+                                   shouldContinue: @escaping TransitPlanningContinuation) async throws
+        -> [NavigationRoute] {
+        nextPlanningID &+= 1
+        let planningID = nextPlanningID
+        let trace = TransitPlanningTrace()
+        trace.setCount("fallbackRequestCount", value: 0)
+        let totalInterval = TransitSignposting.begin("TransitArriveByPlanning", planningID: planningID)
+        defer {
+            TransitSignposting.end("TransitArriveByPlanning", identifier: totalInterval,
+                                   planningID: planningID)
+            trace.emitSummary(planningID: planningID)
+        }
+
+        let coverageStart = deadline.addingTimeInterval(-Self.maximumDepartureSearchWindow)
+        let scheduleCache = TransitActiveScheduleCache(coverageStart: coverageStart,
+                                                      coverageEnd: deadline)
+        let context = try await preparePlanningContext(
+            departingAt: coverageStart,
+            maximumDepartureWindow: Self.maximumDepartureSearchWindow,
+            walkingRoutingEndpoint: walkingRoutingEndpoint,
+            planningID: planningID, trace: trace,
+            activeScheduleCache: scheduleCache, onProgress: onProgress,
+            shouldContinue: shouldContinue)
+
+        var lowerDeparture = coverageStart
+        var upperDeparture = deadline
+        var bestRoutes: [NavigationRoute] = []
+        var iterations = 0
+        for _ in 0..<10 {
+            try await checkPlanningContinuation(shouldContinue)
+            let interval = upperDeparture.timeIntervalSince(lowerDeparture)
+            guard interval > 60 else { break }
+            let departure = lowerDeparture.addingTimeInterval(interval / 2)
+            iterations += 1
+            do {
+                let candidates = try await calculateRoutes(
+                    from: from, to: to, departingAt: departure,
+                    walkingRoutingEndpoint: walkingRoutingEndpoint,
+                    onProgress: onProgress, onProvisionalRoutes: nil,
+                    arrivalDeadline: deadline, shouldContinue: shouldContinue,
+                    planningContext: context)
+                let eligible = candidates.filter {
+                    ($0.journey?.arrival ?? .distantFuture) <= deadline
+                }.sorted(by: TransitCandidateRanker.latestDepartureComesBefore)
+                if let latest = eligible.first {
+                    if bestRoutes.first.map({
+                        TransitCandidateRanker.latestDepartureComesBefore(latest, $0)
+                    }) ?? true {
+                        bestRoutes = eligible
+                    }
+                    lowerDeparture = departure
+                } else {
+                    upperDeparture = departure
+                }
+            } catch TransitRoutingError.noJourney {
+                upperDeparture = departure
+            } catch TransitRoutingError.noJourneyBeforeArrivalDeadline {
+                upperDeparture = departure
+            }
+        }
+        try await checkPlanningContinuation(shouldContinue)
+        trace.setCount("arrivalByIterations", value: iterations)
+        guard !bestRoutes.isEmpty else {
+            throw TransitRoutingError.noJourneyBeforeArrivalDeadline
+        }
+        await onProgress?(nil)
+        return bestRoutes
+    }
+
+    func preparePlanningContext(
+        departingAt: Date,
+        maximumDepartureWindow: TimeInterval,
+        walkingRoutingEndpoint: URL,
+        planningID: UInt64,
+        trace: TransitPlanningTrace,
+        activeScheduleCache: TransitActiveScheduleCache?,
+        onProgress: TransitPlanningProgressHandler?,
+        shouldContinue: TransitPlanningContinuation?
+    ) async throws -> TransitPlanningContext {
+        try await checkPlanningContinuation(shouldContinue)
+        await onProgress?(.loadingSchedule)
+        let database: GTFSDatabase
+        do {
+            let startedAt = ProcessInfo.processInfo.systemUptime
+            let databaseInterval = TransitSignposting.begin("GTFSLoad", planningID: planningID)
+            defer {
+                TransitSignposting.end("GTFSLoad", identifier: databaseInterval, planningID: planningID)
+                trace.recordDuration("GTFSLoad", startedAt: startedAt)
+            }
+            database = try await loadDatabase(planningID: planningID, trace: trace)
+        }
+        try await checkPlanningContinuation(shouldContinue)
+        loadedDatabaseFingerprint = database.feedFingerprint
+        guard walkingRoutingEndpoint.scheme == "https" else { throw RoutingError.invalidEndpoint }
+        let pedestrianCacheStartedAt = ProcessInfo.processInfo.systemUptime
+        await loadPersistentPedestrianCacheIfNeeded()
+        trace.recordDuration("PedestrianCacheLoad", startedAt: pedestrianCacheStartedAt)
+        await onProgress?(.searchingConnections)
+
+        let realtime = await loadRealtimeForRoutePlanning(planningID: planningID, trace: trace)
+        try await checkPlanningContinuation(shouldContinue)
+        let snapshotStartedAt = ProcessInfo.processInfo.systemUptime
+        let snapshot = await Task.detached(priority: .userInitiated) {
+            TransitSnapshot(database: database, realtime: realtime, departure: departingAt,
+                            maximumDepartureWindow: maximumDepartureWindow)
+        }.value
+        trace.recordDuration("TransitSnapshotBuild", startedAt: snapshotStartedAt)
+        return TransitPlanningContext(snapshot: snapshot,
+                                      usingCachedSchedule: databaseWasCached,
+                                      activeScheduleCache: activeScheduleCache)
+    }
+
+    func checkPlanningContinuation(_ continuation: TransitPlanningContinuation?) async throws {
+        try Task.checkCancellation()
+        if let continuation {
+            guard await continuation() else { throw CancellationError() }
         }
     }
 
@@ -223,15 +358,32 @@ extension TransitRepository {
         return snapshot
     }
 
-    func coarseWalkingOptions(from coordinate: Coordinate, database: GTFSDatabase,
-                                      trace: TransitPlanningTrace) -> [TransitWalkOption] {
+    func coarseWalkingOptions(from coordinate: Coordinate, database: GTFSDatabase, endpoint: URL,
+                              trace: TransitPlanningTrace,
+                              maximumWalkingDuration: TimeInterval? = nil,
+                              sortByDistance: Bool = true) -> [TransitWalkOption] {
         let startedAt = ProcessInfo.processInfo.systemUptime
         let interval = TransitSignposting.begin("NearbyStops")
-        let candidates = Self.nearestStops(to: coordinate, stopByID: database.stopByID,
-                                           spatialIndex: database.stopSpatialIndex,
-                                           maximumDistance: Self.maximumAccessWalkDistance,
-                                           localLimit: Self.maximumLocalWalkingCandidates,
-                                           railwayLimit: Self.maximumRailWalkingCandidates)
+        let maximumStraightLineDistance = maximumWalkingDuration.map { $0 * 0.9 / 1.5 }
+        var cachedStopIDs = Set<String>()
+        if let maximumWalkingDuration {
+            let keyPrefix = Self.accessCacheKeyPrefix(
+                from: coordinate, databaseFingerprint: loadedDatabaseFingerprint ?? "",
+                endpoint: endpoint)
+            let now = Date()
+            cachedStopIDs = Set(persistentAccessEstimates.values.compactMap { entry in
+                guard entry.key.hasPrefix(keyPrefix), database.servedStopIDs.contains(entry.stopID),
+                      (0...6 * 60 * 60).contains(now.timeIntervalSince(entry.storedAt)),
+                      entry.distance.isFinite, entry.duration.isFinite else { return nil }
+                let originAdjustment = coordinate.distance(to: entry.origin) / 0.9
+                return entry.duration + originAdjustment <= maximumWalkingDuration
+                    ? entry.stopID : nil
+            })
+        }
+        let candidates = Self.walkingAccessCandidates(
+            from: coordinate, database: database,
+            maximumStraightLineDistance: maximumStraightLineDistance,
+            includingStopIDs: cachedStopIDs, sortByDistance: sortByDistance)
         TransitSignposting.end("NearbyStops", identifier: interval)
         trace.recordDuration("NearbyStops", startedAt: startedAt)
         trace.addCount("nearbyStops", value: candidates.count)
@@ -239,13 +391,13 @@ extension TransitRepository {
         trace.addCount("coarseAccessCandidates", value: candidates.count)
         let cached = candidates.compactMap { stop, distance -> TransitWalkOption? in
             let key = Self.accessCacheKey(from: coordinate, stop: stop,
-                                          databaseFingerprint: loadedDatabaseFingerprint ?? "")
+                                          databaseFingerprint: loadedDatabaseFingerprint ?? "",
+                                          endpoint: endpoint)
             guard let entry = persistentAccessEstimates[key],
                   Date().timeIntervalSince(entry.storedAt) >= 0,
                   Date().timeIntervalSince(entry.storedAt) < 6 * 60 * 60 else { return nil }
             let originAdjustment = coordinate.distance(to: entry.origin) / 0.9
             let adjustedDuration = entry.duration + originAdjustment
-            guard adjustedDuration <= Self.maximumAccessWalkTime else { return nil }
             return TransitWalkOption(stop: stop,
                                      distance: max(distance, entry.distance + originAdjustment * 0.9),
                                      duration: adjustedDuration,
@@ -253,7 +405,10 @@ extension TransitRepository {
                                      hasResolvedGeometry: false, isApproximate: true)
         }
         trace.addCount("persistentAccessCacheHits", value: cached.count)
-        return approximateFallbackWalkingOptions(from: coordinate, candidates: candidates, existing: cached)
+        let options = approximateFallbackWalkingOptions(
+            from: coordinate, candidates: candidates, existing: cached)
+        guard let maximumWalkingDuration else { return options }
+        return options.filter { $0.duration <= maximumWalkingDuration }
     }
 
     func walkingOptions(from coordinate: Coordinate,
@@ -270,11 +425,14 @@ extension TransitRepository {
         trace.addCount("exactAccessCandidates", value: candidates.count)
         let provider = ValhallaRouteProvider(endpoint: endpoint)
         var cachedByStopID: [String: TransitWalkOption] = [:]
+        var exactAccessCacheHits = 0
         for (stop, _) in candidates {
             if let option = cachedWalkingOption(from: coordinate, to: stop, endpoint: endpoint) {
                 cachedByStopID[stop.id] = option
+                if !option.hasResolvedGeometry { exactAccessCacheHits += 1 }
             }
         }
+        trace.addCount("exactAccessCacheHits", value: exactAccessCacheHits)
         var results = candidates.compactMap { cachedByStopID[$0.0.id] }
         let matrixCandidates = candidates.filter { cachedByStopID[$0.0.id] == nil }
         var start = 0
@@ -282,7 +440,6 @@ extension TransitRepository {
         var matrixCalls = 0
         var matrixReachableTargets = 0
         var matrixUnreachableTargets = 0
-        var matrixOverWalkLimit = 0
         var matrixShapesReturned = 0
         while start < matrixCandidates.count {
             let end = min(start + Self.walkingMatrixBatchSize, matrixCandidates.count)
@@ -313,10 +470,6 @@ extension TransitRepository {
                 }
                 matrixReachableTargets += 1
                 if (cost.coordinates?.count ?? 0) > 1 { matrixShapesReturned += 1 }
-                guard cost.duration <= Self.maximumAccessWalkTime else {
-                    matrixOverWalkLimit += 1
-                    continue
-                }
                 let stop = batch[index].0
                 let coordinates = cost.coordinates.flatMap { $0.count > 1 ? $0 : nil }
                     ?? [coordinate, stop.coordinate]
@@ -332,7 +485,8 @@ extension TransitRepository {
                                                  coordinates: coordinates,
                                                  hasResolvedGeometry: (cost.coordinates?.count ?? 0) > 1))
                 let accessKey = Self.accessCacheKey(from: coordinate, stop: stop,
-                                                    databaseFingerprint: loadedDatabaseFingerprint ?? "")
+                                                    databaseFingerprint: loadedDatabaseFingerprint ?? "",
+                                                    endpoint: endpoint)
                 persistentAccessEstimates[accessKey] = TransitAccessEstimate(
                     key: accessKey, origin: coordinate, stopID: stop.id,
                     distance: cost.distance, duration: cost.duration, storedAt: Date())
@@ -342,7 +496,6 @@ extension TransitRepository {
         trace.addCount("matrixCalls", value: matrixCalls)
         trace.addCount("matrixReachableTargets", value: matrixReachableTargets)
         trace.addCount("matrixUnreachableTargets", value: matrixUnreachableTargets)
-        trace.addCount("matrixOverWalkLimit", value: matrixOverWalkLimit)
         trace.addCount("matrixShapesReturned", value: matrixShapesReturned)
         let matrixGeometries = results.filter(\.hasResolvedGeometry).count
         trace.addCount("matrixGeometries", value: matrixGeometries)
@@ -355,8 +508,7 @@ extension TransitRepository {
             trace.addCount("matrixFallbackCount", value: 1)
             trace.addCount("matrixFallbacks", value: 1)
             let fallbackOptions = approximateFallbackWalkingOptions(
-                from: coordinate, candidates: candidates, existing: results,
-                limitToPrioritizedCandidates: false
+                from: coordinate, candidates: candidates, existing: results
             )
             let approximateCount = fallbackOptions.filter(\.isApproximate).count
             trace.addCount("approximateFallbackStops", value: approximateCount)
@@ -379,14 +531,25 @@ extension TransitRepository {
                                      hasResolvedGeometry: true)
         }
         let reverseKey = TransitWalkingGeometryKey(from: stop.coordinate, to: coordinate)
-        guard let geometry = cachedWalkingGeometry(for: reverseKey, endpointKey: endpointKey) else {
-            return nil
+        if let geometry = cachedWalkingGeometry(for: reverseKey, endpointKey: endpointKey) {
+            return TransitWalkOption(stop: stop,
+                                     distance: Self.pathDistance(geometry.coordinates),
+                                     duration: geometry.duration,
+                                     coordinates: Array(geometry.coordinates.reversed()),
+                                     hasResolvedGeometry: true)
         }
-        return TransitWalkOption(stop: stop,
-                                 distance: Self.pathDistance(geometry.coordinates),
-                                 duration: geometry.duration,
-                                 coordinates: Array(geometry.coordinates.reversed()),
-                                 hasResolvedGeometry: true)
+        let accessKey = Self.accessCacheKey(from: coordinate, stop: stop,
+                                            databaseFingerprint: loadedDatabaseFingerprint ?? "",
+                                            endpoint: endpoint)
+        guard let estimate = persistentAccessEstimates[accessKey],
+              estimate.origin == coordinate,
+              estimate.stopID == stop.id,
+              (0...6 * 60 * 60).contains(Date().timeIntervalSince(estimate.storedAt)),
+              estimate.distance.isFinite, estimate.duration.isFinite else { return nil }
+        return TransitWalkOption(stop: stop, distance: estimate.distance,
+                                 duration: estimate.duration,
+                                 coordinates: [coordinate, stop.coordinate],
+                                 hasResolvedGeometry: false)
     }
 
     func cachedWalkingGeometry(for key: TransitWalkingGeometryKey,
@@ -453,6 +616,7 @@ extension TransitRepository {
             return (0...6 * 60 * 60).contains(age)
         }.sorted { $0.storedAt > $1.storedAt }
         for entry in access.prefix(Self.maximumCachedAccessEstimates).reversed() {
+            guard entry.key.hasPrefix("https://") else { continue }
             persistentAccessEstimates[entry.key] = entry
         }
     }
@@ -499,43 +663,40 @@ extension TransitRepository {
     }
 
     static func accessCacheKey(from coordinate: Coordinate, stop: GTFSStop,
-                                       databaseFingerprint: String) -> String {
+                               databaseFingerprint: String, endpoint: URL) -> String {
+        accessCacheKeyPrefix(from: coordinate, databaseFingerprint: databaseFingerprint,
+                             endpoint: endpoint) + stop.id
+    }
+
+    static func accessCacheKeyPrefix(from coordinate: Coordinate,
+                                    databaseFingerprint: String, endpoint: URL) -> String {
         let latitudeCell = Int(floor(coordinate.latitude * 1_000))
         let longitudeCell = Int(floor(coordinate.longitude * 1_000))
-        return "\(databaseFingerprint)|\(latitudeCell):\(longitudeCell)|\(stop.id)"
+        return "\(endpoint.absoluteString)|\(databaseFingerprint)|\(latitudeCell):\(longitudeCell)|"
     }
 
     func approximateFallbackWalkingOptions(
         from coordinate: Coordinate,
         candidates: [(GTFSStop, Double)],
-        existing: [TransitWalkOption],
-        limitToPrioritizedCandidates: Bool = true
+        existing: [TransitWalkOption]
     ) -> [TransitWalkOption] {
-        let localCandidates = candidates.filter { !$0.0.id.hasPrefix("rail/") }
-        let railwayCandidates = candidates.filter { $0.0.id.hasPrefix("rail/") }
-        let local = limitToPrioritizedCandidates
-            ? Array(localCandidates.prefix(Self.maximumApproximateLocalWalkingCandidates)) : localCandidates
-        let railway = limitToPrioritizedCandidates
-            ? Array(railwayCandidates.prefix(Self.maximumApproximateRailWalkingCandidates)) : railwayCandidates
-        let prioritized = (Array(local) + Array(railway)).sorted { $0.1 < $1.1 }
         var byStopID = Dictionary(existing.map { ($0.stop.id, $0) }, uniquingKeysWith: { first, _ in first })
-        for (stop, straightLineDistance) in prioritized where byStopID[stop.id] == nil {
+        for (stop, straightLineDistance) in candidates where byStopID[stop.id] == nil {
             // Leave headroom for street detours and slower walking pace.
             let estimatedDistance = straightLineDistance * 1.5
             let estimatedDuration = estimatedDistance / 0.9
-            guard estimatedDuration <= Self.maximumAccessWalkTime else { continue }
             byStopID[stop.id] = TransitWalkOption(stop: stop, distance: estimatedDistance,
                                                   duration: estimatedDuration,
                                                   coordinates: [coordinate, stop.coordinate],
                                                   hasResolvedGeometry: false,
                                                   isApproximate: true)
         }
-        return prioritized.compactMap { byStopID[$0.0.id] }
+        return candidates.compactMap { byStopID[$0.0.id] }
     }
 
     func resolveTransferWalks(in routes: [NavigationRoute], endpoint: URL,
-                                      planningID: UInt64,
-                                      trace: TransitPlanningTrace) async -> [NavigationRoute] {
+                              planningID: UInt64,
+                              trace: TransitPlanningTrace) async -> [NavigationRoute] {
         let startedAt = ProcessInfo.processInfo.systemUptime
         let interval = TransitSignposting.begin("GeometryFetch", planningID: planningID)
         defer {
@@ -547,6 +708,9 @@ extension TransitRepository {
         for route in routes {
             guard let journey = route.journey else { continue }
             for leg in journey.legs where leg.mode == "WALK" {
+                // Keep exact matrix access and egress out of bulk candidate validation;
+                // fetch their missing map geometry only for the final variants below.
+                if !leg.isTransfer && !leg.walkingTimeIsApproximate { continue }
                 if !leg.isTransfer && (leg.hasResolvedWalkingGeometry || leg.coordinates.count > 2) { continue }
                 guard let from = leg.coordinates.first, let to = leg.coordinates.last,
                       from.distance(to: to) > 1 else { continue }
@@ -602,7 +766,83 @@ extension TransitRepository {
             }
         }
 
-        return Self.selectRouteVariants(resolved, limit: 3)
+        let selectedRoutes = Self.selectRouteVariants(resolved, limit: 3)
+        return await resolveSelectedAccessGeometry(in: selectedRoutes, endpoint: endpoint,
+                                                    planningID: planningID, trace: trace)
+    }
+
+    func resolveSelectedAccessGeometry(in routes: [NavigationRoute], endpoint: URL,
+                                       planningID: UInt64,
+                                       trace: TransitPlanningTrace) async -> [NavigationRoute] {
+        var requestsByKey: [TransitWalkingGeometryKey: TransitWalkingGeometryRequest] = [:]
+        var geometries: [TransitWalkingGeometryKey: TransitWalkingGeometry] = [:]
+
+        for route in routes {
+            guard let journey = route.journey else { continue }
+            for leg in journey.legs where leg.mode == "WALK" && !leg.isTransfer
+                && !leg.walkingTimeIsApproximate && !leg.hasResolvedWalkingGeometry
+                && leg.coordinates.count <= 2 {
+                guard let from = leg.coordinates.first, let to = leg.coordinates.last,
+                      from.distance(to: to) > 1 else { continue }
+                let request = TransitWalkingGeometryRequest(from: from, to: to)
+                if let geometry = cachedWalkingGeometry(for: request.key,
+                                                        endpointKey: endpoint.absoluteString) {
+                    geometries[request.key] = geometry
+                } else {
+                    let reverseKey = TransitWalkingGeometryKey(from: to, to: from)
+                    if let reverseGeometry = cachedWalkingGeometry(
+                        for: reverseKey, endpointKey: endpoint.absoluteString) {
+                        geometries[request.key] = TransitWalkingGeometry(
+                            coordinates: Array(reverseGeometry.coordinates.reversed()),
+                            duration: reverseGeometry.duration)
+                    } else {
+                        requestsByKey[request.key] = request
+                    }
+                }
+            }
+        }
+
+        let fetched = await loadWalkingGeometries(requests: Array(requestsByKey.values),
+                                                  endpoint: endpoint)
+        for (key, geometry) in fetched where geometry.coordinates.count > 1 {
+            geometries[key] = geometry
+            cacheWalkingGeometry(geometry, for: key, endpoint: endpoint)
+        }
+        if !fetched.isEmpty { persistPedestrianCache() }
+        trace.addCount("selectedAccessGeometryRequests", value: requestsByKey.count)
+        trace.addCount("selectedAccessGeometryResolved", value: geometries.count)
+        TransitSignposting.event("SelectedAccessGeometryRequests", value: requestsByKey.count,
+                                 planningID: planningID)
+
+        return routes.map { route in
+            guard var journey = route.journey else { return route }
+            var changed = false
+            for index in journey.legs.indices where journey.legs[index].mode == "WALK"
+                && !journey.legs[index].isTransfer
+                && !journey.legs[index].walkingTimeIsApproximate
+                && !journey.legs[index].hasResolvedWalkingGeometry {
+                guard let from = journey.legs[index].coordinates.first,
+                      let to = journey.legs[index].coordinates.last,
+                      let geometry = geometries[TransitWalkingGeometryKey(from: from, to: to)],
+                      geometry.coordinates.count > 1 else { continue }
+                journey.legs[index].coordinates = geometry.coordinates
+                journey.legs[index].hasResolvedWalkingGeometry = true
+                changed = true
+            }
+            guard changed else { return route }
+
+            var resolved = route
+            resolved.journey = journey
+            resolved.coordinates = journey.legs.flatMap { leg in
+                leg.coordinates.isEmpty ? [] : Array(leg.coordinates.dropFirst())
+            }
+            if let first = journey.legs.first?.coordinates.first {
+                resolved.coordinates.insert(first, at: 0)
+            }
+            resolved.distance = zip(resolved.coordinates, resolved.coordinates.dropFirst())
+                .reduce(0.0) { $0 + $1.0.distance(to: $1.1) }
+            return resolved
+        }
     }
 
     static func selectRouteVariants(_ routes: [NavigationRoute], limit: Int) -> [NavigationRoute] {
@@ -670,6 +910,7 @@ extension TransitRepository {
         var changed = false
         for index in journey.legs.indices where journey.legs[index].mode == "WALK" {
             let leg = journey.legs[index]
+            if !leg.isTransfer && !leg.walkingTimeIsApproximate { continue }
             if !leg.isTransfer && leg.coordinates.count > 2 { continue }
             guard let from = leg.coordinates.first, let to = leg.coordinates.last else { return nil }
             let walkingGeometry: TransitWalkingGeometry
@@ -680,10 +921,6 @@ extension TransitRepository {
                 guard let geometry = geometries[key] else { return nil }
                 walkingGeometry = geometry
             }
-            if !leg.isTransfer && walkingGeometry.duration > Self.maximumAccessWalkTime {
-                return nil
-            }
-
             let transferDeparture: Date
             if leg.isTransfer, index > 0, journey.legs[index - 1].mode == "WALK" {
                 transferDeparture = journey.legs[index - 1].arrival

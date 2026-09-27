@@ -43,11 +43,7 @@ extension ContentView {
             style: .continuous)
 
         return VStack(spacing: 0) {
-            Capsule()
-                .fill(Color.white.opacity(0.48))
-                .frame(width: 38, height: 4)
-                .padding(.top, 9)
-                .padding(.bottom, 12)
+            routePlanningDragHandle
 
             ScrollView(.vertical) {
                 VStack(spacing: 10) {
@@ -56,9 +52,7 @@ extension ContentView {
 
                     if navigationStore.state.transportMode == .transit || navigationStore.state.transportMode == .parkRide {
                         journeyTimeControl
-                            .padding(.horizontal, 11)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .modifier(NavigationGlassSurface(radius: 17))
                     }
 
                     if let route = navigationStore.state.route {
@@ -84,6 +78,18 @@ extension ContentView {
         .frame(height: maxHeight, alignment: .top)
         .frame(maxWidth: .infinity)
         .modifier(NavigationGlassPanelSurface(shape: shape))
+    }
+
+    private var routePlanningDragHandle: some View {
+        ZStack {
+            Capsule()
+                .fill(Color.white.opacity(0.48))
+                .frame(width: 38, height: 4)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 34)
+        .contentShape(Rectangle())
+        .accessibilityHidden(true)
         .gesture(DragGesture(minimumDistance: 20).onEnded { value in
             if value.translation.height < -35 {
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { routePreviewExpanded = true }

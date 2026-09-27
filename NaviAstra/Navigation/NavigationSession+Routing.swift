@@ -24,7 +24,7 @@ extension NavigationSession {
                   state.destination?.id == destination.id else { return }
             guard let firstRoute = routes.first else { throw RoutingError.invalidResponse }
             if state.transportMode == .car, state.routingPreferences.evPlanningEnabled {
-                let chargingStops = firstRoute.chargingStops.map(\.destination)
+                let chargingStops = firstRoute.chargingStops.map { $0.destination }
                 let chargingTargets = await POIAccessResolver.shared.resolveMany(
                     for: chargingStops, mode: .car)
                 guard rerouteController.isCurrent(generation), state.status == .rerouting,

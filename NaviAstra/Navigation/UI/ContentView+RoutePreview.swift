@@ -336,6 +336,13 @@ extension ContentView {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .simultaneousGesture(DragGesture(minimumDistance: 20).onEnded { value in
+                if value.translation.height < -35 {
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { routePreviewExpanded = true }
+                } else if value.translation.height > 35 {
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { routePreviewExpanded = false }
+                }
+            })
             .accessibilityLabel(routePreviewExpanded ? "Zwiń szczegóły trasy" : "Rozwiń szczegóły trasy")
 
             routeEndpointFields
@@ -380,6 +387,7 @@ extension ContentView {
             transportSelector
             if navigationStore.state.transportMode == .transit || navigationStore.state.transportMode == .parkRide {
                 journeyTimeControl
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             if let route = navigationStore.state.route {
@@ -615,13 +623,6 @@ extension ContentView {
         .padding(.top, 7)
         .padding(.bottom, 11)
         .modifier(NavigationGlassSurface(radius: 26))
-        .gesture(DragGesture(minimumDistance: 20).onEnded { value in
-            if value.translation.height < -35 {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { routePreviewExpanded = true }
-            } else if value.translation.height > 35 {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { routePreviewExpanded = false }
-            }
-        })
     }
 
     var beginRouteButton: some View {
@@ -713,75 +714,106 @@ extension ContentView {
     }
 
     var journeyTimeControl: some View {
-        HStack(spacing: 8) {
-            Menu {
-                Button { chooseJourneyTimeMode(.now) } label: {
-                    Label("Teraz", systemImage: navigationStore.state.journeyTimeMode == .now ? "checkmark" : "clock")
-                }
-                Button { chooseJourneyTimeMode(.departAt) } label: {
-                    Label("Wyjazd o…", systemImage: navigationStore.state.journeyTimeMode == .departAt ? "checkmark" : "arrow.up.right")
-                }
-                if navigationStore.state.transportMode == .transit {
-                    Button { chooseJourneyTimeMode(.arriveBy) } label: {
-                        Label("Przyjazd na…", systemImage: navigationStore.state.journeyTimeMode == .arriveBy ? "checkmark" : "mappin")
-                    }
-                }
+        VStack(alignment: .leading, spacing: 9) {
+            Text("CZAS PODRÓŻY")
+                .font(.caption2.weight(.semibold))
+                .tracking(1)
+                .foregroundStyle(.secondary)
+
+            Button {
+                isJourneyTimePickerPresented = true
             } label: {
-                Label(journeyTimeControlTitle, systemImage: "clock")
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 11)
-                    .frame(minHeight: 36)
-                    .background(Color.primary.opacity(0.05), in: Capsule())
-            }
-            .accessibilityLabel("Kiedy chcesz jechać")
-            .disabled(navigationStore.state.status != .routePreview
-                      || navigationStore.state.transitPlanningPhase == .enrichingGeometry)
+                HStack(spacing: 12) {
+                    Image(systemName: journeyTimeModeSymbol)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 42, height: 42)
+                        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
 
-            if navigationStore.state.journeyTimeMode != .now {
-                DatePicker(
-                    navigationStore.state.journeyTimeMode == .departAt ? "Godzina wyjazdu" : "Godzina przyjazdu",
-                    selection: Binding(
-                        get: { navigationStore.state.journeyTargetTime },
-                        set: { navigationStore.setJourneyTargetTime($0) }),
-                    in: Date()...Date().addingTimeInterval(18 * 60 * 60),
-                    displayedComponents: [.date, .hourAndMinute])
-                    .labelsHidden()
-                    .accessibilityLabel(navigationStore.state.journeyTimeMode == .departAt
-                                        ? "Godzina wyjazdu" : "Godzina przyjazdu")
-                    .disabled(navigationStore.state.status != .routePreview
-                              || navigationStore.state.transitPlanningPhase == .enrichingGeometry)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(journeyTimeModeLabel)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        Text(journeyTimeSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.85)
+                    }
 
-                Button {
-                    Task { await navigationStore.planRoute() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
+                    Spacer(minLength: 4)
+                    Text("Zmień")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                    Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
-                        .frame(width: 34, height: 34)
-                        .background(Color.accentColor.opacity(0.12), in: Circle())
+                        .foregroundStyle(Color.accentColor)
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(Color.accentColor)
-                .accessibilityLabel("Przelicz połączenia")
-                .disabled(navigationStore.state.status != .routePreview
-                          || navigationStore.state.transitPlanningPhase == .enrichingGeometry)
+                .padding(12)
+                .frame(maxWidth: .infinity, minHeight: 66, alignment: .leading)
+                .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
-            Spacer(minLength: 0)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Czas podróży: \(journeyTimeModeLabel), \(journeyTimeSummary). Zmień")
+            .disabled(isJourneyTimeControlDisabled)
+        }
+        .padding(13)
+        .modifier(NavigationGlassSurface(radius: 18))
+        .sheet(isPresented: $isJourneyTimePickerPresented) {
+            JourneyTimePickerSheet(
+                currentMode: navigationStore.state.journeyTimeMode,
+                currentTime: navigationStore.state.journeyTargetTime,
+                availableModes: availableJourneyTimeModes,
+                actionTitle: navigationStore.state.route == nil ? "Szukaj połączeń" : "Przelicz połączenia",
+                isDisabled: isJourneyTimeControlDisabled
+            ) { mode, time in
+                navigationStore.setJourneyTimeMode(mode)
+                if mode != .now { navigationStore.setJourneyTargetTime(time) }
+                Task { await navigationStore.planRoute() }
+            }
+#if os(iOS)
+            .presentationDetents([.height(520)])
+            .presentationDragIndicator(.visible)
+            .presentationCornerRadius(30)
+#endif
         }
     }
 
-    var journeyTimeControlTitle: String {
+    var availableJourneyTimeModes: [JourneyTimeMode] {
+        navigationStore.state.transportMode == .transit
+            ? [.now, .departAt, .arriveBy]
+            : [.now, .departAt]
+    }
+
+    var isJourneyTimeControlDisabled: Bool {
+        navigationStore.state.status != .routePreview
+            || navigationStore.state.transitPlanningPhase == .enrichingGeometry
+    }
+
+    var journeyTimeModeLabel: String {
         switch navigationStore.state.journeyTimeMode {
         case .now: "Teraz"
-        case .departAt: "Wyjazd o"
+        case .departAt: "Odjazd o"
         case .arriveBy: "Przyjazd na"
         }
     }
 
-    func chooseJourneyTimeMode(_ mode: JourneyTimeMode) {
-        navigationStore.setJourneyTimeMode(mode)
-        if mode == .now {
-            Task { await navigationStore.planRoute() }
+    var journeyTimeModeSymbol: String {
+        switch navigationStore.state.journeyTimeMode {
+        case .now: "clock"
+        case .departAt: "arrow.up.right"
+        case .arriveBy: "mappin"
         }
+    }
+
+    var journeyTimeSummary: String {
+        guard navigationStore.state.journeyTimeMode != .now else { return "Najbliższe dostępne połączenia" }
+        let polishDateTimeFormat = Date.FormatStyle(
+            date: .abbreviated,
+            time: .shortened,
+            locale: Locale(identifier: "pl_PL"))
+        return navigationStore.state.journeyTargetTime.formatted(polishDateTimeFormat)
     }
 
     var laterTransitConnections: some View {
@@ -964,5 +996,144 @@ extension ContentView {
 
     func transitMetricTime(_ seconds: TimeInterval) -> String {
         seconds > 0 ? compactRouteTime(seconds) : "0 min"
+    }
+}
+
+private struct JourneyTimePickerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedMode: JourneyTimeMode
+    @State private var selectedTime: Date
+
+    let availableModes: [JourneyTimeMode]
+    let actionTitle: String
+    let isDisabled: Bool
+    let onApply: (JourneyTimeMode, Date) -> Void
+
+    init(
+        currentMode: JourneyTimeMode,
+        currentTime: Date,
+        availableModes: [JourneyTimeMode],
+        actionTitle: String,
+        isDisabled: Bool,
+        onApply: @escaping (JourneyTimeMode, Date) -> Void
+    ) {
+        self.availableModes = availableModes
+        self.actionTitle = actionTitle
+        self.isDisabled = isDisabled
+        self.onApply = onApply
+
+        let now = Date()
+        let mode = availableModes.contains(currentMode) ? currentMode : .now
+        let earliest = now.addingTimeInterval(60)
+        let latest = now.addingTimeInterval(18 * 60 * 60)
+        let time = mode == .now ? now : min(max(currentTime, earliest), latest)
+        _selectedMode = State(initialValue: mode)
+        _selectedTime = State(initialValue: time)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 17) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Czas podróży")
+                        .font(.title3.weight(.semibold))
+                    Text("Wybierz teraz, odjazd lub przyjazd")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Button("Zamknij", systemImage: "xmark") { dismiss() }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.bordered)
+                    .clipShape(Circle())
+                    .accessibilityLabel("Zamknij wybór czasu")
+            }
+
+            Picker("Czas podróży", selection: $selectedMode) {
+                ForEach(availableModes) { mode in
+                    Text(title(for: mode)).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .accessibilityLabel("Kiedy chcesz podróżować?")
+            .onChange(of: selectedMode) { _, mode in
+                guard mode != .now, selectedTime < Date().addingTimeInterval(60) else { return }
+                selectedTime = Date().addingTimeInterval(3_600)
+            }
+
+            if selectedMode == .now {
+                VStack(spacing: 12) {
+                    Image(systemName: "clock.fill")
+                        .font(.system(size: 30, weight: .medium))
+                        .foregroundStyle(Color.accentColor)
+                    Text("Szukaj połączeń na teraz")
+                        .font(.headline)
+                    Text("Pokażemy najbliższe dostępne odjazdy.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, minHeight: 212)
+                .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Wybierz datę i godzinę \(selectedMode == .departAt ? "odjazdu" : "przyjazdu")")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    journeyDateTimePicker
+                        .frame(maxWidth: .infinity, minHeight: 210)
+                        .clipped()
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            Button {
+                onApply(selectedMode, selectedTime)
+                dismiss()
+            } label: {
+                Label(actionTitle, systemImage: "magnifyingglass")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity, minHeight: 50)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(isDisabled)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 16)
+        .padding(.bottom, 12)
+        .frame(maxWidth: 500, minHeight: 490, maxHeight: .infinity, alignment: .top)
+        .environment(\.locale, Locale(identifier: "pl_PL"))
+    }
+
+    @ViewBuilder
+    private var journeyDateTimePicker: some View {
+#if os(iOS)
+        DatePicker(
+            selectedMode == .departAt ? "Data i godzina odjazdu" : "Data i godzina przyjazdu",
+            selection: $selectedTime,
+            in: Date()...Date().addingTimeInterval(18 * 60 * 60),
+            displayedComponents: [.date, .hourAndMinute])
+            .datePickerStyle(.wheel)
+            .labelsHidden()
+            .tint(Color.accentColor)
+#else
+        DatePicker(
+            selectedMode == .departAt ? "Data i godzina odjazdu" : "Data i godzina przyjazdu",
+            selection: $selectedTime,
+            in: Date()...Date().addingTimeInterval(18 * 60 * 60),
+            displayedComponents: [.date, .hourAndMinute])
+            .datePickerStyle(.compact)
+            .tint(Color.accentColor)
+#endif
+    }
+
+    private func title(for mode: JourneyTimeMode) -> String {
+        switch mode {
+        case .now: "Teraz"
+        case .departAt: "Odjazd"
+        case .arriveBy: "Przyjazd"
+        }
     }
 }

@@ -44,7 +44,6 @@ nonisolated struct GTFSTrip: Codable, Sendable {
     let trainNumber: String
     let shapeID: String
     let stopTimes: [GTFSTripStop]
-    var patternKey: String { routeID + ":" + directionID + ":" + stopTimes.map(\.stopID).joined(separator: ",") }
 
     func displayLine(for route: GTFSRoute) -> String {
         guard route.mode == "RAIL" else { return route.displayName }
@@ -61,6 +60,24 @@ nonisolated struct GTFSTripStop: Codable, Sendable {
     let arrivalSeconds: Int
     let departureSeconds: Int
     let shapeDistance: Double?
+}
+
+nonisolated struct GTFSTripPatternKey: Hashable, Comparable {
+    let routeID: String
+    let directionID: String
+    let stopIDs: [String]
+
+    init(trip: GTFSTrip) {
+        routeID = trip.routeID
+        directionID = trip.directionID
+        stopIDs = trip.stopTimes.map(\.stopID)
+    }
+
+    static func < (left: GTFSTripPatternKey, right: GTFSTripPatternKey) -> Bool {
+        if left.routeID != right.routeID { return left.routeID < right.routeID }
+        if left.directionID != right.directionID { return left.directionID < right.directionID }
+        return left.stopIDs.lexicographicallyPrecedes(right.stopIDs)
+    }
 }
 
 nonisolated struct GTFSCalendar: Codable, Sendable {
@@ -105,12 +122,19 @@ nonisolated struct TransitTransferGridCell: Hashable {
     let longitude: Int
 }
 
+nonisolated struct GTFSServiceTripGroup: Codable, Sendable {
+    let serviceIndex: Int
+    let tripIndices: [Int]
+    let maximumScheduledDurationSeconds: Int
+}
+
 nonisolated struct GTFSRoutePattern: Codable, Sendable {
     let id: Int
-    let key: String
+    let key: String?
     let routeID: String
     let stopIDs: [String]
-    let tripIndices: [Int]
+    let tripIndices: [Int]?
+    let tripsByService: [GTFSServiceTripGroup]?
 }
 
 nonisolated struct GTFSInputFeed: Sendable {
@@ -137,4 +161,3 @@ nonisolated enum TransitSearchText {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
-

@@ -30,6 +30,19 @@ struct TransitRouteProvider: TransitRouteProviding, TransitDataProviding {
                                                     onProvisionalRoutes: onProvisionalRoutes)
     }
 
+    func calculateRoutesArrivingBy(
+        from: Coordinate,
+        to: Coordinate,
+        deadline: Date,
+        onProgress: TransitPlanningProgressHandler?,
+        shouldContinue: @escaping TransitPlanningContinuation
+    ) async throws -> [NavigationRoute] {
+        try await repository.calculateRoutesArrivingBy(
+            from: from, to: to, deadline: deadline,
+            walkingRoutingEndpoint: walkingRoutingEndpoint,
+            onProgress: onProgress, shouldContinue: shouldContinue)
+    }
+
     func vehiclePositions(near coordinate: Coordinate) async -> TransitVehicleFeed {
         await repository.vehiclePositions(near: coordinate)
     }

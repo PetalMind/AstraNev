@@ -9,12 +9,17 @@ actor ValhallaRequestGate {
 
     func waitUntilAllowed(for endpoint: URL) async throws {
         let host = endpoint.host?.lowercased() ?? endpoint.absoluteString
-        let now = Date()
         let interval = host == publicServerHost ? publicServerMinimumInterval : 0
-        let requestDate = max(now, nextRequestDateByHost[host] ?? .distantPast)
-        nextRequestDateByHost[host] = requestDate.addingTimeInterval(interval)
-        let delay = requestDate.timeIntervalSince(now)
-        if delay > 0 {
+        guard interval > 0 else { return }
+        while true {
+            try Task.checkCancellation()
+            let now = Date()
+            let nextRequestDate = nextRequestDateByHost[host] ?? .distantPast
+            guard nextRequestDate > now else {
+                nextRequestDateByHost[host] = now.addingTimeInterval(interval)
+                return
+            }
+            let delay = nextRequestDate.timeIntervalSince(now)
             try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
         }
     }

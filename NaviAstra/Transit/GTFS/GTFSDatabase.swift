@@ -17,7 +17,7 @@ nonisolated struct GTFSDatabase: Codable, Sendable {
     let tripsByID: [String: GTFSTrip]
     let tripIDsByStop: [String: [String]]
     let routeIDsByStop: [String: Set<String>]
-    let routePatterns: [GTFSRoutePattern]
+    var routePatterns: [GTFSRoutePattern]
     let routePatternIDsByStop: [String: [Int]]
     let stopSpatialIndex: TransitStopSpatialIndex
     let serviceIDs: [String]
@@ -30,36 +30,43 @@ nonisolated struct GTFSDatabase: Codable, Sendable {
 
     init(feeds: [GTFSInputFeed],
          cachedFootpathsByStopID: [String: [TransitFootpath]]? = nil,
-         feedFingerprint: String? = nil) throws {
-        let feedFiles = try feeds.map { try GTFSZipArchive.extract($0.data) }
+         feedFingerprint: String? = nil,
+         trace: TransitPlanningTrace? = nil) throws {
+        let archiveIndexStartedAt = ProcessInfo.processInfo.systemUptime
+        let feedArchives = try feeds.map { try GTFSZipArchive.open($0.data) }
+        trace?.recordDuration("GTFSArchiveIndex", startedAt: archiveIndexStartedAt)
+
         func rows(named filename: String, namespacedColumns: [String] = []) throws -> [[String: String]] {
+            let startedAt = ProcessInfo.processInfo.systemUptime
             var result: [[String: String]] = []
             for index in feeds.indices {
                 let prefix = feeds[index].prefix
-                let parsed = try GTFSCSV.rows(named: filename, in: feedFiles[index])
+                let parsed = try GTFSCSV.rows(named: filename, in: feedArchives[index],
+                                               prefix: prefix, namespacedColumns: namespacedColumns)
                 result.reserveCapacity(result.count + parsed.count)
-                for sourceRow in parsed {
-                    guard !prefix.isEmpty, !namespacedColumns.isEmpty else {
-                        result.append(sourceRow)
-                        continue
-                    }
-                    var row = sourceRow
-                    for column in namespacedColumns {
-                        if let value = row[column], !value.isEmpty { row[column] = prefix + value }
-                    }
-                    result.append(row)
-                }
+                result.append(contentsOf: parsed)
             }
+            trace?.recordDuration("GTFSCSV_\(filename)", startedAt: startedAt)
             return result
+        }
+        func forEachRow(named filename: String, namespacedColumns: [String] = [],
+                        body: ([String: String]) throws -> Void) throws {
+            let startedAt = ProcessInfo.processInfo.systemUptime
+            for index in feeds.indices {
+                try GTFSCSV.forEachRow(named: filename, in: feedArchives[index],
+                                       prefix: feeds[index].prefix,
+                                       namespacedColumns: namespacedColumns, body: body)
+            }
+            trace?.recordDuration("GTFSCSV_\(filename)", startedAt: startedAt)
         }
         let railwayIndex = feeds.firstIndex { $0.prefix == "rail/" }
         railwayFeedAvailable = railwayIndex != nil
         railwayFeedRetrievedAt = railwayIndex.flatMap { feeds[$0].retrievedAt }
         railwayFeedVersion = try railwayIndex.flatMap { index in
-            try GTFSCSV.rows(named: "feed_info.txt", in: feedFiles[index]).first?["feed_version"]
+            try GTFSCSV.rows(named: "feed_info.txt", in: feedArchives[index]).first?["feed_version"]
         }
         railwayAttributions = try railwayIndex.map { index in
-            try GTFSCSV.rows(named: "attributions.txt", in: feedFiles[index]).compactMap { row in
+            try GTFSCSV.rows(named: "attributions.txt", in: feedArchives[index]).compactMap { row in
                 guard let name = row["organization_name"], !name.isEmpty else { return nil }
                 guard let url = row["attribution_url"], !url.isEmpty else { return name }
                 return "\(name) (\(url))"
@@ -101,13 +108,13 @@ nonisolated struct GTFSDatabase: Codable, Sendable {
                                           uniquingKeysWith: { first, _ in first })
 
         var groupedStops: [String: [GTFSTripStop]] = [:]
-        for row in try rows(named: "stop_times.txt", namespacedColumns: ["trip_id", "stop_id"]) {
+        try forEachRow(named: "stop_times.txt", namespacedColumns: ["trip_id", "stop_id"]) { row in
             guard let tripID = row["trip_id"], let stopID = row["stop_id"],
-                  let sequence = Int(row["stop_sequence"] ?? "") else { continue }
+                  let sequence = Int(row["stop_sequence"] ?? "") else { return }
             let arrivalText = row["arrival_time"] ?? ""
             let departureText = row["departure_time"] ?? ""
             guard let arrival = GTFSCSV.serviceSeconds(arrivalText) ?? GTFSCSV.serviceSeconds(departureText),
-                  let departure = GTFSCSV.serviceSeconds(departureText) ?? GTFSCSV.serviceSeconds(arrivalText) else { continue }
+                  let departure = GTFSCSV.serviceSeconds(departureText) ?? GTFSCSV.serviceSeconds(arrivalText) else { return }
             groupedStops[tripID, default: []].append(GTFSTripStop(
                 stopID: stopID, sequence: sequence, arrivalSeconds: arrival, departureSeconds: departure,
                 shapeDistance: row["shape_dist_traveled"].flatMap(Double.init)))
@@ -267,7 +274,8 @@ nonisolated struct GTFSDatabase: Codable, Sendable {
         for id in groupedStops.keys {
             groupedStops[id]?.sort { $0.sequence < $1.sequence }
         }
-        let parsedTrips: [GTFSTrip] = try rows(named: "trips.txt", namespacedColumns: ["trip_id", "route_id", "service_id", "shape_id"]).compactMap { row -> GTFSTrip? in
+        let tripRows = try rows(named: "trips.txt", namespacedColumns: ["trip_id", "route_id", "service_id", "shape_id"])
+        let parsedTrips: [GTFSTrip] = tripRows.compactMap { row -> GTFSTrip? in
             guard let id = row["trip_id"], let routeID = row["route_id"], let serviceID = row["service_id"],
                   let stops = groupedStops[id], stops.count > 1 else { return nil }
             return GTFSTrip(id: id, routeID: routeID, serviceID: serviceID,
@@ -278,6 +286,10 @@ nonisolated struct GTFSDatabase: Codable, Sendable {
                             stopTimes: stops)
         }
         trips = parsedTrips
+        let parsedServiceIDs = Array(Set(parsedTrips.map { $0.serviceID })).sorted()
+        serviceIDs = parsedServiceIDs
+        let serviceIndexByID = Dictionary(uniqueKeysWithValues: parsedServiceIDs.enumerated()
+            .map { ($1, $0) })
         var headsignsByRoute: [String: Set<String>] = [:]
         for trip in parsedTrips where !trip.headsign.isEmpty {
             headsignsByRoute[trip.routeID, default: []].insert(trip.headsign)
@@ -294,7 +306,9 @@ nonisolated struct GTFSDatabase: Codable, Sendable {
         tripIDsByStop = groupedStops.reduce(into: [String: [String]]()) { result, entry in
             for stop in entry.value { result[stop.stopID, default: []].append(entry.key) }
         }
-        let tripPatterns = Dictionary(grouping: parsedTrips.indices, by: { parsedTrips[$0].patternKey })
+        let tripPatterns = Dictionary(grouping: parsedTrips.indices, by: {
+            GTFSTripPatternKey(trip: parsedTrips[$0])
+        })
         var builtPatterns: [GTFSRoutePattern] = []
         var patternIDsByStop: [String: [Int]] = [:]
         for (patternID, key) in tripPatterns.keys.sorted().enumerated() {
@@ -306,9 +320,25 @@ nonisolated struct GTFSDatabase: Codable, Sendable {
                 if left == right { return parsedTrips[$0].id < parsedTrips[$1].id }
                 return left < right
             }
-            let pattern = GTFSRoutePattern(id: patternID, key: key, routeID: firstTrip.routeID,
+            let tripIndicesByService = Dictionary(grouping: sortedTripIndices, by: {
+                serviceIndexByID[parsedTrips[$0].serviceID] ?? -1
+            })
+            let tripsByService = tripIndicesByService.keys.sorted().map { serviceIndex in
+                let serviceTripIndices = tripIndicesByService[serviceIndex] ?? []
+                let maximumDuration = serviceTripIndices.reduce(into: 0) { maximum, tripIndex in
+                    guard let first = parsedTrips[tripIndex].stopTimes.first,
+                          let last = parsedTrips[tripIndex].stopTimes.last else { return }
+                    maximum = max(maximum, last.arrivalSeconds - first.departureSeconds)
+                }
+                return GTFSServiceTripGroup(serviceIndex: serviceIndex,
+                                            tripIndices: serviceTripIndices,
+                                            maximumScheduledDurationSeconds: maximumDuration)
+            }
+            let pattern = GTFSRoutePattern(id: patternID, key: nil,
+                                           routeID: firstTrip.routeID,
                                            stopIDs: firstTrip.stopTimes.map { $0.stopID },
-                                           tripIndices: sortedTripIndices)
+                                           tripIndices: nil,
+                                           tripsByService: tripsByService)
             builtPatterns.append(pattern)
             for stopID in pattern.stopIDs { patternIDsByStop[stopID, default: []].append(patternID) }
         }
@@ -317,7 +347,6 @@ nonisolated struct GTFSDatabase: Codable, Sendable {
         stopSpatialIndex = TransitStopSpatialIndex(stops: parsedStops.filter {
             tripServedStopIDs.contains($0.id)
         })
-        serviceIDs = Array(Set(parsedTrips.map { $0.serviceID })).sorted()
         self.feedFingerprint = feedFingerprint ?? TransitFeedFingerprint.make(feeds)
         var routesByStop: [String: Set<String>] = [:]
         for trip in parsedTrips {
@@ -341,14 +370,50 @@ nonisolated struct GTFSDatabase: Codable, Sendable {
         exceptions = serviceExceptions
 
         var shapeRows: [String: [(Int, Coordinate)]] = [:]
-        for row in try rows(named: "shapes.txt", namespacedColumns: ["shape_id"]) {
+        try forEachRow(named: "shapes.txt", namespacedColumns: ["shape_id"]) { row in
             guard let id = row["shape_id"], let sequence = Int(row["shape_pt_sequence"] ?? ""),
                   let latitude = row["shape_pt_lat"].flatMap(Double.init),
-                  let longitude = row["shape_pt_lon"].flatMap(Double.init) else { continue }
+                  let longitude = row["shape_pt_lon"].flatMap(Double.init) else { return }
             shapeRows[id, default: []].append((sequence, Coordinate(latitude: latitude, longitude: longitude)))
         }
         shapes = shapeRows.mapValues { $0.sorted { $0.0 < $1.0 }.map(\.1) }
         guard !stops.isEmpty, !parsedTrips.isEmpty else { throw TransitRoutingError.invalidResponse }
+    }
+
+    var requiresPatternServiceIndexUpgrade: Bool {
+        routePatterns.contains { $0.tripsByService == nil }
+    }
+
+    func upgradingPatternServiceIndexes() -> GTFSDatabase {
+        guard requiresPatternServiceIndexUpgrade else { return self }
+        let serviceIndexByID = Dictionary(uniqueKeysWithValues: serviceIDs.enumerated()
+            .map { ($1, $0) })
+        var upgraded = self
+        upgraded.routePatterns = routePatterns.map { pattern in
+            guard pattern.tripsByService == nil else { return pattern }
+            guard let legacyTripIndices = pattern.tripIndices else { return pattern }
+            let tripIndicesByService = Dictionary(grouping: legacyTripIndices, by: { tripIndex in
+                guard trips.indices.contains(tripIndex) else { return -1 }
+                return serviceIndexByID[trips[tripIndex].serviceID] ?? -1
+            })
+            let groups = tripIndicesByService.keys.sorted().map { serviceIndex in
+                let tripIndices = tripIndicesByService[serviceIndex] ?? []
+                let maximumDuration = tripIndices.reduce(into: 0) { maximum, tripIndex in
+                    guard trips.indices.contains(tripIndex),
+                          let first = trips[tripIndex].stopTimes.first,
+                          let last = trips[tripIndex].stopTimes.last else { return }
+                    maximum = max(maximum, last.arrivalSeconds - first.departureSeconds)
+                }
+                return GTFSServiceTripGroup(
+                    serviceIndex: serviceIndex,
+                    tripIndices: tripIndices,
+                    maximumScheduledDurationSeconds: maximumDuration)
+            }
+            return GTFSRoutePattern(id: pattern.id, key: nil, routeID: pattern.routeID,
+                                    stopIDs: pattern.stopIDs, tripIndices: nil,
+                                    tripsByService: groups)
+        }
+        return upgraded
     }
 
     private static func parseColor(_ value: String?) -> UInt32? {
