@@ -36,17 +36,18 @@ final class NaviAstraMapStyle {
         }
         lastKey = key
         poiCategories = categories
-        style.transition = MLNTransition(duration: 0.4, delay: 0)
         let navigating = settings.context.isNavigating
+        let transitionDuration = navigating ? 0.16 : 0.4
+        style.transition = MLNTransition(duration: transitionDuration, delay: 0)
         let light = style.light
         let lightPosition = MLNSphericalPositionMake(1.15, dark ? 220 : 225, dark ? 55 : 50)
         light.anchor = NSExpression(forConstantValue: "map")
         light.position = NSExpression(forConstantValue: NSValue(mlnSphericalPosition: lightPosition))
         light.intensity = NSExpression(forConstantValue: dark ? 0.34 : 0.56)
         light.color = NSExpression(forConstantValue: color(dark ? 0xC8D8E8 : 0xFFF9EF))
-        light.positionTransition = MLNTransition(duration: 0.4, delay: 0)
-        light.intensityTransition = MLNTransition(duration: 0.4, delay: 0)
-        light.colorTransition = MLNTransition(duration: 0.4, delay: 0)
+        light.positionTransition = MLNTransition(duration: transitionDuration, delay: 0)
+        light.intensityTransition = MLNTransition(duration: transitionDuration, delay: 0)
+        light.colorTransition = MLNTransition(duration: transitionDuration, delay: 0)
         style.light = light
         let background = color(dark ? 0x111D29 : 0xF2F4F1)
         let text = color(dark ? 0xD5E3EC : 0x344D5B)

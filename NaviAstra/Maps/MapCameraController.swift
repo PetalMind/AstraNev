@@ -121,6 +121,10 @@ final class MapCameraController {
             transportMode: state.transportMode,
             walkingCamera: walkingCameraSnapshot)
 
+        // Transit progress carries an indexed projection for the active leg. A
+        // second full scan of the combined journey shape is unnecessary here.
+        guard route.journey == nil else { return }
+
         guard let location = state.cameraLocation ?? state.location else { return }
         let routeID = route.id
         let locationTimestamp = location.timestamp
@@ -144,7 +148,9 @@ final class MapCameraController {
     }
 
     func updateNavigationCameraState(force: Bool = false) {
-        guard force || state.cameraState != .freeLook else { return }
+        // Preserve an explicitly requested route overview until the user returns
+        // to navigation follow; progress and location updates must not replace it.
+        guard force || (state.cameraState != .freeLook && state.cameraState != .routeOverview) else { return }
         let previousState = state.cameraState
         let nextManeuver = state.progress?.nextManeuver
         let passedManeuver = cameraManeuverID != nil && cameraManeuverID != nextManeuver?.id

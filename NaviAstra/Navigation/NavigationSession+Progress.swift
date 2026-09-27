@@ -233,6 +233,11 @@ extension NavigationSession {
             }
         }
         if let tracked { lastTransitProgressLegIndex = tracked.legIndex }
+        if let projection = tracked?.routeProjection, let location = state.location {
+            previousRouteMatch = (route.id, projection, location.timestamp)
+        } else {
+            previousRouteMatch = nil
+        }
         var progress = tracked
         if var matched = progress, journey.legs.indices.contains(matched.legIndex) {
             let leg = journey.legs[matched.legIndex]

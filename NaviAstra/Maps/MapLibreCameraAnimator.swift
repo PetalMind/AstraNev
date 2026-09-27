@@ -32,7 +32,7 @@ enum MapLibreCameraAnimator {
         camera.heading = intent.bearing.truncatingRemainder(dividingBy: 360)
         camera.altitude = max(120, targetAltitude)
         let defaultDuration: TimeInterval = switch state {
-        case .startingNavigation: 0.9
+        case .startingNavigation: 0.35
         case .maneuverNow: 0.45
         case .leavingManeuver: 0.7
         case .approachingManeuver: 0.4

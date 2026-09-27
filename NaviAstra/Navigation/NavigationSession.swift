@@ -357,8 +357,10 @@ final class NavigationSession {
         let hasFreshRouteTraffic = state.transportMode == .car && routeTrafficDataAvailable
             && Date().timeIntervalSince(routeTrafficUpdatedAt ?? .distantPast) <= 120
         navigationTransitionTask?.cancel()
+        let cameraTransitionDelay = state.transportMode == .transit || state.transportMode == .parkRide
+            ? 400 : 450
         navigationTransitionTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(1100))
+            try? await Task.sleep(for: .milliseconds(cameraTransitionDelay))
             guard !Task.isCancelled, let self else { return }
             await self.mapCameraController.waitForNavigationCameraUpdate()
             guard !Task.isCancelled, self.state.status == .navigating else { return }

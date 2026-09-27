@@ -87,7 +87,10 @@ final class NavigationPuckEngine {
     func update(location: NavigationLocation?, route: NavigationRoute?, isNavigating: Bool,
                 matchedRoute: NavigationRouteMatch? = nil, at now: Date = Date()) {
         guard let location else { return }
-        let activeRoute = isNavigating ? route : nil
+        // Transit progress already follows the active leg and does not publish a
+        // road-style route match for the puck. Avoid building an unused full-route
+        // geometry when transit navigation starts.
+        let activeRoute = isNavigating && route?.journey == nil ? route : nil
         let routeID = activeRoute?.id
         guard location.timestamp != lastInputTimestamp || routeID != lastInputRouteID ||
                 isNavigating != lastInputWasNavigating else { return }

@@ -248,7 +248,9 @@ enum CameraPlanner {
              .leavingManeuver, .rerouting, .weakGPS, .approachingDestination:
             let isTransitRoute = route?.journey != nil
             let routeProjection = route.flatMap {
-                precomputedRouteProjection ?? MapMatcher.project(position, onto: $0.coordinates)
+                precomputedRouteProjection ?? ($0.journey == nil
+                    ? MapMatcher.project(position, onto: $0.coordinates)
+                    : nil)
             }
             let roadHeading: Double? = route.flatMap { route in
                 guard let projection = routeProjection,
@@ -334,7 +336,8 @@ enum CameraPlanner {
             }
             return CameraIntent(target: target, zoom: zoom, pitch: pitch, bearing: heading,
                                 padding: .navigation,
-                                animationDuration: walkingProfile?.animationDuration)
+                                animationDuration: camera == .startingNavigation
+                                    ? 0.35 : walkingProfile?.animationDuration)
         case .arrived:
             let points = [position, destination?.coordinate].compactMap { $0 }
             let bounds = points.count == 2 && points[0].distance(to: points[1]) >= 100 ? points : []

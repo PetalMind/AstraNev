@@ -59,6 +59,8 @@ struct ContentView: View {
     @State var isMapReady = false
     @State var discoveryDrawerCollapseRequest = 0
     @State var navigationPanelExpanded = false
+    @State var expandedTransitStopsLegID: UUID?
+    @State var expandedTransitTimelineLegID: UUID?
     @State var quickETAEstimates: [String: PlaceRouteEstimate] = [:]
     @State var quickETAOrigin: Coordinate?
     @State var quickETADestinationKey = ""

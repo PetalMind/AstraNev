@@ -68,6 +68,7 @@ struct TransitNavigationProgress: Equatable, Sendable {
     var distanceToNextStop: Double?
     var stopsUntilAlighting: Int?
     var isOnVehicle = false
+    var routeProjection: RouteProjection? = nil
 }
 
 nonisolated enum TransitStopMode: String, CaseIterable, Hashable, Sendable {

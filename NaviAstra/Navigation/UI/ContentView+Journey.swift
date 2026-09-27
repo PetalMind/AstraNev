@@ -23,6 +23,15 @@ extension ContentView {
             Capsule()
                 .fill(Color.white.opacity(0.48))
                 .frame(width: 38, height: 4)
+                .frame(maxWidth: .infinity, minHeight: 32)
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 20).onEnded { value in
+                    if value.translation.height < -35 {
+                        withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { navigationPanelExpanded = true }
+                    } else if value.translation.height > 35 {
+                        withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { navigationPanelExpanded = false }
+                    }
+                })
                 .padding(.top, 8)
                 .padding(.bottom, 12)
 
@@ -103,13 +112,6 @@ extension ContentView {
         }
         .frame(maxWidth: .infinity, alignment: .top)
         .modifier(NavigationGlassPanelSurface(shape: shape))
-        .simultaneousGesture(DragGesture(minimumDistance: 20).onEnded { value in
-            if value.translation.height < -35 {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { navigationPanelExpanded = true }
-            } else if value.translation.height > 35 {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { navigationPanelExpanded = false }
-            }
-        })
     }
 
     var journeyDestinationRow: some View {
@@ -271,6 +273,13 @@ extension ContentView {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(navigationPanelExpanded ? "Zwiń panel prowadzenia" : "Rozwiń panel prowadzenia")
+            .simultaneousGesture(DragGesture(minimumDistance: 20).onEnded { value in
+                if value.translation.height < -35 {
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { navigationPanelExpanded = true }
+                } else if value.translation.height > 35 {
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { navigationPanelExpanded = false }
+                }
+            })
 
             if navigationStore.state.transportMode == .transit, let transitLeg = activeTransitLeg {
                 if transitLeg.mode == "WALK" {
@@ -329,13 +338,6 @@ extension ContentView {
         }
         .padding(14)
         .modifier(NavigationGlassSurface(radius: 23))
-        .simultaneousGesture(DragGesture(minimumDistance: 20).onEnded { value in
-            if value.translation.height < -35 {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { navigationPanelExpanded = true }
-            } else if value.translation.height > 35 {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) { navigationPanelExpanded = false }
-            }
-        })
     }
 
     func journeyActionLabel(_ title: String, symbol: String) -> some View {
@@ -549,6 +551,8 @@ extension ContentView {
                 Double(leg.transitStops.count - upcoming.count) / Double(leg.transitStops.count)
             let progress = tracking?.legFraction ?? scheduledProgress
             let stopsRemaining = tracking?.stopsUntilAlighting ?? upcoming.count
+            let upcomingStops = upcomingTransitStops(for: leg, at: context.date, tracking: tracking)
+            let isStopListExpanded = expandedTransitStopsLegID == leg.id
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 10) {
                     Text(leg.line ?? "MPK")
@@ -594,8 +598,38 @@ extension ContentView {
                     }
                 }
                 .frame(height: 8)
-                Text("Jeszcze \(stopsRemaining) przyst. do \(leg.to)")
-                    .font(.caption).foregroundStyle(.secondary)
+                if !leg.transitStops.isEmpty {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            expandedTransitStopsLegID = isStopListExpanded ? nil : leg.id
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text("Jeszcze \(transitStopCountText(stopsRemaining)) do \(leg.to)")
+                                .font(.caption.weight(.medium))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.85)
+                            Spacer(minLength: 0)
+                            Image(systemName: isStopListExpanded ? "chevron.up" : "chevron.down")
+                                .font(.caption2.weight(.semibold))
+                        }
+                        .foregroundStyle(.secondary)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isStopListExpanded
+                                        ? "Zwiń listę przystanków do \(leg.to)"
+                                        : "Pokaż \(transitStopCountText(stopsRemaining)) do \(leg.to)")
+
+                    if isStopListExpanded {
+                        transitUpcomingStopsTimeline(leg, stops: upcomingStops,
+                                                     activeStopID: nextStop?.stopID)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+                } else {
+                    Text("Jeszcze \(transitStopCountText(stopsRemaining)) do \(leg.to)")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 if let delay = displayedDelay, abs(delay) >= 30 {
                     Text("Rozkład \(leg.departure.formatted(date: .omitted, time: .shortened)) · \(delayLabel(TimeInterval(delay)))")
                         .font(.caption).foregroundStyle(transitDelayColor(delay))
@@ -610,6 +644,105 @@ extension ContentView {
         }
     }
 
+    func upcomingTransitStops(for leg: JourneyLeg, at date: Date,
+                              tracking: TransitNavigationProgress?) -> [TransitJourneyStop] {
+        let stops = leg.transitStops.sorted { $0.sequence < $1.sequence }
+        guard !stops.isEmpty else { return [] }
+
+        let liveNextStopID = liveTransitDetails(for: leg)?.nextStops.first?.stopID
+        let nextStopID = tracking?.nextStop?.stopID ?? liveNextStopID
+        let firstUpcomingIndex = nextStopID.flatMap { stopID in
+            stops.firstIndex(where: { $0.stopID == stopID })
+        } ?? stops.firstIndex(where: { $0.arrival > date })
+            .map { max($0, leg.departure > date ? 1 : 0) }
+
+        guard let firstUpcomingIndex else { return [] }
+        return Array(stops.dropFirst(firstUpcomingIndex))
+    }
+
+    func transitStopCountText(_ count: Int) -> String {
+        let absoluteCount = abs(count)
+        let lastTwoDigits = absoluteCount % 100
+        let lastDigit = absoluteCount % 10
+        let noun: String
+        if absoluteCount == 1 {
+            noun = "przystanek"
+        } else if (2...4).contains(lastDigit) && !(12...14).contains(lastTwoDigits) {
+            noun = "przystanki"
+        } else {
+            noun = "przystanków"
+        }
+        return "\(count) \(noun)"
+    }
+
+    func transitUpcomingStopsTimeline(_ leg: JourneyLeg, stops: [TransitJourneyStop],
+                                     activeStopID: String?) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let journey = navigationStore.state.route?.journey {
+                transitFreshnessIndicator(for: journey)
+            }
+
+            if stops.isEmpty {
+                Text("Brak kolejnych przystanków w danych trasy")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 4)
+            } else {
+                ForEach(Array(stops.enumerated()), id: \.element.id) { index, stop in
+                    let isNextStop = stop.stopID == activeStopID
+                    let liveStop = liveTransitStop(stop.stopID, for: leg)
+                    let arrival = liveStop?.arrival ?? stop.arrival
+                    HStack(alignment: .top, spacing: 10) {
+                        VStack(spacing: 0) {
+                            Circle()
+                                .fill(isNextStop ? Color.accentColor : Color.secondary.opacity(0.55))
+                                .frame(width: isNextStop ? 9 : 7, height: isNextStop ? 9 : 7)
+                                .padding(.top, 5)
+                            if index < stops.count - 1 {
+                                Rectangle()
+                                    .fill(Color.secondary.opacity(0.2))
+                                    .frame(width: 1, height: 29)
+                                    .padding(.vertical, 3)
+                            }
+                        }
+                        .frame(width: 9)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(stop.name)
+                                .font(.caption.weight(isNextStop ? .semibold : .medium))
+                                .foregroundStyle(isNextStop ? .primary : .secondary)
+                                .lineLimit(1)
+                            HStack(spacing: 5) {
+                                if isNextStop {
+                                    Text("Następny przystanek")
+                                }
+                                Text(arrival.formatted(date: .omitted, time: .shortened))
+                                    .monospacedDigit()
+                                if let liveStop, liveStop.hasRealtime,
+                                   let journey = navigationStore.state.route?.journey {
+                                    Text("·")
+                                    Text(transitTimeSourceLabel(for: leg, in: journey))
+                                }
+                                if let delay = liveStop?.delaySeconds, abs(delay) >= 30 {
+                                    Text("·")
+                                    Text(delayLabel(TimeInterval(delay)))
+                                        .foregroundStyle(transitDelayColor(delay))
+                                }
+                            }
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        }
+        .padding(.leading, 3)
+        .padding(.top, 2)
+        .accessibilityElement(children: .contain)
+    }
+
     var transitJourneyTimeline: some View {
         Group {
             if let journey = navigationStore.state.route?.journey {
@@ -617,6 +750,12 @@ extension ContentView {
                     transitFreshnessIndicator(for: journey)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     ForEach(Array(journey.legs.enumerated()), id: \.element.id) { index, leg in
+                        let tracking = transitProgress(for: leg)
+                        let nextStopID = tracking?.nextStop?.stopID
+                            ?? liveTransitDetails(for: leg)?.nextStops.first?.stopID
+                        let upcomingStops = upcomingTransitStops(for: leg, at: Date(), tracking: tracking)
+                        let stopsRemaining = tracking?.stopsUntilAlighting ?? upcomingStops.count
+                        let isStopsExpanded = expandedTransitTimelineLegID == leg.id
                         HStack(alignment: .top, spacing: 11) {
                             Image(systemName: leg.mode == "WALK" ? "figure.walk"
                                 : leg.mode == "RAIL" ? "train.side.front.car"
@@ -630,8 +769,34 @@ extension ContentView {
                                 Text("\(leg.departure.formatted(date: .omitted, time: .shortened)) · \(leg.from)")
                                     .font(.caption).foregroundStyle(.secondary)
                                 if leg.mode != "WALK", !leg.transitStops.isEmpty {
-                                    Text("\(max(1, leg.transitStops.count - 1)) przystanków")
-                                        .font(.caption).foregroundStyle(.secondary)
+                                    Button {
+                                        withAnimation(.easeInOut(duration: 0.2)) {
+                                            expandedTransitTimelineLegID = isStopsExpanded ? nil : leg.id
+                                        }
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Text(transitStopCountText(stopsRemaining))
+                                            Image(systemName: isStopsExpanded ? "chevron.up" : "chevron.down")
+                                                .font(.caption2.weight(.semibold))
+                                        }
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(Color.accentColor)
+                                        .contentShape(Rectangle())
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.vertical, 2)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel(isStopsExpanded
+                                                        ? "Zwiń listę przystanków linii \(leg.line ?? "")"
+                                                        : "Pokaż przystanki linii \(leg.line ?? "")")
+
+                                    if isStopsExpanded {
+                                        transitUpcomingStopsTimeline(
+                                            leg,
+                                            stops: upcomingStops,
+                                            activeStopID: nextStopID ?? upcomingStops.first?.stopID)
+                                            .transition(.opacity.combined(with: .move(edge: .top)))
+                                    }
                                 }
                                 if let delay = displayedTransitDelay(for: leg), abs(delay) >= 30 {
                                     Text(delayLabel(TimeInterval(delay))).font(.caption.weight(.semibold))

@@ -1,6 +1,6 @@
 import Foundation
 
-nonisolated struct RouteProjection: Sendable {
+nonisolated struct RouteProjection: Equatable, Sendable {
     let coordinate: Coordinate
     let distanceFromRoute: Double
     let alongRoute: Double
@@ -390,6 +390,14 @@ struct TransitRouteProgressGeometry {
         let distanceBeforeLeg = legs.prefix(match.0).reduce(0) { $0 + $1.length }
         let legDistance = min(match.2, max(0, match.1.alongRoute))
         let routeFraction = min(1, max(0, (distanceBeforeLeg + legDistance) / totalLength))
+        let routeSegmentOffset = journey.legs.prefix(match.0).reduce(0) {
+            $0 + max(0, $1.coordinates.count - 1)
+        }
+        let routeProjection = RouteProjection(
+            coordinate: match.1.coordinate,
+            distanceFromRoute: match.1.distanceFromRoute,
+            alongRoute: distanceBeforeLeg + legDistance,
+            segment: routeSegmentOffset + match.1.segment)
         let leg = journey.legs[match.0]
         let stopPositions = legs[match.0].stops
         let upcomingStops = stopPositions.filter {
@@ -411,7 +419,8 @@ struct TransitRouteProgressGeometry {
             distanceFromRoute: match.1.distanceFromRoute,
             nextStop: nextStop,
             distanceToNextStop: nextStop.map { coordinate.distance(to: $0.coordinate) },
-            stopsUntilAlighting: leg.mode.uppercased() == "WALK" ? nil : upcomingStops.count)
+            stopsUntilAlighting: leg.mode.uppercased() == "WALK" ? nil : upcomingStops.count,
+            routeProjection: routeProjection)
     }
 }
 
