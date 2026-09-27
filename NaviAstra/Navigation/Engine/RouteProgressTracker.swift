@@ -62,6 +62,11 @@ struct RouteProgressTracker {
             distanceToNextManeuver: distanceToNextManeuver)
     }
 
+    mutating func projectRoadCoordinate(route: NavigationRoute, coordinate: Coordinate,
+                                        within searchRadius: Double = 500) -> RouteProjection? {
+        roadGeometry(for: route).project(coordinate, within: searchRadius)
+    }
+
     mutating func transitProgress(
         route: NavigationRoute,
         at coordinate: Coordinate,

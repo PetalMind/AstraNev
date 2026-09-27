@@ -20,7 +20,7 @@ nonisolated struct TrafficFlow: Sendable {
     }
 }
 
-enum TrafficIncidentCategory: String, CaseIterable, Equatable {
+nonisolated enum TrafficIncidentCategory: String, CaseIterable, Equatable, Sendable {
     case unknown, accident, fog, dangerousConditions, rain, ice, jam, laneClosed
     case roadClosed, roadWorks, wind, flooding, detour, cluster, brokenDownVehicle
 
@@ -58,7 +58,7 @@ enum TrafficIncidentCategory: String, CaseIterable, Equatable {
     }
 }
 
-enum TrafficIncidentSeverity: String, Equatable {
+nonisolated enum TrafficIncidentSeverity: String, Equatable, Sendable {
     case unknown, minor, moderate, major, indefinite
 
     init(tomTomValue: Int?) {
@@ -247,7 +247,7 @@ extension TrafficIncident {
     var isImportantDuringNavigation: Bool { category.isImportantDuringNavigation || severity == .major }
 }
 
-struct TrafficIncident: Identifiable {
+nonisolated struct TrafficIncident: Identifiable, Sendable {
     let id: String
     let description: String
     let coordinate: Coordinate
@@ -284,7 +284,7 @@ struct TrafficIncident: Identifiable {
     }
 }
 
-struct TrafficSnapshot {
+nonisolated struct TrafficSnapshot: Sendable {
     let flow: TrafficFlow?
     let incidents: [TrafficIncident]
     let routeFlowSegments: [RouteTrafficSegment]

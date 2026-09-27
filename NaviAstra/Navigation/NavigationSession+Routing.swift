@@ -579,7 +579,9 @@ extension NavigationSession {
                                            on route: NavigationRoute) -> Double? {
         if let alongRoute = incident.distanceAlongRoute { return alongRoute }
         let geometry = incident.geometry.isEmpty ? [incident.coordinate] : incident.geometry
-        guard let projection = geometry.compactMap({ MapMatcher.project($0, onto: route.coordinates) })
+        guard let projection = geometry.compactMap({
+            routeProgressTracker.projectRoadCoordinate(route: route, coordinate: $0)
+        })
             .min(by: { $0.distanceFromRoute < $1.distanceFromRoute }),
               projection.distanceFromRoute <= RouteTrafficMonitor.routeMatchToleranceMeters else { return nil }
         return projection.alongRoute

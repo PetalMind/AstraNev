@@ -114,8 +114,8 @@ nonisolated struct NavigationRouteMatch: Sendable {
     let match: RouteMatch
 }
 
-struct RouteProgressGeometry {
-    private struct Cell: Hashable {
+nonisolated struct RouteProgressGeometry: Sendable {
+    private struct Cell: Hashable, Sendable {
         let latitude: Int
         let longitude: Int
     }

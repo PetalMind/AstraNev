@@ -56,7 +56,7 @@ final class RouteLayerRenderer {
     private var shownRevealStep = 1_000
     private var activeGeometryProgressRouteID: UUID?
     private var activeGeometryProgressStep: Int?
-    private var shownRouteTrafficSegments: [RouteTrafficSegment] = []
+    private var shownRouteTrafficSegmentKeys: [String] = []
     private var routeTransitionTimer: Timer?
     private var context: RouteLayerRenderContext!
     private var parent: RouteLayerRenderContext { context }
@@ -81,7 +81,7 @@ final class RouteLayerRenderer {
             routeLines.removeAll()
             activeGeometryProgressRouteID = nil
             activeGeometryProgressStep = nil
-            shownRouteTrafficSegments = []
+            shownRouteTrafficSegmentKeys = []
             activeRouteSource?.shape = nil
             completedRouteSource?.shape = nil
             revealGeometry = nil
@@ -519,7 +519,8 @@ final class RouteLayerRenderer {
         let segments = parent.settings.overlays.traffic && parent.state.transportMode == .car && isNavigating
             ? (parent.state.traffic?.routeFlowSegments ?? []).filter { $0.routeID == routeID }
             : []
-        guard segments != shownRouteTrafficSegments else { return }
+        let segmentKeys = segments.map { "\($0.id):\($0.colorHex)" }
+        guard segmentKeys != shownRouteTrafficSegmentKeys else { return }
         let previousLines = routeLines.filter { line in
             if case .routeTraffic = line.kind { return true }
             return false
@@ -529,7 +530,7 @@ final class RouteLayerRenderer {
             if case .routeTraffic = line.kind { return true }
             return false
         }
-        shownRouteTrafficSegments = segments
+        shownRouteTrafficSegmentKeys = segmentKeys
         guard let routeID else { return }
         for segment in segments {
             addLine(segment.coordinates, kind: .routeTraffic(color: segment.colorHex),

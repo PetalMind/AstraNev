@@ -34,6 +34,7 @@ final class NavigationSession {
     var laterTransitRequestGeneration = 0
     var nearbySearchID = UUID()
     var trafficGeneration = 0
+    var trafficRouteSelectionGeneration = 0
     private var speedLimitGeneration = 0
     private var roadDataGeneration = 0
     var lastTrafficFetch = Date.distantPast
@@ -472,6 +473,7 @@ final class NavigationSession {
     }
     func invalidateTraffic() {
         trafficGeneration += 1
+        trafficRouteSelectionGeneration += 1
         trafficRequestInFlight = false
         routeTrafficRequestInFlight = false
         lastTrafficFetch = .distantPast

@@ -114,25 +114,40 @@ extension NavigationSession {
                   self.state.route?.id == routeID else { return }
 
             var trafficError: Error?
+            let incidents: [TrafficIncident]
             do {
-                let incidents = try await incidentRequest
-                self.routeTrafficIncidents = RouteTrafficMonitor.matching(
-                    incidents, to: route, from: startDistance, through: endDistance)
-                self.routeTrafficDataAvailable = true
-                self.routeTrafficUpdatedAt = Date()
+                incidents = try await incidentRequest
             } catch {
                 trafficError = error
-                self.routeTrafficIncidents = []
-                self.routeTrafficDataAvailable = false
-                self.routeTrafficUpdatedAt = nil
+                incidents = []
             }
+            let canPublishRouteIncidents = trafficError == nil
+            let processingTask = Task.detached(priority: .utility) {
+                let geometry = RouteProgressGeometry(route)
+                let matchedIncidents = canPublishRouteIncidents
+                    ? RouteTrafficMonitor.matching(incidents, to: route,
+                                                   from: startDistance, through: endDistance,
+                                                   routeGeometry: geometry)
+                    : []
+                let segments = shouldFetchFlow
+                    ? RouteTrafficMonitor.coloredSegments(on: route, from: startDistance,
+                                                         through: endDistance, queries: flowQueries,
+                                                         samples: flowSamples, geometry: geometry)
+                    : []
+                return (matchedIncidents, segments)
+            }
+            let (matchedIncidents, routeFlowSegments) = await processingTask.value
+            guard generation == self.trafficGeneration,
+                  self.state.route?.id == routeID else { return }
+
+            self.routeTrafficIncidents = matchedIncidents
+            self.routeTrafficDataAvailable = canPublishRouteIncidents
+            self.routeTrafficUpdatedAt = canPublishRouteIncidents ? Date() : nil
 
             if shouldFetchFlow {
                 self.routeFlowRouteID = routeID
                 self.lastRouteFlowFetch = Date()
-                self.routeTrafficFlowSegments = RouteTrafficMonitor.coloredSegments(
-                    on: route, from: startDistance, through: endDistance,
-                    queries: flowQueries, samples: flowSamples)
+                self.routeTrafficFlowSegments = routeFlowSegments
                 self.routeTrafficFlowUpdatedAt = self.routeTrafficFlowSegments.isEmpty ? nil : Date()
             }
 
@@ -205,70 +220,104 @@ extension NavigationSession {
               state.route?.id == currentRoute.id else { return }
         let routes = state.routeOptions.isEmpty ? [currentRoute] : state.routeOptions
         guard routes.count > 1 else { return }
-        let scores = routes.map { route in
-            (route, trafficAdjustedETA(for: route, snapshot: snapshot, at: location))
+        trafficRouteSelectionGeneration += 1
+        let selectionGeneration = trafficRouteSelectionGeneration
+        let trafficGeneration = self.trafficGeneration
+        let currentRouteID = currentRoute.id
+        let locationAccuracy = state.location?.accuracy ?? 70
+        let snapshotTimestamp = state.traffic?.updatedAt ?? latestNearbyTrafficSnapshot?.updatedAt
+            ?? snapshot.updatedAt
+        let scoringTask = Task.detached(priority: .utility) {
+            TrafficRouteETA.scores(for: routes, snapshot: snapshot, at: location,
+                                   locationAccuracy: locationAccuracy,
+                                   trafficReferenceRouteID: currentRouteID)
         }
-        guard let best = scores.min(by: { $0.1 < $1.1 }), best.0.id != currentRoute.id,
-              let currentScore = scores.first(where: { $0.0.id == currentRoute.id })?.1,
-              currentScore.isFinite,
-              currentScore - best.1 >= max(120, currentScore * 0.15) else { return }
-        state.route = best.0
-        state.routeOptions = scores.sorted { $0.1 < $1.1 }.map(\.0)
-        state.evChargingStops = best.0.chargingStops.map(\.destination)
-        loadRoadData(for: best.0)
-        trafficProjectionRouteID = nil
-        updateProgress()
-        invalidateSpeedLimit()
-        if let currentLocation = state.location { refreshSpeedLimit(for: currentLocation) }
-        routeTrafficIncidents = []
-        routeTrafficDataAvailable = false
-        routeTrafficUpdatedAt = nil
-        lastRouteTrafficFetch = .distantPast
-        publishTrafficSnapshot()
+        Task { @MainActor [weak self] in
+            let scores = await scoringTask.value
+            guard let self,
+                  self.trafficRouteSelectionGeneration == selectionGeneration,
+                  self.trafficGeneration == trafficGeneration,
+                  self.state.route?.id == currentRouteID,
+                  self.state.status == .navigating,
+                  (self.state.traffic?.updatedAt ?? self.latestNearbyTrafficSnapshot?.updatedAt)
+                    == snapshotTimestamp,
+                  let best = scores.min(by: { $0.eta < $1.eta }),
+                  best.route.id != currentRouteID,
+                  let currentScore = scores.first(where: { $0.route.id == currentRouteID })?.eta,
+                  currentScore.isFinite,
+                  currentScore - best.eta >= max(120, currentScore * 0.15) else { return }
+            self.state.route = best.route
+            self.state.routeOptions = scores.sorted { $0.eta < $1.eta }.map { $0.route }
+            self.state.evChargingStops = best.route.chargingStops.map(\.destination)
+            self.loadRoadData(for: best.route)
+            self.trafficProjectionRouteID = nil
+            self.updateProgress()
+            self.invalidateSpeedLimit()
+            if let currentLocation = self.state.location { self.refreshSpeedLimit(for: currentLocation) }
+            self.routeTrafficIncidents = []
+            self.routeTrafficDataAvailable = false
+            self.routeTrafficUpdatedAt = nil
+            self.lastRouteTrafficFetch = .distantPast
+            self.publishTrafficSnapshot()
+        }
+    }
+}
+
+private enum TrafficRouteETA {
+    nonisolated static func scores(for routes: [NavigationRoute], snapshot: TrafficSnapshot,
+                                   at location: Coordinate, locationAccuracy: Double,
+                                   trafficReferenceRouteID: UUID)
+        -> [(route: NavigationRoute, eta: Double)] {
+        routes.map { route in
+            (route, estimate(for: route, snapshot: snapshot, at: location,
+                             locationAccuracy: locationAccuracy,
+                             trafficReferenceRouteID: trafficReferenceRouteID))
+        }
     }
 
-    private func trafficAdjustedETA(for route: NavigationRoute, snapshot: TrafficSnapshot,
-                                    at location: Coordinate) -> Double {
-        guard let projection = MapMatcher.project(location, onto: route.coordinates),
-              projection.distanceFromRoute <= max(150, (state.location?.accuracy ?? 70) * 2) else {
+    private nonisolated static func estimate(for route: NavigationRoute, snapshot: TrafficSnapshot,
+                                             at location: Coordinate, locationAccuracy: Double,
+                                             trafficReferenceRouteID: UUID) -> Double {
+        let geometry = RouteProgressGeometry(route)
+        guard let projection = geometry.project(location, within: max(150, locationAccuracy * 2)),
+              projection.distanceFromRoute <= max(150, locationAccuracy * 2), geometry.length > 0 else {
             return .infinity
         }
-        let geometryDistance = zip(route.coordinates, route.coordinates.dropFirst())
-            .reduce(0.0) { $0 + $1.0.distance(to: $1.1) }
-        guard geometryDistance > 0 else { return .infinity }
-        let fraction = min(1, max(0, projection.alongRoute / geometryDistance))
+        let fraction = min(1, max(0, projection.alongRoute / geometry.length))
         let plannedDrivingTime = max(0, route.expectedTravelTime - route.chargingDuration)
         var eta = plannedDrivingTime * (1 - fraction)
         eta += route.chargingStops.reduce(0.0) { total, stop in
-            guard let chargeProjection = MapMatcher.project(stop.destination.coordinate, onto: route.coordinates),
+            guard let chargeProjection = geometry.project(stop.destination.coordinate),
+                  chargeProjection.distanceFromRoute <= 500,
                   chargeProjection.alongRoute > projection.alongRoute + 40 else { return total }
             return total + stop.estimatedChargingTime
         }
-        let closures = snapshot.incidents.compactMap { incident -> Double? in
-            guard incident.isRoadClosure,
-                  let incidentProjection = MapMatcher.project(incident.coordinate, onto: route.coordinates),
-                  incidentProjection.distanceFromRoute < 120,
-                  incidentProjection.alongRoute > projection.alongRoute + 40 else { return nil }
-            return incidentProjection.alongRoute
+        let incidentProjections = snapshot.incidents.compactMap { incident -> (TrafficIncident, RouteProjection)? in
+            guard let projectedIncident = geometry.project(incident.coordinate),
+                  projectedIncident.distanceFromRoute < 120 else { return nil }
+            let knownRouteDistance = route.id == trafficReferenceRouteID ? incident.distanceAlongRoute : nil
+            let incidentDistance = knownRouteDistance ?? projectedIncident.alongRoute
+            guard incidentDistance > projection.alongRoute + 40 else { return nil }
+            let incidentProjection = RouteProjection(
+                coordinate: projectedIncident.coordinate,
+                distanceFromRoute: projectedIncident.distanceFromRoute,
+                alongRoute: incidentDistance,
+                segment: projectedIncident.segment)
+            return (incident, incidentProjection)
         }
-        if !closures.isEmpty { return .infinity }
-        if let flow = snapshot.flow,
-           let flowProjection = MapMatcher.project(location, onto: flow.coordinates),
-           flowProjection.distanceFromRoute < 80,
-           flow.coordinates.count > 1 {
-            let flowDistance = zip(flow.coordinates, flow.coordinates.dropFirst())
-                .reduce(0.0) { $0 + $1.0.distance(to: $1.1) }
-            let currentSpeed = max(5, Double(flow.currentSpeedKph)) / 3.6
-            let freeSpeed = Double(max(1, flow.freeFlowSpeedKph)) / 3.6
-            eta += max(0, flowDistance / currentSpeed - flowDistance / freeSpeed)
+        if incidentProjections.contains(where: { $0.0.isRoadClosure }) { return .infinity }
+        if let flow = snapshot.flow, flow.coordinates.count > 1 {
+            let flowGeometry = RouteProgressGeometry(coordinates: flow.coordinates)
+            if let flowProjection = flowGeometry.project(location, within: 80),
+               flowProjection.distanceFromRoute < 80 {
+                let currentSpeed = max(5, Double(flow.currentSpeedKph)) / 3.6
+                let freeSpeed = Double(max(1, flow.freeFlowSpeedKph)) / 3.6
+                eta += max(0, flowGeometry.length / currentSpeed - flowGeometry.length / freeSpeed)
+            }
         }
-        let delays = snapshot.incidents.reduce(0.0) { total, incident in
-            guard let incidentProjection = MapMatcher.project(incident.coordinate, onto: route.coordinates),
-                  incidentProjection.distanceFromRoute < 120,
-                  incidentProjection.alongRoute > projection.alongRoute + 40 else { return total }
-            return total + Double(max(0, incident.delaySeconds ?? 0))
+        let delays = incidentProjections.reduce(0.0) { total, item in
+            total + Double(max(0, item.0.delaySeconds ?? 0))
         }
         return eta + min(1_800, delays)
     }
-
 }

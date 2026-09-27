@@ -53,9 +53,10 @@ struct RouteTrafficMonitor {
     nonisolated static func coloredSegments(on route: NavigationRoute, from startDistance: Double,
                                             through endDistance: Double,
                                             queries: [RouteTrafficFlowQuery],
-                                            samples: [RouteTrafficFlowSample]) -> [RouteTrafficSegment] {
+                                            samples: [RouteTrafficFlowSample],
+                                            geometry: RouteProgressGeometry) -> [RouteTrafficSegment] {
         guard queries.count > 0, !samples.isEmpty else { return [] }
-        let routeLength = routeGeometryLength(route.coordinates)
+        let routeLength = geometry.length
         let start = max(0, startDistance)
         let end = min(routeLength, endDistance)
         guard end > start else { return [] }
@@ -70,7 +71,7 @@ struct RouteTrafficMonitor {
             let cellEnd = index == orderedQueries.count - 1 ? end
                 : (sample.distanceAlongRoute + orderedQueries[index + 1].distanceAlongRoute) / 2
             let projections = sample.flow.coordinates.compactMap { coordinate -> RouteProjection? in
-                guard let projection = MapMatcher.project(coordinate, onto: route.coordinates),
+                guard let projection = geometry.project(coordinate),
                       projection.distanceFromRoute <= routeMatchToleranceMeters,
                       projection.alongRoute >= cellStart - 100,
                       projection.alongRoute <= cellEnd + 100 else { return nil }
@@ -134,14 +135,15 @@ struct RouteTrafficMonitor {
         return boxes
     }
 
-    static func matching(_ incidents: [TrafficIncident], to route: NavigationRoute,
-                         from startDistance: Double, through endDistance: Double,
-                         routeMatchToleranceMeters: Double = routeMatchToleranceMeters) -> [TrafficIncident] {
+    nonisolated static func matching(_ incidents: [TrafficIncident], to route: NavigationRoute,
+                                     from startDistance: Double, through endDistance: Double,
+                                     routeMatchToleranceMeters: Double = routeMatchToleranceMeters,
+                                     routeGeometry: RouteProgressGeometry) -> [TrafficIncident] {
         var matched: [String: TrafficIncident] = [:]
         for incident in incidents {
-            let geometry = incident.geometry.isEmpty ? [incident.coordinate] : incident.geometry
-            let candidates = geometry.compactMap { coordinate -> (Coordinate, RouteProjection)? in
-                guard let projection = MapMatcher.project(coordinate, onto: route.coordinates) else { return nil }
+            let incidentGeometry = incident.geometry.isEmpty ? [incident.coordinate] : incident.geometry
+            let candidates = incidentGeometry.compactMap { coordinate -> (Coordinate, RouteProjection)? in
+                guard let projection = routeGeometry.project(coordinate) else { return nil }
                 return (coordinate, projection)
             }.filter { candidate in
                 candidate.1.distanceFromRoute <= routeMatchToleranceMeters &&

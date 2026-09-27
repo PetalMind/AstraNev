@@ -6,7 +6,8 @@ extension NavigationSession {
         if projectedFlowRouteID != route.id || projectedFlowUpdatedAt != flow.updatedAt ||
             projectedFlowCoordinates != flow.coordinates {
             let distances = flow.coordinates.compactMap { coordinate -> Double? in
-                guard let projection = MapMatcher.project(coordinate, onto: route.coordinates),
+                guard let projection = routeProgressTracker.projectRoadCoordinate(
+                    route: route, coordinate: coordinate),
                       projection.distanceFromRoute <= RouteTrafficMonitor.routeMatchToleranceMeters else {
                     return nil
                 }
@@ -285,7 +286,7 @@ extension NavigationSession {
         }
         let geometry = incident.geometry.isEmpty ? [incident.coordinate] : incident.geometry
         guard let projection = geometry.compactMap({
-            MapMatcher.project($0, onto: route.coordinates)
+            routeProgressTracker.projectRoadCoordinate(route: route, coordinate: $0)
         }).min(by: { $0.distanceFromRoute < $1.distanceFromRoute }),
               projection.distanceFromRoute <= 120 else { return nil }
         return projection.alongRoute - traveledDistance
@@ -299,7 +300,7 @@ extension NavigationSession {
             projectedTrafficIncidents = traffic.incidents.compactMap { incident in
                 let coordinates = [incident.coordinate] + incident.geometry
                 let projections = coordinates.compactMap {
-                    MapMatcher.project($0, onto: route.coordinates)
+                    routeProgressTracker.projectRoadCoordinate(route: route, coordinate: $0)
                 }.filter {
                     $0.distanceFromRoute <= RouteTrafficMonitor.routeMatchToleranceMeters
                 }
