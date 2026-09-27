@@ -148,31 +148,20 @@ struct SearchResult: Identifiable {
         if let travelTime, let travelDistance {
             return "\(String(format: "%.1f", travelDistance / 1000)) km · ~\(max(1, Int((travelTime / 60).rounded(.up)))) min"
         }
-        if travelEstimateStatus == .calculating {
+        switch travelEstimateStatus {
+        case .calculating:
             if let distance = detourDistance {
                 return "\(String(format: "%.1f", distance / 1_000)) km od trasy • obliczanie czasu…"
             }
-            if requiresRouteEstimate { return "Obliczanie odległości trasy i czasu…" }
-            if let straightDistance {
-                return "\(String(format: "%.1f", straightDistance / 1_000)) km w linii prostej • obliczanie czasu…"
-            }
-            return "Obliczanie czasu…"
-        }
-        if travelEstimateStatus == .unavailable {
+            return "Obliczanie odległości trasy i ETA…"
+        case .unavailable:
             if let distance = detourDistance {
                 return "\(String(format: "%.1f", distance / 1_000)) km od trasy • objazd niedostępny"
             }
-            if requiresRouteEstimate { return "Odległość trasy i czas niedostępne" }
-            if let straightDistance {
-                return "\(String(format: "%.1f", straightDistance / 1_000)) km w linii prostej • czas niedostępny"
-            }
-            return "Czas dojazdu niedostępny"
+            return requiresRouteEstimate ? "Odległość trasy i ETA niedostępne" : nil
+        case .notRequested:
+            return requiresRouteEstimate ? "Odległość trasy i ETA niedostępne" : nil
         }
-        if requiresRouteEstimate { return "Odległość trasy i czas niedostępne" }
-        if let straightDistance {
-            return "\(String(format: "%.1f", straightDistance / 1000)) km w linii prostej • ETA niedostępne"
-        }
-        return nil
     }
     var isAddress: Bool {
         !isPOI && ((houseNumber != nil && (street != nil || city != nil)) || street != nil)
@@ -193,6 +182,13 @@ enum TravelEstimateStatus: Equatable {
     case calculating
     case unavailable
 }
+
+struct SearchRouteEstimate: Sendable {
+    var travelTime: TimeInterval
+    var distanceMeters: Double
+}
+
+typealias SearchRouteEstimator = @MainActor (Coordinate, Destination, TransportMode) async throws -> SearchRouteEstimate?
 
 protocol SearchProvider {
     func search(_ query: String, near: Coordinate?) async throws -> [SearchResult]

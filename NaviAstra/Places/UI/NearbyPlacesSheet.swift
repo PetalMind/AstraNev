@@ -2,7 +2,7 @@ import SwiftUI
 
 struct NearbyPlacesSheet: View {
     @Environment(\.dismiss) private var dismiss
-    let engine: NavigationEngine
+    let navigationStore: NavigationStore
     let nearDestination: Bool
     let initialCategory: NearbyPlaceCategory
     let savedPlaces: [SavedPlace]
@@ -19,13 +19,14 @@ struct NearbyPlacesSheet: View {
     @State private var selectedOperator: String?
     @State private var minimumChargingPower: Double?
     @State private var selectedConnector: String?
+    @State private var openingHoursPresentations: [String: OpeningHoursPresentation] = [:]
 
-    init(engine: NavigationEngine, nearDestination: Bool, initialCategory: NearbyPlaceCategory,
+    init(navigationStore: NavigationStore, nearDestination: Bool, initialCategory: NearbyPlaceCategory,
          savedPlaces: [SavedPlace], onSave: @escaping (Destination) -> Bool,
          onRemoveSaved: @escaping (Destination) -> Bool,
          onRenameSaved: @escaping (Destination, String) -> Bool,
          onSelect: @escaping (Destination) -> Void) {
-        self.engine = engine
+        self.navigationStore = navigationStore
         self.nearDestination = nearDestination
         self.initialCategory = initialCategory
         self.savedPlaces = savedPlaces
@@ -40,42 +41,60 @@ struct NearbyPlacesSheet: View {
         nearDestination ? [.parking, .parkRide] : [.fuel, .food, .parking, .charging, .parkRide]
     }
 
+    private var nearbySearchRefreshKey: String {
+        let categoryKey = category.rawValue
+        let retryKey = retryID.uuidString
+        let radiusKey = expandedRadius ? "expanded" : "default"
+        return categoryKey + "-" + retryKey + "-" + radiusKey
+    }
+
+    private var openingHoursRefreshKey: String {
+        navigationStore.state.nearbySuggestions.map { suggestion in
+            let candidate = suggestion.candidate
+            return [candidate.id, candidate.openingHours ?? "", candidate.countryCode ?? "",
+                    candidate.timeZoneIdentifier ?? "", String(candidate.destination.coordinate.latitude),
+                    String(candidate.destination.coordinate.longitude)].joined(separator: "|")
+        }.joined(separator: "\n")
+    }
+
     private var nearestSearch: Bool {
-        !nearDestination && engine.state.status != .navigating && engine.state.status != .rerouting
+        !nearDestination && navigationStore.state.status != .navigating && navigationStore.state.status != .rerouting
     }
 
     private var availableOperators: [String] {
-        Array(Set(engine.state.nearbySuggestions
+        Array(Set(navigationStore.state.nearbySuggestions
             .filter { $0.candidate.category == category }
             .compactMap { $0.candidate.operatorOrBrand })).sorted()
     }
 
     private var availableFuelTypes: [String] {
-        Array(Set(engine.state.nearbySuggestions
+        Array(Set(navigationStore.state.nearbySuggestions
             .filter { $0.candidate.category == .fuel }
             .flatMap { $0.candidate.fuelTypes })).sorted()
     }
 
     private var availableConnectors: [String] {
-        Array(Set(engine.state.nearbySuggestions
+        Array(Set(navigationStore.state.nearbySuggestions
             .filter { $0.candidate.category == .charging }
             .flatMap { $0.candidate.chargingStation?.connectorTypes ?? [] })).sorted()
     }
 
     private var availablePowerThresholds: [Double] {
         [50.0, 100.0, 150.0].filter { threshold in
-            engine.state.nearbySuggestions.contains {
+            navigationStore.state.nearbySuggestions.contains {
                 $0.candidate.category == .charging && ($0.candidate.chargingStation?.maximumPowerKW ?? 0) >= threshold
             }
         }
     }
 
     private var hasOpeningHoursData: Bool {
-        engine.state.nearbySuggestions.contains { $0.candidate.category == category && $0.candidate.isOpenNow != nil }
+        navigationStore.state.nearbySuggestions.contains {
+            $0.candidate.category == category && openingHoursPresentations[$0.id]?.isOpen != nil
+        }
     }
 
     private var has24HourData: Bool {
-        engine.state.nearbySuggestions.contains { $0.candidate.category == category && $0.candidate.isOpen24Hours }
+        navigationStore.state.nearbySuggestions.contains { $0.candidate.category == category && $0.candidate.isOpen24Hours }
     }
 
     private var hasApplicableFilters: Bool {
@@ -91,9 +110,9 @@ struct NearbyPlacesSheet: View {
     }
 
     private var filteredSuggestions: [RouteStopSuggestion] {
-        engine.state.nearbySuggestions.filter { suggestion in
+        navigationStore.state.nearbySuggestions.filter { suggestion in
             let candidate = suggestion.candidate
-            if openNowOnly && candidate.isOpenNow != true { return false }
+            if openNowOnly && openingHoursPresentations[suggestion.id]?.isOpen != true { return false }
             if open24HoursOnly && !candidate.isOpen24Hours { return false }
             if let selectedFuelType, !candidate.fuelTypes.contains(selectedFuelType) { return false }
             if let selectedOperator, candidate.operatorOrBrand != selectedOperator { return false }
@@ -102,6 +121,17 @@ struct NearbyPlacesSheet: View {
             if let selectedConnector,
                !(candidate.chargingStation?.connectorTypes.contains(selectedConnector) ?? false) { return false }
             return true
+        }
+    }
+
+    @MainActor
+    private func refreshOpeningHours() async {
+        openingHoursPresentations = [:]
+        for suggestion in navigationStore.state.nearbySuggestions {
+            guard !Task.isCancelled else { return }
+            guard let presentation = await suggestion.candidate.openingHoursPresentation() else { continue }
+            guard !Task.isCancelled else { return }
+            openingHoursPresentations[suggestion.id] = presentation
         }
     }
 
@@ -143,14 +173,18 @@ struct NearbyPlacesSheet: View {
         if let operatorName = candidate.operatorOrBrand { details.append(operatorName) }
         if candidate.isOpen24Hours {
             details.append("Otwarte 24h")
-        } else if let rawHours = candidate.openingHours,
-                  let timeZoneIdentifier = candidate.timeZoneIdentifier
-                    ?? PlaceTimeZoneResolver.cachedIdentifier(for: candidate.destination.coordinate),
-                  let status = PlaceOpeningHours(rawValue: rawHours,
-                                                 coordinate: candidate.destination.coordinate,
-                                                 countryCode: candidate.countryCode,
-                                                 timeZoneIdentifier: timeZoneIdentifier).statusText() {
-            details.append(status)
+        } else if candidate.openingHours != nil {
+            if let presentation = openingHoursPresentations[candidate.id] {
+                if let status = presentation.statusText {
+                    details.append(status)
+                } else if let failure = presentation.failure {
+                    details.append(failure.errorDescription ?? "Godziny niedostępne")
+                } else if presentation.isAvailable {
+                    details.append("Godziny niepewne")
+                }
+            } else {
+                details.append("Sprawdzam godziny otwarcia…")
+            }
         }
         if candidate.category == .fuel {
             if !candidate.fuelTypes.isEmpty {
@@ -206,207 +240,271 @@ struct NearbyPlacesSheet: View {
         return "\(count) \(suffix)"
     }
 
+    private var categorySelector: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)],
+                   alignment: .leading, spacing: 8) {
+            ForEach(categories) { value in
+                Button {
+                    guard category != value else { return }
+                    category = value
+                    expandedRadius = false
+                    clearFilters()
+                    navigationStore.state.nearbySuggestions = []
+                    navigationStore.state.nearbyStatus = .searching
+                } label: {
+                    Label(value.title, systemImage: value.symbol)
+                        .font(.subheadline.weight(.medium))
+                        .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .foregroundStyle(category == value ? Color.accentColor : Color.primary)
+                        .background(category == value ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.08),
+                                    in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(category == value ? .isSelected : [])
+            }
+        }
+    }
+
+    private var nearbyFilterControls: some View {
+        HStack {
+            Menu {
+                if hasOpeningHoursData {
+                    Toggle("Otwarte teraz", isOn: $openNowOnly)
+                }
+                if has24HourData {
+                    Toggle("Całodobowe 24h", isOn: $open24HoursOnly)
+                }
+                if category == .fuel, !availableFuelTypes.isEmpty {
+                    Picker("Rodzaj paliwa", selection: $selectedFuelType) {
+                        Text("Dowolne").tag(Optional<String>.none)
+                        ForEach(availableFuelTypes, id: \.self) { value in
+                            Text(fuelTypeTitle(value)).tag(Optional<String>.some(value))
+                        }
+                    }
+                }
+                if category == .charging {
+                    if !availablePowerThresholds.isEmpty {
+                        Picker("Moc minimalna", selection: $minimumChargingPower) {
+                            Text("Dowolna").tag(Optional<Double>.none)
+                            ForEach(availablePowerThresholds, id: \.self) { value in
+                                Text("Co najmniej \(Int(value)) kW").tag(Optional<Double>.some(value))
+                            }
+                        }
+                    }
+                    if !availableConnectors.isEmpty {
+                        Picker("Złącze", selection: $selectedConnector) {
+                            Text("Dowolne").tag(Optional<String>.none)
+                            ForEach(availableConnectors, id: \.self) { value in
+                                Text(connectorTitle(value)).tag(Optional<String>.some(value))
+                            }
+                        }
+                    }
+                }
+                if !availableOperators.isEmpty {
+                    Picker("Operator", selection: $selectedOperator) {
+                        Text("Dowolny").tag(Optional<String>.none)
+                        ForEach(availableOperators, id: \.self) { value in
+                            Text(value).tag(Optional<String>.some(value))
+                        }
+                    }
+                }
+                if activeFilterCount > 0 {
+                    Divider()
+                    Button("Wyczyść filtry", systemImage: "xmark.circle", action: clearFilters)
+                }
+            } label: {
+                Label(activeFilterCount == 0 ? "Filtry" : "Filtry · \(activeFilterCount)",
+                      systemImage: "line.3.horizontal.decrease.circle")
+                    .font(.subheadline.weight(.medium))
+            }
+            Spacer()
+        }
+    }
+
+    private var searchDescription: String {
+        if nearDestination {
+            return "Parking jest wyszukiwany w pobliżu celu. Dostępność wolnych miejsc nie jest sprawdzana."
+        }
+        if nearestSearch {
+            let radius = expandedRadius ? 15 : 5
+            return "\(category.title) w promieniu do \(radius) km od Twojej lokalizacji."
+        }
+        return "Miejsca do 1,5 km od pozostałej trasy. Czas objazdu uzupełniamy po znalezieniu wyników."
+    }
+
+    private var searchStatusTitle: String {
+        if nearDestination { return "Szukam parkingów do 2 km od celu…" }
+        return nearestSearch ? "Szukam najbliższych miejsc…" : "Szukam miejsc wzdłuż trasy…"
+    }
+
+    private var navigationTitle: String {
+        if nearDestination { return "Parking przy celu" }
+        return nearestSearch ? category.title : "\(category.title) po trasie"
+    }
+
+    private var searchRadius: Double {
+        expandedRadius ? 15_000 : 5_000
+    }
+
+    private var searchResultLimit: Int {
+        expandedRadius ? 50 : 25
+    }
+
+    private var canExpandSearchRadius: Bool {
+        nearestSearch && !expandedRadius && navigationStore.state.nearbyStatus == .available
+            && navigationStore.state.nearbySuggestions.allSatisfy { $0.estimateStatus != .calculating }
+    }
+
+    @ViewBuilder
+    private var nearbyStatusContent: some View {
+        switch navigationStore.state.nearbyStatus {
+        case .idle, .searching:
+            ProgressView(searchStatusTitle)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .unavailable(let message):
+            unavailableSearchContent(message: message)
+        case .available:
+            availableSearchContent
+        }
+    }
+
+    private func unavailableSearchContent(message: String) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 25, weight: .medium))
+                .foregroundStyle(.secondary)
+            Text("Nie udało się wyszukać miejsc")
+                .font(.headline)
+                .multilineTextAlignment(.center)
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Spróbuj ponownie") { retryID = UUID() }
+                .buttonStyle(.borderedProminent)
+                .padding(.top, 4)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var availableSearchContent: some View {
+        if navigationStore.state.nearbySuggestions.isEmpty {
+            ContentUnavailableView(
+                "Brak miejsc w pobliżu",
+                systemImage: category.symbol,
+                description: Text(nearestSearch
+                    ? "Możesz rozszerzyć wyszukiwanie do 15 km."
+                    : "Spróbuj innej kategorii lub wyszukaj w innym miejscu."))
+        } else if filteredSuggestions.isEmpty {
+            VStack(spacing: 8) {
+                ContentUnavailableView(
+                    "Brak wyników z tymi filtrami",
+                    systemImage: "line.3.horizontal.decrease.circle",
+                    description: Text("Zmień filtry albo wyczyść je, aby zobaczyć wszystkie miejsca."))
+                Button("Wyczyść filtry", action: clearFilters)
+                    .buttonStyle(.bordered)
+            }
+        } else {
+            Text("Znaleziono: \(filteredSuggestions.count)")
+                .font(.subheadline.weight(.semibold))
+            nearbyResultsList
+        }
+    }
+
+    private var nearbyResultsList: some View {
+        List(Array(filteredSuggestions.enumerated()), id: \.element.id) { index, suggestion in
+            nearbyResultRow(suggestion, index: index)
+        }
+        .listStyle(.plain)
+    }
+
+    private func nearbyResultRow(_ suggestion: RouteStopSuggestion, index: Int) -> some View {
+        let result = searchResult(suggestion)
+        let details = supplementalDetails(for: suggestion.candidate)
+        let operatorName = suggestion.candidate.operatorOrBrand
+        let remainingDetails = operatorName == nil ? details : Array(details.dropFirst())
+        let shouldEstimateOnExpand = nearestSearch
+            && suggestion.estimateStatus != .calculating
+            && (suggestion.travelTime == nil || suggestion.travelDistance == nil)
+        let estimateOnExpand: (() -> Void)? = shouldEstimateOnExpand
+            ? { _ = Task { await navigationStore.estimateNearbyTravel(for: suggestion.id) } }
+            : nil
+        let navigationActive = navigationStore.state.status == .navigating || navigationStore.state.status == .rerouting
+        let primaryActionTitle = nearDestination
+            ? "Wybierz parking"
+            : navigationActive ? "Dodaj przystanek" : "Jedź"
+
+        return PlaceSearchResultRow(
+            result: result,
+            index: index + 1,
+            isSaved: savedPlaces.contains {
+                $0.kind == .favorite && $0.destination.coordinate == result.destination.coordinate
+            },
+            onSave: { onSave(result.navigationDestination) },
+            onRemove: { onRemoveSaved(result.destination) },
+            onRename: { onRenameSaved(result.destination, $0) },
+            onSelect: {
+                onSelect(result.navigationDestination)
+                dismiss()
+            },
+            isNavigating: navigationActive,
+            primaryActionTitle: primaryActionTitle,
+            supplementalDetails: remainingDetails,
+            expandedDetails: expandedDetails(for: suggestion.candidate),
+            showsSourceSubtitle: false,
+            primaryMetaLine: operatorName,
+            onExpand: estimateOnExpand)
+    }
+
+    @ViewBuilder
+    private var searchRadiusExpansionControl: some View {
+        if canExpandSearchRadius {
+            Button {
+                expandedRadius = true
+            } label: {
+                Label("Pokaż więcej · do 15 km", systemImage: "arrow.down.circle")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .buttonStyle(.borderedProminent)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(.bar)
+        }
+    }
+
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 12) {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)],
-                           alignment: .leading, spacing: 8) {
-                    ForEach(categories) { value in
-                        Button {
-                            guard category != value else { return }
-                            category = value
-                            expandedRadius = false
-                            clearFilters()
-                            engine.state.nearbySuggestions = []
-                            engine.state.nearbyStatus = .searching
-                        } label: {
-                            Label(value.title, systemImage: value.symbol)
-                                .font(.subheadline.weight(.medium))
-                                .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
-                                .padding(.horizontal, 12)
-                                .foregroundStyle(category == value ? Color.accentColor : Color.primary)
-                                .background(category == value ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.08),
-                                            in: Capsule())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityAddTraits(category == value ? .isSelected : [])
-                    }
-                }
-
-                if hasApplicableFilters {
-                    HStack {
-                        Menu {
-                            if hasOpeningHoursData {
-                                Toggle("Otwarte teraz", isOn: $openNowOnly)
-                            }
-                            if has24HourData {
-                                Toggle("Całodobowe 24h", isOn: $open24HoursOnly)
-                            }
-                            if category == .fuel {
-                                if !availableFuelTypes.isEmpty {
-                                    Picker("Rodzaj paliwa", selection: $selectedFuelType) {
-                                        Text("Dowolne").tag(Optional<String>.none)
-                                        ForEach(availableFuelTypes, id: \.self) { value in
-                                            Text(fuelTypeTitle(value)).tag(Optional<String>.some(value))
-                                        }
-                                    }
-                                }
-                            }
-                            if category == .charging {
-                                if !availablePowerThresholds.isEmpty {
-                                    Picker("Moc minimalna", selection: $minimumChargingPower) {
-                                        Text("Dowolna").tag(Optional<Double>.none)
-                                        ForEach(availablePowerThresholds, id: \.self) { value in
-                                            Text("Co najmniej \(Int(value)) kW").tag(Optional<Double>.some(value))
-                                        }
-                                    }
-                                }
-                                if !availableConnectors.isEmpty {
-                                    Picker("Złącze", selection: $selectedConnector) {
-                                        Text("Dowolne").tag(Optional<String>.none)
-                                        ForEach(availableConnectors, id: \.self) { value in
-                                            Text(connectorTitle(value)).tag(Optional<String>.some(value))
-                                        }
-                                    }
-                                }
-                            }
-                            if !availableOperators.isEmpty {
-                                Picker("Operator", selection: $selectedOperator) {
-                                    Text("Dowolny").tag(Optional<String>.none)
-                                    ForEach(availableOperators, id: \.self) { value in
-                                        Text(value).tag(Optional<String>.some(value))
-                                    }
-                                }
-                            }
-                            if activeFilterCount > 0 {
-                                Divider()
-                                Button("Wyczyść filtry", systemImage: "xmark.circle", action: clearFilters)
-                            }
-                        } label: {
-                            Label(activeFilterCount == 0 ? "Filtry" : "Filtry · \(activeFilterCount)",
-                                  systemImage: "line.3.horizontal.decrease.circle")
-                                .font(.subheadline.weight(.medium))
-                        }
-                        Spacer()
-                    }
-                }
-
-                Text(nearDestination
-                     ? "Parking jest wyszukiwany w pobliżu celu. Dostępność wolnych miejsc nie jest sprawdzana."
-                     : nearestSearch
-                        ? "\(category.title) w promieniu do \(expandedRadius ? 15 : 5) km od Twojej lokalizacji."
-                        : "Miejsca do 1,5 km od pozostałej trasy. Czas objazdu uzupełniamy po znalezieniu wyników.")
+                categorySelector
+                if hasApplicableFilters { nearbyFilterControls }
+                Text(searchDescription)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-
-                switch engine.state.nearbyStatus {
-                case .idle, .searching:
-                    ProgressView(nearDestination
-                                 ? "Szukam parkingów do 2 km od celu…"
-                                 : nearestSearch ? "Szukam najbliższych miejsc…" : "Szukam miejsc wzdłuż trasy…")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                case .unavailable(let message):
-                    VStack(spacing: 10) {
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 25, weight: .medium))
-                            .foregroundStyle(.secondary)
-                        Text("Nie udało się wyszukać miejsc")
-                            .font(.headline)
-                            .multilineTextAlignment(.center)
-                        Text(message)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                        Button("Spróbuj ponownie") { retryID = UUID() }
-                            .buttonStyle(.borderedProminent)
-                            .padding(.top, 4)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                case .available:
-                    if engine.state.nearbySuggestions.isEmpty {
-                        ContentUnavailableView("Brak miejsc w pobliżu",
-                                               systemImage: category.symbol,
-                                               description: Text(nearestSearch
-                                                   ? "Możesz rozszerzyć wyszukiwanie do 15 km."
-                                                   : "Spróbuj innej kategorii lub wyszukaj w innym miejscu."))
-                    } else if filteredSuggestions.isEmpty {
-                        VStack(spacing: 8) {
-                            ContentUnavailableView("Brak wyników z tymi filtrami",
-                                                   systemImage: "line.3.horizontal.decrease.circle",
-                                                   description: Text("Zmień filtry albo wyczyść je, aby zobaczyć wszystkie miejsca."))
-                            Button("Wyczyść filtry", action: clearFilters)
-                                .buttonStyle(.bordered)
-                        }
-                    } else {
-                        Text("Znaleziono: \(filteredSuggestions.count)")
-                            .font(.subheadline.weight(.semibold))
-                        List(Array(filteredSuggestions.enumerated()), id: \.element.id) { index, suggestion in
-                            let result = searchResult(suggestion)
-                            let details = supplementalDetails(for: suggestion.candidate)
-                            let operatorName = suggestion.candidate.operatorOrBrand
-                            let remainingDetails = operatorName == nil ? details : Array(details.dropFirst())
-                            let shouldEstimateOnExpand = nearestSearch
-                                && suggestion.estimateStatus != .calculating
-                                && (suggestion.travelTime == nil || suggestion.travelDistance == nil)
-                            let estimateOnExpand: (() -> Void)? = shouldEstimateOnExpand
-                                ? { _ = Task { await engine.estimateNearbyTravel(for: suggestion.id) } }
-                                : nil
-                            let navigationActive = engine.state.status == .navigating || engine.state.status == .rerouting
-                            let primaryActionTitle = nearDestination
-                                ? "Wybierz parking"
-                                : navigationActive ? "Dodaj przystanek" : "Jedź"
-                            PlaceSearchResultRow(
-                                result: result, index: index + 1,
-                                isSaved: savedPlaces.contains { $0.kind == .favorite && $0.destination.coordinate == result.destination.coordinate },
-                                onSave: { onSave(result.navigationDestination) },
-                                onRemove: { onRemoveSaved(result.destination) },
-                                onRename: { onRenameSaved(result.destination, $0) },
-                                onSelect: {
-                                    onSelect(result.navigationDestination)
-                                    dismiss()
-                                },
-                                isNavigating: navigationActive,
-                                primaryActionTitle: primaryActionTitle,
-                                supplementalDetails: remainingDetails,
-                                expandedDetails: expandedDetails(for: suggestion.candidate),
-                                showsSourceSubtitle: false,
-                                primaryMetaLine: operatorName,
-                                onExpand: estimateOnExpand)
-                        }
-                        .listStyle(.plain)
-                    }
-                }
+                nearbyStatusContent
             }
             .padding(.horizontal, 16)
             .padding(.top, 14)
-            .navigationTitle(nearDestination
-                             ? "Parking przy celu"
-                             : nearestSearch ? category.title : "\(category.title) po trasie")
+            .navigationTitle(navigationTitle)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Zamknij") { dismiss() }
                 }
             }
-            .task(id: "\(category.rawValue)-\(retryID)-\(expandedRadius)") {
-                await engine.searchNearbyPlaces(category, nearDestination: nearDestination,
-                                                searchRadius: expandedRadius ? 15_000 : 5_000,
-                                                resultLimit: expandedRadius ? 50 : 25)
+            .task(id: nearbySearchRefreshKey) {
+                await navigationStore.searchNearbyPlaces(
+                    category,
+                    nearDestination: nearDestination,
+                    searchRadius: searchRadius,
+                    resultLimit: searchResultLimit)
+            }
+            .task(id: openingHoursRefreshKey) {
+                await refreshOpeningHours()
             }
             .safeAreaInset(edge: .bottom) {
-                if nearestSearch, !expandedRadius, engine.state.nearbyStatus == .available,
-                   engine.state.nearbySuggestions.allSatisfy({ $0.estimateStatus != .calculating }) {
-                    Button {
-                        expandedRadius = true
-                    } label: {
-                        Label("Pokaż więcej · do 15 km", systemImage: "arrow.down.circle")
-                            .font(.subheadline.weight(.semibold))
-                            .frame(maxWidth: .infinity, minHeight: 44)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(.bar)
-                }
+                searchRadiusExpansionControl
             }
         }
     }
@@ -420,10 +518,30 @@ struct NearbyPlacesSheet: View {
         case .parking, .parkRide: "parking"
         case .charging: "charging_station"
         }
+        let osmID: String?
+        if poi?.provider == .openStreetMap {
+            osmID = poi?.osmID
+        } else if poi == nil {
+            osmID = candidate.id.replacingOccurrences(of: "-", with: ":")
+        } else {
+            osmID = nil
+        }
+
+        let straightDistance: Double?
+        if nearDestination {
+            straightDistance = navigationStore.state.destination.map {
+                $0.coordinate.distance(to: candidate.destination.coordinate)
+            }
+        } else if nearestSearch {
+            straightDistance = navigationStore.state.location?.coordinate.distance(
+                to: candidate.destination.coordinate)
+        } else {
+            straightDistance = nil
+        }
+
         return SearchResult(destination: candidate.destination, street: nil, houseNumber: nil,
                             city: nil, countryCode: candidate.countryCode, isPOI: true,
-                            osmID: poi?.provider == .openStreetMap
-                                ? poi?.osmID : poi == nil ? candidate.id.replacingOccurrences(of: "-", with: ":") : nil,
+                            osmID: osmID,
                             providerID: candidate.providerID,
                             placeProvider: poi?.provider ?? .openStreetMap,
                             category: poi?.category ?? candidate.osmCategory ?? category,
@@ -431,11 +549,7 @@ struct NearbyPlacesSheet: View {
                             operatorName: poi?.operatorName ?? candidate.operatorName,
                             openingHours: candidate.openingHours,
                             timeZoneIdentifier: candidate.timeZoneIdentifier,
-                            straightDistance: nearDestination
-                                ? engine.state.destination.map { $0.coordinate.distance(to: candidate.destination.coordinate) }
-                                : nearestSearch
-                                    ? engine.state.location?.coordinate.distance(to: candidate.destination.coordinate)
-                                    : nil,
+                            straightDistance: straightDistance,
                             travelTime: suggestion.travelTime, travelDistance: suggestion.travelDistance,
                             detour: suggestion.detourSeconds, travelEstimateStatus: suggestion.estimateStatus)
     }

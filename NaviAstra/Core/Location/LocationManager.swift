@@ -8,18 +8,47 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
     var onHeading: ((CLHeading) -> Void)?
     var onAuthorization: ((CLAuthorizationStatus) -> Void)?
     var onFailure: ((Error) -> Void)?
+    private var appliedPolicy: LocationPolicy?
+    private var headingUpdatesEnabled = false
 
     override init() {
         super.init()
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
-        manager.distanceFilter = kCLDistanceFilterNone
-        manager.activityType = .automotiveNavigation
     }
 
-    func start() {
+    func prepareAuthorization() {
+        guard manager.authorizationStatus == .notDetermined else { return }
         manager.requestWhenInUseAuthorization()
-        manager.startUpdatingLocation()
+    }
+
+    func apply(_ policy: LocationPolicy) {
+        let changed = appliedPolicy != policy
+        appliedPolicy = policy
+
+        guard changed else {
+            applyBackgroundLocationSettings(manager.authorizationStatus)
+            setHeadingUpdatesEnabled(policy.updatesHeading)
+            return
+        }
+
+        manager.stopUpdatingLocation()
+        switch policy.demand {
+        case .stopped:
+            applyBackgroundLocationSettings(manager.authorizationStatus)
+        case .oneShot:
+            configure(policy)
+            applyBackgroundLocationSettings(manager.authorizationStatus)
+            if canUseLocationServices {
+                manager.requestLocation()
+            }
+        case .continuous:
+            configure(policy)
+            applyBackgroundLocationSettings(manager.authorizationStatus)
+            if canUseLocationServices {
+                manager.startUpdatingLocation()
+            }
+        }
+        setHeadingUpdatesEnabled(policy.updatesHeading)
     }
 
     func stop() {
@@ -30,9 +59,35 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
     func setHeadingUpdatesEnabled(_ enabled: Bool) {
         guard enabled, CLLocationManager.headingAvailable() else {
             manager.stopUpdatingHeading()
+            headingUpdatesEnabled = false
             return
         }
+        guard !headingUpdatesEnabled else { return }
+        headingUpdatesEnabled = true
         manager.startUpdatingHeading()
+    }
+
+    private var canUseLocationServices: Bool {
+        manager.authorizationStatus == .authorizedWhenInUse ||
+            manager.authorizationStatus == .authorizedAlways
+    }
+
+    private func configure(_ policy: LocationPolicy) {
+        switch policy.accuracy {
+        case .hundredMeters:
+            manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        case .nearestTenMeters:
+            manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+        case .bestForNavigation:
+            manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
+        }
+        manager.distanceFilter = policy.distanceFilter
+        switch policy.activity {
+        case .other: manager.activityType = .other
+        case .automotiveNavigation: manager.activityType = .automotiveNavigation
+        case .otherNavigation: manager.activityType = .otherNavigation
+        case .fitness: manager.activityType = .fitness
+        }
     }
 
     var backgroundLocationModeEnabled: Bool {
@@ -65,7 +120,9 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
 
     private func applyBackgroundLocationSettings(_ authorization: CLAuthorizationStatus) {
 #if os(iOS)
-        let enabled = authorization == .authorizedAlways && backgroundLocationModeEnabled
+        let wantsBackgroundUpdates = appliedPolicy?.allowsBackgroundUpdates == true
+        let isAuthorized = authorization == .authorizedAlways || authorization == .authorizedWhenInUse
+        let enabled = wantsBackgroundUpdates && isAuthorized && backgroundLocationModeEnabled
         manager.allowsBackgroundLocationUpdates = enabled
         manager.pausesLocationUpdatesAutomatically = !enabled
 #endif
@@ -85,7 +142,14 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
         Task { @MainActor [weak self] in
             self?.applyBackgroundLocationSettings(status)
             self?.onAuthorization?(status)
+            self?.reapplyCurrentPolicy()
         }
+    }
+
+    private func reapplyCurrentPolicy() {
+        guard let appliedPolicy else { return }
+        self.appliedPolicy = nil
+        apply(appliedPolicy)
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {

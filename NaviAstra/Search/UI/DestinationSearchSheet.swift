@@ -4,7 +4,7 @@ struct DestinationSearchSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
 
-    let engine: NavigationEngine
+    let navigationStore: NavigationStore
     @Bindable var searchStore: SearchStore
     let selectingRouteOrigin: Bool
     let places: [SavedPlace]
@@ -143,127 +143,160 @@ struct DestinationSearchSheet: View {
         }
     }
 
+    private var searchScopePicker: some View {
+        Picker("Rodzaj wyszukiwania", selection: $searchStore.scope) {
+            ForEach(DestinationSearchScope.allCases) { scope in
+                Text(scope.rawValue).tag(scope)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .onChange(of: searchScope) { _, _ in startSearch(query) }
+    }
+
+    private var searchAreaControls: some View {
+        HStack {
+            if let center = navigationStore.state.searchMapCenter {
+                Button("Szukaj w tym obszarze") {
+                    searchArea = center
+                    startSearch(query)
+                }
+            }
+            if searchArea != nil {
+                Button("Blisko mnie") { searchArea = nil; startSearch(query) }
+            }
+            if navigationStore.state.status == .navigating && searchScope == .places {
+                Toggle("Po trasie", isOn: $searchStore.alongRoute)
+                    .onChange(of: alongRoute) { _, _ in startSearch(query) }
+            }
+        }
+        .font(.caption)
+    }
+
+    @ViewBuilder
+    private var searchResultSections: some View {
+        if trimmedQuery.isEmpty {
+            if searchScope == .places {
+                savedDestinations
+            } else {
+                ContentUnavailableView(
+                    "Szukaj pociągu, stacji lub linii",
+                    systemImage: "tram.fill",
+                    description: Text("Wpisz numer pociągu lub linii albo nazwę stacji i przystanku w Polsce."))
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 28)
+            }
+        } else if searchScope == .places {
+            matchingDestinations
+            contactsResultsSection
+            searchStatus
+            remoteResults
+        } else {
+            transitResultsSection
+            searchStatus
+        }
+    }
+
+    private var searchResultsScrollView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                searchResultSections
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    private var searchMainContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            searchField
+            if let savedPlaceNotice {
+                Label(savedPlaceNotice, systemImage: "checkmark.circle.fill")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.green)
+                    .transition(.opacity)
+            }
+            if !selectingRouteOrigin && searchScope == .places && trimmedQuery.isEmpty {
+                quickPlacesSection
+            }
+            if !selectingRouteOrigin { searchScopePicker }
+            searchAreaControls
+            searchResultsScrollView
+        }
+        .padding(.horizontal, 17)
+        .padding(.top, 14)
+        .frame(maxWidth: 620, maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var searchNavigationTitle: String {
+        if selectingRouteOrigin { return "Skąd zaczynasz?" }
+        if let savingKind { return "Dodaj \(savingKind.title.lowercased())" }
+        return "Szukaj"
+    }
+
+    private func prepareSearchPresentation() {
+        contactsAccessStatus = ContactsAccessStatus.current()
+        searchStore.resetForPresentation(selectingRouteOrigin: selectingRouteOrigin)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            isSearchFocused = true
+        }
+    }
+
+    private func handleLocationChange(previous: Coordinate?, current: Coordinate?) {
+        // A query entered before the first GPS fix must be retried with that fix.
+        if previous == nil, current != nil, searchArea == nil, !trimmedQuery.isEmpty {
+            startSearch(query)
+        }
+    }
+
+    private func handleScenePhaseChange(_ phase: ScenePhase) {
+        guard phase == .active, !isRequestingContactsAccess else { return }
+        let previousStatus = contactsAccessStatus
+        contactsAccessStatus = ContactsAccessStatus.current()
+        if previousStatus != contactsAccessStatus, !trimmedQuery.isEmpty {
+            startSearch(query)
+        }
+    }
+
+    private func cleanUpSearch() {
+        searchStore.cancelSearches()
+        let closingSearchID = searchStore.currentRequestID
+        Task { @MainActor in
+            await Task.yield()
+            guard searchStore.isCurrentRequest(closingSearchID) else { return }
+            navigationStore.state.searchResults = []
+        }
+    }
+
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 16) {
-                searchField
-                if let savedPlaceNotice {
-                    Label(savedPlaceNotice, systemImage: "checkmark.circle.fill")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.green)
-                        .transition(.opacity)
+            searchMainContent
+                .navigationTitle(searchNavigationTitle)
+                .alert("Nie udało się dodać miejsca", isPresented: $showSaveAlert) {
+                    Button("OK", role: .cancel) { }
+                } message: {
+                    Text(saveAlertMessage)
                 }
-                if !selectingRouteOrigin && searchScope == .places && trimmedQuery.isEmpty {
-                    quickPlacesSection
-                }
-                if !selectingRouteOrigin {
-                    Picker("Rodzaj wyszukiwania", selection: $searchStore.scope) {
-                        ForEach(DestinationSearchScope.allCases) { scope in
-                            Text(scope.rawValue).tag(scope)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .onChange(of: searchScope) { _, _ in startSearch(query) }
-                }
-
-                HStack {
-                    if let center = engine.state.searchMapCenter {
-                        Button("Szukaj w tym obszarze") {
-                            searchArea = center
-                            startSearch(query)
-                        }
-                    }
-                    if searchArea != nil {
-                        Button("Blisko mnie") { searchArea = nil; startSearch(query) }
-                    }
-                    if engine.state.status == .navigating && searchScope == .places {
-                        Toggle("Po trasie", isOn: $searchStore.alongRoute)
-                            .onChange(of: alongRoute) { _, _ in startSearch(query) }
+                .toolbar {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Zamknij") { dismiss() }
                     }
                 }
-                .font(.caption)
-
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        if trimmedQuery.isEmpty {
-                            if searchScope == .places {
-                                savedDestinations
-                            } else {
-                                ContentUnavailableView("Szukaj pociągu, stacji lub linii",
-                                                       systemImage: "tram.fill",
-                                                       description: Text("Wpisz numer pociągu lub linii albo nazwę stacji i przystanku w Polsce."))
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.top, 28)
-                            }
-                        } else {
-                            if searchScope == .places {
-                                matchingDestinations
-                                contactsResultsSection
-                                searchStatus
-                                remoteResults
-                            } else {
-                                transitResultsSection
-                                searchStatus
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                .onAppear(perform: prepareSearchPresentation)
+                .onChange(of: navigationStore.state.location?.coordinate) { previous, current in
+                    handleLocationChange(previous: previous, current: current)
                 }
-                .scrollIndicators(.hidden)
-            }
-            .padding(.horizontal, 17)
-            .padding(.top, 14)
-            .frame(maxWidth: 620, maxHeight: .infinity, alignment: .top)
-            .frame(maxWidth: .infinity)
-            .navigationTitle(selectingRouteOrigin ? "Skąd zaczynasz?" :
-                             savingKind.map { "Dodaj \($0.title.lowercased())" } ?? "Szukaj")
-            .alert("Nie udało się dodać miejsca", isPresented: $showSaveAlert) {
-                Button("OK", role: .cancel) { }
-            } message: {
-                Text(saveAlertMessage)
-            }
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Zamknij") { dismiss() }
+                .onChange(of: scenePhase) { _, phase in
+                    handleScenePhaseChange(phase)
                 }
-            }
-            .onAppear {
-                contactsAccessStatus = ContactsAccessStatus.current()
-                searchStore.resetForPresentation(selectingRouteOrigin: selectingRouteOrigin)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                    isSearchFocused = true
-                }
-            }
-            .onChange(of: engine.state.location?.coordinate) { previous, current in
-                // A query entered before the first GPS fix must be retried with that fix.
-                if previous == nil, current != nil, searchArea == nil, !trimmedQuery.isEmpty {
-                    startSearch(query)
-                }
-            }
-            .onChange(of: scenePhase) { _, phase in
-                guard phase == .active, !isRequestingContactsAccess else { return }
-                let previousStatus = contactsAccessStatus
-                contactsAccessStatus = ContactsAccessStatus.current()
-                if previousStatus != contactsAccessStatus, !trimmedQuery.isEmpty {
-                    startSearch(query)
-                }
-            }
-            .onDisappear {
-                searchStore.cancelSearches()
-                let closingSearchID = searchStore.currentRequestID
-                Task { @MainActor in
-                    await Task.yield()
-                    guard searchStore.isCurrentRequest(closingSearchID) else { return }
-                    engine.state.searchResults = []
-                }
-            }
+                .onDisappear(perform: cleanUpSearch)
         }
     }
 
     private func startSearch(_ value: String, includeUUGFallback: Bool = false) {
         let requestID = searchStore.beginRequest()
-        engine.state.searchResults = []
+        navigationStore.state.searchResults = []
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= 2 else { isSearching = false; isTransitSearching = false; return }
 
@@ -276,7 +309,7 @@ struct DestinationSearchSheet: View {
                     return
                 }
                 guard !Task.isCancelled, searchStore.isCurrentRequest(requestID) else { return }
-                let center = searchArea ?? engine.state.location?.coordinate
+                let center = searchArea ?? navigationStore.state.location?.coordinate
                 let matches = await searchStore.searchTransit(trimmed, near: center)
                 guard !Task.isCancelled, searchStore.isCurrentRequest(requestID) else { return }
                 transitResults = matches
@@ -292,20 +325,23 @@ struct DestinationSearchSheet: View {
             do {
                 try await Task.sleep(for: .milliseconds(250))
                 guard !Task.isCancelled, searchStore.isCurrentRequest(requestID) else { return }
-                let state = engine.state
+                let state = navigationStore.state
                 let context = await searchStore.searchContext(
                     navigation: state, places: places, recentSearches: recentSearches)
                 let found = try await searchStore.searchPlaces(
                     trimmed, context: context, includeUUGFallback: includeUUGFallback,
                     routingServerAddress: UserDefaults.standard.string(forKey: "routingServer")
-                        ?? "https://valhalla1.openstreetmap.de") { partial in
+                        ?? "https://valhalla1.openstreetmap.de",
+                    routeEstimator: { origin, destination, mode in
+                        try await navigationStore.estimatedSearchRoute(from: origin, to: destination, mode: mode)
+                    }) { partial in
                     guard !Task.isCancelled, searchStore.isCurrentRequest(requestID) else { return }
                     results = partial
-                    engine.state.searchResults = results
+                    navigationStore.state.searchResults = results
                 }
                 guard !Task.isCancelled, searchStore.isCurrentRequest(requestID) else { return }
                 results = found
-                engine.state.searchResults = results
+                navigationStore.state.searchResults = results
                 isSearching = false
                 didCompleteSearchWithNoResults = found.isEmpty
                 var didRefreshSavedContact = false
@@ -809,13 +845,13 @@ struct DestinationSearchSheet: View {
         onSelectDestination(result.navigationDestination, asStop)
         if selectingRouteOrigin { return }
         if !asStop, QueryClassifier().classify(query).intent == .coordinates,
-           engine.state.destination?.id == result.destination.id {
+           navigationStore.state.destination?.id == result.destination.id {
             let destinationID = result.destination.id
             Task {
                 guard let address = await GUGiKAddressProvider().reverseGeocode(result.destination.coordinate),
-                      let current = engine.state.destination,
+                      let current = navigationStore.state.destination,
                       current.id == destinationID else { return }
-                engine.state.destination = Destination(id: current.id, name: current.name,
+                navigationStore.state.destination = Destination(id: current.id, name: current.name,
                                                        coordinate: current.coordinate, address: address)
             }
             return
@@ -824,11 +860,11 @@ struct DestinationSearchSheet: View {
         Task {
             let precise = await GUGiKAddressProvider().preciseDestination(for: result)
             if let precise,
-               engine.state.status == .destinationPreview || engine.state.status == .routeCalculating ||
-                engine.state.status == .routePreview || engine.state.status == .error,
-               engine.state.destination?.id == result.destination.id {
-                engine.selectDestination(precise)
-                await engine.planRoute()
+               navigationStore.state.status == .destinationPreview || navigationStore.state.status == .routeCalculating ||
+                navigationStore.state.status == .routePreview || navigationStore.state.status == .error,
+               navigationStore.state.destination?.id == result.destination.id {
+                navigationStore.selectDestination(precise)
+                await navigationStore.planRoute()
             }
         }
     }
@@ -886,7 +922,7 @@ struct DestinationSearchSheet: View {
         results = []
         searchError = nil
         didCompleteSearchWithNoResults = false
-        engine.state.searchResults = []
+        navigationStore.state.searchResults = []
         isSearchFocused = false
     }
 

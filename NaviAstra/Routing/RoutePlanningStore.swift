@@ -5,11 +5,11 @@ import Observation
 final class RoutePlanningStore {
     var draftPreferences = RoutingPreferences()
 
-    func loadPreferences(from engine: NavigationEngine) {
-        draftPreferences = engine.state.routingPreferences
+    func loadPreferences(from navigation: NavigationStore) {
+        draftPreferences = navigation.state.routingPreferences
     }
 
-    func applyPreferences(to engine: NavigationEngine) async {
-        await engine.updateRoutingPreferences(draftPreferences)
+    func applyPreferences(to navigation: NavigationStore) async {
+        await navigation.updateRoutingPreferences(draftPreferences)
     }
 }

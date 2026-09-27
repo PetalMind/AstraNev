@@ -97,9 +97,11 @@ Dołączony `opening_hours.js` jest wydaniem 3.14.0 na licencji LGPL-3.0-only; S
 
 ## Cache, odświeżanie i błędy
 
-Szczegóły są przechowywane lokalnie w pliku `Application Support/NaviAstra/place-details-cache.json`. Cache ma osobne okresy świeżości: identyfikacja, kategoria i adres — 30 dni; kontakt — 7 dni; dostęp i parkowanie — 3 dni; godziny otwarcia — 12 godzin. Zapisane pola zachowują czas pobrania swojej grupy, a wpis po terminie może zostać pokazany od razu podczas odświeżania. Cache ogranicza się do 1000 najnowszych pozycji. Identyczne aktywne żądania są współdzielone. Wynik „nie znaleziono pasującego obiektu” jest pamiętany przez 5 minut, aby nie powtarzać bezskutecznie tej samej próby.
+Szczegóły są przechowywane lokalnie w pliku `Application Support/NaviAstra/place-details-cache.json`. Cache ma osobne okresy świeżości: identyfikacja, kategoria i adres — 30 dni; kontakt — 7 dni; dostęp i parkowanie — 3 dni; godziny otwarcia — 12 godzin. Cache zapamiętuje również, kiedy dana grupa została sprawdzona bez znalezienia pól; po upływie jej terminu aplikacja ponawia próbę zamiast traktować brak danych jako świeży bez końca. Wpis po terminie może zostać pokazany od razu podczas odświeżania. Cache ogranicza się do 1000 najnowszych pozycji. Identyczne aktywne żądania są współdzielone. Wynik „nie znaleziono pasującego obiektu” jest pamiętany przez 5 minut, aby nie powtarzać bezskutecznie tej samej próby.
 
-Jeżeli odświeżenie się nie powiedzie, karta zachowuje dane już dostępne i pokazuje błąd z możliwością ponowienia. Brak tagu oznacza brak informacji w źródle, a nie stan przeciwny: brak `opening_hours` nie znaczy, że sklep jest zamknięty; brak tagu opłaty nie znaczy, że parking jest bezpłatny.
+Szczegóły OSM karta pobiera najpierw z wybranego w ustawieniach serwera Overpass. Gdy żądanie kończy się błędem, przekracza limit czasu albo serwer nie ma pasującego obiektu, aplikacja próbuje kolejno publiczne instancje Overpass Private.coffee i VK Maps. Połączenia są sekwencyjne, a przy powodzeniu dane są zapisywane w tym samym cache. Dostępność tych instancji zależy od ich operatorów; lista pochodzi z [dokumentacji OpenStreetMap](https://wiki.openstreetmap.org/wiki/Overpass_API#Public_Overpass_API_instances).
+
+Jeśli odświeżenie się nie powiedzie, karta zachowuje dane już dostępne. Błąd i przycisk ponowienia pokazują się tylko wtedy, gdy karta nie ma dodatkowych informacji do wyświetlenia. Brak tagu oznacza brak informacji w źródle, a nie stan przeciwny: brak `opening_hours` nie znaczy, że sklep jest zamknięty; brak tagu opłaty nie znaczy, że parking jest bezpłatny.
 
 ## Ograniczenia i prywatność żądań
 

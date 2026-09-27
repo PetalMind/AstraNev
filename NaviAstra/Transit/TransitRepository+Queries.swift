@@ -1,6 +1,6 @@
 import Foundation
 
-extension LodzTransitRepository {
+extension TransitRepository {
     func departures(at stopID: String, limit: Int) async -> [TransitDeparture] {
         guard let database = try? await loadDatabase() else { return [] }
         let realtime = await loadRealtime()

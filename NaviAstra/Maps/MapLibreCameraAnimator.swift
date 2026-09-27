@@ -3,9 +3,11 @@ import MapLibre
 import UIKit
 
 enum MapLibreCameraAnimator {
-    static func apply(_ intent: CameraIntent, state: NavigationCameraState, to map: MLNMapView) {
+    @discardableResult
+    static func apply(_ intent: CameraIntent, state: NavigationCameraState, to map: MLNMapView,
+                      completionHandler: @escaping () -> Void) -> Bool {
         guard isValid(intent.target), intent.zoom.isFinite, intent.pitch.isFinite,
-              intent.bearing.isFinite else { return }
+              intent.bearing.isFinite else { return false }
         let validBounds = intent.bounds.filter(isValid)
         if !validBounds.isEmpty, state == .destinationPreview || state == .routeOverview || state == .arrived {
             let camera = map.camera
@@ -18,14 +20,14 @@ enum MapLibreCameraAnimator {
             map.setVisibleCoordinateBounds(bounds,
                 edgePadding: UIEdgeInsets(top: CGFloat(intent.padding.top), left: CGFloat(intent.padding.left),
                                           bottom: CGFloat(intent.padding.bottom), right: CGFloat(intent.padding.right)),
-                animated: true, completionHandler: nil)
-            return
+                animated: true, completionHandler: completionHandler)
+            return true
         }
         let camera = map.camera
         camera.centerCoordinate = intent.target.cl
-        guard map.zoomLevel.isFinite, camera.altitude.isFinite else { return }
+        guard map.zoomLevel.isFinite, camera.altitude.isFinite else { return false }
         let targetAltitude = camera.altitude * pow(2, map.zoomLevel - intent.zoom)
-        guard targetAltitude.isFinite else { return }
+        guard targetAltitude.isFinite else { return false }
         camera.pitch = CGFloat(min(60, max(0, intent.pitch)))
         camera.heading = intent.bearing.truncatingRemainder(dividingBy: 360)
         camera.altitude = max(120, targetAltitude)
@@ -41,7 +43,8 @@ enum MapLibreCameraAnimator {
         map.setCamera(camera, withDuration: duration, animationTimingFunction: nil,
                       edgePadding: UIEdgeInsets(top: intent.padding.top, left: intent.padding.left,
                                                 bottom: intent.padding.bottom, right: intent.padding.right),
-                      completionHandler: nil)
+                      completionHandler: completionHandler)
+        return true
     }
 
     private static func isValid(_ coordinate: Coordinate) -> Bool {

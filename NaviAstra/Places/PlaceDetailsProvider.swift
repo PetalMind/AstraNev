@@ -170,10 +170,12 @@ struct PlaceDetails: Codable, Identifiable {
             "hours": 12 * 60 * 60,
             "access": 3 * 24 * 60 * 60
         ]
-        return groups.contains { entry in
-            guard let lifetime = ttl[entry.key] else { return true }
-            return Date().timeIntervalSince(entry.value) >= lifetime
+        let now = Date()
+        for (group, lifetime) in ttl {
+            guard let fetchedAt = groups[group] else { return true }
+            if now.timeIntervalSince(fetchedAt) >= lifetime { return true }
         }
+        return false
     }
 
     nonisolated private static func legacyCacheGroups(for details: PlaceDetails) -> [String: Date] {
@@ -210,6 +212,15 @@ protocol PlaceDetailsProvider {
 
 struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
     private let endpoint = URL(string: UserDefaults.standard.string(forKey: "overpassServer") ?? "https://overpass-api.de/api/interpreter")!
+    private static let fallbackEndpoints = [
+        "https://overpass.private.coffee/api/interpreter",
+        "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
+    ].compactMap { URL(string: $0) }
+
+    private var requestEndpoints: [URL] {
+        var seen = Set<String>()
+        return ([endpoint] + Self.fallbackEndpoints).filter { seen.insert($0.absoluteString).inserted }
+    }
 
     /// Search responses already contain full OSM tags; reuse them instead of fetching the same object again.
     static func cacheSearchDetails(_ objects: [(id: String, name: String, tags: [String: String])]) async {
@@ -261,9 +272,66 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
             selector = "nwr(around:100,\(identity.coordinate.latitude),\(identity.coordinate.longitude))[~\"^(name(:.*)?|brand|operator)$\"~\".\"];"
         }
         let query = "[out:json][timeout:6];\(selector)out center tags;"
+        var receivedValidResponse = false
+        var encounteredFailure = false
+        for (attempt, requestEndpoint) in requestEndpoints.enumerated() {
+            try Task.checkCancellation()
+            do {
+                let reply = try await fetchReply(query: query, from: requestEndpoint,
+                                                 timeout: attempt == 0 ? 8 : 6)
+                guard reply.remark == nil else { throw PlaceDetailsError.unavailable }
+                receivedValidResponse = true
+
+                let element: Element?
+                if let requestedID {
+                    element = reply.elements.first(where: { $0.type == requestedID.type && $0.id == requestedID.value })
+                } else {
+                    let candidates = reply.elements.compactMap { candidate -> (element: Element, score: Double)? in
+                        guard let tags = candidate.tags,
+                              let coordinate = candidate.coordinate else { return nil }
+                        let distance = coordinate.distance(to: identity.coordinate)
+                        if identity.provider == .openFreeMap, let externalID = identity.externalID {
+                            guard let tileID = Int64(externalID), tileID != Int64.min,
+                                  (candidate.id == tileID || candidate.id == abs(tileID)),
+                                  Self.matchesExactName(Self.normalized(identity.name), tags: tags),
+                                  distance <= 100 else { return nil }
+                            let categoryScore = identity.category.map { Self.matchesCategory($0, tags: tags) ? 180.0 : 0 } ?? 0
+                            return (candidate, 1_500 + categoryScore - distance)
+                        }
+
+                        guard distance <= 100,
+                              !Self.hasConflictingAddress(identity.address, tags: tags),
+                              let nameScore = Self.nameMatchScore(identity, tags: tags),
+                              nameScore >= 400 else { return nil }
+                        let categoryMatch = identity.category.map { Self.matchesCategory($0, tags: tags) } ?? false
+                        let addressMatch = Self.addressMatchScore(identity.address, tags: tags)
+                        guard distance <= 40 || nameScore >= 760 || categoryMatch || addressMatch >= 100 else { return nil }
+                        let score = nameScore + (categoryMatch ? 180 : 0) + addressMatch - distance * 2
+                        return (candidate, score)
+                    }
+                    element = candidates.max { $0.score < $1.score }?.element
+                }
+                guard let element, let tags = element.tags,
+                      let resolvedID = OpenStreetMapObjectID("\(element.type):\(element.id)") else { continue }
+                let resolvedKey = resolvedID.cacheKey
+                let downloaded = Self.makeDetails(id: resolvedKey, fallbackName: partial.name, tags: tags)
+                await PlaceDetailsCache.shared.store(downloaded, for: Array(Set([resolvedKey, requestKey])))
+                return partial.merging(downloaded)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                encounteredFailure = true
+                // Try the next public instance after a timeout, rate limit, or malformed response.
+            }
+        }
+        if receivedValidResponse && !encounteredFailure { return nil }
+        throw PlaceDetailsError.unavailable
+    }
+
+    private func fetchReply(query: String, from endpoint: URL, timeout: TimeInterval) async throws -> Reply {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
-        request.timeoutInterval = 8
+        request.timeoutInterval = timeout
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.setValue("NaviAstra/1.0 (https://github.com/PetalMind/AstraNev; OpenStreetMap place details)",
                          forHTTPHeaderField: "User-Agent")
@@ -275,48 +343,11 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw PlaceDetailsError.unavailable
         }
-        let reply: Reply
         do {
-            reply = try JSONDecoder().decode(Reply.self, from: data)
+            return try JSONDecoder().decode(Reply.self, from: data)
         } catch {
             throw PlaceDetailsError.invalidResponse
         }
-        guard reply.remark == nil else { throw PlaceDetailsError.unavailable }
-        let element: Element?
-        if let requestedID {
-            element = reply.elements.first(where: { $0.type == requestedID.type && $0.id == requestedID.value })
-        } else {
-            let candidates = reply.elements.compactMap { candidate -> (element: Element, score: Double)? in
-                guard let tags = candidate.tags,
-                      let coordinate = candidate.coordinate else { return nil }
-                let distance = coordinate.distance(to: identity.coordinate)
-                if identity.provider == .openFreeMap, let externalID = identity.externalID {
-                    guard let tileID = Int64(externalID), tileID != Int64.min,
-                          (candidate.id == tileID || candidate.id == abs(tileID)),
-                          Self.matchesExactName(Self.normalized(identity.name), tags: tags),
-                          distance <= 100 else { return nil }
-                    let categoryScore = identity.category.map { Self.matchesCategory($0, tags: tags) ? 180.0 : 0 } ?? 0
-                    return (candidate, 1_500 + categoryScore - distance)
-                }
-
-                guard distance <= 100,
-                      !Self.hasConflictingAddress(identity.address, tags: tags),
-                      let nameScore = Self.nameMatchScore(identity, tags: tags),
-                      nameScore >= 400 else { return nil }
-                let categoryMatch = identity.category.map { Self.matchesCategory($0, tags: tags) } ?? false
-                let addressMatch = Self.addressMatchScore(identity.address, tags: tags)
-                guard distance <= 40 || nameScore >= 760 || categoryMatch || addressMatch >= 100 else { return nil }
-                let score = nameScore + (categoryMatch ? 180 : 0) + addressMatch - distance * 2
-                return (candidate, score)
-            }
-            element = candidates.max { $0.score < $1.score }?.element
-        }
-        guard let element, let tags = element.tags,
-              let resolvedID = OpenStreetMapObjectID("\(element.type):\(element.id)") else { return nil }
-        let resolvedKey = resolvedID.cacheKey
-        let downloaded = Self.makeDetails(id: resolvedKey, fallbackName: partial.name, tags: tags)
-        await PlaceDetailsCache.shared.store(downloaded, for: Array(Set([resolvedKey, requestKey])))
-        return partial.merging(downloaded)
     }
 
     nonisolated private static func normalized(_ value: String) -> String {
@@ -437,12 +468,8 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         let driveThrough = tags["drive_through"]
         let osmParking = ParkingInformation.fromOSMTags(tags)
         let now = Date()
-        var cacheGroupFetchedAt = ["identity": now]
-        if phone != nil || website != nil { cacheGroupFetchedAt["contact"] = now }
-        if tags["opening_hours"] != nil { cacheGroupFetchedAt["hours"] = now }
-        if wheelchair != nil || parking != nil || osmParking != nil || driveThrough != nil {
-            cacheGroupFetchedAt["access"] = now
-        }
+        // Record negative lookups too, so missing fields are retried after their TTL.
+        let cacheGroupFetchedAt = ["identity": now, "contact": now, "hours": now, "access": now]
 
         return PlaceDetails(id: id,
                             name: name,

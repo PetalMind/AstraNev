@@ -5,7 +5,7 @@ Dokument opisuje syntezę mowy w NaviAstra: źródła zdarzeń, harmonogram wypo
 ## Architektura
 
 ```text
-NavigationEngine.updateProgress()
+NavigationSession.updateProgress()
         ↓
 VoiceGuidanceEngine
   treść, progi, preferencje, klucze zdarzeń
@@ -17,7 +17,7 @@ AVSpeechSynthesizer
   + AVAudioSession na iOS
 ```
 
-`NavigationEngine` dostarcza kontekst GPS i trasę. `VoiceGuidanceEngine` zamienia go na komunikaty, a prywatny `VoiceAnnouncementScheduler` decyduje, czy wypowiedź może rozpocząć się teraz, czekać, przerwać inną albo zostać pominięta. Obsługa audio nie zmienia geometrii ani wyboru trasy.
+`NavigationSession` dostarcza kontekst GPS i trasę. `VoiceGuidanceEngine` zamienia go na komunikaty, a prywatny `VoiceAnnouncementScheduler` decyduje, czy wypowiedź może rozpocząć się teraz, czekać, przerwać inną albo zostać pominięta. Obsługa audio nie zmienia geometrii ani wyboru trasy.
 
 ## Źródła i rodzaje komunikatów
 
@@ -97,9 +97,9 @@ Na macOS `AVSpeechSynthesizer` jest wywoływany bez `AVAudioSession`; wybór urz
 | Obszar | Plik i symbol |
 |---|---|
 | Ustawienia głosu i kolejka | [`VoiceGuidanceEngine.swift`](../NaviAstra/Navigation/VoiceGuidanceEngine.swift) — `VoiceGuidancePreferences`, `VoiceGuidanceEngine`, `VoiceAnnouncementScheduler` |
-| Integracja z GPS, podróżą i przyjazdem | [`NavigationEngine.swift`](../NaviAstra/Navigation/NavigationEngine.swift) — `updateProgress()`, `updateJourneyVoiceProgress()`, `updateTransitVoice(for:journey:)`, `arriveAtDestination()` |
+| Integracja z GPS, podróżą i przyjazdem | [`NavigationSession+Progress.swift`](../NaviAstra/Navigation/NavigationSession+Progress.swift) — `updateProgress()`, `updateJourneyVoiceProgress()`, `updateTransitVoice(for:journey:)`, `arriveAtDestination()` |
 | Tekst manewru | [`Models.swift`](../NaviAstra/Navigation/Models.swift) — `Maneuver.spokenInstruction` |
 | Typy alertów drogowych | [`RoadSafetyData.swift`](../NaviAstra/Navigation/RoadSafetyData.swift) — `RoadAlertType`, `RoadSafetyAlert` |
 | Typy incydentów ruchu | [`TrafficProvider.swift`](../NaviAstra/Traffic/TrafficProvider.swift) — `TrafficIncidentCategory`, `TrafficIncident` |
-| Panel podczas prowadzenia i ustawienia | [`ContentView.swift`](../NaviAstra/ContentView.swift) — `voiceQuickControls`, przycisk mapy i sekcja „Głos i komunikaty” |
+| Panel podczas prowadzenia i ustawienia | [`ContentView+Journey.swift`](../NaviAstra/Navigation/UI/ContentView+Journey.swift) — `voiceQuickControls`; [`ContentView+MapPanels.swift`](../NaviAstra/Maps/UI/ContentView+MapPanels.swift) — przycisk mapy; [`ContentView+Settings.swift`](../NaviAstra/Settings/UI/ContentView+Settings.swift) — sekcja „Głos i komunikaty” |
 | Konfiguracja audio i lokalizacji w tle iOS | [`NaviAstra-iOS-Info.plist`](../Config/NaviAstra-iOS-Info.plist) |

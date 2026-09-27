@@ -171,25 +171,40 @@ struct RouteProgressGeometry {
         return cumulativeDistances[end] - cumulativeDistances[start]
     }
 
-    func project(_ location: Coordinate) -> RouteProjection? {
+    func project(_ location: Coordinate,
+                 within searchRadius: Double = Self.indexedProjectionRadius) -> RouteProjection? {
         guard coordinates.count > 1,
-              let cell = Self.cell(for: location) else { return nil }
-        let candidates = (segmentIndicesByCell[cell] ?? []) + unindexedSegments
+              let candidates = candidateSegments(near: location, within: searchRadius) else { return nil }
         guard !candidates.isEmpty else { return nil }
         return candidates.compactMap { projection(of: location, onto: $0) }
             .min { $0.distanceFromRoute < $1.distanceFromRoute }
     }
 
+    func nearestProjection(to location: Coordinate) -> RouteProjection? {
+        guard coordinates.count > 1, Self.cell(for: location) != nil else { return nil }
+        var searchRadius = Self.indexedProjectionRadius
+        while true {
+            guard let candidates = candidateSegments(near: location, within: searchRadius) else { return nil }
+            let nearest = candidates.compactMap { projection(of: location, onto: $0) }
+                .min { $0.distanceFromRoute < $1.distanceFromRoute }
+            if candidates.count == coordinates.count - 1 ||
+                (nearest?.distanceFromRoute ?? .infinity) <= searchRadius {
+                return nearest
+            }
+            searchRadius *= 2
+        }
+    }
+
     func match(_ location: NavigationLocation, previous: RouteProjection? = nil,
                previousTimestamp: Date? = nil) -> RouteMatch? {
         guard coordinates.count > 1,
-              let cell = Self.cell(for: location.coordinate) else { return nil }
-        let candidates = (segmentIndicesByCell[cell] ?? []) + unindexedSegments
-        guard !candidates.isEmpty else { return nil }
-        let accuracy = max(8, location.accuracy)
+              Self.cell(for: location.coordinate) != nil else { return nil }
+        let accuracy = location.accuracy.isFinite ? max(8, location.accuracy) : 8
+        let maximumDistance = max(250, accuracy * 6)
+        guard let candidates = candidateSegments(near: location.coordinate, within: maximumDistance),
+              !candidates.isEmpty else { return nil }
         let elapsed = previousTimestamp.map { max(0, location.timestamp.timeIntervalSince($0)) } ?? 0
         let expectedProgress = previous.map { $0.alongRoute + max(0, location.speed) * elapsed }
-        let maximumDistance = max(250, location.accuracy * 6)
         var bestProjection: RouteProjection?
         var bestScore = Double.infinity
 
@@ -219,6 +234,37 @@ struct RouteProgressGeometry {
         }
         guard let bestProjection else { return nil }
         return RouteMatch(projection: bestProjection, confidence: exp(-0.5 * min(40, bestScore)))
+    }
+
+    private func candidateSegments(near location: Coordinate, within searchRadius: Double) -> [Int]? {
+        guard let cell = Self.cell(for: location) else { return nil }
+        let radius = searchRadius.isFinite ? max(0, searchRadius) : 20_037_500
+        if radius <= Self.indexedProjectionRadius {
+            return (segmentIndicesByCell[cell] ?? []) + unindexedSegments
+        }
+        let latitudePadding = min(180, radius / 110_574.0 + Self.cellSize)
+        let longitudeScale = max(11_132.0, 111_320.0 * abs(cos(location.latitude * .pi / 180)))
+        let longitudePadding = min(360, radius / longitudeScale + Self.cellSize)
+        let minimumLatitude = Int(floor(max(-90, location.latitude - latitudePadding) / Self.cellSize))
+        let maximumLatitude = Int(floor(min(90, location.latitude + latitudePadding) / Self.cellSize))
+        let minimumLongitude = Int(floor(max(-180, location.longitude - longitudePadding) / Self.cellSize))
+        let maximumLongitude = Int(floor(min(180, location.longitude + longitudePadding) / Self.cellSize))
+        let latitudeCellCount = maximumLatitude - minimumLatitude + 1
+        let longitudeCellCount = maximumLongitude - minimumLongitude + 1
+        guard latitudeCellCount > 0, longitudeCellCount > 0 else { return nil }
+        guard latitudeCellCount <= 4_096,
+              longitudeCellCount <= 4_096,
+              latitudeCellCount * longitudeCellCount <= 4_096 else {
+            return Array(0..<(coordinates.count - 1))
+        }
+
+        var candidates = Set(unindexedSegments)
+        for latitude in minimumLatitude...maximumLatitude {
+            for longitude in minimumLongitude...maximumLongitude {
+                candidates.formUnion(segmentIndicesByCell[Cell(latitude: latitude, longitude: longitude)] ?? [])
+            }
+        }
+        return candidates.sorted()
     }
 
     private func projection(of location: Coordinate, onto index: Int) -> RouteProjection? {
@@ -321,23 +367,18 @@ struct TransitRouteProgressGeometry {
         guard route.id == routeID, let journey = route.journey,
               journey.legs.count == legs.count, totalLength > 0 else { return nil }
 
+        let boundedAccuracy = accuracy.isFinite ? max(0, accuracy) : 0
+        let maximumMatchDistance = max(150, boundedAccuracy * 2)
         let matches = legs.indices.compactMap { index -> (Int, RouteProjection, Double)? in
             let leg = journey.legs[index]
             guard legs[index].length > 0 else { return nil }
-            let projection: RouteProjection?
-            if accuracy * 2 > 500 {
-                projection = MapMatcher.project(coordinate, onto: leg.coordinates)
-            } else {
-                projection = legs[index].geometry.project(coordinate)
-                    ?? MapMatcher.project(coordinate, onto: leg.coordinates)
-            }
-            guard let projection else { return nil }
+            guard let projection = legs[index].geometry.project(coordinate, within: maximumMatchDistance),
+                  projection.distanceFromRoute <= maximumMatchDistance else { return nil }
             return (index, projection, legs[index].length)
         }
         guard let nearest = matches.min(by: {
             $0.1.distanceFromRoute < $1.1.distanceFromRoute
         }) else { return nil }
-        let maximumMatchDistance = max(150, accuracy * 2)
         let previousMatch = previousLegIndex.flatMap { index in matches.first(where: { $0.0 == index }) }
         let match = previousMatch.map {
             $0.1.distanceFromRoute <= maximumMatchDistance &&

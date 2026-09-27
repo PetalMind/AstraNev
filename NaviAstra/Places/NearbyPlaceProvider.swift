@@ -63,15 +63,17 @@ struct NearbyPlaceCandidate: Identifiable {
         [operatorName, brand].compactMap { $0 }.first { $0 != destination.name }
     }
 
-    @MainActor var isOpenNow: Bool? {
+    @MainActor func openingHoursPresentation() async -> OpeningHoursPresentation? {
         guard let openingHours else { return nil }
         let resolvedTimeZoneIdentifier = self.timeZoneIdentifier
             ?? PlaceTimeZoneResolver.cachedIdentifier(for: destination.coordinate)
-        guard let resolvedTimeZoneIdentifier else { return nil }
-        return PlaceOpeningHours(rawValue: openingHours,
-                                 coordinate: destination.coordinate,
-                                 countryCode: countryCode,
-                                 timeZoneIdentifier: resolvedTimeZoneIdentifier).isOpen()
+        guard let resolvedTimeZoneIdentifier else {
+            return .unavailable(.timeZoneUnavailable)
+        }
+        return await PlaceOpeningHours(rawValue: openingHours,
+                                       coordinate: destination.coordinate,
+                                       countryCode: countryCode,
+                                       timeZoneIdentifier: resolvedTimeZoneIdentifier).presentation()
     }
 
     var isOpen24Hours: Bool {

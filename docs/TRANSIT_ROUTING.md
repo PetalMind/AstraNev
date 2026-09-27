@@ -17,9 +17,9 @@ P+R jest osobnym trybem `P+R`. Łączy trasę samochodową do parkingu z planem 
 
 | Składnik | Rola |
 | --- | --- |
-| `NavigationEngine` | Wymaga pozycji i celu, przekazuje bieżący czas odjazdu, publikuje postęp planowania i udostępnia podgląd trasy. |
-| `LodzTransitRouteProvider` | Publiczna fasada dostawcy używana przez silnik nawigacji i widoki transportu. |
-| `LodzTransitRepository` | Współdzielony aktor koordynujący GTFS, realtime, cache i usługi piesze. Ciężkie wyszukiwanie wykonuje poza aktorem. |
+| `NavigationSession` | Koordynuje stan sesji; rozszerzenie `NavigationSession+RoutePreview.swift` planuje podgląd, a `NavigationSession+Transit.swift` odświeża połączenia. |
+| `TransitRouteProvider` | Publiczna fasada `TransitRouteProviding`; przekazuje planowanie i zapytania do repozytorium. |
+| `TransitRepository` | Aktor koordynujący feedy, realtime i cache; algorytmy są rozdzielone między rozszerzenia `+DataLoading`, `+Planning`, `+ConnectionPlanner` i `+Queries`. |
 | `TransitGTFSLoader` / `GTFSDatabase` | Czytają archiwa GTFS i budują indeksy tras, wzorców kursowania, przystanków, kalendarzy, kształtów oraz transferów pieszych. |
 | `TransitSnapshot` | Niezmienna migawka rozkładu i realtime dla jednego żądania, z bitsetami aktywnych kursów dla dni w oknie. |
 | `ValhallaRouteProvider` | Oblicza macierz dojść pieszych (`/sources_to_targets`) i, gdy trzeba, szczegółową geometrię dojścia (`/route`). |
@@ -27,10 +27,10 @@ P+R jest osobnym trybem `P+R`. Łączy trasę samochodową do parkingu z planem 
 
 ## Przepływ od żądania do wariantów
 
-1. **Początek, cel i czas podróży.** `NavigationEngine.preview()` używa ostatniej zaakceptowanej pozycji GPS jako początku i wymaga wybranego celu. Bez pozycji zgłasza błąd zamiast zgadywać początek. Tryb czasu może użyć bieżącej chwili, wskazanego odjazdu albo — dla komunikacji — wskazanego terminu przyjazdu.
+1. **Początek, cel i czas podróży.** `NavigationSession.preview()` w `NavigationSession+RoutePreview.swift` używa ostatniej zaakceptowanej pozycji GPS jako początku i wymaga wybranego celu. Bez pozycji zgłasza błąd zamiast zgadywać początek. Tryb czasu może użyć bieżącej chwili, wskazanego odjazdu albo — dla komunikacji — wskazanego terminu przyjazdu.
 2. **Rozkłady statyczne.** Repozytorium sprawdza najpierw indeks GTFS w pamięci, potem binarny indeks plist na urządzeniu. Jeśli oba są nieaktualne lub nieprawidłowe, pobiera archiwum miejskie i opcjonalnie archiwum kolejowe, a następnie buduje indeks.
 3. **Przystanki dostępne pieszo.** Indeks przestrzenny wybiera pobliskie przystanki. Dla początku i celu powstają wstępne czasy dojścia z oszacowania `odległość × 1,5 / 0,9 m/s`; na tym etapie nie ma żądania do Valhalli. Pobranie realtime trwa równolegle.
-4. **Wyszukiwanie wstępne.** Niezmienna migawka powstaje poza aktorem. RAPTOR skanuje tylko wzorce tras dotykające oznaczonych przystanków, a wyszukiwanie binarne znajduje pierwszy odjazd, na który można zdążyć. Planer sprawdza kolejno okna 2, 6 i maksymalnie 18 godzin.
+4. **Wyszukiwanie wstępne.** Niezmienna migawka powstaje poza aktorem. RAPTOR skanuje tylko wzorce tras dotykające oznaczonych przystanków, a wyszukiwanie binarne znajduje pierwszy odjazd, na który można zdążyć. Dla danego przystanku wejściowego planer zachowuje najlepszy czas przyjazdu dla każdego dalszego przystanku i rozwija tylko odjazdy poprawiające co najmniej jeden z nich. Planer sprawdza kolejno okna 2, 6 i maksymalnie 18 godzin.
 5. **Dokładne dojścia.** Spośród maksymalnie 15 kandydatów zbierane są oddzielnie przystanki początkowe i końcowe. Dopiero dla nich Valhalla wyznacza macierze piesze; następnie RAPTOR ponownie liczy trasy z dokładnymi czasami.
 6. **Geometria i walidacja.** Valhalla uzupełnia transfery. Planer ponownie sprawdza, czy dojścia mieszczą się między kursami, odrzuca niewykonalne połączenia i szereguje pozostałe także według zapasu na przesiadkę.
 7. **Gotowy podgląd.** Po zakończeniu uzupełniania geometrii można wybrać wariant i rozpocząć nawigację. W trakcie uzupełniania wybór oraz przycisk rozpoczęcia są zablokowane.
@@ -43,13 +43,13 @@ W trybie **Przyjazd na…** silnik wykonuje do 10 wyszukiwań dla różnych chwi
 
 ### Pobieranie i cache
 
-- Adresy źródeł są zapisane w `LodzTransitRepository`: osobne archiwa GTFS dla Łodzi i kolei, miejskie feedy aktualizacji kursów, komunikatów i pozycji pojazdów oraz feed kolejowych aktualizacji czasu.
+- Adresy źródeł pochodzą z `TransitRegion` i są udostępniane przez `TransitRepository`: osobne archiwa GTFS dla Łodzi i kolei, miejskie feedy aktualizacji kursów, komunikatów i pozycji pojazdów oraz feed kolejowych aktualizacji czasu.
 - Archiwum GTFS jest uznawane za świeże przez 24 godziny. Gdy świeże pobranie się nie powiedzie, aplikacja może użyć poprawnego archiwum zapisanego wcześniej — także starszego niż 24 godziny.
 - Sparsowany indeks jest przechowywany jako binarny plist z numerem wersji schematu i wczytywany przez mapowane `Data`. Może być użyty, jeśli jest młodszy niż 24 godziny i zawiera przystanki oraz kursy. Nowy indeks jest zapisywany w tle.
 - Obok indeksu głównego jest płaski indeks numerów usług przypisanych do kursów. Ma wersję i fingerprint feedu, jest otwierany przez mapowane `Data` i odrzucany, jeśli nie pasuje do aktualnego feedu.
 - Graf transferów GTFS ma osobny trwały cache binarny. Jest używany przez 30 dni tylko wtedy, gdy fingerprint archiwów feedu jest zgodny; zmieniony feed wymusza ponowne zbudowanie grafu.
 - Cache dokładnych geometrii pieszych jest trwały, rozdzielony według endpointu Valhalli i kierunku przejścia. Przechowuje do 5 000 geometrii przez 30 dni. Cache dokładnych czasów dojścia dla obszaru GPS i przystanku służy tylko wstępnemu przybliżeniu, ma limit 10 000 wpisów i TTL 6 godzin.
-- Współdzielony `LodzTransitRepository` scala równoległe żądania ładowania. Odczyt i zapis cache pieszych działa w zadaniach pomocniczych; błąd zapisu nie blokuje planowania.
+- Współdzielony `TransitRepository` scala równoległe żądania ładowania. Odczyt i zapis cache pieszych działa w zadaniach pomocniczych; błąd zapisu nie blokuje planowania.
 - Brak krajowego feedu kolejowego nie uniemożliwia zbudowania feedu MPK. Oznacza natomiast, że trasa kolejowa nie może być obliczona; jeśli nie ma dostępnego rozkładu lokalnego, użytkownik otrzymuje błąd pobrania.
 
 Ładowanie kursu respektuje `calendar.txt` i wyjątki `calendar_dates.txt`. Kalendarz planowania ma strefę `Europe/Warsaw`. Sprawdzane są również kursy z poprzedniego dnia usługi, co pozwala obsłużyć rozkładowe godziny po północy (np. `25:10:00`).
@@ -99,6 +99,8 @@ Graf dojść między przystankami budowany jest podczas tworzenia indeksu z kilk
 | Wspólna `parent_station` | Krawędzie między obsługiwanymi peronami tej samej stacji, jeśli są do 500 m od siebie; czas to co najmniej 45 s przy tempie 0,9 m/s plus bufor 30 s. |
 | Bliskie różne przystanki | Połączenie w obie strony między przystankami do 350 m od siebie; dystans jest mnożony przez 1,5, tempo wynosi 1 m/s, a minimalny bufor to 60 s. |
 
+Budowa transferów między bliskimi przystankami używa siatki przestrzennej do ograniczenia liczby sprawdzanych par; każda para kandydująca nadal przechodzi dokładny pomiar odległości. Indeksy przystanków oraz istniejących krawędzi transferu pozwalają wyszukać wiersze `transfers.txt` i `pathways.txt` bez skanowania całej listy przystanków lub krawędzi.
+
 Jeżeli ten sam skierowany transfer opisują różne reguły, indeks zachowuje tę regułę, której suma czasu dojścia i minimalnego bufora jest krótsza. W grafie przejście może mieć maksymalnie 12 krawędzi, a łączne chodzenie od początku podróży do rozpatrywanego przystanku (dojście początkowe wraz z transferami) nie może przekroczyć 30 minut. Bufor minimalny nie jest wliczany do tego limitu.
 
 Przy wejściu na pierwszy kurs nie dolicza się bufora przesiadkowego. Po przejeździe planer wymaga co najmniej 60 sekund na przesiadkę na tym samym węźle; transfer przez inną krawędź uwzględnia zapisany czas chodzenia i minimalny bufor. Zanim trasa zostanie uznana za gotową, sprawdza się, czy faktyczne czasy dojść między przejazdami mieszczą się w przerwach rozkładowych.
@@ -138,6 +140,8 @@ czas jazdy
 
 Wynik obejmuje do trzech odrębnych tras wybranych spośród: najniższego kosztu uogólnionego, najszybszej podróży, najmniejszej liczby przesiadek oraz najkrótszego chodzenia. Jeśli kilka kryteriów wskazuje ten sam przebieg kursów, wariant nie jest duplikowany. Po wyznaczeniu dokładniejszych dojść czasy i koszt są liczone ponownie. Końcowy koszt dodaje karę za transfer z zapasem krótszym niż dwie minuty po wymaganym marszu oraz za transfer bez dokładnie wyznaczonej geometrii.
 
+Wstępny ranking oblicza koszt każdego kandydata raz przed sortowaniem, zamiast ponownie przechodzić po jego etapach przy każdym porównaniu.
+
 Wariant rozpoznawany jest po kursach i odcinkach podróży, a nie wyłącznie po geometrii linii. Dwa przejazdy tą samą linią, lecz o innym czasie lub innym kursie, mogą być różnymi wariantami.
 
 ## Geometria trasy i walidacja
@@ -176,9 +180,10 @@ Planer zapisuje pomiary `os_signpost` w logu subsystemu `STDMSolution.NaviAstra`
 
 ## Najważniejsze miejsca w kodzie
 
-- `NaviAstra/Navigation/NavigationEngine.swift` — uruchomienie podglądu, status planowania, wybór wariantu, rozpoczęcie i odświeżanie podróży.
-- `NaviAstra/Navigation/LodzTransitRouteProvider.swift` — fasada, cache i koordynacja GTFS/realtime, dojścia, algorytm wyszukiwania, graf transferów, ranking i budowa `Journey`.
+- `NaviAstra/Navigation/NavigationSession+RoutePreview.swift` i `NavigationSession+Transit.swift` — planowanie podglądu i odświeżanie połączeń; `NavigationSession.swift` przechowuje stan aktywnej sesji.
+- `NaviAstra/Transit/TransitRouteProvider.swift` — fasada dostawcy. `TransitRepository.swift` koordynuje źródła i cache; `TransitRepository+Planning.swift` obsługuje dojścia, a `Transit/Planning/TransferSearch.swift` wyszukiwanie, transfery, ranking i budowę `Journey`.
+- `NaviAstra/Transit/GTFS/GTFSModels.swift`, `GTFSDatabase.swift` i `TransitGTFSLoader.swift` — modele feedów, indeks rozkładu i ładowanie archiwów.
 - `NaviAstra/Navigation/ValhallaRouteProvider.swift` — żądania pieszej macierzy i trasy oraz bramka żądań dla publicznego endpointu.
 - `NaviAstra/Navigation/Models.swift` — `NavigationRoute`, `Journey`, `JourneyLeg`, stany realtime i postęp podróży.
-- `NaviAstra/ContentView.swift` — podsumowanie wariantów, świeżość realtime, komunikaty, etapy i sygnalizacja przybliżonych dojść.
+- `NaviAstra/Navigation/UI/ContentView+RoutePreview.swift` oraz `ContentView+Journey.swift` — podgląd wariantów i aktywna podróż.
 - `NaviAstra/Navigation/TransitDetailsSheet.swift` — szczegóły przystanków, linii, kursu, odjazdów i pojazdu.

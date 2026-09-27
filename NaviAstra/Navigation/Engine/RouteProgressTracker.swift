@@ -13,7 +13,7 @@ struct RouteProgressMeasurement {
 
 /// Owns the geometry caches and route-coordinate calculations used by the
 /// navigation engine. State publication and navigation side effects remain in
-/// `NavigationEngine`.
+/// `NavigationSession`.
 struct RouteProgressTracker {
     private var roadGeometry: RouteProgressGeometry?
     private var transitGeometry: TransitRouteProgressGeometry?
@@ -31,7 +31,7 @@ struct RouteProgressTracker {
             previous: previousMatch,
             previousTimestamp: previousTimestamp)
         guard let projection = matchedRoute?.projection
-                ?? MapMatcher.project(location.coordinate, onto: route.coordinates) else {
+                ?? geometry.nearestProjection(to: location.coordinate) else {
             return nil
         }
 

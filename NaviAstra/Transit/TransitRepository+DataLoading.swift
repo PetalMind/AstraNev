@@ -1,6 +1,6 @@
 import Foundation
 
-extension LodzTransitRepository {
+extension TransitRepository {
     func loadDatabase(planningID: UInt64? = nil,
                               trace: TransitPlanningTrace? = nil) async throws -> GTFSDatabase {
         if let database, let databaseLoadedAt,
@@ -29,9 +29,11 @@ extension LodzTransitRepository {
             let directory = cacheDirectory
             let feedURL = staticFeedURL
             let railwayURL = railwayFeedURL
+            let cityFeedFilename = region.staticFeedFilename
             loadTask = Task.detached(priority: .utility) {
                 try await TransitGTFSLoader.load(cacheDirectory: directory, feedURL: feedURL,
                                                  railwayFeedURL: railwayURL,
+                                                 cityFeedFilename: cityFeedFilename,
                                                  planningID: planningID, trace: trace)
             }
             databaseLoadTask = loadTask
@@ -160,7 +162,7 @@ extension LodzTransitRepository {
                     canceledTrips.formUnion(parsedRailwayUpdates?.canceledTrips ?? [])
                 }
                 let sourceUpdatedAt = [
-                    "lodz": parsedUpdates?.updatedAt,
+                    region.id: parsedUpdates?.updatedAt,
                     "rail": parsedRailwayUpdates?.updatedAt
                 ].compactMapValues { $0 }
                 return GTFSRealtimeSnapshot(
@@ -171,7 +173,7 @@ extension LodzTransitRepository {
                     alertsAvailable: alertsAreFresh,
                     alerts: alertsAreFresh ? (parsedAlerts?.alerts ?? []) : [],
                     freshness: freshness,
-                    sourceFreshness: ["lodz": cityFreshness, "rail": railwayFreshness],
+                    sourceFreshness: [region.id: cityFreshness, "rail": railwayFreshness],
                     sourceUpdatedAt: sourceUpdatedAt
                 )
             }

@@ -59,7 +59,7 @@ struct PlaceDetailsView: View {
         _savedName = State(initialValue: result.destination.name)
     }
 
-    var body: some View {
+    private var placeDetailsContent: some View {
         VStack(alignment: .leading, spacing: 11) {
             if showsPlacePhoto {
                 placePhotoSection
@@ -113,7 +113,8 @@ struct PlaceDetailsView: View {
             }
 
             if let loadedAt {
-                Text("OpenStreetMap · pobrano \(loadedAt.formatted(date: .abbreviated, time: .shortened))")
+                let sourceTitle = details?.source.title ?? "OpenStreetMap"
+                Text("\(sourceTitle) · pobrano \(loadedAt.formatted(date: .abbreviated, time: .shortened))")
                     .font(.caption2).foregroundStyle(.secondary)
             } else if let details {
                 Text(details.source.title).font(.caption2).foregroundStyle(.secondary)
@@ -122,6 +123,10 @@ struct PlaceDetailsView: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    var body: some View {
+        placeDetailsContent
         .confirmationDialog("Dodano do Ulubionych", isPresented: $showSavedConfirmation,
                             titleVisibility: .visible) {
             if onRename != nil {
@@ -153,48 +158,55 @@ struct PlaceDetailsView: View {
         .lookAroundViewer(isPresented: $showLookAround,
                           initialScene: lookAroundPreview?.scene)
 #endif
-        .task(id: "\(result.placeIdentity.cacheKey)/\(retry)") {
-            details = PlaceDetails.partial(for: result)
-            placePhoto = nil
-            placePhotoLoadFailed = false
-            lookAroundPreview = nil
-            isLoadingPlacePhoto = false
-            loadedAt = nil
-            loadError = nil
-            guard result.isPOI else { return }
-            isLoading = true
-            defer { isLoading = false }
-            if let cached = await provider.cachedDetails(for: result.placeIdentity) {
+        .task(id: detailsRefreshKey) {
+            await loadPlaceDetails()
+        }
+    }
+
+    @MainActor
+    private func loadPlaceDetails() async {
+        details = PlaceDetails.partial(for: result)
+        placePhoto = nil
+        placePhotoLoadFailed = false
+        lookAroundPreview = nil
+        isLoadingPlacePhoto = false
+        loadedAt = nil
+        loadError = nil
+        guard result.isPOI else { return }
+        isLoading = true
+        defer { isLoading = false }
+        if let cached = await provider.cachedDetails(for: result.placeIdentity) {
+            guard !Task.isCancelled else { return }
+            details = details?.merging(cached) ?? cached
+            loadedAt = cached.fetchedAt
+        }
+        do {
+            if let loaded = try await provider.details(for: result.placeIdentity, forceRefresh: retry > 0) {
                 guard !Task.isCancelled else { return }
-                details = details?.merging(cached) ?? cached
-                loadedAt = cached.fetchedAt
+                details = details?.merging(loaded) ?? loaded
+                loadedAt = loaded.fetchedAt
             }
-            do {
-                if let loaded = try await provider.details(for: result.placeIdentity, forceRefresh: retry > 0) {
-                    guard !Task.isCancelled else { return }
-                    details = details?.merging(loaded) ?? loaded
-                    loadedAt = loaded.fetchedAt
-                }
-            } catch {
-                guard !Task.isCancelled else { return }
+        } catch {
+            guard !Task.isCancelled else { return }
+            if details?.hasAdditionalInformation != true {
                 loadError = "Nie udało się uzupełnić informacji. Dostępne dane pozostają widoczne."
             }
-            if let current = details,
-               current.timeZoneIdentifier == nil,
-               let timeZoneIdentifier = await PlaceTimeZoneResolver.identifier(for: result.destination.coordinate) {
-                guard !Task.isCancelled else { return }
-                var updated = current
-                updated.timeZoneIdentifier = timeZoneIdentifier
-                details = updated
-            }
-            if let current = details,
-               !isNavigating {
-                if PlacePhotoResolver.isEligible(category: current.category)
-                    || PlacePhotoResolver.isEligible(category: result.category) {
-                    await loadPlacePhoto(for: current, forceRefresh: retry > 0)
-                } else {
-                    await loadBrandLogo(for: current, forceRefresh: retry > 0)
-                }
+        }
+        if let current = details,
+           current.timeZoneIdentifier == nil,
+           let timeZoneIdentifier = await PlaceTimeZoneResolver.identifier(for: result.destination.coordinate) {
+            guard !Task.isCancelled else { return }
+            var updated = current
+            updated.timeZoneIdentifier = timeZoneIdentifier
+            details = updated
+        }
+        if let current = details,
+           !isNavigating {
+            if PlacePhotoResolver.isEligible(category: current.category)
+                || PlacePhotoResolver.isEligible(category: result.category) {
+                await loadPlacePhoto(for: current, forceRefresh: retry > 0)
+            } else {
+                await loadBrandLogo(for: current, forceRefresh: retry > 0)
             }
         }
     }
@@ -231,6 +243,12 @@ struct PlaceDetailsView: View {
         !isNavigating && (PlacePhotoResolver.isEligible(category: details?.category)
                           || PlacePhotoResolver.isEligible(category: result.category)
                           || placePhoto?.role == .brandLogo)
+    }
+
+    private var detailsRefreshKey: String {
+        let placeKey = result.placeIdentity.cacheKey
+        let retryAttempt = String(retry)
+        return placeKey + "/" + retryAttempt
     }
 
     @ViewBuilder

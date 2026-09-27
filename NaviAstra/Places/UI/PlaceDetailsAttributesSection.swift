@@ -26,7 +26,9 @@ struct PlaceDetailsAttributesSection: View {
         if let rawHours = details.openingHours, !rawHours.isEmpty, details.osmParking?.openingHours == nil {
             PlaceDetailsOpeningHoursSection(
                 rawHours: rawHours,
-                hours: details.openingHoursInfo,
+                coordinate: details.coordinate,
+                countryCode: details.countryCode,
+                timeZoneIdentifier: details.timeZoneIdentifier,
                 isExpanded: $showHours)
         }
 
@@ -71,27 +73,52 @@ struct PlaceDetailsAttributesSection: View {
 
 private struct PlaceDetailsOpeningHoursSection: View {
     let rawHours: String
-    let hours: PlaceOpeningHours?
+    let coordinate: Coordinate?
+    let countryCode: String?
+    let timeZoneIdentifier: String?
     @Binding var isExpanded: Bool
+    @State private var presentation: OpeningHoursPresentation?
+
+    private var evaluationKey: String {
+        [rawHours, countryCode ?? "", timeZoneIdentifier ?? "",
+         coordinate.map { String($0.latitude) } ?? "", coordinate.map { String($0.longitude) } ?? ""]
+            .joined(separator: "|")
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            if let status = hours?.statusText() {
+            if let status = presentation?.statusText {
                 Label(status, systemImage: status.hasPrefix("Otwarte") ? "clock.fill" : "clock")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(status.hasPrefix("Otwarte") ? Color.green : Color.secondary)
+            } else if let failure = presentation?.failure {
+                Label(failure.errorDescription ?? "Godziny niedostępne", systemImage: "exclamationmark.clock")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            } else if presentation?.isAvailable == true {
+                Label("Godziny niepewne", systemImage: "questionmark.circle")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
             }
             DisclosureGroup("Godziny otwarcia", isExpanded: $isExpanded) {
-                if let rows = hours?.weeklyRows {
+                if let rows = presentation?.weeklyRows {
                     ForEach(Array(rows.enumerated()), id: \.offset) { item in
                         HStack {
-                            Text(item.element.0).frame(width: 46, alignment: .leading)
-                            Text(item.element.1)
+                            Text(item.element.day).frame(width: 46, alignment: .leading)
+                            Text(item.element.hours)
                             Spacer(minLength: 0)
                         }
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     }
+                } else if let failure = presentation?.failure {
+                    Text(failure.errorDescription ?? "Godziny niedostępne")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(rawHours)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
                 } else {
                     Text(rawHours)
                         .font(.caption)
@@ -102,6 +129,19 @@ private struct PlaceDetailsOpeningHoursSection: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
             .font(.subheadline)
+        }
+        .task(id: evaluationKey) {
+            guard !Task.isCancelled else { return }
+            guard coordinate == nil || timeZoneIdentifier != nil else {
+                presentation = .unavailable(.timeZoneUnavailable)
+                return
+            }
+            let evaluated = await PlaceOpeningHours(rawValue: rawHours,
+                                                    coordinate: coordinate,
+                                                    countryCode: countryCode,
+                                                    timeZoneIdentifier: timeZoneIdentifier).presentation()
+            guard !Task.isCancelled else { return }
+            presentation = evaluated
         }
     }
 }
@@ -283,22 +323,31 @@ private struct PlaceParkingOpeningHoursDisclosure: View {
     let rawHours: String
     let details: PlaceDetails
     @Binding var isExpanded: Bool
+    @State private var presentation: OpeningHoursPresentation?
+
+    private var evaluationKey: String {
+        [rawHours, details.countryCode ?? "", details.timeZoneIdentifier ?? "",
+         details.coordinate.map { String($0.latitude) } ?? "",
+         details.coordinate.map { String($0.longitude) } ?? ""].joined(separator: "|")
+    }
 
     var body: some View {
         DisclosureGroup("Godziny parkowania", isExpanded: $isExpanded) {
-            if let rows = PlaceOpeningHours(rawValue: rawHours,
-                                            coordinate: details.coordinate,
-                                            countryCode: details.countryCode,
-                                            timeZoneIdentifier: details.timeZoneIdentifier).weeklyRows {
+            if let rows = presentation?.weeklyRows {
                 ForEach(Array(rows.enumerated()), id: \.offset) { item in
                     HStack {
-                        Text(item.element.0).frame(width: 46, alignment: .leading)
-                        Text(item.element.1)
+                        Text(item.element.day).frame(width: 46, alignment: .leading)
+                        Text(item.element.hours)
                         Spacer(minLength: 0)
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 }
+            } else if let failure = presentation?.failure {
+                Text(failure.errorDescription ?? "Godziny niedostępne")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(rawHours).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             } else {
                 Text(rawHours).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             }
@@ -306,5 +355,14 @@ private struct PlaceParkingOpeningHoursDisclosure: View {
                 .font(.caption2).foregroundStyle(.secondary)
         }
         .font(.caption)
+        .task(id: evaluationKey) {
+            guard !Task.isCancelled else { return }
+            let evaluated = await PlaceOpeningHours(rawValue: rawHours,
+                                                    coordinate: details.coordinate,
+                                                    countryCode: details.countryCode,
+                                                    timeZoneIdentifier: details.timeZoneIdentifier).presentation()
+            guard !Task.isCancelled else { return }
+            presentation = evaluated
+        }
     }
 }

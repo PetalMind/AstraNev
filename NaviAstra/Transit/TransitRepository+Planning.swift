@@ -1,12 +1,13 @@
 import Foundation
 
-extension LodzTransitRepository {
+extension TransitRepository {
     func calculateRoutes(from: Coordinate, to: Coordinate, departingAt: Date,
                          walkingRoutingEndpoint: URL,
                          onProgress: TransitPlanningProgressHandler?,
                          onProvisionalRoutes: TransitProvisionalRoutesHandler?) async throws -> [NavigationRoute] {
         nextPlanningID &+= 1
         let planningID = nextPlanningID
+        let regionID = region.id
         let trace = TransitPlanningTrace()
         trace.setCount("fallbackRequestCount", value: 0)
         let totalInterval = TransitSignposting.begin("TransitPlanning", planningID: planningID)
@@ -91,7 +92,7 @@ extension LodzTransitRepository {
                                       maximumJourneyDuration: Self.maximumJourneyDuration,
                                       originWalks: originWalks, destinationWalks: destinationWalks,
                                       usingCachedSchedule: usingCachedSchedule, resultLimit: 15,
-                                      planningID: planningID, trace: trace)
+                                      planningID: planningID, trace: trace, regionID: regionID)
                     }.value
                 } catch TransitRoutingError.noJourney {
                     continue
@@ -134,7 +135,7 @@ extension LodzTransitRepository {
                                       originWalks: exactOriginWalks,
                                       destinationWalks: exactDestinationWalks,
                                       usingCachedSchedule: usingCachedSchedule, resultLimit: 15,
-                                      planningID: planningID, trace: trace)
+                                      planningID: planningID, trace: trace, regionID: regionID)
                     }.value
                 } catch TransitRoutingError.noJourney {
                     continue
@@ -142,17 +143,17 @@ extension LodzTransitRepository {
                     continue
                 }
                 for route in exactRoutes {
-                    let signature = Self.transitSignature(route)
+                    let signature = TransitCandidateRanker.transitSignature(route)
                     guard !signature.isEmpty else { continue }
                     if let old = routePool[signature],
-                       Self.generalizedCost(old) <= Self.generalizedCost(route) { continue }
+                       TransitCandidateRanker.generalizedCost(old) <= TransitCandidateRanker.generalizedCost(route) { continue }
                     routePool[signature] = route
                 }
                 if stageIndex < Self.stagedDepartureWindows.count - 1 && routePool.count >= 3 { break }
             }
             guard !routePool.isEmpty else { throw lastPlanningError }
             let planned = routePool.values.sorted {
-                Self.generalizedCost($0) < Self.generalizedCost($1)
+                TransitCandidateRanker.generalizedCost($0) < TransitCandidateRanker.generalizedCost($1)
             }.prefix(15).map { $0 }
             trace.recordElapsedDuration("TimeToStaticCandidates")
             TransitSignposting.end("TransitSearch", identifier: searchInterval, planningID: planningID)
@@ -605,7 +606,7 @@ extension LodzTransitRepository {
     }
 
     static func selectRouteVariants(_ routes: [NavigationRoute], limit: Int) -> [NavigationRoute] {
-        let ranked = routes.sorted { generalizedCost($0) < generalizedCost($1) }
+        let ranked = routes.sorted { TransitCandidateRanker.generalizedCost($0) < TransitCandidateRanker.generalizedCost($1) }
         guard limit > 0, !ranked.isEmpty else { return [] }
         let fastest = ranked.min { $0.expectedTravelTime < $1.expectedTravelTime }
         let fewestTransfers = ranked.min {
@@ -618,11 +619,11 @@ extension LodzTransitRepository {
         }
         var selected: [NavigationRoute] = []
         for candidate in [ranked.first, fastest, fewestTransfers, leastWalking].compactMap({ $0 }) + ranked {
-            guard !selected.contains(where: { transitSignature($0) == transitSignature(candidate) }) else { continue }
+            guard !selected.contains(where: { TransitCandidateRanker.transitSignature($0) == TransitCandidateRanker.transitSignature(candidate) }) else { continue }
             selected.append(candidate)
             if selected.count == limit { break }
         }
-        return selected.sorted { generalizedCost($0) < generalizedCost($1) }
+        return selected.sorted { TransitCandidateRanker.generalizedCost($0) < TransitCandidateRanker.generalizedCost($1) }
     }
 
     static func touchWalkingGeometryCacheKey(
@@ -646,14 +647,14 @@ extension LodzTransitRepository {
             let concurrencyLimit = min(4, requests.count)
             for _ in 0..<concurrencyLimit {
                 guard let request = requestsIterator.next() else { break }
-                group.addTask { await fetchTransitWalkingGeometry(request, endpoint: endpoint) }
+                group.addTask { await WalkingConnectionProvider.fetchGeometry(request, endpoint: endpoint) }
             }
 
             var geometries: [TransitWalkingGeometryKey: TransitWalkingGeometry] = [:]
             while let (key, geometry) = await group.next() {
                 if let geometry { geometries[key] = geometry }
                 if let request = requestsIterator.next() {
-                    group.addTask { await fetchTransitWalkingGeometry(request, endpoint: endpoint) }
+                    group.addTask { await WalkingConnectionProvider.fetchGeometry(request, endpoint: endpoint) }
                 }
             }
             return geometries

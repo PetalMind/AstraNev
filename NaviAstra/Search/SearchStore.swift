@@ -11,6 +11,8 @@ enum DestinationSearchScope: String, CaseIterable, Identifiable {
 @MainActor
 @Observable
 final class SearchStore {
+    private let transitRepository: TransitDataProviding
+
     var query = ""
     var scope: DestinationSearchScope = .places
     var results: [SearchResult] = []
@@ -25,6 +27,10 @@ final class SearchStore {
     private(set) var currentRequestID = UUID()
     private var placeSearchTask: Task<Void, Never>?
     private var transitSearchTask: Task<Void, Never>?
+
+    init(transitRepository: TransitDataProviding) {
+        self.transitRepository = transitRepository
+    }
 
     func resetForPresentation(selectingRouteOrigin: Bool) {
         cancelSearches()
@@ -102,7 +108,8 @@ final class SearchStore {
         } else {
             routeTarget = state.destination?.coordinate
         }
-        return SearchContext(origin: state.location?.coordinate, area: searchArea,
+        return SearchContext(origin: state.location?.coordinate ?? searchArea ?? state.searchMapCenter,
+                             area: searchArea,
                              route: remainingRoute, routeTarget: routeTarget,
                              mode: state.transportMode, preferences: state.routingPreferences,
                              localDestinations: places.map(\.navigationDestination)
@@ -111,17 +118,18 @@ final class SearchStore {
 
     func searchPlaces(_ rawQuery: String, context: SearchContext, includeUUGFallback: Bool,
                       routingServerAddress: String,
-                      onUpdate: ([SearchResult]) -> Void) async throws -> [SearchResult] {
+                      routeEstimator: SearchRouteEstimator = { _, _, _ in nil },
+                      onUpdate: @MainActor ([SearchResult]) -> Void) async throws -> [SearchResult] {
         let endpoint = URL(string: routingServerAddress) ?? URL(string: "https://valhalla1.openstreetmap.de")!
         let normalizedQuery = QueryClassifier.normalize(rawQuery)
         let effectiveQuery = alongRoute && !normalizedQuery.hasSuffix(" po trasie")
             ? rawQuery + " po trasie" : rawQuery
         return try await SearchEngine(matrix: ValhallaRouteProvider(endpoint: endpoint))
             .search(effectiveQuery, context: context, includeUUGFallback: includeUUGFallback,
-                    onUpdate: onUpdate)
+                    routeEstimator: routeEstimator, onUpdate: onUpdate)
     }
 
     func searchTransit(_ query: String, near coordinate: Coordinate?) async -> TransitSearchResults {
-        await LodzTransitRouteProvider().search(query, near: coordinate)
+        await transitRepository.search(query, near: coordinate)
     }
 }

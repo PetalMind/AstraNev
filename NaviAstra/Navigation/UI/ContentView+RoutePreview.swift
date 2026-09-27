@@ -6,31 +6,31 @@ import UIKit
 
 extension ContentView {
     var maneuverCard: some View {
-        let maneuver = engine.state.progress?.nextManeuver
-        let maneuverDistance = engine.state.progress?.distanceToNextManeuver ?? .infinity
+        let maneuver = navigationStore.state.progress?.nextManeuver
+        let maneuverDistance = navigationStore.state.progress?.distanceToNextManeuver ?? .infinity
         let guidanceDistance = maneuverDistance.isFinite
             ? maneuverDistance
-            : (engine.state.transportMode == .parkRide
+            : (navigationStore.state.transportMode == .parkRide
                 ? (parkRideCarDistanceToTransfer ?? .infinity)
-                : (engine.state.progress?.remainingDistance ?? .infinity))
+                : (navigationStore.state.progress?.remainingDistance ?? .infinity))
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
                 Image(systemName: maneuver?.iconName
-                      ?? (engine.state.transportMode == .parkRide ? "parkingsign.circle.fill" : "arrow.up"))
+                      ?? (navigationStore.state.transportMode == .parkRide ? "parkingsign.circle.fill" : "arrow.up"))
                     .font(.system(size: 27, weight: .semibold))
                     .foregroundStyle(.white)
                     .frame(width: 52, height: 52)
                     .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(engine.state.status == .rerouting
+                    Text(navigationStore.state.status == .rerouting
                          ? "Przeliczanie trasy…"
                          : (guidanceDistance <= 25 ? "TERAZ" : distance(guidanceDistance)))
                         .font(.system(size: 20, weight: .bold, design: .rounded))
                         .contentTransition(.numericText())
 
                     Text(maneuver?.displayInstruction
-                         ?? (engine.state.transportMode == .parkRide
+                         ?? (navigationStore.state.transportMode == .parkRide
                              ? "Jedź do parkingu P+R" : "Kontynuuj do celu"))
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.primary)
@@ -55,11 +55,11 @@ extension ContentView {
                 }
             }
 
-            if engine.state.transportMode == .car, let incident = nextRouteTrafficIncident {
+            if navigationStore.state.transportMode == .car, let incident = nextRouteTrafficIncident {
                 HStack(spacing: 7) {
                     Image(systemName: incident.isRoadClosure ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
                         .foregroundStyle(incident.isRoadClosure ? Color.red : Color.orange)
-                    Text("\(incident.category.mapLabel) · za \(distance(max(0, (incident.distanceAlongRoute ?? 0) - (engine.state.progress?.traveledDistance ?? 0))))")
+                    Text("\(incident.category.mapLabel) · za \(distance(max(0, (incident.distanceAlongRoute ?? 0) - (navigationStore.state.progress?.traveledDistance ?? 0))))")
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                     Spacer(minLength: 0)
@@ -78,7 +78,7 @@ extension ContentView {
                 .accessibilityElement(children: .combine)
             }
 
-            if let maneuver = engine.state.progress?.nextManeuver,
+            if let maneuver = navigationStore.state.progress?.nextManeuver,
                let exitNumber = maneuver.exitNumber {
                 HStack(spacing: 6) {
                     Image(systemName: maneuver.iconName)
@@ -100,9 +100,9 @@ extension ContentView {
     }
 
     var nextRouteTrafficIncident: TrafficIncident? {
-        guard engine.state.route != nil else { return nil }
-        let traveledDistance = engine.state.progress?.traveledDistance ?? 0
-        return (engine.state.traffic?.incidents ?? [])
+        guard navigationStore.state.route != nil else { return nil }
+        let traveledDistance = navigationStore.state.progress?.traveledDistance ?? 0
+        return (navigationStore.state.traffic?.incidents ?? [])
             .filter { incident in
                 guard let distance = incident.distanceAlongRoute else { return false }
                 return distance > traveledDistance && distance <= traveledDistance + 12_000
@@ -201,7 +201,7 @@ extension ContentView {
 
     @ViewBuilder
     var laneGuidance: some View {
-        if let lanes = engine.state.progress?.nextManeuver?.lanes, !lanes.isEmpty {
+        if let lanes = navigationStore.state.progress?.nextManeuver?.lanes, !lanes.isEmpty {
             HStack(spacing: 4) {
                 ForEach(lanes) { lane in
                     Image(systemName: laneSymbol(lane.indications))
@@ -244,12 +244,12 @@ extension ContentView {
                     withAnimation(.easeInOut(duration: 0.25)) { destinationExpanded.toggle() }
                 }
                 .labelStyle(.iconOnly)
-                Button("Zamknij", systemImage: "xmark") { engine.stop() }
+                Button("Zamknij", systemImage: "xmark") { navigationStore.stop() }
                     .labelStyle(.iconOnly)
             }
             routeEndpointFields
             Button {
-                Task { await engine.planRoute() }
+                Task { await navigationStore.planRoute() }
             } label: {
                 Label("Wyznacz trasę", systemImage: "arrow.triangle.turn.up.right.diamond")
                     .font(.headline)
@@ -257,7 +257,7 @@ extension ContentView {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            if destinationExpanded, let destination = engine.state.destination {
+            if destinationExpanded, let destination = navigationStore.state.destination {
                 Divider()
                 HStack(spacing: 14) {
                     Button("Zapisz", systemImage: "heart") {
@@ -293,7 +293,7 @@ extension ContentView {
 
     var routeCalculatingCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if engine.state.destination != nil {
+            if navigationStore.state.destination != nil {
                 transportSelector
             }
             HStack(spacing: 12) {
@@ -302,7 +302,7 @@ extension ContentView {
                     .font(.headline)
                     .contentTransition(.opacity)
                 Spacer()
-                Button("Anuluj", systemImage: "xmark") { engine.stop() }
+                Button("Anuluj", systemImage: "xmark") { navigationStore.stop() }
                     .labelStyle(.iconOnly)
             }
         }
@@ -353,9 +353,9 @@ extension ContentView {
                 .accessibilityLabel(isDestinationFavorite ? "Usuń cel z ulubionych" : "Zapisz cel w ulubionych")
             }
 
-            if isRouteOriginAwayFromUser, let origin = engine.state.routeOrigin {
+            if isRouteOriginAwayFromUser, let origin = navigationStore.state.routeOrigin {
                 VStack(alignment: .leading, spacing: 8) {
-                    if let location = engine.state.location {
+                    if let location = navigationStore.state.location {
                         Label("Start trasy: \(distance(origin.coordinate.distance(to: location.coordinate))) od Ciebie",
                               systemImage: "location.north.line")
                             .font(.caption.weight(.medium))
@@ -367,7 +367,7 @@ extension ContentView {
                             .foregroundStyle(.secondary)
                     }
                     Button {
-                        Task { await engine.setRouteOrigin(nil) }
+                        Task { await navigationStore.setRouteOrigin(nil) }
                     } label: {
                         Label("Użyj mojej lokalizacji jako start", systemImage: "location.fill")
                             .font(.caption.weight(.semibold))
@@ -378,11 +378,11 @@ extension ContentView {
             }
 
             transportSelector
-            if engine.state.transportMode == .transit || engine.state.transportMode == .parkRide {
+            if navigationStore.state.transportMode == .transit || navigationStore.state.transportMode == .parkRide {
                 journeyTimeControl
             }
 
-            if let route = engine.state.route {
+            if let route = navigationStore.state.route {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(time(route.expectedTravelTime))
@@ -407,13 +407,13 @@ extension ContentView {
                 }
 
                 HStack(spacing: 7) {
-                    ForEach(Array(engine.state.routeOptions.enumerated()), id: \.element.id) { item in
+                    ForEach(Array(navigationStore.state.routeOptions.enumerated()), id: \.element.id) { item in
                         routeOption(item.element, index: item.offset + 1,
                                     selectedRoute: route, isSelected: item.element.id == route.id)
                     }
                 }
 
-                if engine.state.transportMode == .transit, let journey = route.journey {
+                if navigationStore.state.transportMode == .transit, let journey = route.journey {
                     let transitLegs = journey.legs.filter { $0.mode != "WALK" }
                     if let firstRide = transitLegs.first {
                         let rideDuration = transitLegs.reduce(0.0) {
@@ -452,15 +452,15 @@ extension ContentView {
                         Text("Pojazdami \(transitMetricTime(rideDuration)) · pieszo \(transitMetricTime(journey.walkingDuration)) · czekanie \(transitMetricTime(journey.waitingDuration)) · przesiadki: \(journey.transferCount)")
                             .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                         Button {
-                            Task { await engine.loadLaterTransitConnections(after: firstRide.departure) }
+                            Task { await navigationStore.loadLaterTransitConnections(after: firstRide.departure) }
                         } label: {
                             HStack(spacing: 7) {
-                                if engine.state.isLoadingLaterTransitRoutes {
+                                if navigationStore.state.isLoadingLaterTransitRoutes {
                                     ProgressView().controlSize(.small)
                                 } else {
                                     Image(systemName: "clock.arrow.circlepath")
                                 }
-                                Text(engine.state.isLoadingLaterTransitRoutes
+                                Text(navigationStore.state.isLoadingLaterTransitRoutes
                                      ? "Szukam późniejszych połączeń…"
                                      : "Pokaż późniejsze połączenia")
                             }
@@ -469,10 +469,10 @@ extension ContentView {
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(Color.accentColor)
-                        .disabled(engine.state.isLoadingLaterTransitRoutes
-                                  || engine.state.transitPlanningPhase == .enrichingGeometry)
+                        .disabled(navigationStore.state.isLoadingLaterTransitRoutes
+                                  || navigationStore.state.transitPlanningPhase == .enrichingGeometry)
                     }
-                    if engine.state.transitPlanningPhase == .enrichingGeometry {
+                    if navigationStore.state.transitPlanningPhase == .enrichingGeometry {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.small)
                             Text("Znaleziono połączenia. Uzupełniam przebieg dojść pieszych…")
@@ -491,10 +491,10 @@ extension ContentView {
                     }
                 }
 
-                if engine.state.didSearchLaterTransitRoutes && engine.state.laterTransitRoutes.isEmpty {
+                if navigationStore.state.didSearchLaterTransitRoutes && navigationStore.state.laterTransitRoutes.isEmpty {
                     Text("Nie znaleziono późniejszych połączeń w dostępnym rozkładzie.")
                         .font(.caption).foregroundStyle(.secondary)
-                } else if !engine.state.laterTransitRoutes.isEmpty {
+                } else if !navigationStore.state.laterTransitRoutes.isEmpty {
                     laterTransitConnections
                 }
 
@@ -532,67 +532,10 @@ extension ContentView {
                             }
 
                             if let journey = route.journey {
-                                VStack(alignment: .leading, spacing: 7) {
-                                    Text("Połączenie")
-                                        .font(.subheadline.weight(.semibold))
-                                    Text("Odjazd \(journey.departure.formatted(date: .omitted, time: .shortened)) · Przyjazd \(journey.arrival.formatted(date: .omitted, time: .shortened))")
-                                        .font(.caption)
-                                    Text(transitRealtimeStatus(for: journey))
-                                        .font(.caption2).foregroundStyle(.secondary)
-                                    if journey.alertsFeedAvailable && journey.alerts.isEmpty {
-                                        Text("Brak aktywnych komunikatów dla tej trasy")
-                                            .font(.caption2).foregroundStyle(.secondary)
-                                    } else if !journey.alertsFeedAvailable {
-                                        Text("Komunikaty na trasie niedostępne")
-                                            .font(.caption2).foregroundStyle(.secondary)
-                                    }
-                                    if let attribution = journey.railwayScheduleAttribution {
-                                        Text(attribution)
-                                            .font(.caption2).foregroundStyle(.secondary)
-                                    }
-                                    if journey.scheduleIsCached {
-                                        Text("Rozkład pobrany z pamięci urządzenia")
-                                            .font(.caption2).foregroundStyle(.secondary)
-                                    }
-                                    ForEach(Array(journey.alerts.enumerated()), id: \.offset) { _, alert in
-                                        Label(alert, systemImage: "exclamationmark.triangle.fill")
-                                            .font(.caption2).foregroundStyle(.orange)
-                                    }
-                                    ForEach(journey.legs) { leg in
-                                        HStack(alignment: .top, spacing: 9) {
-                                            Text(leg.departure.formatted(date: .omitted, time: .shortened))
-                                                .monospacedDigit()
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                let legTitle = leg.mode == "WALK"
-                                                    ? (leg.isTransfer ? "Przesiadka pieszo" : "Dojście pieszo")
-                                                    : (leg.line ?? leg.mode)
-                                                Text("\(legTitle) · \(leg.from) → \(leg.to)")
-                                                if let delay = displayedTransitDelay(for: leg), abs(delay) >= 30 {
-                                                    HStack(spacing: 4) {
-                                                        Text(delayLabel(TimeInterval(delay)))
-                                                            .foregroundStyle(transitDelayColor(delay))
-                                                        Text(transitTimeSourceLabel(for: leg, in: journey))
-                                                            .foregroundStyle(.secondary)
-                                                    }
-                                                    .font(.caption2)
-                                                } else if hasLiveTransitUpdate(for: leg) {
-                                                    Text(transitTimeSourceLabel(for: leg, in: journey))
-                                                        .font(.caption2).foregroundStyle(.secondary)
-                                                } else if leg.realTime {
-                                                    Text(transitTimeSourceLabel(for: leg, in: journey))
-                                                        .font(.caption2).foregroundStyle(.secondary)
-                                                } else if leg.mode != "WALK" {
-                                                    Text("wg rozkładu")
-                                                        .font(.caption2).foregroundStyle(.secondary)
-                                                }
-                                            }
-                                        }
-                                        .font(.caption)
-                                    }
-                                }
+                                routePlanningJourneyDetails(journey, darkStyle: false)
                             }
 
-                            if engine.state.transportMode == .car {
+                            if navigationStore.state.transportMode == .car {
                                 Button {
                                     appRouter.present(.trafficDetails)
                                 } label: {
@@ -643,14 +586,14 @@ extension ContentView {
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
 
-                if engine.state.transportMode != .transit {
+                if navigationStore.state.transportMode != .transit {
                     beginRouteButton
                 }
-            } else if engine.state.status == .routeCalculating {
+            } else if navigationStore.state.status == .routeCalculating {
                 HStack(spacing: 10) {
                     ProgressView()
-                    Text(engine.state.transportMode == .transit
-                         ? (engine.state.transitPlanningPhase == .loadingSchedule
+                    Text(navigationStore.state.transportMode == .transit
+                         ? (navigationStore.state.transitPlanningPhase == .loadingSchedule
                             ? "Aktualizuję rozkłady…" : "Szukam połączeń…")
                          : "Wyznaczanie trasy…")
                         .font(.subheadline)
@@ -660,11 +603,11 @@ extension ContentView {
                 .padding(.vertical, 8)
             } else {
                 HStack {
-                    Text(engine.state.errorMessage ?? "Nie udało się wyznaczyć trasy.")
+                    Text(navigationStore.state.errorMessage ?? "Nie udało się wyznaczyć trasy.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button("Spróbuj ponownie") { Task { await engine.planRoute() } }
+                    Button("Spróbuj ponownie") { Task { await navigationStore.planRoute() } }
                 }
             }
         }
@@ -686,12 +629,12 @@ extension ContentView {
             if isRouteOriginAwayFromUser {
                 navigateToRouteOrigin()
             } else {
-                engine.begin()
+                navigationStore.begin()
             }
         } label: {
             Label(isRouteOriginAwayFromUser ? "Nawiguj do punktu startowego" : "Rozpocznij",
                   systemImage: isRouteOriginAwayFromUser ? "location.magnifyingglass" :
-                    (engine.state.transportMode == .transit ? "tram.fill" : "location.fill"))
+                    (navigationStore.state.transportMode == .transit ? "tram.fill" : "location.fill"))
                 .font(.headline)
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
@@ -699,28 +642,28 @@ extension ContentView {
                 .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(engine.state.status != .routePreview
-                  || engine.state.transitPlanningPhase == .enrichingGeometry)
-        .opacity(engine.state.status == .routePreview
-                 && engine.state.transitPlanningPhase != .enrichingGeometry ? 1 : 0.55)
+        .disabled(navigationStore.state.status != .routePreview
+                  || navigationStore.state.transitPlanningPhase == .enrichingGeometry)
+        .opacity(navigationStore.state.status == .routePreview
+                 && navigationStore.state.transitPlanningPhase != .enrichingGeometry ? 1 : 0.55)
     }
 
     func navigateToRouteOrigin() {
-        guard let point = engine.state.routeOrigin, !point.isCurrentLocation else { return }
+        guard let point = navigationStore.state.routeOrigin, !point.isCurrentLocation else { return }
         let originDestination = point.destination
-        engine.state.routeOrigin = nil
-        engine.selectDestination(originDestination)
-        Task { await engine.planRoute() }
+        navigationStore.state.routeOrigin = nil
+        navigationStore.selectDestination(originDestination)
+        Task { await navigationStore.planRoute() }
     }
 
     var transportSelector: some View {
         HStack(spacing: 5) {
             ForEach(TransportMode.allCases) { mode in
                 Button {
-                    Task { await engine.selectTransportMode(mode) }
+                    Task { await navigationStore.selectTransportMode(mode) }
                 } label: {
                     Group {
-                        if engine.state.transportMode == mode {
+                        if navigationStore.state.transportMode == mode {
                             HStack(spacing: 8) {
                                 Image(systemName: mode.symbol)
                                     .font(.system(size: 16, weight: .semibold))
@@ -740,13 +683,13 @@ extension ContentView {
                             }
                         }
                     }
-                    .foregroundStyle(engine.state.transportMode == mode ? Color.accentColor : Color.secondary)
-                    .frame(maxWidth: engine.state.transportMode == mode ? 132 : .infinity)
-                    .layoutPriority(engine.state.transportMode == mode ? 1 : 0)
+                    .foregroundStyle(navigationStore.state.transportMode == mode ? Color.accentColor : Color.secondary)
+                    .frame(maxWidth: navigationStore.state.transportMode == mode ? 132 : .infinity)
+                    .layoutPriority(navigationStore.state.transportMode == mode ? 1 : 0)
                     .frame(minHeight: 48)
-                    .padding(.horizontal, engine.state.transportMode == mode ? 5 : 0)
+                    .padding(.horizontal, navigationStore.state.transportMode == mode ? 5 : 0)
                     .background {
-                        if engine.state.transportMode == mode {
+                        if navigationStore.state.transportMode == mode {
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
                                 .fill(Color.accentColor.opacity(0.16))
                                 .overlay {
@@ -763,24 +706,24 @@ extension ContentView {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(mode.title)
-                .accessibilityAddTraits(engine.state.transportMode == mode ? .isSelected : [])
+                .accessibilityAddTraits(navigationStore.state.transportMode == mode ? .isSelected : [])
             }
         }
-        .animation(.spring(response: 0.34, dampingFraction: 0.88), value: engine.state.transportMode)
+        .animation(.spring(response: 0.34, dampingFraction: 0.88), value: navigationStore.state.transportMode)
     }
 
     var journeyTimeControl: some View {
         HStack(spacing: 8) {
             Menu {
                 Button { chooseJourneyTimeMode(.now) } label: {
-                    Label("Teraz", systemImage: engine.state.journeyTimeMode == .now ? "checkmark" : "clock")
+                    Label("Teraz", systemImage: navigationStore.state.journeyTimeMode == .now ? "checkmark" : "clock")
                 }
                 Button { chooseJourneyTimeMode(.departAt) } label: {
-                    Label("Wyjazd o…", systemImage: engine.state.journeyTimeMode == .departAt ? "checkmark" : "arrow.up.right")
+                    Label("Wyjazd o…", systemImage: navigationStore.state.journeyTimeMode == .departAt ? "checkmark" : "arrow.up.right")
                 }
-                if engine.state.transportMode == .transit {
+                if navigationStore.state.transportMode == .transit {
                     Button { chooseJourneyTimeMode(.arriveBy) } label: {
-                        Label("Przyjazd na…", systemImage: engine.state.journeyTimeMode == .arriveBy ? "checkmark" : "mappin")
+                        Label("Przyjazd na…", systemImage: navigationStore.state.journeyTimeMode == .arriveBy ? "checkmark" : "mappin")
                     }
                 }
             } label: {
@@ -791,25 +734,25 @@ extension ContentView {
                     .background(Color.primary.opacity(0.05), in: Capsule())
             }
             .accessibilityLabel("Kiedy chcesz jechać")
-            .disabled(engine.state.status != .routePreview
-                      || engine.state.transitPlanningPhase == .enrichingGeometry)
+            .disabled(navigationStore.state.status != .routePreview
+                      || navigationStore.state.transitPlanningPhase == .enrichingGeometry)
 
-            if engine.state.journeyTimeMode != .now {
+            if navigationStore.state.journeyTimeMode != .now {
                 DatePicker(
-                    engine.state.journeyTimeMode == .departAt ? "Godzina wyjazdu" : "Godzina przyjazdu",
+                    navigationStore.state.journeyTimeMode == .departAt ? "Godzina wyjazdu" : "Godzina przyjazdu",
                     selection: Binding(
-                        get: { engine.state.journeyTargetTime },
-                        set: { engine.setJourneyTargetTime($0) }),
+                        get: { navigationStore.state.journeyTargetTime },
+                        set: { navigationStore.setJourneyTargetTime($0) }),
                     in: Date()...Date().addingTimeInterval(18 * 60 * 60),
                     displayedComponents: [.date, .hourAndMinute])
                     .labelsHidden()
-                    .accessibilityLabel(engine.state.journeyTimeMode == .departAt
+                    .accessibilityLabel(navigationStore.state.journeyTimeMode == .departAt
                                         ? "Godzina wyjazdu" : "Godzina przyjazdu")
-                    .disabled(engine.state.status != .routePreview
-                              || engine.state.transitPlanningPhase == .enrichingGeometry)
+                    .disabled(navigationStore.state.status != .routePreview
+                              || navigationStore.state.transitPlanningPhase == .enrichingGeometry)
 
                 Button {
-                    Task { await engine.planRoute() }
+                    Task { await navigationStore.planRoute() }
                 } label: {
                     Image(systemName: "arrow.clockwise")
                         .font(.caption.weight(.semibold))
@@ -819,15 +762,15 @@ extension ContentView {
                 .buttonStyle(.plain)
                 .foregroundStyle(Color.accentColor)
                 .accessibilityLabel("Przelicz połączenia")
-                .disabled(engine.state.status != .routePreview
-                          || engine.state.transitPlanningPhase == .enrichingGeometry)
+                .disabled(navigationStore.state.status != .routePreview
+                          || navigationStore.state.transitPlanningPhase == .enrichingGeometry)
             }
             Spacer(minLength: 0)
         }
     }
 
     var journeyTimeControlTitle: String {
-        switch engine.state.journeyTimeMode {
+        switch navigationStore.state.journeyTimeMode {
         case .now: "Teraz"
         case .departAt: "Wyjazd o"
         case .arriveBy: "Przyjazd na"
@@ -835,9 +778,9 @@ extension ContentView {
     }
 
     func chooseJourneyTimeMode(_ mode: JourneyTimeMode) {
-        engine.setJourneyTimeMode(mode)
+        navigationStore.setJourneyTimeMode(mode)
         if mode == .now {
-            Task { await engine.planRoute() }
+            Task { await navigationStore.planRoute() }
         }
     }
 
@@ -845,11 +788,11 @@ extension ContentView {
         VStack(alignment: .leading, spacing: 7) {
             Text("Późniejsze połączenia")
                 .font(.subheadline.weight(.semibold))
-            ForEach(engine.state.laterTransitRoutes) { route in
+            ForEach(navigationStore.state.laterTransitRoutes) { route in
                 if let journey = route.journey,
                    let firstRide = journey.legs.first(where: { $0.mode != "WALK" }) {
                     Button {
-                        engine.selectLaterTransitConnection(route)
+                        navigationStore.selectLaterTransitConnection(route)
                     } label: {
                         HStack(alignment: .top, spacing: 10) {
                             VStack(alignment: .leading, spacing: 3) {
@@ -900,20 +843,20 @@ extension ContentView {
 
     @ViewBuilder
     var waypointDetails: some View {
-        if !engine.state.waypoints.isEmpty {
+        if !navigationStore.state.waypoints.isEmpty {
             HStack {
                 Label("Przystanki pośrednie", systemImage: "mappin.and.ellipse")
                     .font(.subheadline.weight(.semibold))
-                Text("\(engine.state.waypoints.count)")
+                Text("\(navigationStore.state.waypoints.count)")
                     .font(.caption.weight(.semibold).monospacedDigit())
                     .foregroundStyle(.secondary)
                 Spacer()
-                if engine.state.waypoints.count >= 2 {
+                if navigationStore.state.waypoints.count >= 2 {
                     Button("Optymalizuj", systemImage: "arrow.triangle.swap") {
-                        Task { await engine.optimizeWaypoints() }
+                        Task { await navigationStore.optimizeWaypoints() }
                     }
                     .font(.caption.weight(.semibold))
-                    .disabled(engine.state.status != .routePreview)
+                    .disabled(navigationStore.state.status != .routePreview)
                 }
             }
         }
@@ -923,12 +866,12 @@ extension ContentView {
         VStack(alignment: .leading, spacing: 8) {
             Text("Trasa")
                 .font(.subheadline.weight(.semibold))
-            Label(engine.state.routeOrigin?.name ??
-                  (engine.state.location == nil ? "Pozycja niedostępna" : "Moja lokalizacja"),
-                  systemImage: engine.state.routeOrigin?.isCurrentLocation == false ? "a.circle.fill" : "location.fill")
+            Label(navigationStore.state.routeOrigin?.name ??
+                  (navigationStore.state.location == nil ? "Pozycja niedostępna" : "Moja lokalizacja"),
+                  systemImage: navigationStore.state.routeOrigin?.isCurrentLocation == false ? "a.circle.fill" : "location.fill")
                 .font(.subheadline)
-                .foregroundStyle(engine.state.location == nil ? Color.secondary : Color.primary)
-            Label(engine.state.destination?.name ?? "Cel podróży",
+                .foregroundStyle(navigationStore.state.location == nil ? Color.secondary : Color.primary)
+            Label(navigationStore.state.destination?.name ?? "Cel podróży",
                   systemImage: "mappin.and.ellipse")
                 .font(.subheadline)
                 .foregroundStyle(.primary)
@@ -938,11 +881,11 @@ extension ContentView {
     func routePreferenceToggle(_ title: String,
                                       keyPath: WritableKeyPath<RoutingPreferences, Bool>) -> some View {
         Toggle(title, isOn: Binding(
-            get: { engine.state.routingPreferences[keyPath: keyPath] },
+            get: { navigationStore.state.routingPreferences[keyPath: keyPath] },
             set: { value in
-                var preferences = engine.state.routingPreferences
+                var preferences = navigationStore.state.routingPreferences
                 preferences[keyPath: keyPath] = value
-                Task { await engine.updateRoutingPreferences(preferences) }
+                Task { await navigationStore.updateRoutingPreferences(preferences) }
             }
         ))
         .font(.subheadline)
@@ -952,18 +895,26 @@ extension ContentView {
                              selectedRoute: NavigationRoute, isSelected: Bool) -> some View {
         Button {
             withAnimation(.easeInOut(duration: 0.3)) {
-                engine.select(route)
+                navigationStore.select(route)
             }
         } label: {
             VStack(alignment: .leading, spacing: 3) {
-                Text(routeOptionTime(route, selectedRoute: selectedRoute, isSelected: isSelected))
+                Text(routeOptionTime(route))
                     .font(.system(size: 15, weight: .semibold, design: .rounded).monospacedDigit())
                     .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
+                if !isSelected {
+                    Text(routeOptionDifference(route, from: selectedRoute))
+                        .font(.system(size: 9, weight: .medium, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
                 Text(routeTransitSummary(route) ?? distance(route.distance))
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.82)
             }
             .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
             .padding(.horizontal, 9)
@@ -975,8 +926,8 @@ extension ContentView {
             }
         }
         .buttonStyle(.plain)
-        .disabled(engine.state.transitPlanningPhase == .enrichingGeometry)
-        .accessibilityLabel("Trasa \(index), \(time(route.expectedTravelTime)), \(distance(route.distance))")
+        .disabled(navigationStore.state.transitPlanningPhase == .enrichingGeometry)
+        .accessibilityLabel("Trasa \(index), \(time(route.expectedTravelTime)), \(routeTransitSummary(route) ?? distance(route.distance))")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
@@ -986,16 +937,21 @@ extension ContentView {
         guard !lines.isEmpty else { return nil }
         let walkingMinutes = journey.legs.filter { $0.mode == "WALK" }
             .reduce(0) { $0 + max(0, Int(ceil($1.arrival.timeIntervalSince($1.departure) / 60))) }
-        return lines.joined(separator: " → ") + (walkingMinutes > 0 ? " · pieszo \(walkingMinutes) min" : "")
+        let walking = walkingMinutes > 0 ? "pieszo \(walkingMinutes) min" : nil
+        let transfers = "\(journey.transferCount) \(transferCaption(journey.transferCount))"
+        let arrival = "przyjazd \(journey.arrival.formatted(date: .omitted, time: .shortened))"
+        return (lines + [walking, transfers, arrival].compactMap { $0 }).joined(separator: " · ")
     }
 
-    func routeOptionTime(_ route: NavigationRoute, selectedRoute: NavigationRoute,
-                                 isSelected: Bool) -> String {
-        guard !isSelected else { return compactRouteTime(route.expectedTravelTime) }
+    func routeOptionTime(_ route: NavigationRoute) -> String {
+        compactRouteTime(route.expectedTravelTime)
+    }
+
+    func routeOptionDifference(_ route: NavigationRoute, from selectedRoute: NavigationRoute) -> String {
         let difference = route.expectedTravelTime - selectedRoute.expectedTravelTime
         let minutes = Int(ceil(abs(difference) / 60))
-        guard minutes > 0 else { return compactRouteTime(route.expectedTravelTime) }
-        return "\(difference > 0 ? "+" : "−")\(minutes) min"
+        guard minutes > 0 else { return "Podobny czas" }
+        return difference > 0 ? "+\(minutes) min względem wybranej" : "\(minutes) min szybciej"
     }
 
     func compactRouteTime(_ seconds: TimeInterval) -> String {

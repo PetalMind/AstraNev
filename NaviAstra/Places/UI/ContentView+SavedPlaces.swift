@@ -4,14 +4,14 @@ extension ContentView {
     var favoritesSheet: some View {
         NavigationStack {
             List {
-                if localData.places.isEmpty {
+                if placeStore.places.isEmpty {
                     ContentUnavailableView("Brak zapisanych miejsc",
                                            systemImage: "heart",
                                            description: Text("Dodaj Dom, Pracę albo ulubiony adres z wyszukiwarki."))
                 }
 
                 let quickPlaces = [PlaceKind.home, .work].compactMap { kind in
-                    localData.places.first(where: { $0.kind == kind })
+                    placeStore.places.first(where: { $0.kind == kind })
                 }
                 if !quickPlaces.isEmpty {
                     Section("Szybkie miejsca") {
@@ -21,7 +21,7 @@ extension ContentView {
                     }
                 }
 
-                let pinnedFavorites = localData.places.filter { $0.kind == .favorite && $0.isPinned }
+                let pinnedFavorites = placeStore.places.filter { $0.kind == .favorite && $0.isPinned }
                 if !pinnedFavorites.isEmpty {
                     Section("Przypięte ulubione") {
                         ForEach(pinnedFavorites) { place in
@@ -30,7 +30,7 @@ extension ContentView {
                     }
                 }
 
-                let otherFavorites = localData.places.filter { $0.kind == .favorite && !$0.isPinned }
+                let otherFavorites = placeStore.places.filter { $0.kind == .favorite && !$0.isPinned }
                 if !otherFavorites.isEmpty {
                     Section("Pozostałe ulubione") {
                         ForEach(otherFavorites) { place in
@@ -48,16 +48,16 @@ extension ContentView {
             }
             .sheet(item: $editingSavedPlace) { place in
                 SavedPlaceEditorSheet(place: place) { name, icon, isPinned in
-                    localData.updatePlace(place.id, customName: name, icon: icon, isPinned: isPinned)
+                    placeStore.updatePlace(place.id, customName: name, icon: icon, isPinned: isPinned)
                 } onRemove: {
-                    localData.removePlace(place.id)
+                    placeStore.removePlace(place.id)
                 }
             }
             .confirmationDialog("Usunąć to miejsce z Ulubionych?",
                                 isPresented: $showPlaceRemovalConfirmation,
                                 titleVisibility: .visible) {
                 Button("Usuń", role: .destructive) {
-                    if let placePendingRemoval { localData.removePlace(placePendingRemoval.id) }
+                    if let placePendingRemoval { placeStore.removePlace(placePendingRemoval.id) }
                     placePendingRemoval = nil
                 }
                 Button("Anuluj", role: .cancel) { placePendingRemoval = nil }
@@ -117,7 +117,7 @@ extension ContentView {
                 if place.kind == .favorite {
                     Button(place.isPinned ? "Odepnij od wyszukiwarki" : "Przypnij pod wyszukiwarką",
                            systemImage: place.isPinned ? "pin.slash" : "pin") {
-                        localData.updatePlace(place.id, customName: place.customName,
+                        placeStore.updatePlace(place.id, customName: place.customName,
                                               isPinned: !place.isPinned)
                     }
                 }
@@ -137,19 +137,19 @@ extension ContentView {
     var historySheet: some View {
         NavigationStack {
             List {
-                if localData.trips.isEmpty && localData.searches.isEmpty {
+                if placeStore.trips.isEmpty && placeStore.searches.isEmpty {
                     ContentUnavailableView("Brak zakończonych podróży",
                                            systemImage: "clock.arrow.circlepath",
                                            description: Text("Wyszukane miejsca i zakończone podróże pojawią się tutaj."))
                 }
 
-                if !localData.searches.isEmpty {
+                if !placeStore.searches.isEmpty {
                     Section("Ostatnie wyszukiwania") {
-                        ForEach(localData.searches) { item in
+                        ForEach(placeStore.searches) { item in
                             HStack(spacing: 10) {
                                 Button {
                                     appRouter.dismiss(.history)
-                                    Task { await engine.previewNewTrip(item.destination) }
+                                    Task { await navigationStore.previewNewTrip(item.destination) }
                                 } label: {
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(item.destination.name).foregroundStyle(.primary)
@@ -160,11 +160,11 @@ extension ContentView {
                                 }
                                 .buttonStyle(.plain)
                                 Button("Zapisz do ulubionych", systemImage: "heart") {
-                                    localData.add(item.destination)
+                                    placeStore.add(item.destination)
                                 }
                                 .labelStyle(.iconOnly)
                                 Button("Usuń wyszukiwanie", systemImage: "trash", role: .destructive) {
-                                    localData.removeSearch(item.id)
+                                    placeStore.removeSearch(item.id)
                                 }
                                 .labelStyle(.iconOnly)
                             }
@@ -172,9 +172,9 @@ extension ContentView {
                     }
                 }
 
-                if !localData.trips.isEmpty {
+                if !placeStore.trips.isEmpty {
                     Section("Przebyte trasy") {
-                        ForEach(localData.trips) { trip in
+                        ForEach(placeStore.trips) { trip in
                             HStack(spacing: 10) {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(trip.destination.name).font(.headline)
@@ -191,11 +191,11 @@ extension ContentView {
                                 }
                                 .labelStyle(.iconOnly)
                                 Button("Zapisz cel do ulubionych", systemImage: "heart") {
-                                    localData.add(trip.destination)
+                                    placeStore.add(trip.destination)
                                 }
                                 .labelStyle(.iconOnly)
                                 Button("Usuń podróż", systemImage: "trash", role: .destructive) {
-                                    localData.removeTrip(trip.id)
+                                    placeStore.removeTrip(trip.id)
                                 }
                                 .labelStyle(.iconOnly)
                             }

@@ -50,7 +50,7 @@ extension ContentView {
 
     var plannedTransitLegForSelectedTrip: JourneyLeg? {
         guard let selectedTransitTripID else { return nil }
-        return engine.state.route?.journey?.legs.first(where: { $0.tripID == selectedTransitTripID })
+        return navigationStore.state.route?.journey?.legs.first(where: { $0.tripID == selectedTransitTripID })
     }
 
     var transitLineCoordinatesForMap: [Coordinate] {
@@ -67,8 +67,8 @@ extension ContentView {
     }
 
     var activeNavigationTransitLeg: JourneyLeg? {
-        guard isNavigating, let legs = engine.state.route?.journey?.legs else { return nil }
-        if let index = engine.state.transitProgress?.legIndex, legs.indices.contains(index) {
+        guard isNavigating, let legs = navigationStore.state.route?.journey?.legs else { return nil }
+        if let index = navigationStore.state.transitProgress?.legIndex, legs.indices.contains(index) {
             if legs[index].mode != "WALK" { return legs[index] }
             return legs.dropFirst(index + 1).first { $0.mode != "WALK" }
         }
@@ -76,8 +76,8 @@ extension ContentView {
     }
 
     var activeTransitStopID: String? {
-        if let progress = engine.state.transitProgress,
-           let legs = engine.state.route?.journey?.legs,
+        if let progress = navigationStore.state.transitProgress,
+           let legs = navigationStore.state.route?.journey?.legs,
            legs.indices.contains(progress.legIndex), legs[progress.legIndex].mode != "WALK" {
             return progress.nextStop?.stopID
         }
@@ -91,41 +91,32 @@ extension ContentView {
     var supportedBaseMap: Binding<String> {
         Binding(
             get: {
-                let requested = BaseMap(rawValue: mapBase) ?? .standard
+                let requested = BaseMap(rawValue: mapStore.mapBase) ?? .standard
                 return mapCapabilities.supports(requested) ? requested.rawValue : BaseMap.standard.rawValue
             },
             set: { value in
                 guard let selected = BaseMap(rawValue: value), mapCapabilities.supports(selected) else { return }
-                mapBase = selected.rawValue
+                mapStore.mapBase = selected.rawValue
             })
     }
 
     var mapSettings: MapSettings {
-        let requestedBase = BaseMap(rawValue: mapBase) ?? .standard
-        return MapSettings(
-            baseMap: mapCapabilities.supports(requestedBase) ? requestedBase : .standard,
-            appearance: MapAppearance(rawValue: mapAppearance) ?? .auto,
-            cameraMode: mapCapabilities.supports3DCamera ? (MapDimension(rawValue: mapDimension) ?? .flat) : .flat,
-            overlays: MapOverlays(
-                traffic: mapCapabilities.supportsTrafficOverlay && mapTrafficVisible,
-                poi: mapCapabilities.supportsPOIToggle && mapPOIVisible,
-                buildings3D: mapCapabilities.supports3DBuildings && mapBuildingsVisible,
-                transit: mapCapabilities.supportsTransitOverlay && mapTransitVisible,
-                cycling: mapCapabilities.supportsCyclingOverlay && mapCyclingVisible),
-            poiCategories: Set(MapPOICategory.allCases.filter { mapPOICategories & $0.mask != 0 }))
+        mapStore.settings(for: mapCapabilities)
     }
 
     var navigationMapSettings: MapSettings {
         var settings = mapSettings
-        if engine.state.destination != nil && engine.state.status != .idle {
-            let shouldShowContextualPOI = isNavigating || engine.state.status == .arrived
+        settings.overlays.buildings3D = settings.overlays.buildings3D &&
+            navigationStore.energyPolicy.enables3DBuildings
+        if navigationStore.state.destination != nil && navigationStore.state.status != .idle {
+            let shouldShowContextualPOI = isNavigating || navigationStore.state.status == .arrived
             if !shouldShowContextualPOI { settings.overlays.poi = false }
         }
-        if isNavigating || engine.state.status == .arrived {
-            if engine.state.status == .arrived || (engine.state.progress?.remainingDistance ?? .infinity) < 500 {
+        if isNavigating || navigationStore.state.status == .arrived {
+            if navigationStore.state.status == .arrived || (navigationStore.state.progress?.remainingDistance ?? .infinity) < 500 {
                 settings.context = .approachingDestination
             } else {
-                switch engine.state.transportMode {
+                switch navigationStore.state.transportMode {
                 case .car: settings.context = .driving
                 case .walking: settings.context = .walking
                 case .bicycle: settings.context = .cycling
@@ -147,12 +138,12 @@ extension ContentView {
     }
 
     var isNavigating: Bool {
-        engine.state.status == .navigating || engine.state.status == .rerouting
+        navigationStore.state.status == .navigating || navigationStore.state.status == .rerouting
     }
 
     var activeParkRideLeg: JourneyLeg? {
-        guard let legs = engine.state.route?.journey?.legs, !legs.isEmpty else { return nil }
-        if let index = engine.state.transitProgress?.legIndex, legs.indices.contains(index) {
+        guard let legs = navigationStore.state.route?.journey?.legs, !legs.isEmpty else { return nil }
+        if let index = navigationStore.state.transitProgress?.legIndex, legs.indices.contains(index) {
             return legs[index]
         }
         return legs.first { $0.arrival > Date() } ?? legs.last
@@ -168,12 +159,12 @@ extension ContentView {
     }
 
     var isOnRoadDrivingLeg: Bool {
-        engine.state.transportMode == .car ||
-            (engine.state.transportMode == .parkRide && parkRideIsDrivingLeg)
+        navigationStore.state.transportMode == .car ||
+            (navigationStore.state.transportMode == .parkRide && parkRideIsDrivingLeg)
     }
 
     var activeJourneyNearbyCategories: [NearbyPlaceCategory] {
-        switch engine.state.transportMode {
+        switch navigationStore.state.transportMode {
         case .car:
             [.fuel, .parking, .charging, .food]
         case .parkRide where parkRideIsDrivingLeg:
@@ -184,18 +175,18 @@ extension ContentView {
     }
 
     var supportsActiveTripWaypoints: Bool {
-        switch engine.state.transportMode {
+        switch navigationStore.state.transportMode {
         case .car, .walking, .bicycle: true
         case .transit, .parkRide: false
         }
     }
 
     var supportsActiveTripTrafficDetails: Bool {
-        engine.state.transportMode == .car
+        navigationStore.state.transportMode == .car
     }
 
     var supportsActiveTripDestinationParking: Bool {
-        engine.state.transportMode == .car
+        navigationStore.state.transportMode == .car
     }
 
     var supportsActiveTripRoadPreferences: Bool {
@@ -203,9 +194,9 @@ extension ContentView {
     }
 
     var parkRideCarDistanceToTransfer: Double? {
-        guard engine.state.transportMode == .parkRide,
+        guard navigationStore.state.transportMode == .parkRide,
               parkRideIsDrivingLeg,
-              let location = engine.state.location,
+              let location = navigationStore.state.location,
               let coordinates = activeParkRideLeg?.coordinates,
               coordinates.count > 1,
               let projection = MapMatcher.project(location.coordinate, onto: coordinates),
@@ -216,8 +207,8 @@ extension ContentView {
     }
 
     var activeJourneyTargetText: String {
-        let fallback = currentJourneyLeg?.current.name ?? engine.state.destination?.name ?? "celu"
-        switch engine.state.transportMode {
+        let fallback = currentJourneyLeg?.current.name ?? navigationStore.state.destination?.name ?? "celu"
+        switch navigationStore.state.transportMode {
         case .car:
             return "Teraz jedziesz do \(fallback)"
         case .walking:
@@ -238,7 +229,7 @@ extension ContentView {
     }
 
     var arrivalTitle: String {
-        switch engine.state.transportMode {
+        switch navigationStore.state.transportMode {
         case .car: "Cel osiągnięty samochodem!"
         case .walking: "Cel osiągnięty pieszo!"
         case .bicycle: "Cel osiągnięty rowerem!"
@@ -248,7 +239,7 @@ extension ContentView {
     }
 
     var arrivalDistanceCaption: String {
-        switch engine.state.transportMode {
+        switch navigationStore.state.transportMode {
         case .car: "samochodem"
         case .walking: "pieszo"
         case .bicycle: "rowerem"
@@ -258,8 +249,8 @@ extension ContentView {
     }
 
     var arrivalSummaryMetric: (symbol: String, value: String, caption: String) {
-        let trip = engine.state.lastTrip
-        switch engine.state.transportMode {
+        let trip = navigationStore.state.lastTrip
+        switch navigationStore.state.transportMode {
         case .walking:
             let pace = trip.flatMap { trip -> String? in
                 guard trip.distanceMeters > 0, trip.movingSeconds > 0 else { return nil }
@@ -268,25 +259,25 @@ extension ContentView {
             } ?? "—"
             return ("figure.walk", pace, "tempo")
         case .transit:
-            guard let transfers = engine.state.route?.journey?.transferCount else {
+            guard let transfers = navigationStore.state.route?.journey?.transferCount else {
                 return ("arrow.left.arrow.right", "—", "przesiadek")
             }
             return ("arrow.left.arrow.right", "\(transfers)", transferCaption(transfers))
         case .parkRide:
-            guard let journeyTransfers = engine.state.route?.journey?.transferCount else {
+            guard let journeyTransfers = navigationStore.state.route?.journey?.transferCount else {
                 return ("arrow.left.arrow.right", "—", "przesiadek")
             }
             let transfers = journeyTransfers + 1
             return ("arrow.left.arrow.right", "\(transfers)", transferCaption(transfers))
         case .car, .bicycle:
-            let symbol = engine.state.transportMode == .car ? "car.side" : "bicycle"
+            let symbol = navigationStore.state.transportMode == .car ? "car.side" : "bicycle"
             let speed = trip.map { "\(Int($0.averageSpeedKph.rounded())) km/h" } ?? "—"
             return (symbol, speed, "śr. prędkość")
         }
     }
 
     var navigationArrivalCaption: String {
-        switch engine.state.transportMode {
+        switch navigationStore.state.transportMode {
         case .walking, .bicycle: "dotarcie"
         case .car, .transit, .parkRide: "przyjazd"
         }
@@ -302,7 +293,7 @@ extension ContentView {
 
     var usesFullBleedNavigationPanel: Bool {
         #if os(iOS)
-        isNavigating || engine.state.status == .arrived || isIOSRoutePlanningPreview
+        isNavigating || navigationStore.state.status == .arrived || isIOSRoutePlanningPreview
         #else
         false
         #endif
@@ -310,18 +301,18 @@ extension ContentView {
 
     var isIOSRoutePlanningPreview: Bool {
         #if os(iOS)
-        engine.state.destination != nil &&
-            (engine.state.status == .routePreview || engine.state.status == .error)
+        navigationStore.state.destination != nil &&
+            (navigationStore.state.status == .routePreview || navigationStore.state.status == .error)
         #else
         false
         #endif
     }
 
     var arrivalShareURL: URL? {
-        guard let destination = engine.state.destination else { return nil }
+        guard let destination = navigationStore.state.destination else { return nil }
         var components = URLComponents(string: "https://maps.apple.com/")
         var queryItems = [URLQueryItem]()
-        if let origin = engine.state.route?.coordinates.first {
+        if let origin = navigationStore.state.route?.coordinates.first {
             queryItems.append(URLQueryItem(
                 name: "saddr",
                 value: "\(origin.latitude),\(origin.longitude)"))
@@ -329,7 +320,7 @@ extension ContentView {
         queryItems.append(URLQueryItem(
             name: "daddr",
             value: "\(destination.coordinate.latitude),\(destination.coordinate.longitude)"))
-        switch engine.state.transportMode {
+        switch navigationStore.state.transportMode {
         case .car, .parkRide: queryItems.append(URLQueryItem(name: "dirflg", value: "d"))
         case .walking: queryItems.append(URLQueryItem(name: "dirflg", value: "w"))
         case .bicycle: break
@@ -347,20 +338,20 @@ extension ContentView {
 
     var voiceEnabledBinding: Binding<Bool> {
         Binding(
-            get: { engine.state.voiceEnabled },
-            set: { engine.setVoiceEnabled($0) })
+            get: { navigationStore.state.voiceEnabled },
+            set: { navigationStore.setVoiceEnabled($0) })
     }
 
     var voiceVerbosityBinding: Binding<VoiceVerbosity> {
         Binding(
-            get: { engine.state.voicePreferences.verbosity },
+            get: { navigationStore.state.voicePreferences.verbosity },
             set: { value in updateVoicePreferences { $0.verbosity = value } })
     }
 
     var voiceIdentifierBinding: Binding<String> {
         Binding(
             get: {
-                let identifier = engine.state.voicePreferences.voiceIdentifier ?? ""
+                let identifier = navigationStore.state.voicePreferences.voiceIdentifier ?? ""
                 return availablePolishVoices.contains(where: { $0.identifier == identifier }) ? identifier : ""
             },
             set: { value in updateVoicePreferences { $0.voiceIdentifier = value.isEmpty ? nil : value } })
@@ -368,48 +359,48 @@ extension ContentView {
 
     var voiceRateBinding: Binding<Double> {
         Binding(
-            get: { Double(engine.state.voicePreferences.speechRate) },
+            get: { Double(navigationStore.state.voicePreferences.speechRate) },
             set: { value in updateVoicePreferences { $0.speechRate = Float(value) } })
     }
 
     var voiceVolumeBinding: Binding<Double> {
         Binding(
-            get: { Double(engine.state.voicePreferences.volume) },
+            get: { Double(navigationStore.state.voicePreferences.volume) },
             set: { value in updateVoicePreferences { $0.volume = Float(value) } })
     }
 
     func updateVoicePreferences(_ update: (inout VoiceGuidancePreferences) -> Void) {
-        var preferences = engine.state.voicePreferences
+        var preferences = navigationStore.state.voicePreferences
         update(&preferences)
-        engine.setVoicePreferences(preferences)
+        navigationStore.setVoicePreferences(preferences)
     }
 
     var hasRoutePreviewContext: Bool {
-        engine.state.destination != nil && !isNavigating &&
-            (engine.state.status == .routePreview || engine.state.status == .routeCalculating || engine.state.status == .error)
+        navigationStore.state.destination != nil && !isNavigating &&
+            (navigationStore.state.status == .routePreview || navigationStore.state.status == .routeCalculating || navigationStore.state.status == .error)
     }
 
     var isTransitRoutePreview: Bool {
-        engine.state.status == .routePreview && engine.state.transportMode == .transit
+        navigationStore.state.status == .routePreview && navigationStore.state.transportMode == .transit
     }
 
     var isDestinationFavorite: Bool {
-        guard let destination = engine.state.destination else { return false }
-        return localData.places.contains {
+        guard let destination = navigationStore.state.destination else { return false }
+        return placeStore.places.contains {
             $0.kind == .favorite && $0.destination.coordinate == destination.coordinate
         }
     }
 
     var routeOriginPoint: RoutePoint? {
-        engine.state.routeOrigin ?? engine.state.location.map {
+        navigationStore.state.routeOrigin ?? navigationStore.state.location.map {
             RoutePoint(Destination(name: "Twoja lokalizacja", coordinate: $0.coordinate),
                        source: .currentLocation)
         }
     }
 
     var isRouteOriginAwayFromUser: Bool {
-        guard let origin = engine.state.routeOrigin, !origin.isCurrentLocation else { return false }
-        guard let location = engine.state.location else { return true }
+        guard let origin = navigationStore.state.routeOrigin, !origin.isCurrentLocation else { return false }
+        guard let location = navigationStore.state.location else { return true }
         return origin.coordinate.distance(to: location.coordinate) > 100
     }
 

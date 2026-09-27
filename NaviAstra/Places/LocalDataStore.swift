@@ -160,11 +160,38 @@ struct SearchHistoryEntry: Identifiable, Codable {
     var searchedAt = Date()
 }
 
+struct ParkedCar: Identifiable, Codable, Equatable, Sendable {
+    var id = UUID()
+    var coordinate: Coordinate
+    var parkedAt = Date()
+    var address: String?
+    var floor: String?
+    var sector: String?
+    var spot: String?
+    var note: String?
+    var photoPath: String?
+    var parkingExpiresAt: Date?
+
+    var destination: Destination {
+        Destination(id: id, name: "Zaparkowany samochód", coordinate: coordinate, address: address)
+    }
+
+    var parkingDetails: String? {
+        let details = [
+            floor.map { "Poziom \($0)" },
+            sector.map { "Sektor \($0)" },
+            spot.map { "Miejsce \($0)" }
+        ].compactMap { $0 }
+        return details.isEmpty ? nil : details.joined(separator: " · ")
+    }
+}
+
 @MainActor @Observable
 final class LocalDataStore {
     private(set) var places: [SavedPlace] = []
     private(set) var trips: [TripRecord] = []
     private(set) var searches: [SearchHistoryEntry] = []
+    private(set) var parkedCar: ParkedCar?
     var errorMessage: String?
     private let directory: URL
 
@@ -179,6 +206,73 @@ final class LocalDataStore {
         catch { errorMessage = "Nie udało się wczytać historii: \(error.localizedDescription)" }
         do { searches = try Self.read([SearchHistoryEntry].self, from: self.directory.appendingPathComponent("searches.json")) ?? [] }
         catch { errorMessage = "Nie udało się wczytać historii wyszukiwania: \(error.localizedDescription)" }
+        do { parkedCar = try Self.read(ParkedCar.self, from: self.directory.appendingPathComponent("parked-car.json")) }
+        catch { errorMessage = "Nie udało się wczytać miejsca samochodu: \(error.localizedDescription)" }
+    }
+
+    @discardableResult
+    func saveParkedCar(at coordinate: Coordinate, parkedAt: Date = Date()) -> Bool {
+        let car = ParkedCar(coordinate: coordinate, parkedAt: parkedAt)
+        guard persist(car, file: "parked-car.json") else { return false }
+        parkedCar = car
+        return true
+    }
+
+    @discardableResult
+    func updateParkedCar(_ car: ParkedCar) -> Bool {
+        var updated = car
+        let oldPhotoPath = parkedCar?.photoPath
+        if let current = parkedCar, current.id == car.id {
+            if updated.address == nil { updated.address = current.address }
+            if updated.photoPath == nil { updated.photoPath = current.photoPath }
+        }
+        guard persist(updated, file: "parked-car.json") else { return false }
+        parkedCar = updated
+        if let oldPhotoPath, oldPhotoPath != updated.photoPath {
+            try? FileManager.default.removeItem(at: parkedCarPhotoURL(for: oldPhotoPath))
+        }
+        return true
+    }
+
+    @discardableResult
+    func removeParkedCar() -> Bool {
+        let file = directory.appendingPathComponent("parked-car.json")
+        do {
+            if FileManager.default.fileExists(atPath: file.path) {
+                try FileManager.default.removeItem(at: file)
+            }
+            if let photoPath = parkedCar?.photoPath {
+                try? FileManager.default.removeItem(at: parkedCarPhotoURL(for: photoPath))
+            }
+            parkedCar = nil
+            errorMessage = nil
+            return true
+        } catch {
+            errorMessage = "Nie udało się usunąć miejsca samochodu: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func saveParkedCarPhoto(_ data: Data) -> String? {
+        let fileName = "parked-car-\(UUID().uuidString).photo"
+        do {
+            try data.write(to: parkedCarPhotoURL(for: fileName), options: .atomic)
+            errorMessage = nil
+            return fileName
+        } catch {
+            errorMessage = "Nie udało się zapisać zdjęcia samochodu: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    func parkedCarPhotoData(for car: ParkedCar) -> Data? {
+        guard let photoPath = car.photoPath else { return nil }
+        return try? Data(contentsOf: parkedCarPhotoURL(for: photoPath))
+    }
+
+    private func parkedCarPhotoURL(for fileName: String) -> URL {
+        let safeFileName = URL(fileURLWithPath: fileName).lastPathComponent
+        return directory.appendingPathComponent(safeFileName)
     }
 
     @discardableResult

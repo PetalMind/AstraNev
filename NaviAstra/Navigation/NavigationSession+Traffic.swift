@@ -1,10 +1,9 @@
 import Foundation
 
-extension NavigationEngine {
+extension NavigationSession {
     func configureTraffic(apiKey: String?) -> Bool {
         guard TrafficCredential.save(apiKey?.trimmingCharacters(in: .whitespacesAndNewlines)) else { return false }
-        let normalizedKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines)
-        trafficProvider = normalizedKey == nil || normalizedKey!.isEmpty ? nil : TomTomTrafficProvider(apiKey: normalizedKey!)
+        trafficProvider = trafficProviderFactory.make(apiKey: apiKey)
         updateTrafficTileURLTemplates()
         invalidateTraffic()
         state.traffic = nil
@@ -22,11 +21,15 @@ extension NavigationEngine {
     }
 
     func refreshTraffic(force: Bool = false, forceRouteRefresh: Bool = true) {
-        guard state.transportMode == .car || state.status == .idle else { return }
+        let energyPolicy = energyPolicyEngine.currentPolicy
+        let isOnDemandMapRequest = force && energyPolicy.mode == .mapBrowsing
+        guard energyPolicy.trafficRefreshInterval != nil || isOnDemandMapRequest else { return }
+        guard state.transportMode == .car || state.transportMode == .parkRide || state.status == .idle else { return }
+        guard state.cameraState != .startingNavigation else { return }
         guard let trafficProvider else { state.trafficStatus = .notConfigured; return }
         let coordinate = state.location?.coordinate
         let isNavigating = state.status == .navigating || state.status == .rerouting
-        let nearbyRefreshInterval: TimeInterval = isNavigating ? 60 : 120
+        let nearbyRefreshInterval = energyPolicy.trafficRefreshInterval ?? 120
         if let coordinate, !trafficRequestInFlight,
            force || Date().timeIntervalSince(lastTrafficFetch) >= nearbyRefreshInterval {
             startNearbyTrafficRefresh(using: trafficProvider, at: coordinate)
@@ -161,8 +164,9 @@ extension NavigationEngine {
             return (along - distance, incident.isRoadClosure)
         }.min { $0.0 < $1.0 }
         if nearest?.1 == true, (nearest?.0 ?? .infinity) <= 3_000 { return 20 }
-        if (nearest?.0 ?? .infinity) <= 10_000 { return 30 }
-        return state.status == .routePreview ? 90 : 60
+        let policyInterval = energyPolicyEngine.currentPolicy.trafficRefreshInterval ?? 60
+        if (nearest?.0 ?? .infinity) <= 10_000 { return max(30, policyInterval) }
+        return max(state.status == .routePreview ? 90 : 60, policyInterval)
     }
 
     private func publishTrafficSnapshot() {

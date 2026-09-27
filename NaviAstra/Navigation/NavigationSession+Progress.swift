@@ -1,6 +1,6 @@
 import Foundation
 
-extension NavigationEngine {
+extension NavigationSession {
     func flowDistanceRange(on route: NavigationRoute,
                                    flow: TrafficFlow) -> (start: Double, end: Double)? {
         if projectedFlowRouteID != route.id || projectedFlowUpdatedAt != flow.updatedAt ||
@@ -199,22 +199,17 @@ extension NavigationEngine {
             updateTransitVoice(for: journeyProgress, journey: journey)
         }
         guard state.transportMode != .parkRide else { return }
-        let sustainedDeparture = location.accuracy <= 45
-            && projection.distanceFromRoute > max(40, location.accuracy * 1.5)
-            && (routeMatch?.confidence ?? 0) < 0.25
-        if sustainedDeparture {
-            if let offRouteSince,
-               location.timestamp.timeIntervalSince(offRouteSince) >= 2,
-               Date().timeIntervalSince(lastReroute) > 20,
-               state.status != .rerouting {
-                lastReroute = Date()
-                self.offRouteSince = nil
-                Task { await reroute(from: location.coordinate) }
-            } else if offRouteSince == nil {
-                offRouteSince = location.timestamp
-            }
-        } else {
-            offRouteSince = nil
+        let hasSustainedDeparture = offRouteDetector.shouldRequestReroute(
+            location: location,
+            route: route,
+            projection: routeMatch?.projection ?? projection,
+            matchConfidence: routeMatch?.confidence ?? 0)
+        if hasSustainedDeparture,
+           Date().timeIntervalSince(rerouteController.lastReroute) > 20,
+           state.status != .rerouting {
+            rerouteController.recordRerouteRequest()
+            resetOffRouteEvidence()
+            Task { await reroute(from: location.coordinate) }
         }
     }
 
@@ -265,6 +260,7 @@ extension NavigationEngine {
 
     func arriveAtDestination() {
         state.status = .arrived
+        refreshEnergyPolicy()
         state.cameraState = .arrived
         locationManager.setHeadingUpdatesEnabled(false)
         state.deviceHeading = nil
@@ -407,8 +403,10 @@ extension NavigationEngine {
         lastTransitRideDistance = 0
     }
     func refreshTransitVehicles(near coordinate: Coordinate) {
-        let lodzCenter = Coordinate(latitude: 51.7592, longitude: 19.4560)
-        guard coordinate.distance(to: lodzCenter) <= 100_000 else {
+        guard let refreshInterval = energyPolicyEngine.currentPolicy.transitRefreshInterval else { return }
+        guard let provider = transitProvider as? any TransitDataProviding else { return }
+        let coverage = transitProvider.region
+        guard coordinate.distance(to: coverage.coverageCenter) <= coverage.coverageRadiusMeters else {
             if insideTransitCoverage {
                 insideTransitCoverage = false
                 transitVehiclesGeneration &+= 1
@@ -423,12 +421,11 @@ extension NavigationEngine {
         }
         insideTransitCoverage = true
         guard !transitVehiclesRequestInFlight,
-              Date().timeIntervalSince(lastTransitVehiclesFetch) >= 30 else { return }
+              Date().timeIntervalSince(lastTransitVehiclesFetch) >= refreshInterval else { return }
         transitVehiclesRequestInFlight = true
         lastTransitVehiclesFetch = Date()
         transitVehiclesGeneration &+= 1
         let generation = transitVehiclesGeneration
-        let provider = transitProvider
         Task {
             let feed = await provider.vehiclePositions(near: coordinate)
             guard generation == transitVehiclesGeneration else { return }

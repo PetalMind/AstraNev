@@ -19,6 +19,7 @@ enum TransitSheetSelection: Identifiable {
 struct TransitDetailsSheet: View {
     @Environment(\.dismiss) private var dismiss
     let selection: TransitSheetSelection
+    let transitStore: TransitStore
     let onSelectDeparture: (TransitDeparture) -> Void
 
     @State private var departures: [TransitDeparture] = []
@@ -26,8 +27,6 @@ struct TransitDetailsSheet: View {
     @State private var tripDetails: TransitTripDetails?
     @State private var railwayAttribution: String?
     @State private var isLoading = true
-
-    private let provider = LodzTransitRouteProvider()
 
     var body: some View {
         NavigationStack {
@@ -263,7 +262,7 @@ struct TransitDetailsSheet: View {
 
     private func loadDetails() async {
         isLoading = true
-        railwayAttribution = selectedIsRail ? await provider.railwayScheduleAttribution() : nil
+        railwayAttribution = selectedIsRail ? await transitStore.railwayScheduleAttribution() : nil
         await refreshDetails()
         isLoading = false
     }
@@ -271,18 +270,18 @@ struct TransitDetailsSheet: View {
     private func refreshDetails() async {
         switch selection {
         case .stop(let stop):
-            async let board = provider.departures(at: stop.detailStopIDs)
-            async let activeAlerts = provider.alerts(for: stop.detailStopIDs)
+            async let board = transitStore.departures(at: stop.detailStopIDs)
+            async let activeAlerts = transitStore.alerts(for: stop.detailStopIDs)
             let (loadedDepartures, loadedAlerts) = await (board, activeAlerts)
             departures = loadedDepartures
             alerts = loadedAlerts
             tripDetails = nil
         case .vehicle(let vehicle):
-            tripDetails = await provider.vehicleDetails(id: vehicle.id)
+            tripDetails = await transitStore.vehicleDetails(id: vehicle.id)
             departures = []
             alerts = []
         case .departure(let departure):
-            tripDetails = await provider.tripDetails(for: departure)
+            tripDetails = await transitStore.tripDetails(for: departure)
             departures = []
             alerts = []
         case .line:

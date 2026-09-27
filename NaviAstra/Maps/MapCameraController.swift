@@ -1,6 +1,59 @@
 import Foundation
 
-extension NavigationEngine {
+@MainActor
+final class MapCameraController {
+    private let state: NavigationState
+    private let routeMatchProvider: @MainActor () -> (routeID: UUID, projection: RouteProjection, timestamp: Date)?
+    private let refreshTransitVehicles: @MainActor (Coordinate) -> Void
+    let walkingCameraController = WalkingCameraController()
+
+    private var routeRevealTask: Task<Void, Never>?
+    private var routeProjectionTask: Task<RouteProjection?, Never>?
+    private var cameraUpdateTask: Task<Void, Never>?
+    private var maneuverTransitionTask: Task<Void, Never>?
+    private var cameraManeuverID: Int?
+
+    init(state: NavigationState,
+         routeMatchProvider: @escaping @MainActor () -> (routeID: UUID, projection: RouteProjection, timestamp: Date)?,
+         refreshTransitVehicles: @escaping @MainActor (Coordinate) -> Void) {
+        self.state = state
+        self.routeMatchProvider = routeMatchProvider
+        self.refreshTransitVehicles = refreshTransitVehicles
+    }
+
+    func updateWalkingCamera(location: NavigationLocation?, deviceHeading: Double?,
+                             isNewLocationFix: Bool = true) {
+        walkingCameraController.update(location: location, deviceHeading: deviceHeading,
+                                       isNewLocationFix: isNewLocationFix)
+    }
+
+    func resetWalkingCamera() {
+        walkingCameraController.reset()
+    }
+
+    func setCurrentManeuver(_ id: Int?) {
+        cameraManeuverID = id
+    }
+
+    func cancelNavigationCameraTasks() {
+        routeProjectionTask?.cancel()
+        cameraUpdateTask?.cancel()
+    }
+
+    func cancelManeuverTransition() {
+        maneuverTransitionTask?.cancel()
+        maneuverTransitionTask = nil
+    }
+
+    func cancelRouteReveal() {
+        routeRevealTask?.cancel()
+        routeRevealTask = nil
+    }
+
+    func waitForNavigationCameraUpdate() async {
+        await cameraUpdateTask?.value
+    }
+
     func setFreeLook() {
         guard state.status == .navigating || state.status == .rerouting else { return }
         state.cameraState = .freeLook
@@ -35,44 +88,38 @@ extension NavigationEngine {
 
     func updateCameraIntent(using precomputedRouteProjection: RouteProjection? = nil) {
         let routeProjection = precomputedRouteProjection ?? cameraRouteProjection
-        state.cameraIntent = CameraPlanner.intent(for: state.cameraState, location: state.cameraLocation ?? state.location,
-                                                  destination: state.destination, route: state.route,
-                                                  alternatives: state.alternatives, progress: state.progress,
-                                                  previousBearing: state.cameraIntent?.bearing ?? 0,
-                                                  precomputedRouteProjection: routeProjection,
-                                                  transportMode: state.transportMode,
-                                                  walkingCamera: walkingCameraSnapshot)
+        state.cameraIntent = CameraPlanner.intent(
+            for: state.cameraState,
+            location: state.cameraLocation ?? state.location,
+            destination: state.destination,
+            route: state.route,
+            alternatives: state.alternatives,
+            progress: state.progress,
+            previousBearing: state.cameraIntent?.bearing ?? 0,
+            precomputedRouteProjection: routeProjection,
+            transportMode: state.transportMode,
+            walkingCamera: walkingCameraSnapshot)
     }
 
-    private var walkingCameraSnapshot: WalkingCameraSnapshot? {
-        guard state.transportMode == .walking,
-              state.status == .navigating || state.status == .rerouting else { return nil }
-        return walkingCameraController.snapshot()
-    }
-
-    private var cameraRouteProjection: RouteProjection? {
-        guard !state.weakGPS, let route = state.route, let location = state.location,
-              let previousRouteMatch,
-              previousRouteMatch.routeID == route.id,
-              previousRouteMatch.timestamp == location.timestamp else { return nil }
-        return previousRouteMatch.projection
-    }
-
-    func prepareNavigationCamera(for route: NavigationRoute) {
-        navigationCameraProjectionTask?.cancel()
-        navigationCameraUpdateTask?.cancel()
+    func prepareNavigationCamera(for route: NavigationRoute,
+                                 onProjectionReady: @escaping @MainActor (UUID, RouteProjection, Date) -> Void) {
+        cancelNavigationCameraTasks()
         if let projection = cameraRouteProjection {
             updateCameraIntent(using: projection)
             return
         }
 
-        // Set a responsive location-centered camera immediately. When no fresh route
-        // match is available, prepare the full route projection off the main actor.
+        // Center immediately, then calculate the route projection away from the main actor.
         state.cameraIntent = CameraPlanner.intent(
-            for: .startingNavigation, location: state.cameraLocation ?? state.location,
-            destination: state.destination, route: nil, alternatives: [], progress: state.progress,
+            for: .startingNavigation,
+            location: state.cameraLocation ?? state.location,
+            destination: state.destination,
+            route: nil,
+            alternatives: [],
+            progress: state.progress,
             previousBearing: state.cameraIntent?.bearing ?? 0,
-            transportMode: state.transportMode, walkingCamera: walkingCameraSnapshot)
+            transportMode: state.transportMode,
+            walkingCamera: walkingCameraSnapshot)
 
         guard let location = state.cameraLocation ?? state.location else { return }
         let routeID = route.id
@@ -82,20 +129,17 @@ extension NavigationEngine {
         let projectionTask = Task.detached(priority: .userInitiated) {
             MapMatcher.project(coordinate, onto: routeCoordinates)
         }
-        navigationCameraProjectionTask = projectionTask
-        navigationCameraUpdateTask = Task { @MainActor [weak self] in
+        routeProjectionTask = projectionTask
+        cameraUpdateTask = Task { @MainActor [weak self] in
             let projection = await projectionTask.value
             guard !Task.isCancelled, let self,
                   self.state.status == .navigating,
                   self.state.cameraState == .startingNavigation,
                   self.state.route?.id == routeID else { return }
-            if self.state.location?.timestamp == locationTimestamp {
-                if let projection, !self.state.weakGPS {
-                    self.previousRouteMatch = (routeID, projection, locationTimestamp)
-                }
-            }
-            // Keep the first camera animation intact. The navigation camera will
-            // consume this projection after its startup animation has settled.
+            guard self.state.location?.timestamp == locationTimestamp,
+                  !self.state.weakGPS,
+                  let projection else { return }
+            onProjectionReady(routeID, projection, locationTimestamp)
         }
     }
 
@@ -134,42 +178,53 @@ extension NavigationEngine {
         } else {
             state.cameraState = .followNavigation
         }
-        if let coordinate = state.cameraLocation?.coordinate ?? state.location?.coordinate {
-            refreshTransitVehicles(near: coordinate)
-        }
 
+        if let coordinate = state.cameraLocation?.coordinate ?? state.location?.coordinate {
+            refreshTransitVehicles(coordinate)
+        }
         let holdsCamera = (previousState == .maneuverNow && state.cameraState == .maneuverNow) ||
             (previousState == .leavingManeuver && state.cameraState == .leavingManeuver)
-        if !holdsCamera {
-            updateCameraIntent()
+        if !holdsCamera { updateCameraIntent() }
+    }
+
+    func revealRoute() {
+        cancelRouteReveal()
+        state.routeRevealProgress = 0
+        routeRevealTask = Task { @MainActor [weak self] in
+            let startedAt = ProcessInfo.processInfo.systemUptime
+            let duration = 1.35
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(33))
+                guard !Task.isCancelled, let self, self.state.status == .routePreview else { return }
+                let progress = min(1, (ProcessInfo.processInfo.systemUptime - startedAt) / duration)
+                self.state.routeRevealProgress = progress
+                if progress >= 1 { return }
+            }
         }
     }
 
+    private var walkingCameraSnapshot: WalkingCameraSnapshot? {
+        guard state.transportMode == .walking,
+              state.status == .navigating || state.status == .rerouting else { return nil }
+        return walkingCameraController.snapshot()
+    }
+
+    private var cameraRouteProjection: RouteProjection? {
+        guard !state.weakGPS, let route = state.route, let location = state.location,
+              let previousRouteMatch = routeMatchProvider(),
+              previousRouteMatch.routeID == route.id,
+              previousRouteMatch.timestamp == location.timestamp else { return nil }
+        return previousRouteMatch.projection
+    }
+
     private func scheduleFollowAfterManeuver() {
-        maneuverTransitionTask?.cancel()
+        cancelManeuverTransition()
         maneuverTransitionTask = Task { @MainActor [weak self] in
             let delay: Duration = self?.state.transportMode == .walking ? .seconds(3) : .milliseconds(650)
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled, let self, self.state.cameraState == .leavingManeuver else { return }
             self.state.cameraState = self.state.weakGPS ? .weakGPS : .followNavigation
             self.updateCameraIntent()
-        }
-    }
-
-    func revealRoute() {
-        revealTask?.cancel()
-        state.routeRevealProgress = 0
-        revealTask = Task { @MainActor [weak self] in
-            let startedAt = ProcessInfo.processInfo.systemUptime
-            let duration = 1.35
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(33))
-                guard !Task.isCancelled, let self, self.state.status == .routePreview else { return }
-                let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
-                let progress = min(1, elapsed / duration)
-                self.state.routeRevealProgress = progress
-                if progress >= 1 { return }
-            }
         }
     }
 }

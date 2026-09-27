@@ -76,15 +76,15 @@ extension ContentView {
 
     @ViewBuilder
     var nearbyTransitCard: some View {
-        if let stop = engine.state.nearbyTransitStop,
-           !engine.state.nearbyTransitDepartures.isEmpty {
+        if let stop = navigationStore.state.nearbyTransitStop,
+           !navigationStore.state.nearbyTransitDepartures.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 Button { openTransitStop(stop) } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "tram.fill").foregroundStyle(Color.accentColor)
                         Text("Transport w pobliżu").font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
                         Spacer()
-                        if let location = engine.state.location?.coordinate {
+                        if let location = navigationStore.state.location?.coordinate {
                             Text(distance(location.distance(to: stop.coordinate)))
                                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                         }
@@ -94,7 +94,7 @@ extension ContentView {
                 }
                 .buttonStyle(.plain)
                 Text(stop.name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                ForEach(engine.state.nearbyTransitDepartures.prefix(3)) { departure in
+                ForEach(navigationStore.state.nearbyTransitDepartures.prefix(3)) { departure in
                     Button { openTransitDeparture(departure) } label: {
                         TimelineView(.periodic(from: .now, by: 20)) { context in
                             HStack(spacing: 9) {
@@ -234,33 +234,33 @@ extension ContentView {
             layout {
                 if isNavigating {
                     Button {
-                        engine.setVoiceEnabled(!engine.state.voiceEnabled)
+                        navigationStore.setVoiceEnabled(!navigationStore.state.voiceEnabled)
                     } label: {
                         circleSurface {
-                            Image(systemName: engine.state.voiceEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                            Image(systemName: navigationStore.state.voiceEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
                                 .font(.system(size: 17, weight: .semibold))
-                                .foregroundStyle(engine.state.voiceEnabled ? Color.accentColor : Color.secondary)
+                                .foregroundStyle(navigationStore.state.voiceEnabled ? Color.accentColor : Color.secondary)
                         }
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(engine.state.voiceEnabled ? "Wyłącz komunikaty głosowe" : "Włącz komunikaty głosowe")
+                    .accessibilityLabel(navigationStore.state.voiceEnabled ? "Wyłącz komunikaty głosowe" : "Włącz komunikaty głosowe")
                 } else {
                     mapLayersMenu
                 }
                 Button {
                     if isNavigating {
-                        engine.returnToFollow()
-                    } else if engine.state.cameraState == .routeOverview {
-                        engine.returnToFollow()
-                    } else if engine.state.route != nil {
-                        engine.showRouteOverview()
+                        navigationStore.returnToFollow()
+                    } else if navigationStore.state.cameraState == .routeOverview {
+                        navigationStore.returnToFollow()
+                    } else if navigationStore.state.route != nil {
+                        navigationStore.showRouteOverview()
                     } else {
-                        engine.returnToFollow()
+                        navigationStore.returnToFollow()
                     }
                 } label: {
                     circleSurface {
                         Image(systemName: isNavigating ? "location.north.fill"
-                              : engine.state.cameraState == .routeOverview ? "location.fill" : "scope")
+                              : navigationStore.state.cameraState == .routeOverview ? "location.fill" : "scope")
                             .font(.system(size: 17, weight: .semibold))
                             .foregroundStyle(.primary)
                     }
@@ -268,17 +268,19 @@ extension ContentView {
                 .buttonStyle(.plain)
                 .contextMenu {
                     Button(isNavigating ? "Wróć do nawigacji" : "Moja pozycja", systemImage: "location.fill") {
-                        engine.returnToFollow()
+                        navigationStore.returnToFollow()
                     }
-                    if engine.state.route != nil {
+                    Button("Tu zaparkowałem", systemImage: "car.side.fill", action: saveCurrentParkedCar)
+                        .disabled(currentParkedCarLocation == nil)
+                    if navigationStore.state.route != nil {
                         Button("Cała trasa", systemImage: "map") {
-                            engine.showRouteOverview()
+                            navigationStore.showRouteOverview()
                         }
                     }
                 }
                 .accessibilityLabel(isNavigating
                     ? "Wróć do prowadzenia"
-                    : (engine.state.route == nil ? "Moja pozycja" : (engine.state.cameraState == .routeOverview ? "Wróć do mapy" : "Przegląd trasy")))
+                    : (navigationStore.state.route == nil ? "Moja pozycja" : (navigationStore.state.cameraState == .routeOverview ? "Wróć do mapy" : "Przegląd trasy")))
                 .accessibilityHint(isNavigating
                     ? "Ustawia kamerę na bieżącej pozycji i kierunku podróży"
                     : "Przełącza między mapą i przeglądem trasy")

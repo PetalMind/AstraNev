@@ -1,7 +1,7 @@
 import Foundation
 import JavaScriptCore
 
-struct OpeningHoursInterval: Decodable {
+struct OpeningHoursInterval: Decodable, Equatable, Sendable {
     let startMilliseconds: Double
     let endMilliseconds: Double
     let unknown: Bool
@@ -20,7 +20,7 @@ struct OpeningHoursInterval: Decodable {
     var end: Date { Date(timeIntervalSince1970: endMilliseconds / 1_000) }
 }
 
-struct OpeningHoursEvaluation: Decodable {
+struct OpeningHoursEvaluation: Decodable, Equatable, Sendable {
     let open: Bool
     let unknown: Bool
     var nextChangeMilliseconds: Double?
@@ -34,39 +34,56 @@ struct OpeningHoursEvaluation: Decodable {
     }
 }
 
-final class OpeningHoursEngine: @unchecked Sendable {
+enum OpeningHoursFailure: Error, LocalizedError, Equatable, Sendable {
+    case runtimeUnavailable
+    case invalidExpression
+    case timeZoneUnavailable
+    case invalidDate
+
+    var errorDescription: String? {
+        switch self {
+        case .runtimeUnavailable:
+            "Parser godzin otwarcia jest niedostępny."
+        case .invalidExpression:
+            "Nie udało się odczytać podanych godzin otwarcia."
+        case .timeZoneUnavailable:
+            "Nie udało się ustalić strefy czasowej tego miejsca."
+        case .invalidDate:
+            "Nie udało się obliczyć godzin dla wybranej daty."
+        }
+    }
+}
+
+struct OpeningHoursDayRow: Equatable, Sendable {
+    let day: String
+    let hours: String
+}
+
+struct OpeningHoursPresentation: Equatable, Sendable {
+    let isAvailable: Bool
+    let isOpen: Bool?
+    let statusText: String?
+    let weeklyRows: [OpeningHoursDayRow]?
+    let failure: OpeningHoursFailure?
+
+    static func unavailable(_ failure: OpeningHoursFailure) -> OpeningHoursPresentation {
+        OpeningHoursPresentation(isAvailable: false, isOpen: nil, statusText: nil,
+                                 weeklyRows: nil, failure: failure)
+    }
+}
+
+actor OpeningHoursEngine {
     static let shared = OpeningHoursEngine()
 
     private static let resourceSubdirectory = "Resources/Vendor/OpeningHours"
 
-    private let lock = NSRecursiveLock()
-    private lazy var context: JSContext? = {
-        let context = JSContext()
-        guard let context,
-              let sunCalc = Self.script(named: "suncalc"),
-              let openingHours = Self.script(named: "opening_hours") else { return nil }
-        context.evaluateScript(sunCalc)
-        context.evaluateScript(openingHours)
-        context.evaluateScript(Self.wrapper)
-        guard context.exception == nil,
-              context.evaluateScript("typeof opening_hours === 'function'")?.toBool() == true else { return nil }
-        return context
-    }()
-
-    private static func script(named name: String) -> String? {
-        let url = Bundle.main.url(forResource: name, withExtension: "js",
-                                  subdirectory: resourceSubdirectory)
-            ?? Bundle.main.url(forResource: name, withExtension: "js")
-        guard let url else { return nil }
-        return try? String(contentsOf: url, encoding: .utf8)
-    }
+    private var didLoadContext = false
+    private var context: JSContext?
 
     func evaluate(rawValue: String, nowMilliseconds: Double, weekRanges: [[Double]],
-                         coordinate: Coordinate?, countryCode: String?,
-                         systemTimeZoneIdentifier: String) -> OpeningHoursEvaluation? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let context else { return nil }
+                  coordinate: Coordinate?, countryCode: String?,
+                  systemTimeZoneIdentifier: String) async throws -> OpeningHoursEvaluation {
+        let context = try javascriptContext()
         var input: [String: Any] = [
             "raw": rawValue,
             "now": nowMilliseconds,
@@ -81,9 +98,50 @@ final class OpeningHoursEngine: @unchecked Sendable {
             input["location"] = location
         }
         context.setObject(input, forKeyedSubscript: "__naviOpeningHoursInput" as NSString)
-        guard let json = context.evaluateScript("JSON.stringify(__naviParseOpeningHours(__naviOpeningHoursInput))")?.toString(),
-              let data = json.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(OpeningHoursEvaluation.self, from: data)
+        guard let json = context.evaluateScript(
+            "JSON.stringify(__naviParseOpeningHours(__naviOpeningHoursInput))")?.toString(),
+              let data = json.data(using: .utf8) else {
+            throw OpeningHoursFailure.invalidExpression
+        }
+        if let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           payload["error"] != nil {
+            throw OpeningHoursFailure.invalidExpression
+        }
+        do {
+            return try JSONDecoder().decode(OpeningHoursEvaluation.self, from: data)
+        } catch {
+            throw OpeningHoursFailure.invalidExpression
+        }
+    }
+
+    private func javascriptContext() throws -> JSContext {
+        if didLoadContext {
+            guard let context else { throw OpeningHoursFailure.runtimeUnavailable }
+            return context
+        }
+        didLoadContext = true
+        guard let context = JSContext(),
+              let sunCalc = Self.script(named: "suncalc"),
+              let openingHours = Self.script(named: "opening_hours") else {
+            throw OpeningHoursFailure.runtimeUnavailable
+        }
+        context.evaluateScript(sunCalc)
+        context.evaluateScript(openingHours)
+        context.evaluateScript(Self.wrapper)
+        guard context.exception == nil,
+              context.evaluateScript("typeof opening_hours === 'function'")?.toBool() == true else {
+            throw OpeningHoursFailure.runtimeUnavailable
+        }
+        self.context = context
+        return context
+    }
+
+    private static func script(named name: String) -> String? {
+        let url = Bundle.main.url(forResource: name, withExtension: "js",
+                                  subdirectory: resourceSubdirectory)
+            ?? Bundle.main.url(forResource: name, withExtension: "js")
+        guard let url else { return nil }
+        return try? String(contentsOf: url, encoding: .utf8)
     }
 
     private static let wrapper = #"""

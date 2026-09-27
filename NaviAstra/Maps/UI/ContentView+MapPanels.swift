@@ -7,7 +7,7 @@ import UIKit
 extension ContentView {
     @ViewBuilder
     var activePanel: some View {
-        switch engine.state.status {
+        switch navigationStore.state.status {
         case .destinationPreview:
             destinationCard
         case .routeCalculating:
@@ -20,7 +20,7 @@ extension ContentView {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
         case .arrived:
             arrivalCard
-        case .error where engine.state.destination != nil:
+        case .error where navigationStore.state.destination != nil:
             routePreviewCard
         case .idle, .error:
             discoveryPanel()
@@ -30,12 +30,12 @@ extension ContentView {
     var selectedMapPlacesSheet: some View {
         NavigationStack {
             Group {
-                if selectedMapPlaces.count > 1 {
-                    List(selectedMapPlaces) { result in
+                if placeStore.selectedMapPlaces.count > 1 {
+                    List(placeStore.selectedMapPlaces) { result in
                         mapPlaceSelectionRow(result)
                     }
                     .listStyle(.plain)
-                } else if let result = selectedMapPlaces.first {
+                } else if let result = placeStore.selectedMapPlaces.first {
                     selectedMapPlaceDetails(for: result)
                 }
             }
@@ -45,15 +45,15 @@ extension ContentView {
 #endif
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Zamknij") { selectedMapPlaces = [] }
+                    Button("Zamknij") { placeStore.selectedMapPlaces = [] }
                 }
             }
         }
     }
 
     var selectedMapPlacesSheetTitle: String {
-        guard selectedMapPlaces.count > 1 else {
-            return selectedMapPlaces.first?.destination.name ?? "Miejsce"
+        guard placeStore.selectedMapPlaces.count > 1 else {
+            return placeStore.selectedMapPlaces.first?.destination.name ?? "Miejsce"
         }
         return "Wybierz miejsce"
     }
@@ -82,7 +82,7 @@ extension ContentView {
             PlaceDetailsView(
                 result: result,
                 isSaved: isMapPlaceSaved(result),
-                onSave: { localData.add(result.navigationDestination) },
+                onSave: { placeStore.add(result.navigationDestination) },
                 isNavigating: isNavigating,
                 primaryActionTitle: isNavigating ? "Dodaj przystanek" : "Wyznacz trasę",
                 onRouteFromPlace: { setMapPlaceAsRouteOrigin(result) },
@@ -95,29 +95,29 @@ extension ContentView {
     }
 
     func isMapPlaceSaved(_ result: SearchResult) -> Bool {
-        localData.places.contains {
+        placeStore.places.contains {
             $0.kind == .favorite && $0.destination.coordinate == result.destination.coordinate
         }
     }
 
     func setMapPlaceAsRouteOrigin(_ result: SearchResult) {
         let destination = result.navigationDestination
-        selectedMapPlaces = []
-        localData.recordSearch(destination)
-        if engine.state.destination == nil {
+        placeStore.selectedMapPlaces = []
+        placeStore.recordSearch(destination)
+        if navigationStore.state.destination == nil {
             openDestinationSearchAfterPlaceDismiss = true
         }
         Task {
-            await engine.setRouteOrigin(RoutePoint(
+            await navigationStore.setRouteOrigin(RoutePoint(
                 destination, source: destination.poi == nil ? .search : .poi))
         }
     }
 
     func planRoute(from result: SearchResult) {
         let destination = result.navigationDestination
-        selectedMapPlaces = []
+        placeStore.selectedMapPlaces = []
         if isNavigating {
-            Task { await engine.addWaypoint(destination) }
+            Task { await navigationStore.addWaypoint(destination) }
         } else {
             selectDestination(destination)
         }
@@ -130,22 +130,30 @@ extension ContentView {
         }
     }
 
-    func handleNavigationStatusChange(_ status: NavigationStatus) {
+    func handleNavigationStatusChange(_ status: NavigationStatus, previous: NavigationStatus? = nil) {
         switch status {
         case .navigating, .rerouting:
             routePreviewExpanded = false
+            parkedCarPromptExpiresAt = nil
         case .arrived, .idle:
             routePreviewExpanded = false
             navigationPanelExpanded = false
+            if status == .arrived, navigationStore.state.transportMode == .car {
+                arrivalCarPromptDismissed = false
+                parkedCarPromptExpiresAt = Date().addingTimeInterval(5 * 60)
+            } else if status == .idle, previous != .arrived {
+                parkedCarPromptExpiresAt = nil
+            }
         case .destinationPreview, .routeCalculating, .routePreview, .error:
             navigationPanelExpanded = false
+            parkedCarPromptExpiresAt = nil
         }
     }
 
     var header: some View {
         HStack(alignment: .top, spacing: 10) {
             if isNavigating {
-                if engine.state.transportMode == .transit || parkRideIsUsingTransitLeg {
+                if navigationStore.state.transportMode == .transit || parkRideIsUsingTransitLeg {
                     transitNavigationHeader
                 } else {
                     maneuverCard
@@ -175,8 +183,8 @@ extension ContentView {
 
     @ViewBuilder
     var gpsStatusIndicator: some View {
-        let fixAge = engine.state.location.map { Date().timeIntervalSince($0.timestamp) } ?? .infinity
-        let warning: (String, String, Color)? = switch engine.state.gpsQuality {
+        let fixAge = navigationStore.state.location.map { Date().timeIntervalSince($0.timestamp) } ?? .infinity
+        let warning: (String, String, Color)? = switch navigationStore.state.gpsQuality {
         case .good, .excellent: nil
         case .predicted where fixAge < 15: nil
         case .predicted, .weak: ("Sygnał GPS słaby", "location.circle", .orange)
@@ -207,9 +215,9 @@ extension ContentView {
             if mapCapabilities.supports3DCamera {
                 ForEach(MapDimension.allCases) { dimension in
                     Button {
-                        mapDimension = dimension.rawValue
+                        mapStore.mapDimension = dimension.rawValue
                     } label: {
-                        mapMenuLabel(dimension.title, selected: mapDimension == dimension.rawValue)
+                        mapMenuLabel(dimension.title, selected: mapStore.mapDimension == dimension.rawValue)
                     }
                 }
             }
@@ -217,19 +225,19 @@ extension ContentView {
 
         Section("Warstwy") {
             if mapCapabilities.supportsTrafficOverlay {
-                Toggle("Ruch drogowy", isOn: $mapTrafficVisible)
+                Toggle("Ruch drogowy", isOn: $mapStore.mapTrafficVisible)
             }
             if mapCapabilities.supportsPOIToggle {
-                Toggle("Punkty POI", isOn: $mapPOIVisible)
+                Toggle("Punkty POI", isOn: $mapStore.mapPOIVisible)
             }
             if mapCapabilities.supportsTransitOverlay {
-                Toggle("Wyróżnij kolej i tramwaje", isOn: $mapTransitVisible)
+                Toggle("Wyróżnij kolej i tramwaje", isOn: $mapStore.mapTransitVisible)
             }
             if mapCapabilities.supportsCyclingOverlay {
-                Toggle("Trasy rowerowe", isOn: $mapCyclingVisible)
+                Toggle("Trasy rowerowe", isOn: $mapStore.mapCyclingVisible)
             }
             if mapCapabilities.supports3DBuildings {
-                Toggle("Budynki 3D", isOn: $mapBuildingsVisible)
+                Toggle("Budynki 3D", isOn: $mapStore.mapBuildingsVisible)
             }
         }
     }
@@ -267,7 +275,7 @@ extension ContentView {
     var routePreviewHeader: some View {
         HStack(spacing: 11) {
             Button {
-                engine.stop()
+                navigationStore.stop()
             } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 15, weight: .semibold))
@@ -353,7 +361,7 @@ extension ContentView {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Zamień punkt startowy i cel")
-                .disabled(engine.state.destination == nil || routeOriginPoint == nil)
+                .disabled(navigationStore.state.destination == nil || routeOriginPoint == nil)
             }
             .frame(minHeight: 48)
 
@@ -377,11 +385,11 @@ extension ContentView {
                         .frame(width: 34, height: 34)
                         .background(Color.accentColor.opacity(0.1), in: Circle())
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(engine.state.destination?.name ?? "Dokąd?")
+                        Text(navigationStore.state.destination?.name ?? "Dokąd?")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
-                        Text(engine.state.destination?.address ?? "Cel podróży")
+                        Text(navigationStore.state.destination?.address ?? "Cel podróży")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -395,7 +403,7 @@ extension ContentView {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Cel podróży: \(engine.state.destination?.name ?? "Wybierz miejsce")")
+            .accessibilityLabel("Cel podróży: \(navigationStore.state.destination?.name ?? "Wybierz miejsce")")
 
             routeWaypointAddButton()
         }
@@ -405,7 +413,7 @@ extension ContentView {
 
     @ViewBuilder
     func routeWaypointRows(darkStyle: Bool) -> some View {
-        ForEach(Array(engine.state.waypoints.enumerated()), id: \.element.id) { index, waypoint in
+        ForEach(Array(navigationStore.state.waypoints.enumerated()), id: \.element.id) { index, waypoint in
             routeWaypointConnector(darkStyle: darkStyle)
             routeWaypointRow(waypoint, index: index, darkStyle: darkStyle)
         }
@@ -453,12 +461,12 @@ extension ContentView {
             Menu {
                 if index > 0 {
                     Button("Bliżej punktu startowego", systemImage: "arrow.up") {
-                        Task { await engine.moveWaypoint(waypoint.id, by: -1) }
+                        Task { await navigationStore.moveWaypoint(waypoint.id, by: -1) }
                     }
                 }
-                if index + 1 < engine.state.waypoints.count {
+                if index + 1 < navigationStore.state.waypoints.count {
                     Button("Bliżej celu", systemImage: "arrow.down") {
-                        Task { await engine.moveWaypoint(waypoint.id, by: 1) }
+                        Task { await navigationStore.moveWaypoint(waypoint.id, by: 1) }
                     }
                 }
             } label: {
@@ -469,11 +477,11 @@ extension ContentView {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(engine.state.status != .routePreview || engine.state.waypoints.count < 2)
+            .disabled(navigationStore.state.status != .routePreview || navigationStore.state.waypoints.count < 2)
             .accessibilityLabel("Zmień kolejność przystanku \(index + 1)")
 
             Button {
-                Task { await engine.removeWaypoint(waypoint.id) }
+                Task { await navigationStore.removeWaypoint(waypoint.id) }
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 12, weight: .semibold))
@@ -483,21 +491,21 @@ extension ContentView {
                                 in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
             .buttonStyle(.plain)
-            .disabled(engine.state.status != .routePreview)
+            .disabled(navigationStore.state.status != .routePreview)
             .accessibilityLabel("Usuń przystanek \(index + 1)")
         }
         .frame(minHeight: 44)
         .dropDestination(for: String.self) { draggedIDs, location in
-            guard engine.state.status == .routePreview,
+            guard navigationStore.state.status == .routePreview,
                   let draggedIDString = draggedIDs.first,
                   let draggedID = UUID(uuidString: draggedIDString),
-                  let sourceIndex = engine.state.waypoints.firstIndex(where: { $0.id == draggedID }) else {
+                  let sourceIndex = navigationStore.state.waypoints.firstIndex(where: { $0.id == draggedID }) else {
                 return false
             }
 
             let targetInsertionIndex = index + (location.y >= 22 ? 1 : 0)
             let finalIndex = targetInsertionIndex - (sourceIndex < targetInsertionIndex ? 1 : 0)
-            Task { await engine.reorderWaypoint(draggedID, to: finalIndex) }
+            Task { await navigationStore.reorderWaypoint(draggedID, to: finalIndex) }
             return true
         }
         .draggable(waypoint.id.uuidString)
@@ -523,8 +531,8 @@ extension ContentView {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(engine.state.waypoints.count >= 8 || engine.state.status != .routePreview)
-        .opacity(engine.state.waypoints.count >= 8 || engine.state.status != .routePreview ? 0.5 : 1)
+        .disabled(navigationStore.state.waypoints.count >= 8 || navigationStore.state.status != .routePreview)
+        .opacity(navigationStore.state.waypoints.count >= 8 || navigationStore.state.status != .routePreview ? 0.5 : 1)
         .accessibilityLabel("Dodaj przystanek przed celem podróży")
     }
 
@@ -534,7 +542,7 @@ extension ContentView {
                 Section {
                     Button {
                         appRouter.dismiss(.originPicker)
-                        Task { await engine.setRouteOrigin(nil) }
+                        Task { await navigationStore.setRouteOrigin(nil) }
                     } label: {
                         Label("Moja lokalizacja", systemImage: "location.fill")
                     }
@@ -553,9 +561,9 @@ extension ContentView {
                     }
                 }
 
-                if !localData.places.isEmpty {
+                if !placeStore.places.isEmpty {
                     Section("Zapisane miejsca") {
-                        ForEach(localData.places) { place in
+                        ForEach(placeStore.places) { place in
                             Button {
                                 applyRouteOrigin(
                                     place.navigationDestination,
@@ -567,7 +575,7 @@ extension ContentView {
                     }
                 }
 
-                let recent = Array((localData.searches.map(\.destination) + recentDestinations)
+                let recent = Array((placeStore.searches.map(\.destination) + recentDestinations)
                     .reduce(into: [Destination]()) { values, destination in
                         if !values.contains(where: { $0.coordinate == destination.coordinate }) {
                             values.append(destination)
@@ -612,7 +620,7 @@ extension ContentView {
                     HStack {
                         Button {
                             selectingRouteOriginOnMap = false
-                            engine.state.routeOriginMapSelectionActive = false
+                            navigationStore.state.routeOriginMapSelectionActive = false
                             appRouter.present(.originPicker)
                         } label: {
                             Label("Wstecz", systemImage: "chevron.left")
@@ -727,13 +735,13 @@ extension ContentView {
 
     func beginSavedPlaceMapSelection(as kind: PlaceKind) {
         savedPlaceMapSelectionKind = kind
-        let coordinate = engine.state.searchMapCenter ?? engine.state.location?.coordinate
-            ?? engine.state.destination?.coordinate
+        let coordinate = navigationStore.state.searchMapCenter ?? navigationStore.state.location?.coordinate
+            ?? navigationStore.state.destination?.coordinate
         savedPlaceMapCoordinate = coordinate
         savedPlaceMapAddress = nil
         appRouter.dismiss(.search)
         if let coordinate {
-            engine.focusMap(on: coordinate, zoom: 15.5)
+            navigationStore.focusMap(on: coordinate, zoom: 15.5)
             updateSavedPlaceMapSelection(coordinate)
         }
     }
@@ -756,7 +764,7 @@ extension ContentView {
     func confirmSavedPlaceMapSelection() {
         guard let kind = savedPlaceMapSelectionKind, let coordinate = savedPlaceMapCoordinate else { return }
         let destination = Destination(name: kind.title, coordinate: coordinate, address: savedPlaceMapAddress)
-        localData.add(destination, kind: kind)
+        placeStore.add(destination, kind: kind)
         savedPlaceMapGeocodingTask?.cancel()
         savedPlaceMapSelectionKind = nil
     }
@@ -764,7 +772,7 @@ extension ContentView {
     func saveMapSelectedPlace(_ destination: Destination, as kind: PlaceKind) {
         let saved = Destination(name: kind.title, coordinate: destination.coordinate,
                                 address: destination.address, poi: destination.poi)
-        localData.add(saved, kind: kind)
+        placeStore.add(saved, kind: kind)
         savedPlaceMapGeocodingTask?.cancel()
         savedPlaceMapSelectionKind = nil
     }
@@ -772,13 +780,13 @@ extension ContentView {
     func beginRouteOriginMapSelection() {
         appRouter.dismiss(.originPicker)
         selectingRouteOriginOnMap = true
-        engine.state.routeOriginMapSelectionActive = true
-        let coordinate = engine.state.searchMapCenter ?? engine.state.location?.coordinate
-            ?? engine.state.destination?.coordinate
+        navigationStore.state.routeOriginMapSelectionActive = true
+        let coordinate = navigationStore.state.searchMapCenter ?? navigationStore.state.location?.coordinate
+            ?? navigationStore.state.destination?.coordinate
         pickedRouteOriginCoordinate = coordinate
         pickedRouteOriginAddress = nil
         if let coordinate {
-            engine.focusMap(on: coordinate, zoom: 15.5)
+            navigationStore.focusMap(on: coordinate, zoom: 15.5)
             updatePickedRouteOrigin(coordinate)
         }
     }
@@ -805,11 +813,11 @@ extension ContentView {
         let address = pickedRouteOriginAddress
         let name = address?.components(separatedBy: ",").first ?? "Wybrany punkt"
         let destination = Destination(name: name, coordinate: coordinate, address: address)
-        localData.recordSearch(destination)
+        placeStore.recordSearch(destination)
         selectingRouteOriginOnMap = false
-        engine.state.routeOriginMapSelectionActive = false
+        navigationStore.state.routeOriginMapSelectionActive = false
         routeOriginGeocodingTask?.cancel()
-        Task { await engine.setRouteOrigin(RoutePoint(destination, source: .mapSelection)) }
+        Task { await navigationStore.setRouteOrigin(RoutePoint(destination, source: .mapSelection)) }
     }
 
     func applyRouteOrigin(_ destination: Destination, source: RoutePointSource) {
@@ -817,15 +825,15 @@ extension ContentView {
         appRouter.dismiss(.search)
         selectingRouteOriginInSearch = false
         selectingRouteOriginOnMap = false
-        engine.state.routeOriginMapSelectionActive = false
+        navigationStore.state.routeOriginMapSelectionActive = false
         routeOriginGeocodingTask?.cancel()
         if source == .search || source == .mapSelection || source == .poi {
-            localData.recordSearch(destination)
+            placeStore.recordSearch(destination)
         }
-        Task { await engine.setRouteOrigin(RoutePoint(destination, source: source)) }
+        Task { await navigationStore.setRouteOrigin(RoutePoint(destination, source: source)) }
     }
 
     func swapRouteEndpoints() {
-        Task { await engine.swapRoutePoints() }
+        Task { await navigationStore.swapRoutePoints() }
     }
 }

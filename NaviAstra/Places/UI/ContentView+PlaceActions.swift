@@ -9,7 +9,7 @@ extension ContentView {
         var shortcuts: [PlaceShortcut] = []
 
         for kind in [PlaceKind.home, .work, .favorite] {
-            for place in localData.places where place.kind == kind && (kind != .favorite || place.isPinned) {
+            for place in placeStore.places where place.kind == kind && (kind != .favorite || place.isPinned) {
                 guard !shortcuts.contains(where: { $0.destination.coordinate == place.destination.coordinate }) else { continue }
                 shortcuts.append(PlaceShortcut(
                     id: place.id.uuidString,
@@ -27,7 +27,7 @@ extension ContentView {
 
     var recentPlaceShortcuts: [PlaceShortcut] {
         var candidates: [(date: Date, shortcut: PlaceShortcut)] = []
-        for search in localData.searches {
+        for search in placeStore.searches {
             candidates.append((search.searchedAt, PlaceShortcut(
                 id: "recent-\(search.id.uuidString)",
                 title: search.destination.name,
@@ -37,7 +37,7 @@ extension ContentView {
             )))
         }
 
-        for trip in localData.trips {
+        for trip in placeStore.trips {
             candidates.append((trip.endedAt, PlaceShortcut(
                 id: "trip-\(trip.id.uuidString)",
                 title: trip.destination.name,
@@ -60,7 +60,7 @@ extension ContentView {
 
     var quickETADestinationFingerprint: String {
         savedPlaceShortcuts.prefix(6).compactMap { shortcut in
-            localData.places.first(where: { $0.id.uuidString == shortcut.id })
+            placeStore.places.first(where: { $0.id.uuidString == shortcut.id })
         }.map { place in
             let coordinate = place.destination.coordinate
             return "\(place.id.uuidString):\(coordinate.latitude),\(coordinate.longitude)"
@@ -68,7 +68,7 @@ extension ContentView {
     }
 
     func refreshQuickDestinationETAs() async {
-        guard !quickETAInFlight, let origin = engine.state.location?.coordinate else { return }
+        guard !quickETAInFlight, let origin = navigationStore.state.location?.coordinate else { return }
         let priorityDestinations = Array(savedPlaceShortcuts.prefix(6))
         guard !priorityDestinations.isEmpty else {
             quickETAEstimates = [:]
@@ -90,7 +90,7 @@ extension ContentView {
 
         var estimates: [String: PlaceRouteEstimate] = [:]
         for shortcut in priorityDestinations.prefix(2) {
-            guard let estimate = await engine.estimatedCarRouteEstimate(to: shortcut.destination) else { continue }
+            guard let estimate = await navigationStore.estimatedCarRouteEstimate(to: shortcut.destination) else { continue }
             estimates[shortcut.id] = estimate
         }
         quickETAEstimates = estimates
@@ -98,7 +98,7 @@ extension ContentView {
 
     var recentDestinations: [Destination] {
         var destinations: [Destination] = []
-        for trip in localData.trips {
+        for trip in placeStore.trips {
             guard !destinations.contains(where: { $0.coordinate == trip.destination.coordinate }) else { continue }
             destinations.append(trip.destination)
             if destinations.count == 5 { break }
@@ -124,13 +124,13 @@ extension ContentView {
 
     @ViewBuilder
     func speedCard(at now: Date) -> some View {
-        let fresh = engine.state.location.map { now.timeIntervalSince($0.timestamp) < 15 } ?? false
-        let speed = fresh ? engine.state.location?.speed : nil
+        let fresh = navigationStore.state.location.map { now.timeIntervalSince($0.timestamp) < 15 } ?? false
+        let speed = fresh ? navigationStore.state.location?.speed : nil
         let current = speed.flatMap { $0 >= 0 ? Int(($0 * 3.6).rounded()) : nil }
-        let limit = fresh ? engine.state.speedLimitKph : nil
+        let limit = fresh ? navigationStore.state.speedLimitKph : nil
         let aboveLimit = speedWarningsEnabled && (current.map { value in limit.map { value > $0 + 5 } ?? false } ?? false)
-        let routeDistance = engine.state.progress?.traveledDistance ?? 0
-        let nextRoadAlert = engine.state.roadSafetyAlerts
+        let routeDistance = navigationStore.state.progress?.traveledDistance ?? 0
+        let nextRoadAlert = navigationStore.state.roadSafetyAlerts
             .filter { alert in
                 guard alert.type.isEnforcement || alert.type == .speedLimitChange,
                       let distance = alert.distanceAlongRoute else { return false }
@@ -154,7 +154,7 @@ extension ContentView {
                             .font(.system(size: 21, weight: .bold, design: .rounded).monospacedDigit())
                             .foregroundStyle(aboveLimit ? .red : .primary)
                             .contentTransition(.numericText())
-                        Text(engine.state.speedLimitSource.map { "\($0.shortTitle) · km/h" } ?? "km/h")
+                        Text(navigationStore.state.speedLimitSource.map { "\($0.shortTitle) · km/h" } ?? "km/h")
                             .font(.system(size: 9, weight: .medium))
                             .foregroundStyle(.secondary)
                     }
@@ -169,21 +169,21 @@ extension ContentView {
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.orange)
                     .accessibilityElement(children: .combine)
-                } else if let message = engine.state.speedLimitMessage {
+                } else if let message = navigationStore.state.speedLimitMessage {
                     Label(message, systemImage: "exclamationmark.triangle")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
-                } else if case .loading = engine.state.roadSafetyStatus {
+                } else if case .loading = navigationStore.state.roadSafetyStatus {
                     Label("Pobieranie ostrzeżeń drogowych…", systemImage: "arrow.triangle.2.circlepath")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                } else if case .unavailable = engine.state.roadSafetyStatus {
+                } else if case .unavailable = navigationStore.state.roadSafetyStatus {
                     Label("Ostrzeżenia drogowe niedostępne", systemImage: "wifi.slash")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
-                if case .available = engine.state.roadSafetyStatus {
+                if case .available = navigationStore.state.roadSafetyStatus {
                     Text("© OpenStreetMap contributors")
                         .font(.system(size: 8, weight: .medium))
                         .foregroundStyle(.secondary)
@@ -234,14 +234,14 @@ extension ContentView {
     }
 
     func presentNearby(_ category: NearbyPlaceCategory, nearDestination: Bool = false) {
-        nearbyRequest = NearbySearchRequest(category: category, nearDestination: nearDestination)
+        placeStore.nearbyRequest = NearbySearchRequest(category: category, nearDestination: nearDestination)
     }
 
     func selectDestination(_ destination: Destination, recordSearch: Bool = true) {
         appRouter.dismiss(.search)
-        if recordSearch { localData.recordSearch(destination) }
-        engine.selectDestination(destination)
-        Task { await engine.planRoute() }
+        if recordSearch { placeStore.recordSearch(destination) }
+        navigationStore.selectDestination(destination)
+        Task { await navigationStore.planRoute() }
     }
 
     func selectMapCoordinate(_ coordinate: Coordinate) {
@@ -249,9 +249,9 @@ extension ContentView {
         selectDestination(destination, recordSearch: false)
         Task {
             guard let address = await GUGiKAddressProvider().reverseGeocode(coordinate),
-                  let current = engine.state.destination,
+                  let current = navigationStore.state.destination,
                   current.id == destination.id else { return }
-            engine.state.destination = Destination(id: current.id, name: current.name,
+            navigationStore.state.destination = Destination(id: current.id, name: current.name,
                                                    coordinate: current.coordinate, address: address)
         }
     }
@@ -262,21 +262,21 @@ extension ContentView {
         if places.count == 1, let place = places.first {
             presentMapPlace(place)
         } else {
-            selectedMapPlaces = places
+            placeStore.selectedMapPlaces = places
         }
     }
 
     func presentMapPlace(_ result: SearchResult) {
         mapPlaceEstimateTask?.cancel()
-        let origin = engine.state.location?.coordinate
+        let origin = navigationStore.state.location?.coordinate
         let navigationActive = isNavigating
-        let mode = engine.state.transportMode
+        let mode = navigationStore.state.transportMode
         let canRequestETA = origin != nil && mode != .transit && mode != .parkRide
         var selected = result
         selected.travelEstimateStatus = canRequestETA ? .calculating : .unavailable
 
         if navigationActive {
-            if let origin, let route = engine.state.route?.coordinates,
+            if let origin, let route = navigationStore.state.route?.coordinates,
                let currentProjection = MapMatcher.project(origin, onto: route) {
                 let futureRoute = Array(route.dropFirst(currentProjection.segment))
                 selected.detourDistance = MapMatcher.project(result.destination.coordinate, onto: futureRoute)?.distanceFromRoute
@@ -284,16 +284,16 @@ extension ContentView {
         } else if let origin {
             selected.straightDistance = origin.distance(to: result.destination.coordinate)
         }
-        selectedMapPlaces = [selected]
+        placeStore.selectedMapPlaces = [selected]
 
         guard canRequestETA, let origin else { return }
         let requestID = selected.id
-        let preferences = engine.state.routingPreferences
+        let preferences = navigationStore.state.routingPreferences
         let endpoint = URL(string: UserDefaults.standard.string(forKey: "routingServer") ??
                            "https://valhalla1.openstreetmap.de")!
-        let activeWaypoint = engine.state.waypoints.first
-        let activeDestination = engine.state.destination
-        let activeNavigationTarget = engine.state.navigationTarget?.coordinate
+        let activeWaypoint = navigationStore.state.waypoints.first
+        let activeDestination = navigationStore.state.destination
+        let activeNavigationTarget = navigationStore.state.navigationTarget?.coordinate
         mapPlaceEstimateTask = Task {
             do {
                 let destinationCoordinate: Coordinate
@@ -321,9 +321,9 @@ extension ContentView {
                         routeTarget = activeDestination?.coordinate
                     }
                     guard let routeTarget else {
-                        guard selectedMapPlaces.first?.id == requestID else { return }
+                        guard placeStore.selectedMapPlaces.first?.id == requestID else { return }
                         updated.travelEstimateStatus = .unavailable
-                        selectedMapPlaces = [updated]
+                        placeStore.selectedMapPlaces = [updated]
                         return
                     }
                     let rows = try await provider.searchMatrix(
@@ -331,7 +331,7 @@ extension ContentView {
                         targets: [destinationCoordinate, routeTarget],
                         mode: mode, preferences: preferences)
                     guard rows.count == 2, rows.allSatisfy({ $0.count == 2 }),
-                          selectedMapPlaces.first?.id == requestID else { return }
+                          placeStore.selectedMapPlaces.first?.id == requestID else { return }
                     if let toPlace = rows[0][0].time,
                        let baseline = rows[0][1].time,
                        let onward = rows[1][1].time {
@@ -344,7 +344,7 @@ extension ContentView {
                     let rows = try await provider.searchMatrix(
                         sources: [origin], targets: [destinationCoordinate],
                         mode: mode, preferences: preferences)
-                    guard selectedMapPlaces.first?.id == requestID,
+                    guard placeStore.selectedMapPlaces.first?.id == requestID,
                           let cell = rows.first?.first else { return }
                     updated.travelTime = cell.time
                     updated.travelDistance = cell.distance.map { $0 * 1_000 }
@@ -353,38 +353,38 @@ extension ContentView {
                     updated.travelEstimateStatus = .unavailable
                 }
                 guard !Task.isCancelled else { return }
-                selectedMapPlaces = [updated]
+                placeStore.selectedMapPlaces = [updated]
             } catch {
-                guard !Task.isCancelled, selectedMapPlaces.first?.id == requestID else { return }
-                var updated = selectedMapPlaces[0]
+                guard !Task.isCancelled, placeStore.selectedMapPlaces.first?.id == requestID else { return }
+                var updated = placeStore.selectedMapPlaces[0]
                 updated.travelEstimateStatus = .unavailable
                 guard !Task.isCancelled else { return }
-                selectedMapPlaces = [updated]
+                placeStore.selectedMapPlaces = [updated]
             }
         }
     }
 
     func replayTrip(_ trip: TripRecord) {
         appRouter.dismiss(.history)
-        engine.state.waypoints = trip.waypoints
-        Task { await engine.previewNewTrip(trip.destination) }
+        navigationStore.state.waypoints = trip.waypoints
+        Task { await navigationStore.previewNewTrip(trip.destination) }
     }
 
     func saveCurrentPlace(as kind: PlaceKind) {
-        guard let destination = engine.state.destination else { return }
+        guard let destination = navigationStore.state.destination else { return }
         let name = favoriteName.trimmingCharacters(in: .whitespacesAndNewlines)
-        localData.add(destination, kind: kind, customName: name.isEmpty ? nil : name)
+        placeStore.add(destination, kind: kind, customName: name.isEmpty ? nil : name)
         favoriteName = ""
         isSavingPlace = false
     }
 
     func toggleDestinationFavorite() {
-        guard let destination = engine.state.destination else { return }
+        guard let destination = navigationStore.state.destination else { return }
         if isDestinationFavorite {
             showFavoriteRemovalConfirmation = true
             return
         }
-        guard localData.add(destination, kind: .favorite) else { return }
+        guard placeStore.add(destination, kind: .favorite) else { return }
         animateFavoritePulse()
     }
 
@@ -406,18 +406,18 @@ extension ContentView {
     }
 
     func removeFavorite(for destination: Destination) -> Bool {
-        guard let place = localData.places.first(where: {
+        guard let place = placeStore.places.first(where: {
             $0.kind == .favorite && $0.destination.coordinate == destination.coordinate
         }) else { return false }
-        localData.removePlace(place.id)
-        return !localData.places.contains { $0.id == place.id }
+        placeStore.removePlace(place.id)
+        return !placeStore.places.contains { $0.id == place.id }
     }
 
     func renameFavorite(for destination: Destination, to name: String) -> Bool {
-        guard let place = localData.places.first(where: {
+        guard let place = placeStore.places.first(where: {
             $0.kind == .favorite && $0.destination.coordinate == destination.coordinate
         }) else { return false }
-        return localData.updatePlace(place.id, customName: name)
+        return placeStore.updatePlace(place.id, customName: name)
     }
 
     func distance(_ meters: Double) -> String {
@@ -440,7 +440,7 @@ extension ContentView {
     }
 
     func arrivalTime(_ seconds: TimeInterval) -> String {
-        (engine.state.estimatedArrival ?? Date().addingTimeInterval(max(0, seconds)))
+        (navigationStore.state.estimatedArrival ?? Date().addingTimeInterval(max(0, seconds)))
             .formatted(date: .omitted, time: .shortened)
     }
 

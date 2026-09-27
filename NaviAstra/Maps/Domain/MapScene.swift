@@ -18,6 +18,7 @@ struct MapSceneCommands {
     let onPlaceSelect: ([SearchResult]) -> Void
     let onTransitStopSelect: (TransitStop) -> Void
     let onTransitVehicleSelect: (TransitVehicle) -> Void
+    let onParkedCarSelect: () -> Void
     let onMapReady: () -> Void
     let onMapPan: () -> Void
     let onLongPress: (Coordinate) -> Void
@@ -25,7 +26,9 @@ struct MapSceneCommands {
 
 struct MapScene {
     let navigationState: NavigationState
+    let energyPolicy: EnergyPolicy
     let transit: MapSceneTransitData
+    let parkedCar: ParkedCar?
     let settings: MapSettings
     let isSearchPresented: Bool
     let routePreviewExpanded: Bool

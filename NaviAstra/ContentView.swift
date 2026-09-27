@@ -6,11 +6,15 @@ import UIKit
 
 struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) var reduceMotion
+    @Environment(\.scenePhase) var scenePhase
     @Namespace var transportSelectionNamespace
-    @State var engine: NavigationEngine
+    @State var navigationStore: NavigationStore
     @State var appRouter: AppRouter
     @State var searchStore: SearchStore
     @State var routePlanningStore: RoutePlanningStore
+    @State var transitStore: TransitStore
+    @State var mapStore: MapStore
+    @State var placeStore: PlaceStore
     @State var panelHeight: CGFloat = 320
     @State var mapPanelInset: CGFloat = 340
     @State var mapHeaderInset: CGFloat = 100
@@ -25,29 +29,30 @@ struct ContentView: View {
     @State var savedPlaceMapCoordinate: Coordinate?
     @State var savedPlaceMapAddress: String?
     @State var savedPlaceMapGeocodingTask: Task<Void, Never>?
-    @State var selectedMapPlaces: [SearchResult] = []
-    @State var selectedTransitSheet: TransitSheetSelection?
-    @State var selectedTransitStopID: String?
-    @State var selectedTransitRouteID: String?
-    @State var selectedTransitTripID: String?
-    @State var selectedTransitTripStopIDs: Set<String> = []
-    @State var selectedTransitLine: TransitLineDetails?
-    @State var selectedTransitTripCoordinates: [Coordinate] = []
-    @State var liveTransitTripDetails: TransitTripDetails?
     @State var mapPlaceEstimateTask: Task<Void, Never>?
     @State var serverAddress = UserDefaults.standard.string(forKey: "routingServer") ?? "https://valhalla1.openstreetmap.de"
     @State var editingSavedPlace: SavedPlace?
     @State var placePendingRemoval: SavedPlace?
     @State var showPlaceRemovalConfirmation = false
     @State var addingWaypoint = false
-    @State var nearbyRequest: NearbySearchRequest?
-    @State var localData: LocalDataStore
     @State var favoriteName = ""
     @State var isSavingPlace = false
     @State var destinationExpanded = false
     @State var routePreviewExpanded = false
     @State var favoritePulseScale: CGFloat = 1
     @State var showFavoriteRemovalConfirmation = false
+    @State var selectedParkedCar: ParkedCar?
+    @State var parkedCarStartsInEditMode = false
+    @State var showParkedCarReplacementConfirmation = false
+    @State var pendingParkedCarCoordinate: Coordinate?
+    @State var pendingParkedCarAccuracy: Double?
+    @State var pendingParkedCarDate: Date?
+    @State var mapActionCoordinate: Coordinate?
+    @State var showMapLocationActions = false
+    @State var parkedCarToast: ParkedCarToast?
+    @State var parkedCarToastDismissTask: Task<Void, Never>?
+    @State var arrivalCarPromptDismissed = false
+    @State var parkedCarPromptExpiresAt: Date?
     @State var trafficKey = ""
     @State var trafficConfigured = TrafficCredential.read() != nil
     @State var isMapReady = false
@@ -58,33 +63,20 @@ struct ContentView: View {
     @State var quickETADestinationKey = ""
     @State var quickETAUpdatedAt = Date.distantPast
     @State var quickETAInFlight = false
-    @AppStorage("mapBase") var mapBase = BaseMap.standard.rawValue
-    @AppStorage("mapAppearance") var mapAppearance = MapAppearance.auto.rawValue
-    @AppStorage("mapDimension") var mapDimension = MapDimension.flat.rawValue
-    @AppStorage("mapTrafficVisible") var mapTrafficVisible = true
-    @AppStorage("mapPOICategories") var mapPOICategories = MapPOICategory.allMask
-    @AppStorage("mapPOIVisible") var mapPOIVisible = true
-    @AppStorage("mapBuildingsVisible") var mapBuildingsVisible = true
-    @AppStorage("mapTransitVisible") var mapTransitVisible = false
-    @AppStorage("mapCyclingVisible") var mapCyclingVisible = false
     @AppStorage("speedWarningsEnabled") var speedWarningsEnabled = true
     @AppStorage("defaultTransportMode") var defaultTransportMode = TransportMode.car.rawValue
 
     init(dependencies: AppDependencies) {
-        _engine = State(initialValue: dependencies.navigationEngine)
+        _navigationStore = State(initialValue: dependencies.navigationStore)
         _appRouter = State(initialValue: dependencies.router)
-        _localData = State(initialValue: dependencies.localData)
         _searchStore = State(initialValue: dependencies.searchStore)
         _routePlanningStore = State(initialValue: dependencies.routePlanningStore)
+        _transitStore = State(initialValue: dependencies.transitStore)
+        _mapStore = State(initialValue: dependencies.mapStore)
+        _placeStore = State(initialValue: dependencies.placeStore)
     }
 
 
-}
-
-struct NearbySearchRequest: Identifiable {
-    let id = UUID()
-    let category: NearbyPlaceCategory
-    let nearDestination: Bool
 }
 
 func mapTransitColor(_ hex: UInt32) -> Color {

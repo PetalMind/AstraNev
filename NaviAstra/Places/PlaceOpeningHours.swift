@@ -14,74 +14,54 @@ struct PlaceOpeningHours {
         self.timeZoneIdentifier = timeZoneIdentifier
     }
 
-    func isOpen(at date: Date = Date(), calendar: Calendar = .current) -> Bool? {
-        guard let result = evaluate(at: date, calendar: calendar), !result.unknown else { return nil }
-        return result.open
-    }
-
-    func statusText(at date: Date = Date(), calendar: Calendar = .current) -> String? {
-        guard let result = evaluate(at: date, calendar: calendar), !result.unknown else { return nil }
-        guard result.open else { return "Zamknięte teraz" }
-        guard let nextChange = result.nextChange,
-              !result.nextUnknown,
-              result.nextOpen == false else { return "Otwarte teraz" }
-        return "Otwarte · zamyka o \(Self.clockTimeString(nextChange, calendar: targetCalendar(from: calendar)))"
-    }
-
-    func closingTime(at date: Date = Date(), calendar: Calendar = .current) -> Date? {
-        guard let result = evaluate(at: date, calendar: calendar), result.open, !result.unknown,
-              !result.nextUnknown, result.nextOpen == false else { return nil }
-        return result.nextChange
-    }
-
-    var weeklyRows: [(String, String)]? {
-        weeklyRows(at: Date())
-    }
-
-    func weeklyRows(at date: Date, calendar: Calendar = .current) -> [(String, String)]? {
-        guard let result = evaluate(at: date, calendar: calendar) else { return nil }
-        let labels = ["Pon.", "Wt.", "Śr.", "Czw.", "Pt.", "Sob.", "Niedz."]
-        return labels.enumerated().map { index, label in
-            let intervals = index < result.days.count ? result.days[index] : []
-            guard !intervals.isEmpty else { return (label, "Zamknięte") }
-            let values = intervals.map { interval -> String in
-                let start = Self.intervalTimeString(interval.start, calendar: .current, clippedStart: interval.clippedStart)
-                let end = Self.intervalTimeString(interval.end, calendar: .current, clippedEnd: interval.clippedEnd)
-                let value = "\(start)–\(end)"
-                return interval.unknown ? "Niepewne · \(value)" : value
-            }
-            return (label, values.joined(separator: ", "))
-        }
-    }
-
-    private func evaluate(at date: Date, calendar: Calendar) -> OpeningHoursEvaluation? {
+    func presentation(at date: Date = Date(), calendar: Calendar = .current) async -> OpeningHoursPresentation {
         let localCalendar = targetCalendar(from: calendar)
-        guard let parserDate = Self.parserDate(for: date, targetCalendar: localCalendar) else { return nil }
+        guard let parserDate = Self.parserDate(for: date, targetCalendar: localCalendar) else {
+            return .unavailable(.invalidDate)
+        }
         var weekCalendar = localCalendar
         weekCalendar.firstWeekday = 2
         weekCalendar.minimumDaysInFirstWeek = 4
-        guard let weekStart = weekCalendar.dateInterval(of: .weekOfYear, for: date)?.start else { return nil }
+        guard let weekStart = weekCalendar.dateInterval(of: .weekOfYear, for: date)?.start else {
+            return .unavailable(.invalidDate)
+        }
         var dayRanges: [[Double]] = []
         for offset in 0..<7 {
             guard let start = weekCalendar.date(byAdding: .day, value: offset, to: weekStart),
                   let end = weekCalendar.date(byAdding: .day, value: offset + 1, to: weekStart),
                   let parserStart = Self.parserDate(for: start, targetCalendar: weekCalendar),
-                  let parserEnd = Self.parserDate(for: end, targetCalendar: weekCalendar) else { return nil }
+                  let parserEnd = Self.parserDate(for: end, targetCalendar: weekCalendar) else {
+                return .unavailable(.invalidDate)
+            }
             dayRanges.append([parserStart.timeIntervalSince1970 * 1_000,
                               parserEnd.timeIntervalSince1970 * 1_000])
         }
-        guard var result = OpeningHoursEngine.shared.evaluate(
-            rawValue: rawValue,
-            nowMilliseconds: parserDate.timeIntervalSince1970 * 1_000,
-            weekRanges: dayRanges,
-            coordinate: coordinate,
-            countryCode: countryCode,
-            systemTimeZoneIdentifier: localCalendar.timeZone.identifier) else { return nil }
+
+        var result: OpeningHoursEvaluation
+        do {
+            result = try await OpeningHoursEngine.shared.evaluate(
+                rawValue: rawValue,
+                nowMilliseconds: parserDate.timeIntervalSince1970 * 1_000,
+                weekRanges: dayRanges,
+                coordinate: coordinate,
+                countryCode: countryCode,
+                systemTimeZoneIdentifier: localCalendar.timeZone.identifier)
+        } catch let failure as OpeningHoursFailure {
+            return .unavailable(failure)
+        } catch {
+            return .unavailable(.invalidExpression)
+        }
+
         if let parserDate = result.nextChange,
            let targetDate = Self.targetDate(fromParserDate: parserDate, calendar: localCalendar) {
             result.nextChangeMilliseconds = targetDate.timeIntervalSince1970 * 1_000
         }
-        return result
+        return OpeningHoursPresentation(
+            isAvailable: true,
+            isOpen: result.unknown ? nil : result.open,
+            statusText: Self.statusText(for: result, calendar: localCalendar),
+            weeklyRows: Self.weeklyRows(from: result),
+            failure: nil)
     }
 
     private func targetCalendar(from fallback: Calendar) -> Calendar {
@@ -105,8 +85,34 @@ struct PlaceOpeningHours {
         return calendar.date(from: components)
     }
 
+    private static func weeklyRows(from result: OpeningHoursEvaluation) -> [OpeningHoursDayRow] {
+        let labels = ["Pon.", "Wt.", "Śr.", "Czw.", "Pt.", "Sob.", "Niedz."]
+        return labels.enumerated().map { index, label in
+            let intervals = index < result.days.count ? result.days[index] : []
+            guard !intervals.isEmpty else { return OpeningHoursDayRow(day: label, hours: "Zamknięte") }
+            let values = intervals.map { interval -> String in
+                let start = intervalTimeString(interval.start, calendar: .current,
+                                               clippedStart: interval.clippedStart)
+                let end = intervalTimeString(interval.end, calendar: .current,
+                                             clippedEnd: interval.clippedEnd)
+                let value = "\(start)–\(end)"
+                return interval.unknown ? "Niepewne · \(value)" : value
+            }
+            return OpeningHoursDayRow(day: label, hours: values.joined(separator: ", "))
+        }
+    }
+
+    private static func statusText(for result: OpeningHoursEvaluation, calendar: Calendar) -> String? {
+        guard !result.unknown else { return nil }
+        guard result.open else { return "Zamknięte teraz" }
+        guard let nextChange = result.nextChange,
+              !result.nextUnknown,
+              result.nextOpen == false else { return "Otwarte teraz" }
+        return "Otwarte · zamyka o \(clockTimeString(nextChange, calendar: calendar))"
+    }
+
     private static func intervalTimeString(_ date: Date, calendar: Calendar,
-                                          clippedStart: Bool = false, clippedEnd: Bool = false) -> String {
+                                           clippedStart: Bool = false, clippedEnd: Bool = false) -> String {
         if clippedStart { return "00:00" }
         if clippedEnd { return "24:00" }
         let hour = calendar.component(.hour, from: date)
@@ -122,5 +128,4 @@ struct PlaceOpeningHours {
         formatter.timeStyle = .short
         return formatter.string(from: date)
     }
-
 }

@@ -25,7 +25,7 @@ extension ContentView {
                         Button("Zamknij") { appRouter.dismiss(.settings) }
                     }
                 }
-                .onAppear { routePlanningStore.loadPreferences(from: engine) }
+                .onAppear { routePlanningStore.loadPreferences(from: navigationStore) }
         }
     }
 
@@ -66,7 +66,7 @@ extension ContentView {
 
     private var settingsAppearanceSection: some View {
         Section("Wygląd") {
-            Picker("Wygląd", selection: $mapAppearance) {
+            Picker("Wygląd", selection: $mapStore.mapAppearance) {
                 ForEach(MapAppearance.allCases) { value in Text(value.title).tag(value.rawValue) }
             }
             .disabled(!mapCapabilities.supportsApplicationDarkMode)
@@ -79,13 +79,13 @@ extension ContentView {
 
     private var settingsCameraSection: some View {
         Section("Perspektywa i budynki") {
-            Picker("Kamera", selection: $mapDimension) {
+            Picker("Kamera", selection: $mapStore.mapDimension) {
                 ForEach(MapDimension.allCases) { value in Text(value.title).tag(value.rawValue) }
             }
             .pickerStyle(.segmented)
             .disabled(!mapCapabilities.supports3DCamera)
             if mapCapabilities.supports3DBuildings {
-                Toggle("Budynki 3D", isOn: $mapBuildingsVisible)
+                Toggle("Budynki 3D", isOn: $mapStore.mapBuildingsVisible)
             } else {
                 unavailableToggle("Budynki 3D", reason: "Obecny styl mapy nie udostępnia osobnej warstwy budynków.")
             }
@@ -95,22 +95,22 @@ extension ContentView {
     private var settingsMapDetailsSection: some View {
         Section("Szczegóły mapy") {
             if mapCapabilities.supportsTrafficOverlay {
-                Toggle("Ruch drogowy", isOn: $mapTrafficVisible)
+                Toggle("Ruch drogowy", isOn: $mapStore.mapTrafficVisible)
             } else {
                 unavailableToggle("Ruch drogowy", reason: "Obecny dostawca nie udostępnia warstwy ruchu.")
             }
             if mapCapabilities.supportsPOIToggle {
-                Toggle("POI", isOn: $mapPOIVisible)
+                Toggle("POI", isOn: $mapStore.mapPOIVisible)
             } else {
                 unavailableToggle("POI", reason: "Obecny styl mapy nie pozwala osobno ukryć punktów zainteresowania.")
             }
             if mapCapabilities.supportsTransitOverlay {
-                Toggle("Wyróżnij kolej i tramwaje", isOn: $mapTransitVisible)
+                Toggle("Wyróżnij kolej i tramwaje", isOn: $mapStore.mapTransitVisible)
             } else {
                 unavailableToggle("Transport publiczny", reason: "Brak niezależnej warstwy u obecnego dostawcy mapy.")
             }
             if mapCapabilities.supportsCyclingOverlay {
-                Toggle("Trasy rowerowe", isOn: $mapCyclingVisible)
+                Toggle("Trasy rowerowe", isOn: $mapStore.mapCyclingVisible)
             } else {
                 unavailableToggle("Trasy rowerowe", reason: "Brak niezależnej warstwy u obecnego dostawcy mapy.")
             }
@@ -121,13 +121,13 @@ extension ContentView {
         Section("Kategorie miejsc na mapie") {
             ForEach(MapPOICategory.allCases) { category in
                 Toggle(category.title, isOn: Binding(
-                    get: { mapPOICategories & category.mask != 0 },
+                    get: { mapStore.mapPOICategories & category.mask != 0 },
                     set: { enabled in
-                        if enabled { mapPOICategories |= category.mask }
-                        else { mapPOICategories &= ~category.mask }
+                        if enabled { mapStore.mapPOICategories |= category.mask }
+                        else { mapStore.mapPOICategories &= ~category.mask }
                     }))
             }
-            .disabled(!mapPOIVisible)
+            .disabled(!mapStore.mapPOIVisible)
             Text("Podczas prowadzenia mapa wybiera z zaznaczonych kategorii miejsca przydatne dla danego sposobu podróży. Przy celu wyróżnia parkingi i przystanki.")
                 .font(.footnote).foregroundStyle(.secondary)
         }
@@ -147,7 +147,7 @@ extension ContentView {
                     Text(value.title).tag(value)
                 }
             }
-            Text(engine.state.voicePreferences.verbosity.detail)
+            Text(navigationStore.state.voicePreferences.verbosity.detail)
                 .font(.footnote).foregroundStyle(.secondary)
             Picker("Głos polski", selection: voiceIdentifierBinding) {
                 Text("Automatyczny").tag("")
@@ -163,13 +163,13 @@ extension ContentView {
                 title: "Tempo mowy",
                 value: voiceRateBinding,
                 range: 0.38...0.62,
-                valueDescription: String(format: "%.0f%%", Double(engine.state.voicePreferences.speechRate) * 200)
+                valueDescription: String(format: "%.0f%%", Double(navigationStore.state.voicePreferences.speechRate) * 200)
             )
             voiceSliderRow(
                 title: "Głośność komunikatów",
                 value: voiceVolumeBinding,
                 range: 0...1,
-                valueDescription: String(format: "%.0f%%", Double(engine.state.voicePreferences.volume) * 100)
+                valueDescription: String(format: "%.0f%%", Double(navigationStore.state.voicePreferences.volume) * 100)
             )
         }
     }
@@ -200,7 +200,7 @@ extension ContentView {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Button("Zastosuj preferencje trasy") {
-                Task { await routePlanningStore.applyPreferences(to: engine) }
+                Task { await routePlanningStore.applyPreferences(to: navigationStore) }
             }
         }
     }
@@ -232,19 +232,19 @@ extension ContentView {
             SecureField("Klucz API TomTom", text: $trafficKey)
             Button("Zapisz klucz") {
                 guard !trafficKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-                if engine.configureTraffic(apiKey: trafficKey) {
+                if navigationStore.configureTraffic(apiKey: trafficKey) {
                     trafficConfigured = true
                     trafficKey = ""
                 } else {
-                    engine.state.errorMessage = "Nie udało się zapisać klucza w pęku kluczy."
+                    navigationStore.state.errorMessage = "Nie udało się zapisać klucza w pęku kluczy."
                 }
             }
             .disabled(trafficKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
             if trafficConfigured {
                 Button("Wyłącz ruch i usuń klucz", role: .destructive) {
-                    if engine.configureTraffic(apiKey: nil) { trafficConfigured = false }
-                    else { engine.state.errorMessage = "Nie udało się usunąć klucza z pęku kluczy." }
+                    if navigationStore.configureTraffic(apiKey: nil) { trafficConfigured = false }
+                    else { navigationStore.state.errorMessage = "Nie udało się usunąć klucza z pęku kluczy." }
                 }
             }
         }
@@ -256,21 +256,21 @@ extension ContentView {
                 .autocorrectionDisabled()
             Button("Zapisz serwer") {
                 guard let url = URL(string: serverAddress), url.scheme == "https", url.host != nil else {
-                    engine.state.errorMessage = "Podaj poprawny adres HTTPS serwera Valhalla."
+                    navigationStore.state.errorMessage = "Podaj poprawny adres HTTPS serwera Valhalla."
                     return
                 }
                 UserDefaults.standard.set(serverAddress, forKey: "routingServer")
-                engine.updateProvider(ValhallaRouteProvider(endpoint: url))
+                navigationStore.updateRoutingEndpoint(url)
                 appRouter.dismiss(.settings)
             }
         }
     }
 
     private var settingsTransitSection: some View {
-        Section("Komunikacja miejska · MPK Łódź") {
-            Text("Rozkłady autobusów i tramwajów, aktualizacje kursów, opóźnienia i komunikaty są pobierane bezpośrednio z otwartych danych miasta Łodzi. Mapa pokazuje świeże pozycje pojazdów. Rozkład jest zapisywany na urządzeniu i odświeżany raz dziennie.")
-            Link("Otwarte dane Łódź", destination: URL(string: "https://otwarte.miasto.lodz.pl/transport_komunikacja/")!)
-            Link("Rozkłady MPK Łódź", destination: URL(string: "https://www.mpk.lodz.pl/rozklady/linie.jsp")!)
+        Section("Komunikacja miejska · \(transitStore.region.displayName)") {
+            Text("Rozkłady, aktualizacje kursów, opóźnienia i komunikaty są pobierane z otwartych danych regionu. Mapa pokazuje świeże pozycje pojazdów. Rozkład jest zapisywany na urządzeniu i odświeżany raz dziennie.")
+            Link(transitStore.region.dataPortalTitle, destination: transitStore.region.dataPortalURL)
+            Link(transitStore.region.scheduleTitle, destination: transitStore.region.scheduleURL)
         }
     }
 
@@ -280,7 +280,7 @@ extension ContentView {
     }
 
     var routeSettingsSheet: some View {
-        let mode = engine.state.transportMode
+        let mode = navigationStore.state.transportMode
         return NavigationStack {
             Form {
                 if supportsActiveTripRoadPreferences {
@@ -319,7 +319,7 @@ extension ContentView {
                         .foregroundStyle(.secondary)
                     Button("Zastosuj ustawienia trasy") {
                         Task {
-                            await routePlanningStore.applyPreferences(to: engine)
+                            await routePlanningStore.applyPreferences(to: navigationStore)
                             appRouter.dismiss(.routeSettings)
                         }
                     }
@@ -369,7 +369,7 @@ extension ContentView {
                     .font(.headline)
                 Spacer()
                 Button {
-                    engine.refreshTraffic(force: true)
+                    navigationStore.refreshTraffic(force: true)
                 } label: {
                     Image(systemName: "arrow.clockwise")
                         .frame(width: 36, height: 36)
@@ -379,7 +379,7 @@ extension ContentView {
                 .accessibilityLabel("Odśwież ruch")
             }
 
-            switch engine.state.trafficStatus {
+            switch navigationStore.state.trafficStatus {
             case .notConfigured:
                 Label("Wpisz klucz TomTom w ustawieniach.", systemImage: "key")
                     .foregroundStyle(.secondary)
@@ -390,7 +390,7 @@ extension ContentView {
                 Label("Ruch niedostępny: \(reason)", systemImage: "wifi.slash")
                     .foregroundStyle(.secondary)
             case .available:
-                if let flow = engine.state.traffic?.flow {
+                if let flow = navigationStore.state.traffic?.flow {
                     Label(
                         flow.roadClosure
                             ? "Zgłoszone zamknięcie pobliskiego odcinka"
@@ -402,7 +402,7 @@ extension ContentView {
                         .foregroundStyle(.secondary)
                 }
 
-                if let incidents = engine.state.traffic?.incidents {
+                if let incidents = navigationStore.state.traffic?.incidents {
                     Text(incidents.isEmpty
                          ? "Brak zgłoszonych utrudnień na pobliskiej trasie."
                          : "Utrudnienia na pobliskiej trasie: \(incidents.count)")
@@ -412,12 +412,12 @@ extension ContentView {
                     }
                 }
 
-                if let partialError = engine.state.traffic?.partialError {
+                if let partialError = navigationStore.state.traffic?.partialError {
                     Text(partialError)
                         .foregroundStyle(.secondary)
                 }
 
-                if let updatedAt = engine.state.traffic?.updatedAt {
+                if let updatedAt = navigationStore.state.traffic?.updatedAt {
                     Text("Aktualizacja: \(updatedAt.formatted(date: .omitted, time: .shortened))")
                         .font(.caption)
                         .foregroundStyle(.secondary)

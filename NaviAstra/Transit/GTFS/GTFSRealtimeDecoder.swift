@@ -14,7 +14,7 @@ nonisolated struct GTFSRealtimeSnapshot {
     static let empty = GTFSRealtimeSnapshot(updates: [:], canceledTrips: [], updatedAt: nil,
                                              isAvailable: false, alertsAvailable: false, alerts: [],
                                              freshness: .unavailable,
-                                             sourceFreshness: ["lodz": .unavailable, "rail": .unavailable],
+                                             sourceFreshness: ["city": .unavailable, "rail": .unavailable],
                                              sourceUpdatedAt: [:])
 
     func update(tripID: String, serviceDate: String, stopID: String,

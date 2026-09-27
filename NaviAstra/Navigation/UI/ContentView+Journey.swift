@@ -32,11 +32,11 @@ extension ContentView {
                 }
             } label: {
                 HStack(spacing: 0) {
-                    journeySummaryMetric(value: time(engine.state.progress?.remainingTime ?? 0), caption: "do celu")
+                    journeySummaryMetric(value: time(navigationStore.state.progress?.remainingTime ?? 0), caption: "do celu")
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    journeySummaryMetric(value: distance(engine.state.progress?.remainingDistance ?? 0), caption: "pozostało")
+                    journeySummaryMetric(value: distance(navigationStore.state.progress?.remainingDistance ?? 0), caption: "pozostało")
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    journeySummaryMetric(value: arrivalTime(engine.state.progress?.remainingTime ?? 0), caption: navigationArrivalCaption)
+                    journeySummaryMetric(value: arrivalTime(navigationStore.state.progress?.remainingTime ?? 0), caption: navigationArrivalCaption)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Image(systemName: navigationPanelExpanded ? "chevron.down" : "chevron.up")
                         .font(.system(size: 13, weight: .semibold))
@@ -49,7 +49,7 @@ extension ContentView {
             .padding(.horizontal, 20)
             .accessibilityLabel(navigationPanelExpanded ? "Zwiń panel prowadzenia" : "Rozwiń panel prowadzenia")
 
-            if engine.state.transportMode == .transit, let transitLeg = activeTransitLeg {
+            if navigationStore.state.transportMode == .transit, let transitLeg = activeTransitLeg {
                 Group {
                     if transitLeg.mode == "WALK" {
                         transitWalkNavigationCard(transitLeg)
@@ -66,13 +66,13 @@ extension ContentView {
 
             HStack(spacing: 8) {
                 journeyFooterAction(symbol: "arrow.triangle.branch", title: "Przegląd\ntrasy") {
-                    engine.showRouteOverview()
+                    navigationStore.showRouteOverview()
                     withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
                         navigationPanelExpanded = false
                     }
                 }
                 journeyFooterAction(symbol: "stop.circle.fill", title: "Zakończ\nnawigację", destructive: true) {
-                    engine.stop()
+                    navigationStore.stop()
                 }
             }
             .padding(.horizontal, 18)
@@ -91,9 +91,9 @@ extension ContentView {
 
                     journeyActionsGrid
 
-                    if engine.state.transportMode == .transit {
+                    if navigationStore.state.transportMode == .transit {
                         transitJourneyTimeline
-                    } else if engine.state.transportMode == .parkRide {
+                    } else if navigationStore.state.transportMode == .parkRide {
                         parkRideJourneyTimeline
                     }
                 }
@@ -212,11 +212,11 @@ extension ContentView {
                 } label: {
                     journeyActionLabel("Przystanek", symbol: "plus.circle")
                 }
-                .disabled(engine.state.waypoints.count >= 8)
+                .disabled(navigationStore.state.waypoints.count >= 8)
             }
             #if os(macOS)
             Button {
-                engine.showRouteOverview()
+                navigationStore.showRouteOverview()
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
                     navigationPanelExpanded = false
                 }
@@ -226,10 +226,10 @@ extension ContentView {
             #endif
             if supportsActiveTripRoadPreferences {
                 Button {
-                    routePlanningStore.loadPreferences(from: engine)
+                    routePlanningStore.loadPreferences(from: navigationStore)
                     appRouter.present(.routeSettings)
                 } label: {
-                    journeyActionLabel(engine.state.transportMode == .parkRide ? "Opcje jazdy" : "Opcje trasy",
+                    journeyActionLabel(navigationStore.state.transportMode == .parkRide ? "Opcje jazdy" : "Opcje trasy",
                                        symbol: "slider.horizontal.3")
                 }
             }
@@ -256,11 +256,11 @@ extension ContentView {
                 }
             } label: {
                 HStack(spacing: 0) {
-                    metric(value: time(engine.state.progress?.remainingTime ?? 0), caption: "do celu")
+                    metric(value: time(navigationStore.state.progress?.remainingTime ?? 0), caption: "do celu")
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    metric(value: distance(engine.state.progress?.remainingDistance ?? 0), caption: "pozostało")
+                    metric(value: distance(navigationStore.state.progress?.remainingDistance ?? 0), caption: "pozostało")
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    metric(value: arrivalTime(engine.state.progress?.remainingTime ?? 0), caption: navigationArrivalCaption)
+                    metric(value: arrivalTime(navigationStore.state.progress?.remainingTime ?? 0), caption: navigationArrivalCaption)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Image(systemName: navigationPanelExpanded ? "chevron.down" : "chevron.up")
                         .font(.caption.weight(.semibold))
@@ -272,7 +272,7 @@ extension ContentView {
             .buttonStyle(.plain)
             .accessibilityLabel(navigationPanelExpanded ? "Zwiń panel prowadzenia" : "Rozwiń panel prowadzenia")
 
-            if engine.state.transportMode == .transit, let transitLeg = activeTransitLeg {
+            if navigationStore.state.transportMode == .transit, let transitLeg = activeTransitLeg {
                 if transitLeg.mode == "WALK" {
                     transitWalkNavigationCard(transitLeg)
                 } else {
@@ -311,13 +311,13 @@ extension ContentView {
                     .font(.subheadline.weight(.semibold))
                     .frame(maxWidth: .infinity, alignment: .leading)
                 journeyActionsGrid
-                if engine.state.transportMode == .transit {
+                if navigationStore.state.transportMode == .transit {
                     transitJourneyTimeline
-                } else if engine.state.transportMode == .parkRide {
+                } else if navigationStore.state.transportMode == .parkRide {
                     parkRideJourneyTimeline
                 }
                 Divider()
-                Button(role: .destructive) { engine.stop() } label: {
+                Button(role: .destructive) { navigationStore.stop() } label: {
                     Label("Zakończ nawigację", systemImage: "stop.circle.fill")
                         .font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity, minHeight: 48)
@@ -348,8 +348,8 @@ extension ContentView {
     }
 
     var currentJourneyLeg: (current: Destination, following: Destination?)? {
-        guard let route = engine.state.route, let destination = engine.state.destination else { return nil }
-        var stops = engine.state.waypoints + engine.state.evChargingStops
+        guard let route = navigationStore.state.route, let destination = navigationStore.state.destination else { return nil }
+        var stops = navigationStore.state.waypoints + navigationStore.state.evChargingStops
         if !stops.contains(where: { $0.coordinate == destination.coordinate }) { stops.append(destination) }
         let ordered = stops.compactMap { stop -> (Destination, Double)? in
             guard let projection = MapMatcher.project(stop.coordinate, onto: route.coordinates) else { return nil }
@@ -359,7 +359,7 @@ extension ContentView {
         let routeLength = zip(route.coordinates, route.coordinates.dropFirst())
             .reduce(0.0) { $0 + $1.0.distance(to: $1.1) }
         let progressFraction = route.distance > 0
-            ? (engine.state.progress?.traveledDistance ?? 0) / route.distance : 0
+            ? (navigationStore.state.progress?.traveledDistance ?? 0) / route.distance : 0
         let traveledGeometry = routeLength * max(0, min(1, progressFraction))
         let currentIndex = ordered.firstIndex { $0.1 > traveledGeometry + 30 } ?? (ordered.count - 1)
         return (ordered[currentIndex].0,
@@ -367,8 +367,8 @@ extension ContentView {
     }
 
     var activeTransitLegIndex: Int? {
-        guard let legs = engine.state.route?.journey?.legs, !legs.isEmpty else { return nil }
-        if let tracked = engine.state.transitProgress?.legIndex, legs.indices.contains(tracked) {
+        guard let legs = navigationStore.state.route?.journey?.legs, !legs.isEmpty else { return nil }
+        if let tracked = navigationStore.state.transitProgress?.legIndex, legs.indices.contains(tracked) {
             return tracked
         }
         return legs.firstIndex { leg in
@@ -379,14 +379,14 @@ extension ContentView {
     }
 
     var activeTransitLeg: JourneyLeg? {
-        guard let legs = engine.state.route?.journey?.legs,
+        guard let legs = navigationStore.state.route?.journey?.legs,
               let index = activeTransitLegIndex, legs.indices.contains(index) else { return nil }
         return legs[index]
     }
 
     func transitProgress(for leg: JourneyLeg) -> TransitNavigationProgress? {
-        guard let legs = engine.state.route?.journey?.legs,
-              let progress = engine.state.transitProgress,
+        guard let legs = navigationStore.state.route?.journey?.legs,
+              let progress = navigationStore.state.transitProgress,
               legs.indices.contains(progress.legIndex),
               legs[progress.legIndex].id == leg.id else { return nil }
         return progress
@@ -413,7 +413,7 @@ extension ContentView {
     }
 
     func hasLiveTransitUpdate(for leg: JourneyLeg) -> Bool {
-        guard engine.state.route?.journey?.realtimeFreshness == .live else { return false }
+        guard navigationStore.state.route?.journey?.realtimeFreshness == .live else { return false }
         guard let details = liveTransitDetails(for: leg) else { return false }
         return details.nextStops.contains(where: { $0.hasRealtime })
             || details.pastStops.contains(where: { $0.hasRealtime })
@@ -458,50 +458,37 @@ extension ContentView {
     }
 
     func refreshTransitJourneyDetails() async {
-        guard engine.state.transportMode == .transit else {
-            liveTransitTripDetails = nil
-            engine.updateTransitTripDetails(nil, tripID: nil)
+        guard navigationStore.state.transportMode == .transit else {
+            transitStore.clearJourneySelection()
+            navigationStore.updateTransitTripDetails(nil, tripID: nil)
             return
         }
         while !Task.isCancelled {
-            await engine.refreshTransitRouteIfNeeded()
+            await navigationStore.refreshTransitRouteIfNeeded()
             guard !Task.isCancelled else { return }
-            let legs = engine.state.route?.journey?.legs ?? []
+            let legs = navigationStore.state.route?.journey?.legs ?? []
             let activeIndex = activeTransitLegIndex ?? 0
             let nextRide = legs.indices.first { index in
                 index >= activeIndex && legs[index].tripID != nil
             }.map { legs[$0] }
             if let leg = nextRide, let tripID = leg.tripID,
                let serviceDate = leg.serviceDate, let sequence = leg.transitStops.first?.sequence {
-                let provider = LodzTransitRouteProvider()
-                let tripDetails = await provider.tripDetails(tripID: tripID, serviceDate: serviceDate,
-                                                             fromStopSequence: sequence)
+                let tripDetails = await transitStore.tripDetails(
+                    tripID: tripID, serviceDate: serviceDate, fromStopSequence: sequence)
                 guard !Task.isCancelled else { return }
-                engine.updateTransitTripDetails(tripDetails, tripID: tripID)
+                navigationStore.updateTransitTripDetails(tripDetails, tripID: tripID)
                 let lineDetails: TransitLineDetails?
                 if selectedTransitRouteID == leg.routeID, let selectedTransitLine {
                     lineDetails = selectedTransitLine
                 } else if let routeID = leg.routeID {
-                    lineDetails = await provider.lineDetails(for: routeID)
+                    lineDetails = await transitStore.lineDetails(for: routeID)
                 } else {
                     lineDetails = nil
                 }
-                liveTransitTripDetails = tripDetails
-                selectedTransitRouteID = leg.routeID
-                selectedTransitTripID = tripID
-                selectedTransitTripStopIDs = Set((tripDetails?.pastStops ?? []).map(\.stopID)
-                    + (tripDetails?.currentStopID.map { [$0] } ?? [])
-                    + (tripDetails?.nextStops ?? []).map(\.stopID))
-                selectedTransitLine = lineDetails
-                selectedTransitTripCoordinates = tripDetails?.coordinates ?? []
+                transitStore.selectJourney(leg, tripDetails: tripDetails, lineDetails: lineDetails)
             } else {
-                liveTransitTripDetails = nil
-                engine.updateTransitTripDetails(nil, tripID: nil)
-                selectedTransitRouteID = nil
-                selectedTransitTripID = nil
-                selectedTransitTripStopIDs = []
-                selectedTransitLine = nil
-                selectedTransitTripCoordinates = []
+                transitStore.clearJourneySelection()
+                navigationStore.updateTransitTripDetails(nil, tripID: nil)
             }
             try? await Task.sleep(for: .seconds(30))
         }
@@ -512,7 +499,7 @@ extension ContentView {
             let tracking = transitProgress(for: leg)
             let remaining = tracking.map { max(0, Int(ceil($0.distanceToLegEnd / 1.25 / 60))) }
                 ?? max(0, Int(ceil(leg.arrival.timeIntervalSince(context.date) / 60)))
-            let nextRide = engine.state.route?.journey?.legs.first {
+            let nextRide = navigationStore.state.route?.journey?.legs.first {
                 $0.mode != "WALK" && $0.departure >= leg.arrival && $0.from == leg.to
             }
             VStack(alignment: .leading, spacing: 8) {
@@ -625,7 +612,7 @@ extension ContentView {
 
     var transitJourneyTimeline: some View {
         Group {
-            if let journey = engine.state.route?.journey {
+            if let journey = navigationStore.state.route?.journey {
                 VStack(spacing: 10) {
                     transitFreshnessIndicator(for: journey)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -673,7 +660,7 @@ extension ContentView {
 
     var parkRideJourneyTimeline: some View {
         Group {
-            if let journey = engine.state.route?.journey {
+            if let journey = navigationStore.state.route?.journey {
                 VStack(alignment: .leading, spacing: 11) {
                     Text("Etapy podróży")
                         .font(.subheadline.weight(.semibold))
@@ -804,7 +791,7 @@ extension ContentView {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(arrivalTitle)
                         .font(.headline)
-                    Text(engine.state.destination?.name ?? "Podróż zakończona")
+                    Text(navigationStore.state.destination?.name ?? "Podróż zakończona")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -812,7 +799,7 @@ extension ContentView {
                 Spacer()
             }
 
-            if let trip = engine.state.lastTrip {
+            if let trip = navigationStore.state.lastTrip {
                 HStack(spacing: 0) {
                     metric(value: distance(trip.distanceMeters), caption: arrivalDistanceCaption)
                     Spacer()
@@ -833,8 +820,10 @@ extension ContentView {
                 }
             }
 
+            arrivalParkedCarPrompt
+
             Button {
-                engine.stop()
+                navigationStore.stop()
             } label: {
                 Text("Zamknij podsumowanie")
                     .font(.headline)
@@ -869,7 +858,7 @@ extension ContentView {
                 Text(arrivalTitle)
                     .font(.system(size: 20, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
-                Text(engine.state.lastTrip?.destination.name ?? engine.state.destination?.name ?? "Podróż zakończona")
+                Text(navigationStore.state.lastTrip?.destination.name ?? navigationStore.state.destination?.name ?? "Podróż zakończona")
                     .font(.system(size: 12, weight: .medium, design: .rounded))
                     .foregroundStyle(Color.white.opacity(0.58))
                     .lineLimit(1)
@@ -877,15 +866,15 @@ extension ContentView {
             .padding(.top, -3)
 
             HStack(spacing: 0) {
-                arrivalMetric(symbol: engine.state.transportMode.symbol,
-                              value: engine.state.lastTrip.map { distance($0.distanceMeters) } ?? "—",
+                arrivalMetric(symbol: navigationStore.state.transportMode.symbol,
+                              value: navigationStore.state.lastTrip.map { distance($0.distanceMeters) } ?? "—",
                               caption: arrivalDistanceCaption)
                     .frame(maxWidth: .infinity)
                 Rectangle()
                     .fill(Color.white.opacity(0.10))
                     .frame(width: 1, height: 45)
                 arrivalMetric(symbol: "clock",
-                              value: engine.state.lastTrip.map { time($0.duration) } ?? "—",
+                              value: navigationStore.state.lastTrip.map { time($0.duration) } ?? "—",
                               caption: "czas")
                     .frame(maxWidth: .infinity)
                 Rectangle()
@@ -901,10 +890,14 @@ extension ContentView {
             .padding(.horizontal, 16)
             .padding(.top, 10)
 
+            arrivalParkedCarPrompt
+                .padding(.horizontal, 16)
+                .padding(.top, 9)
+
             HStack(spacing: 7) {
                 Button {
-                    if !isDestinationFavorite, let destination = engine.state.destination {
-                        localData.add(destination, kind: .favorite)
+                    if !isDestinationFavorite, let destination = navigationStore.state.destination {
+                        placeStore.add(destination, kind: .favorite)
                     }
                 } label: {
                     arrivalActionLabel(symbol: isDestinationFavorite ? "checkmark" : "star",
@@ -916,7 +909,7 @@ extension ContentView {
                 arrivalShareAction
 
                 Button {
-                    engine.stop()
+                    navigationStore.stop()
                 } label: {
                     arrivalActionLabel(symbol: "paperplane.fill", title: "Zakończ", primary: true)
                 }

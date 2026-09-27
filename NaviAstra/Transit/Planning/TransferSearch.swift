@@ -1,6 +1,6 @@
 import Foundation
 
-extension LodzTransitRepository {
+extension TransitRepository {
     static func plan(snapshot: TransitSnapshot,
                              from origin: Coordinate, to destination: Coordinate,
                              departingAt: Date, departureSearchWindow: TimeInterval,
@@ -8,7 +8,8 @@ extension LodzTransitRepository {
                              originWalks: [TransitWalkOption],
                              destinationWalks: [TransitWalkOption],
                              usingCachedSchedule: Bool, resultLimit: Int,
-                             planningID: UInt64, trace: TransitPlanningTrace) throws -> [NavigationRoute] {
+                             planningID: UInt64, trace: TransitPlanningTrace,
+                             regionID: String) throws -> [NavigationRoute] {
         let database = snapshot.database
         let realtime = snapshot.realtime
         guard !originWalks.isEmpty, !destinationWalks.isEmpty else {
@@ -21,7 +22,8 @@ extension LodzTransitRepository {
         var activeRouteIDs: Set<String> = []
         var touchedPatternIDs: Set<Int> = []
 
-        let stopByID = Dictionary(uniqueKeysWithValues: database.stops.map { ($0.id, $0) })
+        let stopByID = database.stopByID
+        let destinationWalksByStopID = Dictionary(grouping: destinationWalks, by: { $0.stop.id })
         var initial: [String: [TransitPathLabel]] = [:]
         for access in originWalks {
             let label = TransitPathLabel(arrival: departingAt.addingTimeInterval(access.duration),
@@ -90,29 +92,29 @@ extension LodzTransitRepository {
                         let startIndex = lowerBound(in: departures, for: minimumDeparture)
                         guard startIndex < departures.count else { continue }
                         var bestArrivalByDownstreamIndex: [Int: Date] = [:]
+                        var improvedDownstreamIndices: [Int] = []
+                        let firstInstance = instances[departures[startIndex].instanceIndex]
+                        improvedDownstreamIndices.reserveCapacity(firstInstance.times.count - stopIndex - 1)
                         for departureIndex in startIndex..<departures.count {
                             let departure = departures[departureIndex]
                             if departure.time > latestDeparture { break }
                             departureTripsScanned += 1
                             let instance = instances[departure.instanceIndex]
-                            var improvesAnAlightingStop = false
+                            improvedDownstreamIndices.removeAll(keepingCapacity: true)
                             for downstreamIndex in (stopIndex + 1)..<instance.times.count {
                                 let arrival = instance.times[downstreamIndex].arrival
                                 if arrival > latestArrival { break }
                                 if arrival < (bestArrivalByDownstreamIndex[downstreamIndex] ?? .distantFuture) {
-                                    improvesAnAlightingStop = true
+                                    improvedDownstreamIndices.append(downstreamIndex)
                                 }
                             }
-                            guard improvesAnAlightingStop else {
+                            guard !improvedDownstreamIndices.isEmpty else {
                                 departureTripsDominated += 1
                                 continue
                             }
-                            for downstreamIndex in (stopIndex + 1)..<instance.times.count {
+                            for downstreamIndex in improvedDownstreamIndices {
                                 let downstream = instance.times[downstreamIndex]
-                                if downstream.arrival > latestArrival { break }
-                                bestArrivalByDownstreamIndex[downstreamIndex] = min(
-                                    bestArrivalByDownstreamIndex[downstreamIndex] ?? .distantFuture,
-                                    downstream.arrival)
+                                bestArrivalByDownstreamIndex[downstreamIndex] = downstream.arrival
                                 let ride = TransitRide(instanceIndex: departure.instanceIndex,
                                                        boardIndex: stopIndex,
                                                        alightIndex: downstreamIndex)
@@ -135,7 +137,7 @@ extension LodzTransitRepository {
             let alightingLabels = transferClosure(current, database: database)
             for (stopID, labels) in alightingLabels where stopByID[stopID] != nil {
                 for label in labels {
-                    for access in destinationWalks where access.stop.id == stopID {
+                    for access in destinationWalksByStopID[stopID] ?? [] {
                         let arrival = label.arrival.addingTimeInterval(access.duration)
                         guard arrival <= latestArrival else { continue }
                         candidates.append(TransitPlanCandidate(
@@ -154,8 +156,10 @@ extension LodzTransitRepository {
         trace.setCount("markedStops", value: markedStopsCount(in: layers))
         trace.setCount("departureTripsScanned", value: departureTripsScanned)
         trace.setCount("departureTripsDominated", value: departureTripsDominated)
-        trace.setCount("stopsWithDepartures", value: departuresByPatternStop.values
-            .flatMap { $0 }.filter { !$0.isEmpty }.count)
+        let stopsWithDepartures = departuresByPatternStop.values.reduce(into: 0) { count, departuresByStop in
+            for departures in departuresByStop where !departures.isEmpty { count += 1 }
+        }
+        trace.setCount("stopsWithDepartures", value: stopsWithDepartures)
         TransitSignposting.event("ActiveTripInstanceCount", value: instances.count, planningID: planningID)
         TransitSignposting.event("ActiveRouteCount", value: activeRouteIDs.count, planningID: planningID)
         TransitSignposting.event("ActiveRoutePatternCount", value: touchedPatternIDs.count, planningID: planningID)
@@ -165,19 +169,23 @@ extension LodzTransitRepository {
         let rankingInterval = TransitSignposting.begin("CandidateRanking", planningID: planningID)
         trace.setCount("candidates", value: candidates.count)
         TransitSignposting.event("StaticCandidateCount", value: candidates.count, planningID: planningID)
-        let rankedCandidates = candidates.sorted {
-            candidateCost($0, departingAt: departingAt, instances: instances)
-                < candidateCost($1, departingAt: departingAt, instances: instances)
-        }
+        let rankedCandidates = candidates
+            .map { candidate in
+                (candidate: candidate,
+                 cost: TransitCandidateRanker.candidateCost(candidate, departingAt: departingAt, instances: instances))
+            }
+            .sorted { $0.cost < $1.cost }
         TransitSignposting.end("CandidateRanking", identifier: rankingInterval, planningID: planningID)
         trace.recordDuration("CandidateRanking", startedAt: rankingStartedAt)
         var routes: [NavigationRoute] = []
-        for candidate in rankedCandidates.prefix(max(resultLimit * 4, resultLimit)) {
+        for rankedCandidate in rankedCandidates.prefix(max(resultLimit * 4, resultLimit)) {
+            let candidate = rankedCandidate.candidate
             if let route = makeRoute(candidate: candidate, database: database, realtime: realtime,
                                      instances: instances, stopByID: stopByID,
                                      origin: origin, destination: destination, departingAt: departingAt,
                                      originWalks: originWalks,
-                                     usingCachedSchedule: usingCachedSchedule) {
+                                     usingCachedSchedule: usingCachedSchedule,
+                                     regionID: regionID) {
                 routes.append(route)
             }
         }
@@ -254,71 +262,6 @@ extension LodzTransitRepository {
             }
         }
         return reachable
-    }
-
-    static func candidateCost(_ candidate: TransitPlanCandidate, departingAt: Date,
-                                      instances: [GTFSTripInstance]) -> Double {
-        let rideSeconds = pathRideSeconds(candidate.label, instances: instances)
-        let walking = candidate.label.walkingSeconds + candidate.destinationWalk.duration
-        let total = candidate.arrival.timeIntervalSince(departingAt)
-        let waiting = max(0, total - rideSeconds - walking)
-        return rideSeconds + walking * 1.6 + waiting * 1.25
-            + Double(candidate.label.transferCount) * 240
-    }
-
-    static func generalizedCost(_ route: NavigationRoute) -> Double {
-        guard let journey = route.journey else { return route.expectedTravelTime }
-        let rideSeconds = journey.legs.filter { $0.mode != "WALK" }
-            .reduce(0.0) { $0 + $1.arrival.timeIntervalSince($1.departure) }
-        return rideSeconds + journey.walkingDuration * 1.6 + journey.waitingDuration * 1.25
-            + Double(journey.transferCount) * 240 + transferRiskPenalty(for: journey.legs)
-    }
-
-    static func transferRiskPenalty(for legs: [JourneyLeg]) -> Double {
-        var penalty = 0.0
-        for nextRideIndex in legs.indices where legs[nextRideIndex].mode != "WALK" {
-            guard let previousRideIndex = legs[..<nextRideIndex].lastIndex(where: { $0.mode != "WALK" }) else {
-                continue
-            }
-            let transferWalks = legs[(previousRideIndex + 1)..<nextRideIndex]
-                .filter { $0.mode == "WALK" }
-            let requiredTransfer = transferWalks.isEmpty
-                ? 60.0
-                : transferWalks.reduce(0.0) { $0 + max(0, $1.arrival.timeIntervalSince($1.departure)) }
-            let available = legs[nextRideIndex].departure
-                .timeIntervalSince(legs[previousRideIndex].arrival)
-            let margin = max(0, available - requiredTransfer)
-            let risk = max(0, (120 - margin) / 120)
-            penalty += risk * risk * 240
-            if transferWalks.contains(where: { $0.isTransfer && !$0.hasResolvedWalkingGeometry }) {
-                penalty += 120
-            }
-        }
-        return penalty
-    }
-
-    static func pathRideSeconds(_ label: TransitPathLabel,
-                                        instances: [GTFSTripInstance]) -> Double {
-        var total = 0.0
-        var current: TransitPathLabel? = label
-        while let node = current {
-            if let ride = node.ride,
-               instances.indices.contains(ride.instanceIndex) {
-                let times = instances[ride.instanceIndex].times
-                if times.indices.contains(ride.boardIndex), times.indices.contains(ride.alightIndex) {
-                    total += max(0, times[ride.alightIndex].arrival
-                        .timeIntervalSince(times[ride.boardIndex].departure))
-                }
-            }
-            current = node.parent
-        }
-        return max(0, total)
-    }
-
-    static func transitSignature(_ route: NavigationRoute) -> String {
-        route.journey?.legs.filter { $0.mode != "WALK" }
-            .map { "\($0.tripID ?? $0.line ?? ""):\($0.from):\($0.to):\($0.departure.timeIntervalSince1970.rounded())" }
-            .joined(separator: "|") ?? ""
     }
 
     static func nearestStops(to coordinate: Coordinate,
@@ -515,7 +458,8 @@ extension LodzTransitRepository {
         destination: Coordinate,
         departingAt: Date,
         originWalks: [TransitWalkOption],
-        usingCachedSchedule: Bool
+        usingCachedSchedule: Bool,
+        regionID: String
     ) -> NavigationRoute? {
         var path: [TransitPathLabel] = []
         var root = candidate.label
@@ -622,7 +566,7 @@ extension LodzTransitRepository {
         let journeyHasRail = legs.contains { $0.mode == "RAIL" }
         let journeySources = Set(legs.compactMap { leg -> String? in
             guard leg.mode != "WALK", let tripID = leg.tripID else { return nil }
-            return tripID.hasPrefix("rail/") ? "rail" : "lodz"
+            return tripID.hasPrefix("rail/") ? "rail" : regionID
         })
         let journeyFreshness = Self.combinedFreshness(journeySources.compactMap {
             realtime.sourceFreshness[$0]

@@ -72,8 +72,6 @@ final class NavigationPuckEngine {
     private var lastInputTimestamp: Date?
     private var lastInputRouteID: UUID?
     private var lastInputWasNavigating = false
-    private var previousProjection: RouteProjection?
-    private var previousProjectionTimestamp: Date?
 
     private var anchorTime = Date.distantPast
     private var anchorCoordinate: Coordinate?
@@ -98,41 +96,21 @@ final class NavigationPuckEngine {
         let routeChanged = routeID != geometry?.id
         if routeChanged {
             geometry = activeRoute.map(RouteGeometry.init)
-            previousProjection = nil
-            previousProjectionTimestamp = nil
         }
 
-        let isSameRoute = routeID != nil && routeID == lastInputRouteID && !routeChanged
         let projectedMatch = geometry.flatMap { geometry -> RouteMatch? in
-            guard isNavigating else { return nil }
-            if let matchedRoute,
-               matchedRoute.routeID == geometry.id,
-               matchedRoute.locationTimestamp == location.timestamp {
-                return matchedRoute.match
-            }
-            return MapMatcher.match(location, onto: geometry.coordinates,
-                                    previous: isSameRoute ? previousProjection : nil,
-                                    previousTimestamp: isSameRoute ? previousProjectionTimestamp : nil)
+            guard isNavigating,
+                  let matchedRoute,
+                  matchedRoute.routeID == geometry.id,
+                  matchedRoute.locationTimestamp == location.timestamp else { return nil }
+            return matchedRoute.match
         }
-        let maximumMatchDistance = max(45, min(100, location.accuracy * 2.5))
+        let accuracy = location.accuracy.isFinite ? max(0, location.accuracy) : 0
+        let maximumMatchDistance = max(45, min(100, accuracy * 2.5))
         let acceptedMatch = projectedMatch.flatMap {
             $0.projection.distanceFromRoute <= maximumMatchDistance ? $0 : nil
         }
-        let closeProjection = acceptedMatch == nil ? geometry.flatMap { geometry -> RouteProjection? in
-            guard isNavigating else { return nil }
-            guard let projection = MapMatcher.project(location.coordinate, onto: geometry.coordinates) else {
-                return nil
-            }
-            return projection.distanceFromRoute <= maximumMatchDistance ? projection : nil
-        } : nil
-        let routeProjection = acceptedMatch?.projection ?? closeProjection
-        if let routeProjection {
-            previousProjection = routeProjection
-            previousProjectionTimestamp = location.timestamp
-        } else if !isSameRoute {
-            previousProjection = nil
-            previousProjectionTimestamp = nil
-        }
+        let routeProjection = acceptedMatch?.projection
 
         let usableSpeed = Self.usableSpeed(from: location)
         let usableCourse = Self.usableCourse(from: location, speed: usableSpeed)
@@ -141,25 +119,10 @@ final class NavigationPuckEngine {
         let correctionWeight = 0.75 * accuracyWeight + 0.25 * matchWeight
 
         if let oldFrame {
-            if let routeProjection, let geometry {
-                let currentProgress: Double
-                if routeChanged {
-                    if let oldProjection = MapMatcher.project(oldFrame.coordinate, onto: geometry.coordinates),
-                       oldProjection.distanceFromRoute <= 150 {
-                        currentProgress = oldProjection.alongRoute
-                    } else {
-                        currentProgress = routeProjection.alongRoute
-                    }
-                } else if let oldProgress = oldFrame.routeProgress {
-                    currentProgress = oldProgress
-                } else {
-                    if let oldProjection = MapMatcher.project(oldFrame.coordinate, onto: geometry.coordinates),
-                       oldProjection.distanceFromRoute <= 150 {
-                        currentProgress = oldProjection.alongRoute
-                    } else {
-                        currentProgress = routeProjection.alongRoute
-                    }
-                }
+            if let routeProjection {
+                let currentProgress = routeChanged
+                    ? routeProjection.alongRoute
+                    : oldFrame.routeProgress ?? routeProjection.alongRoute
                 anchorProgress = currentProgress
                 routeCorrection = min(120, max(-120, routeProjection.alongRoute - currentProgress)) * correctionWeight
                 anchorCoordinate = nil

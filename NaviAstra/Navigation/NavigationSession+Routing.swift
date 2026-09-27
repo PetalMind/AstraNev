@@ -1,11 +1,6 @@
 import Foundation
 
-extension NavigationEngine {
-    func invalidateAutomaticClosureReroute() {
-        automaticClosureRerouteTask?.cancel()
-        automaticClosureRerouteTask = nil
-    }
-
+extension NavigationSession {
     private func clearRerouteErrorIfNeeded() {
         guard let message = state.errorMessage,
               message.hasPrefix("Nie udało się przeliczyć trasy:") ||
@@ -15,9 +10,7 @@ extension NavigationEngine {
 
     func reroute(from origin: Coordinate) async {
         guard let destination = state.destination else { return }
-        invalidateAutomaticClosureReroute()
-        rerouteGeneration &+= 1
-        let generation = rerouteGeneration
+        let generation = rerouteController.beginManualReroute()
         state.status = .rerouting
         clearRerouteErrorIfNeeded()
         if state.cameraState != .freeLook { state.cameraState = .rerouting; updateCameraIntent() }
@@ -27,14 +20,14 @@ extension NavigationEngine {
             let routes = try await calculateRoutes(from: origin, to: target,
                                                    through: remainingStops.map(\.coordinate),
                                                    commitEVStops: false)
-            guard generation == rerouteGeneration, state.status == .rerouting,
+            guard rerouteController.isCurrent(generation), state.status == .rerouting,
                   state.destination?.id == destination.id else { return }
             guard let firstRoute = routes.first else { throw RoutingError.invalidResponse }
             if state.transportMode == .car, state.routingPreferences.evPlanningEnabled {
                 let chargingStops = firstRoute.chargingStops.map(\.destination)
                 let chargingTargets = await POIAccessResolver.shared.resolveMany(
                     for: chargingStops, mode: .car)
-                guard generation == rerouteGeneration, state.status == .rerouting,
+                guard rerouteController.isCurrent(generation), state.status == .rerouting,
                       state.destination?.id == destination.id else { return }
                 state.evChargingStops = chargingStops
                 for (stop, target) in zip(chargingStops, chargingTargets) where stop.poi != nil {
@@ -54,7 +47,7 @@ extension NavigationEngine {
             updateNavigationCameraState()
             if state.transportMode == .car { refreshTraffic(force: true) }
         } catch {
-            guard generation == rerouteGeneration, state.status == .rerouting,
+            guard rerouteController.isCurrent(generation), state.status == .rerouting,
                   state.destination?.id == destination.id else { return }
             state.status = .navigating
             updateNavigationCameraState()
@@ -158,14 +151,46 @@ extension NavigationEngine {
         return (target, nil)
     }
 
+    func estimatedSearchRoute(from origin: Coordinate, to destination: Destination,
+                              mode: TransportMode) async throws -> SearchRouteEstimate? {
+        let departure = state.journeyTimeMode == .departAt ? state.journeyTargetTime : Date()
+        let route: NavigationRoute?
+        switch mode {
+        case .transit:
+            let target: Coordinate
+            if destination.poi == nil {
+                target = destination.coordinate
+            } else {
+                target = await POIAccessResolver.shared.resolve(for: destination, mode: .walking)?.coordinate
+                    ?? destination.coordinate
+            }
+            route = try await transitProvider.calculateRoutes(from: origin, to: target,
+                                                               departingAt: departure).first
+        case .parkRide:
+            let targets = await resolveAccessTargets(for: destination, mode: .parkRide)
+            route = try await calculateParkRideRoutes(
+                from: origin, to: targets.navigation?.coordinate ?? destination.coordinate,
+                departingAt: departure, destination: destination,
+                parkRideCarTarget: targets.parkRideCar?.coordinate).first
+        case .car, .walking, .bicycle:
+            return nil
+        }
+        guard let route, route.expectedTravelTime.isFinite, route.distance.isFinite else { return nil }
+        return SearchRouteEstimate(travelTime: route.expectedTravelTime, distanceMeters: route.distance)
+    }
+
     func calculateParkRideRoutes(from: Coordinate, to: Coordinate,
-                                         departingAt requestedDeparture: Date = Date()) async throws -> [NavigationRoute] {
+                                 departingAt requestedDeparture: Date = Date(),
+                                 destination: Destination? = nil,
+                                 parkRideCarTarget: Coordinate? = nil) async throws -> [NavigationRoute] {
         guard let provider = routeProvider as? AdvancedRouteProvider else {
             throw TransitRoutingError.noParkRide
         }
         let carDestination: Coordinate
-        if state.destination?.poi != nil {
-            carDestination = state.parkRideCarTarget?.coordinate ?? state.destination?.coordinate ?? to
+        let selectedDestination = destination ?? state.destination
+        if selectedDestination?.poi != nil {
+            carDestination = parkRideCarTarget ?? state.parkRideCarTarget?.coordinate
+                ?? selectedDestination?.coordinate ?? to
         } else {
             carDestination = to
         }
@@ -448,31 +473,25 @@ extension NavigationEngine {
               let progress = state.progress, state.transportMode == .car,
               let provider = routeProvider as? AdvancedRouteProvider,
               let destinationID = state.destination?.id,
-              automaticClosureRerouteTask == nil else { return }
+              !rerouteController.hasAutomaticClosureReroute else { return }
         guard let closureIncident = confirmedClosureAhead(in: snapshot, on: route, progress: progress) else { return }
-        guard !autoReroutedClosures.contains(closureIncident.id),
-              automaticClosureRetryAfter[closureIncident.id, default: .distantPast] <= Date() else { return }
-
-        rerouteGeneration &+= 1
-        let generation = rerouteGeneration
+        guard let generation = rerouteController.beginAutomaticClosureReroute(for: closureIncident.id) else { return }
         let routeID = route.id
         state.status = .rerouting
         if state.cameraState != .freeLook {
             state.cameraState = .rerouting
             updateCameraIntent()
         }
-        automaticClosureRerouteTask = Task { @MainActor [weak self] in
+        rerouteController.setAutomaticClosureTask(Task { @MainActor [weak self] in
             guard let self else { return }
             defer {
-                if self.rerouteGeneration == generation {
-                    self.automaticClosureRerouteTask = nil
-                }
+                self.rerouteController.finishAutomaticClosureReroute(generation: generation)
             }
 
             do {
                 let stops = self.unvisitedStops(from: location)
                 let routedStops = await self.routedDestinations(stops, mode: .car)
-                guard self.rerouteGeneration == generation,
+                guard self.rerouteController.isCurrent(generation),
                       self.state.status == .rerouting,
                       self.state.route?.id == routeID,
                       self.state.destination?.id == destinationID else { return }
@@ -494,7 +513,7 @@ extension NavigationEngine {
                         preferences: self.state.routingPreferences,
                         avoiding: [closureIncident.coordinate])
                 }
-                guard self.rerouteGeneration == generation,
+                guard self.rerouteController.isCurrent(generation),
                       self.state.status == .rerouting,
                       self.state.route?.id == routeID,
                       self.state.destination?.id == destinationID else { return }
@@ -503,7 +522,7 @@ extension NavigationEngine {
                     let chargingStops = alternative.chargingStops.map(\.destination)
                     let chargingTargets = await POIAccessResolver.shared.resolveMany(
                         for: chargingStops, mode: .car)
-                    guard self.rerouteGeneration == generation,
+                    guard self.rerouteController.isCurrent(generation),
                           self.state.status == .rerouting,
                           self.state.route?.id == routeID,
                           self.state.destination?.id == destinationID else { return }
@@ -514,8 +533,7 @@ extension NavigationEngine {
                 }
                 self.state.route = alternative
                 self.state.routeOptions = routes
-                self.autoReroutedClosures.insert(closureIncident.id)
-                self.automaticClosureRetryAfter[closureIncident.id] = nil
+                self.rerouteController.markClosureRerouted(closureIncident.id)
                 self.loadRoadData(for: alternative)
                 self.tripSession?.rerouteCount += 1
                 self.invalidateTraffic()
@@ -528,16 +546,16 @@ extension NavigationEngine {
                 self.updateNavigationCameraState()
                 self.refreshTraffic(force: true)
             } catch {
-                guard self.rerouteGeneration == generation,
+                guard self.rerouteController.isCurrent(generation),
                       self.state.status == .rerouting,
                       self.state.route?.id == routeID,
                       self.state.destination?.id == destinationID else { return }
                 self.state.status = .navigating
                 self.updateNavigationCameraState()
                 self.state.errorMessage = "Nie udało się ominąć zgłoszonego zamknięcia: \(error.localizedDescription)"
-                self.automaticClosureRetryAfter[closureIncident.id] = Date().addingTimeInterval(60)
+                self.rerouteController.scheduleClosureRetry(closureIncident.id, after: 60)
             }
-        }
+        })
     }
 
     func confirmedClosureAhead(in snapshot: TrafficSnapshot, on route: NavigationRoute,

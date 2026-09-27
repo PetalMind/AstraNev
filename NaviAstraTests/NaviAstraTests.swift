@@ -10,6 +10,79 @@ import Testing
 
 struct NaviAstraTests {
 
+    @Test @MainActor func energyPolicySeparatesBrowsingPreviewAndBackgroundModes() {
+        let policyEngine = EnergyPolicyEngine()
+
+        let browsing = policyEngine.update(
+            navigationStatus: .idle, transportMode: .car, appIsForeground: true,
+            lowPowerMode: false, thermalState: .nominal, speedMetersPerSecond: nil)
+        #expect(browsing.mode == .mapBrowsing)
+        #expect(browsing.location.demand == .continuous)
+        #expect(browsing.location.accuracy == .hundredMeters)
+        #expect(browsing.location.distanceFilter == 50)
+        #expect(browsing.trafficRefreshInterval == nil)
+
+        let preview = policyEngine.update(
+            navigationStatus: .routePreview, transportMode: .car, appIsForeground: true,
+            lowPowerMode: false, thermalState: .nominal, speedMetersPerSecond: nil)
+        #expect(preview.mode == .routePreview)
+        #expect(preview.location.demand == .oneShot)
+        #expect(preview.location.accuracy == .bestForNavigation)
+        #expect(preview.trafficRefreshInterval == 90)
+
+        let background = policyEngine.update(
+            navigationStatus: .navigating, transportMode: .car, appIsForeground: false,
+            lowPowerMode: false, thermalState: .nominal, speedMetersPerSecond: 20)
+        #expect(background.mode == .backgroundNavigation)
+        #expect(background.location.demand == .continuous)
+        #expect(background.location.allowsBackgroundUpdates)
+        #expect(background.location.distanceFilter == 8)
+        #expect(background.mapFramesPerSecond == 0)
+        #expect(background.trafficRefreshInterval == 60)
+
+        let idleBackground = policyEngine.update(
+            navigationStatus: .idle, transportMode: .car, appIsForeground: false,
+            lowPowerMode: false, thermalState: .nominal, speedMetersPerSecond: nil)
+        #expect(idleBackground.mode == .idle)
+        #expect(idleBackground.location.demand == .stopped)
+        #expect(idleBackground.mapFramesPerSecond == 0)
+        #expect(idleBackground.trafficRefreshInterval == nil)
+    }
+
+    @Test @MainActor func energyPolicyReducesRenderingWithoutReducingActiveNavigationAccuracy() {
+        let policyEngine = EnergyPolicyEngine()
+        let normal = policyEngine.update(
+            navigationStatus: .navigating, transportMode: .car, appIsForeground: true,
+            lowPowerMode: false, thermalState: .nominal, speedMetersPerSecond: 28)
+        let lowPower = policyEngine.update(
+            navigationStatus: .navigating, transportMode: .car, appIsForeground: true,
+            lowPowerMode: true, thermalState: .nominal, speedMetersPerSecond: 28)
+        let thermal = policyEngine.update(
+            navigationStatus: .navigating, transportMode: .car, appIsForeground: true,
+            lowPowerMode: false, thermalState: .serious, speedMetersPerSecond: 28)
+
+        #expect(normal.location == lowPower.location)
+        #expect(normal.location == thermal.location)
+        #expect(normal.location.accuracy == .bestForNavigation)
+        #expect(normal.location.distanceFilter == 3)
+        #expect(normal.mapFramesPerSecond == 60)
+        #expect(lowPower.mapFramesPerSecond == 30)
+        #expect(thermal.mapFramesPerSecond == 30)
+        #expect(lowPower.trafficRefreshInterval == 60)
+        #expect(thermal.trafficRefreshInterval == 60)
+        #expect(!lowPower.enables3DBuildings)
+        #expect(!thermal.enablesMapPrefetch)
+
+        let walking = policyEngine.update(
+            navigationStatus: .navigating, transportMode: .walking, appIsForeground: true,
+            lowPowerMode: false, thermalState: .nominal, speedMetersPerSecond: 1.2)
+        #expect(walking.mode == .walking)
+        #expect(walking.location.accuracy == .nearestTenMeters)
+        #expect(walking.location.distanceFilter == 5)
+        #expect(walking.location.updatesHeading)
+        #expect(walking.mapFramesPerSecond == 60)
+    }
+
     @Test func speedLimitParserNormalizesUnitsAndRejectsUnresolvedValues() {
         #expect(SpeedLimitParser.parse("50 km/h") == 50)
         #expect(SpeedLimitParser.parse("50 mph") == 80)
@@ -224,6 +297,59 @@ struct NaviAstraTests {
         #expect(tracker.displayedGeometryProgress(routeID: route.id, candidate: 0.2,
                                                   canAdvance: true,
                                                   isNavigationActive: true) == 0.2)
+    }
+
+    @Test @MainActor func offRouteDetectorRequiresThreeDistinctFixesAcrossTwoSeconds() {
+        var detector = OffRouteDetector()
+        let route = self.route(from: Coordinate(latitude: 0, longitude: 0),
+                               to: Coordinate(latitude: 0, longitude: 0.01),
+                               expectedTravelTime: 600)
+        let projection = RouteProjection(coordinate: Coordinate(latitude: 0, longitude: 0.005),
+                                         distanceFromRoute: 100, alongRoute: 500, segment: 0)
+        let start = Date(timeIntervalSince1970: 1_000)
+        func location(at offset: TimeInterval) -> NavigationLocation {
+            NavigationLocation(coordinate: Coordinate(latitude: 0.001, longitude: 0.005),
+                               speed: 10, course: 180, accuracy: 5,
+                               timestamp: start.addingTimeInterval(offset), courseAccuracy: 5)
+        }
+
+        #expect(!detector.shouldRequestReroute(location: location(at: 0), route: route,
+                                               projection: projection, matchConfidence: 0.2))
+        #expect(!detector.shouldRequestReroute(location: location(at: 0), route: route,
+                                               projection: projection, matchConfidence: 0.2))
+        #expect(!detector.shouldRequestReroute(location: location(at: 1), route: route,
+                                               projection: projection, matchConfidence: 0.2))
+        #expect(detector.shouldRequestReroute(location: location(at: 2), route: route,
+                                              projection: projection, matchConfidence: 0.2))
+    }
+
+    @Test @MainActor func offRouteDetectorResetsWhenPositionOrHeadingEvidenceIsNoLongerValid() {
+        var detector = OffRouteDetector()
+        let route = self.route(from: Coordinate(latitude: 0, longitude: 0),
+                               to: Coordinate(latitude: 0, longitude: 0.01),
+                               expectedTravelTime: 600)
+        let projection = RouteProjection(coordinate: Coordinate(latitude: 0, longitude: 0.005),
+                                         distanceFromRoute: 100, alongRoute: 500, segment: 0)
+        let start = Date(timeIntervalSince1970: 2_000)
+        func location(at offset: TimeInterval, latitude: Double = 0.001,
+                      course: Double = 180) -> NavigationLocation {
+            NavigationLocation(coordinate: Coordinate(latitude: latitude, longitude: 0.005),
+                               speed: 10, course: course, accuracy: 5,
+                               timestamp: start.addingTimeInterval(offset), courseAccuracy: 5)
+        }
+
+        #expect(!detector.shouldRequestReroute(location: location(at: 0), route: route,
+                                               projection: projection, matchConfidence: 0.2))
+        let nearbyProjection = RouteProjection(coordinate: Coordinate(latitude: 0, longitude: 0.005),
+                                               distanceFromRoute: 0, alongRoute: 500, segment: 0)
+        #expect(!detector.shouldRequestReroute(location: location(at: 1, latitude: 0), route: route,
+                                               projection: nearbyProjection, matchConfidence: 0.8))
+        #expect(!detector.shouldRequestReroute(location: location(at: 3), route: route,
+                                               projection: projection, matchConfidence: 0.2))
+        #expect(!detector.shouldRequestReroute(location: location(at: 4, course: 90), route: route,
+                                               projection: projection, matchConfidence: 0.2))
+        #expect(!detector.shouldRequestReroute(location: location(at: 5), route: route,
+                                               projection: projection, matchConfidence: 0.2))
     }
 
     @Test @MainActor func routeTrafficLookAheadUsesTravelTimeAndRoadSpeed() {

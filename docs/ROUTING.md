@@ -1,6 +1,6 @@
 # Jak NaviAstra wyznacza trasę
 
-Ten dokument opisuje bieżącą implementację routingu. Głównym koordynatorem jest `NavigationEngine`; osobni dostawcy obliczają trasy drogowe oraz połączenia kolejowe i MPK. Mapa tylko prezentuje otrzymaną geometrię — nie wyszukuje samodzielnie dróg.
+Ten dokument opisuje bieżącą implementację routingu. Głównym koordynatorem jest `NavigationSession`; osobni dostawcy obliczają trasy drogowe oraz połączenia kolejowe i MPK. Mapa tylko prezentuje otrzymaną geometrię — nie wyszukuje samodzielnie dróg.
 
 ## W skrócie
 
@@ -12,7 +12,7 @@ Ten dokument opisuje bieżącą implementację routingu. Głównym koordynatorem
 
 ## Przebieg obliczenia
 
-1. `NavigationEngine.planRoute()` wymaga wybranego celu i pozycji GPS. Gdy nie ma zaakceptowanej pozycji, nie zaczyna obliczeń.
+1. `NavigationSession.planRoute()` wymaga wybranego celu i pozycji GPS. Gdy nie ma zaakceptowanej pozycji, nie zaczyna obliczeń.
 2. `preview()` bierze bieżące współrzędne GPS jako początek, ustawia status obliczania i wywołuje `calculateRoutes()`.
 3. `calculateRoutes()` przekazuje żądanie do dostawcy zależnie od trybu podróży.
 4. Po otrzymaniu niepustej listy tras pierwszy element staje się początkowo wybraną trasą, a cała lista pozostaje dostępna jako warianty. Podczas jazdy traffic może zmienić wybór wśród tych wariantów.
@@ -28,7 +28,7 @@ Pozycje GPS przechodzą przez `LocationFilter`. Akceptowane są pomiary z dokła
 - profil kosztowania: `auto`, `pedestrian` albo `bicycle`;
 - jednostki kilometrów, język instrukcji `pl-PL` oraz prośbę o dwie alternatywy.
 
-Odpowiedź może więc zawierać trasę podstawową i do dwóch alternatyw. Dostawca dekoduje geometrię polyline6, instrukcje manewrów, dystans i czas z podsumowania Valhalli. W podglądzie `NavigationEngine` domyślnie wybiera `routes.first`, zachowując kolejność serwera; użytkownik może wybrać inny zwrócony wariant. W trakcie jazdy TomTom może zmienić wybrany wariant po porównaniu opóźnień i zamknięć na tych trasach.
+Odpowiedź może więc zawierać trasę podstawową i do dwóch alternatyw. Dostawca dekoduje geometrię polyline6, instrukcje manewrów, dystans i czas z podsumowania Valhalli. W podglądzie `NavigationSession` domyślnie wybiera `routes.first`, zachowując kolejność serwera; użytkownik może wybrać inny zwrócony wariant. W trakcie jazdy TomTom może zmienić wybrany wariant po porównaniu opóźnień i zamknięć na tych trasach.
 
 Dla wybranego POI `POIAccessResolver` przed żądaniem trasy pobiera z Overpass parkingi, główne wejścia i drogi do 250 m od miejsca. Samochód dostaje najlepiej powiązany punkt drogi serwisowej wewnątrz parkingu, a pieszy, rowerzysta i transport publiczny — `entrance=main`, gdy taki punkt jest opisany; w przeciwnym razie resolver wybiera najbliższą drogę dostępną dla danego trybu. P+R używa wejścia do końcowego dojścia pieszego oraz osobnego celu samochodowego do obliczenia odcinka bazowego. Ocena parkingu uwzględnia geometrię budynku, odległość od głównego wejścia, zgodność nazwy/marki i dostęp dla klientów; wjazdy prywatne i strefy dostaw są pomijane. Wybrany punkt i poziom pewności są osobne od współrzędnych POI używanych do etykiety i karty miejsca. Jeśli OSM nie zwróci wiarygodnego punktu albo Overpass jest niedostępny, NaviAstra kontynuuje trasę, wysyłając do Valhalli oryginalną współrzędną POI; Valhalla może wtedy przypiąć cel do pobliskiej krawędzi sieci drogowej, co nie zawsze wskaże właściwy parking lub wejście. Wynik resolvera jest cache'owany lokalnie przez 6 godzin.
 
@@ -55,7 +55,7 @@ Można dodać do ośmiu przystanków. Zwykłe wyznaczanie trasy zachowuje ich bi
 
 Pełny, osobny opis przetwarzania feedów, doboru przystanków, transferów, aktualizacji realtime, kosztu wariantów i walidacji geometrii znajduje się w [docs/TRANSIT_ROUTING.md](TRANSIT_ROUTING.md). Poniższa sekcja zachowuje krótsze omówienie w kontekście całego routingu.
 
-`LodzTransitRouteProvider` łączy miejski rozkład MPK i jego feedy GTFS-Realtime z krajowym rozkładem pociągów PKP PLK/ŁKA i feedem aktualizacji czasu przejazdu. Te publiczne źródła pobierane są bez klucza API. Identyfikatory krajowego feedu dostają prefiks `rail/`, aby nie kolidowały z identyfikatorami MPK. Surowe archiwa GTFS i skompilowana baza indeksów są cache'owane przez 24 godziny; skompilowany indeks jest zapisany jako binarny plist ze znacznikiem wersji schematu, a jego zapis nie blokuje pierwszego wyniku. Obowiązywanie kursów jest liczone według kalendarza `Europe/Warsaw`, z uwzględnieniem wyjątków kalendarza GTFS. Dane realtime mają stan `live` do 90 sekund, `degraded` do 180 sekund, `stale` powyżej 180 sekund albo `unavailable`, gdy feed nie ma poprawnego znacznika czasu. Nieświeże aktualizacje nie zmieniają czasów kursów; odświeżenie realtime działa w tle, gdy nie ma świeżej migawki.
+`TransitRouteProvider` łączy miejski rozkład MPK i jego feedy GTFS-Realtime z krajowym rozkładem pociągów PKP PLK/ŁKA i feedem aktualizacji czasu przejazdu. Te publiczne źródła pobierane są bez klucza API. Identyfikatory krajowego feedu dostają prefiks `rail/`, aby nie kolidowały z identyfikatorami MPK. Surowe archiwa GTFS i skompilowana baza indeksów są cache'owane przez 24 godziny; skompilowany indeks jest zapisany jako binarny plist ze znacznikiem wersji schematu, a jego zapis nie blokuje pierwszego wyniku. Obowiązywanie kursów jest liczone według kalendarza `Europe/Warsaw`, z uwzględnieniem wyjątków kalendarza GTFS. Dane realtime mają stan `live` do 90 sekund, `degraded` do 180 sekund, `stale` powyżej 180 sekund albo `unavailable`, gdy feed nie ma poprawnego znacznika czasu. Nieświeże aktualizacje nie zmieniają czasów kursów; odświeżenie realtime działa w tle, gdy nie ma świeżej migawki.
 
 ### Wybór połączeń
 
@@ -65,7 +65,7 @@ Planer używa rund w stylu RAPTOR i stosuje następujące ograniczenia i kryteri
 - Wynik macierzy pieszej może zawierać od razu geometrię. Planer zachowuje takie odcinki w pamięci podręcznej geometrii. Gdy macierz nie odpowiada, nie wysyła osobnego `/route` dla każdego przystanku: używa dostępnych wyników i cache, a brakujące dojścia szacuje z odległości w linii prostej, mnożąc ją przez 1,5 i przyjmując 0,9 m/s. Takie czasy i odcinki są oznaczone jako przybliżone w podsumowaniu trasy.
 - Po znalezieniu kandydatów interfejs pokazuje wstępną trasę, zanim skończy się pobieranie brakujących geometrii pieszych. W czasie weryfikacji geometria jest uzupełniana dla maksymalnie trzech kandydatów; wybór wariantu i rozpoczęcie nawigacji pozostają zablokowane do zakończenia walidacji przesiadek. Gdy pobranie geometrii nie powiedzie się, zachowywany jest orientacyjny przebieg; jeśli dokładna geometria wykaże, że transfer nie mieści się w czasie, ten wariant jest odrzucany.
 - Rozpatruje kursy w oknie do 18 godzin i szuka podróży składających się z jednego do czterech przejazdów pojazdem. Planowanie obejmuje stacje z krajowego feedu, więc cel podróży może leżeć poza województwem łódzkim.
-- Przy standardowym planowaniu żądany czas odjazdu to bieżąca chwila. Interfejs silnika przyjmuje też inny czas, ale `NavigationEngine` przekazuje `Date()`.
+- Przy standardowym planowaniu żądany czas odjazdu to bieżąca chwila. Interfejs silnika przyjmuje też inny czas, ale `NavigationSession` przekazuje `Date()`.
 - Przy przesiadce na tym samym przystanku wymaga co najmniej 60 sekund. Dane `transfers.txt` (w tym zakaz transferu typu 3), przejścia z `pathways.txt`, wspólna `parent_station` oraz osobne przystanki do 350 m budują skierowany graf dojść. Bufory z GTFS są zachowywane, a wybrane dojścia muszą zmieścić się w rzeczywistym czasie między kursami.
 - Uwzględnia aktualizacje czasu przejazdu i odwołane kursy z realtime, jeśli feed jest dostępny. Bez aktualizacji używa godzin rozkładowych. Komunikaty są dołączane do tras, których linii lub przystanków dotyczą.
 - Planer nie odcina odjazdów limitem 2 kursów na wzorzec ani 48 kursów na przystanek. W każdej rundzie zachowuje niedominowane etykiety czasu przyjazdu, łącznego chodzenia i liczby przesiadek.
@@ -139,10 +139,10 @@ Wyników nie należy interpretować jako gwarancji najkrótszej drogi, dostępno
 
 ## Główne miejsca w kodzie
 
-- `NaviAstra/Navigation/NavigationEngine.swift` — orkiestracja obliczeń, wybór dostawcy, EV, P+R, postęp i rerouting.
+- `NaviAstra/Navigation/NavigationSession.swift` — stan sesji i cykl życia; rozszerzenia `NavigationSession+Routing.swift`, `NavigationSession+Progress.swift` i `NavigationSession+Traffic.swift` obsługują trasę, postęp, ruch i rerouting.
 - `NaviAstra/Navigation/ValhallaRouteProvider.swift` — żądania `/route` i `/optimized_route`, preferencje i dekodowanie wyniku.
-- `NaviAstra/Navigation/LodzTransitRouteProvider.swift` — pobieranie GTFS/GTFS-Realtime, wyszukiwanie przystanków, ranking i budowanie połączeń.
+- `NaviAstra/Transit/TransitRouteProvider.swift` — pobieranie GTFS/GTFS-Realtime, wyszukiwanie przystanków, ranking i budowanie połączeń.
 - `NaviAstra/Navigation/Models.swift` — tryby transportu, preferencje, modele tras i etapów podróży.
 - `NaviAstra/Places/NearbyPlaceProvider.swift` — wyszukiwanie parkingów, P+R i ładowarek oraz odczyt ich metadanych OpenStreetMap.
-- `NaviAstra/ContentView.swift` — prezentacja świeżości realtime, ustawień EV i postojów ładowania.
+- `NaviAstra/Navigation/UI/ContentView+RoutePreview.swift` i `ContentView+Journey.swift` — ustawienia EV, postoje i podsumowanie aktywnej podróży.
 - `NaviAstra/Traffic/TrafficProvider.swift` — pobieranie danych TomTom o ruchu i zdarzeniach.

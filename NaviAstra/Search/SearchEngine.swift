@@ -83,11 +83,9 @@ struct SearchEngine {
     var matrix: ValhallaRouteProvider
 
     func search(_ query: String, context: SearchContext, includeUUGFallback: Bool = false,
-                onUpdate: ([SearchResult]) -> Void = { _ in }) async throws -> [SearchResult] {
+                routeEstimator: SearchRouteEstimator = { _, _, _ in nil },
+                onUpdate: @MainActor ([SearchResult]) -> Void = { _ in }) async throws -> [SearchResult] {
         let intent = QueryClassifier().classify(query)
-        if let coordinate = intent.coordinate {
-            return [SearchResult(destination: Destination(name: query, coordinate: coordinate), street: nil, houseNumber: nil, city: nil, countryCode: nil)]
-        }
         if intent.alongRoute && context.route.count < 2 { throw SearchError.noActiveRoute }
         var center = context.area ?? context.origin
         if let location = intent.location {
@@ -95,60 +93,15 @@ struct SearchEngine {
         }
         let searchCenter = center
         let routeOrigin = context.origin ?? searchCenter
-        let needsEstimates = routeOrigin != nil && context.mode != .transit && context.mode != .parkRide
-        func ranked(_ candidates: [SearchResult]) -> [SearchResult] {
-            var unique: [SearchResult] = []
-            for result in candidates {
-                if intent.intent == .brand {
-                    let names = [result.destination.name, result.brand, result.operatorName]
-                        .compactMap { $0 }.map(QueryClassifier.normalize)
-                    let query = QueryClassifier.normalize(intent.text)
-                    guard names.contains(where: { $0.contains(query) }) else { continue }
-                }
-                if intent.alongRoute {
-                    guard MapMatcher.project(result.destination.coordinate, onto: context.route)
-                        .map({ $0.distanceFromRoute <= 1500 }) == true else { continue }
-                }
-                if let matchIndex = unique.firstIndex(where: { Self.samePlace($0, result) }) {
-                    unique[matchIndex] = unique[matchIndex].mergingMetadata(from: result)
-                    continue
-                }
-                var value = result
-                value.straightDistance = searchCenter.map { $0.distance(to: result.destination.coordinate) }
-                value.requiresRouteEstimate = needsEstimates
-                if needsEstimates {
-                    value.travelEstimateStatus = .calculating
-                } else {
-                    value.travelEstimateStatus = .notRequested
-                }
-                unique.append(value)
-            }
-            return unique.sorted { a, b in
-                if a.isContact != b.isContact { return a.isContact }
-                let aRelevance = Self.relevance(a, intent: intent)
-                let bRelevance = Self.relevance(b, intent: intent)
-                if aRelevance != bRelevance { return aRelevance > bRelevance }
-                if intent.alongRoute {
-                    let aOffset = MapMatcher.project(a.destination.coordinate, onto: context.route)?.distanceFromRoute ?? .infinity
-                    let bOffset = MapMatcher.project(b.destination.coordinate, onto: context.route)?.distanceFromRoute ?? .infinity
-                    if aOffset != bOffset { return aOffset < bOffset }
-                }
-                return (a.straightDistance ?? .infinity) < (b.straightDistance ?? .infinity)
-            }
-        }
-        func publish(_ candidates: [SearchResult]) {
-            let results = Array(ranked(candidates).prefix(8))
-            guard !results.isEmpty else { return }
-            // Keep place rows out of the list until route values are ready, so they cannot be
-            // selected while only a straight-line distance is available.
-            if needsEstimates { return }
-            onUpdate(results)
-        }
         var candidates: [SearchResult]
-        if intent.intent == .address {
+        if let coordinate = intent.coordinate {
+            candidates = [SearchResult(
+                destination: Destination(name: query, coordinate: coordinate),
+                street: nil, houseNumber: nil, city: nil, countryCode: nil)]
+        } else if intent.intent == .address {
             candidates = try await AddressSearchProvider().search(intent.text, near: searchCenter,
                                                                   includeUUGFallback: includeUUGFallback,
-                                                                  onUpdate: publish)
+                                                                  onUpdate: { _ in })
         } else {
             let photonTag = intent.intent == .category ? intent.photonTag : nil
             var requests: [SearchProviderBatch.Request] = []
@@ -171,27 +124,47 @@ struct SearchEngine {
                 })
             }
             do {
-                candidates = try await SearchProviderBatch.search(requests, onUpdate: publish)
+                candidates = try await SearchProviderBatch.search(requests, onUpdate: { _ in })
             } catch {
                 try Task.checkCancellation()
                 guard includeUUGFallback, intent.intent == .place else { throw error }
                 let fallback = await GUGiKAddressProvider().search(intent.text)
                 guard !fallback.isEmpty else { throw error }
                 candidates = fallback
-                publish(candidates)
             }
             if includeUUGFallback, intent.intent == .place, candidates.isEmpty {
                 candidates = await GUGiKAddressProvider().search(intent.text)
-                if !candidates.isEmpty { publish(candidates) }
             }
         }
         try Task.checkCancellation()
-        // Ordinary searches only need estimates for the eight visible places.
-        // Along-route searches retain a wider candidate set to compare detours.
-        var results = Array(ranked(candidates).prefix(intent.alongRoute ? 20 : 8))
-        if !needsEstimates { return Array(results.prefix(8)) }
-        if let origin = routeOrigin, !results.isEmpty, context.mode != .transit, context.mode != .parkRide {
-            do {
+        // Along-route road searches retain extra candidates to compare detours.
+        // Transit and P+R need a full journey plan per result, so only plan the visible rows.
+        let candidateLimit = intent.alongRoute && context.mode != .transit && context.mode != .parkRide ? 20 : 8
+        var results = Array(SearchDeduplicator.mergeAndRank(
+            candidates, intent: intent, context: context,
+            searchCenter: searchCenter, routeOrigin: routeOrigin).prefix(candidateLimit))
+        if let origin = routeOrigin, !results.isEmpty {
+            if context.mode == .transit || context.mode == .parkRide {
+                for index in results.indices {
+                    try Task.checkCancellation()
+                    do {
+                        if let estimate = try await routeEstimator(
+                            origin, results[index].navigationDestination, context.mode),
+                           estimate.travelTime.isFinite, estimate.travelTime >= 0,
+                           estimate.distanceMeters.isFinite, estimate.distanceMeters >= 0 {
+                            results[index].travelTime = estimate.travelTime
+                            results[index].travelDistance = estimate.distanceMeters
+                            results[index].travelEstimateStatus = .notRequested
+                        } else {
+                            results[index].travelEstimateStatus = .unavailable
+                        }
+                    } catch {
+                        try Task.checkCancellation()
+                        results[index].travelEstimateStatus = .unavailable
+                    }
+                    await onUpdate(Array(results.prefix(8)))
+                }
+            } else {
                 let poiIndexes = results.indices.filter { results[$0].isPOI }
                 let poiDestinations = poiIndexes.map { results[$0].navigationDestination }
                 let resolvedPOIs = await POIAccessResolver.shared.resolveMany(for: poiDestinations, mode: context.mode)
@@ -215,13 +188,43 @@ struct SearchEngine {
                 }
                 if !routedTargets.isEmpty {
                     let coordinates = routedTargets.map { $0.coordinate }
-                    let rows = try await matrix.searchMatrix(sources: [origin], targets: coordinates,
+                    let rows: [[ValhallaRouteProvider.MatrixCell]]?
+                    do {
+                        rows = try await matrix.searchMatrix(sources: [origin], targets: coordinates,
                                                              mode: context.mode, preferences: context.preferences)
+                    } catch {
+                        try Task.checkCancellation()
+                        rows = nil
+                    }
                     for (rowIndex, target) in routedTargets.enumerated() {
-                        results[target.index].travelTime = rows[0][rowIndex].time
-                        results[target.index].travelDistance = rows[0][rowIndex].distance.map { $0 * 1_000 }
-                        results[target.index].travelEstimateStatus = results[target.index].travelTime == nil
-                            || results[target.index].travelDistance == nil ? .unavailable : .notRequested
+                        let cell: ValhallaRouteProvider.MatrixCell?
+                        if let firstRow = rows?.first, firstRow.indices.contains(rowIndex) {
+                            cell = firstRow[rowIndex]
+                        } else {
+                            cell = nil
+                        }
+                        if let time = cell?.time, time.isFinite, time >= 0,
+                           let distance = cell?.distance, distance.isFinite, distance >= 0 {
+                            results[target.index].travelTime = time
+                            results[target.index].travelDistance = distance * 1_000
+                            results[target.index].travelEstimateStatus = .notRequested
+                        } else {
+                            do {
+                                if let route = try await matrix.calculateRoutes(
+                                    from: origin, to: target.coordinate, through: [], mode: context.mode,
+                                    preferences: context.preferences, avoiding: []).first {
+                                    results[target.index].travelTime = route.expectedTravelTime
+                                    results[target.index].travelDistance = route.distance
+                                    results[target.index].travelEstimateStatus = .notRequested
+                                } else {
+                                    results[target.index].travelEstimateStatus = .unavailable
+                                }
+                            } catch {
+                                try Task.checkCancellation()
+                                results[target.index].travelEstimateStatus = .unavailable
+                            }
+                        }
+                        await onUpdate(Array(results.prefix(8)))
                     }
                     if intent.alongRoute, let routeTarget = context.routeTarget {
                         // Compare the same routing model on both sides; never subtract a stale live ETA.
@@ -238,11 +241,6 @@ struct SearchEngine {
                         }
                     }
                 }
-            } catch {
-                try Task.checkCancellation()
-                for index in results.indices where results[index].travelEstimateStatus == .calculating {
-                    results[index].travelEstimateStatus = .unavailable
-                }
             }
         }
         try Task.checkCancellation()
@@ -251,8 +249,8 @@ struct SearchEngine {
             if a.isContact != b.isContact { return a.isContact }
             let aTime = intent.alongRoute ? a.detour : a.travelTime
             let bTime = intent.alongRoute ? b.detour : b.travelTime
-            let aRelevance = Self.relevance(a, intent: intent)
-            let bRelevance = Self.relevance(b, intent: intent)
+            let aRelevance = SearchRanking.relevance(a, intent: intent)
+            let bRelevance = SearchRanking.relevance(b, intent: intent)
             if intent.alongRoute, aTime != bTime { return (aTime ?? .infinity) < (bTime ?? .infinity) }
             if aRelevance != bRelevance { return aRelevance > bRelevance }
             if !intent.alongRoute, aTime != bTime { return (aTime ?? .infinity) < (bTime ?? .infinity) }
@@ -261,93 +259,9 @@ struct SearchEngine {
             if aLocal != bLocal { return aLocal }
             return (a.straightDistance ?? .infinity) < (b.straightDistance ?? .infinity)
         }
-        return Array(results.prefix(8))
-    }
-
-    private static func samePlace(_ lhs: SearchResult, _ rhs: SearchResult) -> Bool {
-        guard lhs.isContact == rhs.isContact else { return false }
-        let leftIdentity = lhs.placeIdentity
-        let rightIdentity = rhs.placeIdentity
-        if leftIdentity.cacheKey == rightIdentity.cacheKey,
-           (leftIdentity.externalID != nil || leftIdentity.providerID != nil) { return true }
-
-        let distance = lhs.destination.coordinate.distance(to: rhs.destination.coordinate)
-        guard distance <= 45 else { return false }
-        if hasConflictingHouseNumbers(lhs.destination.address, rhs.destination.address) { return false }
-
-        let leftNames = Set([lhs.destination.name, lhs.brand, lhs.operatorName]
-            .compactMap { $0 }.map { Self.normalizedIdentity($0) })
-        let rightNames = Set([rhs.destination.name, rhs.brand, rhs.operatorName]
-            .compactMap { $0 }.map { Self.normalizedIdentity($0) })
-        let sharedNames = leftNames.intersection(rightNames).filter { !$0.isEmpty }
-        guard !sharedNames.isEmpty else { return false }
-        let titleMatch = normalizedIdentity(lhs.destination.name) == normalizedIdentity(rhs.destination.name)
-        let categoriesAgree = categoriesCompatible(lhs.category, rhs.category)
-        return titleMatch ? (distance <= 25 || (distance <= 45 && categoriesAgree))
-            : distance <= 25 && categoriesAgree
-    }
-
-    private static func relevance(_ result: SearchResult, intent: ClassifiedQuery) -> Double {
-        let query = normalizedIdentity(intent.text)
-        let name = normalizedIdentity(result.destination.name)
-        let brand = normalizedIdentity(result.brand ?? "")
-        let operatorName = normalizedIdentity(result.operatorName ?? "")
-        let category = normalizedIdentity(result.category ?? "")
-        let address = normalizedIdentity(result.destination.address ?? "")
-        let categoryFilter = normalizedIdentity(intent.photonTag?.split(separator: ":").last.map(String.init) ?? "")
-        var score = 0.0
-        if !query.isEmpty {
-            if name == query { score += 1_000 }
-            else if name.hasPrefix(query) { score += 780 }
-            else if name.contains(query) { score += 600 }
-            if brand == query { score += 750 }
-            else if brand.contains(query), !query.isEmpty { score += 560 }
-            if operatorName == query { score += 620 }
-            else if operatorName.contains(query), !query.isEmpty { score += 440 }
-            if address.contains(query) { score += 180 }
-
-            let tokens = Set(query.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
-            if !tokens.isEmpty {
-                let searchable = [name, brand, operatorName, address].joined(separator: " ")
-                let matched = tokens.filter { searchable.contains($0) }.count
-                score += Double(matched) / Double(tokens.count) * 220
-            }
-        }
-        if intent.intent == .category, !categoryFilter.isEmpty {
-            score += category.contains(categoryFilter) ? 240 : 0
-        }
-        if let importance = result.photonImportance {
-            score += min(1, max(0, importance)) * 80
-        }
-        if result.placeProvider == .openStreetMap, OpenStreetMapObjectID(result.osmID) != nil { score += 12 }
-        if result.category != nil { score += 5 }
-        return score
-    }
-
-    nonisolated private static func normalizedIdentity(_ value: String) -> String {
-        QueryClassifier.normalize(value).filter { $0.isLetter || $0.isNumber }
-    }
-
-    private static func categoriesCompatible(_ lhs: String?, _ rhs: String?) -> Bool {
-        guard let lhs, let rhs else { return true }
-        let left = normalizedIdentity(lhs)
-        let right = normalizedIdentity(rhs)
-        return left == right || left.contains(right) || right.contains(left)
-    }
-
-    private static func hasConflictingHouseNumbers(_ lhs: String?, _ rhs: String?) -> Bool {
-        guard let lhs, let rhs else { return false }
-        func numbers(_ address: String) -> Set<String> {
-            guard let regex = try? NSRegularExpression(pattern: #"(?<![\p{L}\p{N}])\d+[a-zA-Z]?(?:/\d+)?(?![\p{L}\p{N}])"#) else { return [] }
-            let range = NSRange(address.startIndex..<address.endIndex, in: address)
-            return Set(regex.matches(in: address, range: range).compactMap { match in
-                guard let range = Range(match.range, in: address) else { return nil }
-                return PhotonSearchProvider.normalized(String(address[range]))
-            })
-        }
-        let leftNumbers = numbers(lhs)
-        let rightNumbers = numbers(rhs)
-        return !leftNumbers.isEmpty && !rightNumbers.isEmpty && leftNumbers.isDisjoint(with: rightNumbers)
+        let visibleResults = Array(results.prefix(8))
+        await onUpdate(visibleResults)
+        return visibleResults
     }
 
     private func resolve(_ location: String, near center: Coordinate?) async throws -> Coordinate {
