@@ -467,16 +467,9 @@ extension ContentView {
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(Color.accentColor)
-                        .disabled(navigationStore.state.isLoadingLaterTransitRoutes
-                                  || navigationStore.state.transitPlanningPhase == .enrichingGeometry)
+                        .disabled(navigationStore.state.isLoadingLaterTransitRoutes)
                     }
-                    if navigationStore.state.transitPlanningPhase == .enrichingGeometry {
-                        HStack(spacing: 6) {
-                            ProgressView().controlSize(.small)
-                            Text("Znaleziono połączenia. Uzupełniam przebieg dojść pieszych…")
-                                .font(.caption2).foregroundStyle(.secondary)
-                        }
-                    } else if journey.legs.contains(where: {
+                    if journey.legs.contains(where: {
                         $0.mode == "WALK" && $0.walkingTimeIsApproximate
                     }) {
                         Label("Czasy dojść są szacunkowe.", systemImage: "info.circle")
@@ -591,8 +584,7 @@ extension ContentView {
                 HStack(spacing: 10) {
                     ProgressView()
                     Text(navigationStore.state.transportMode == .transit
-                         ? (navigationStore.state.transitPlanningPhase == .loadingSchedule
-                            ? "Aktualizuję rozkłady…" : "Szukam połączeń…")
+                         ? "Szukam połączeń…"
                          : "Wyznaczanie trasy…")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -633,10 +625,8 @@ extension ContentView {
                 .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(navigationStore.state.status != .routePreview
-                  || navigationStore.state.transitPlanningPhase == .enrichingGeometry)
-        .opacity(navigationStore.state.status == .routePreview
-                 && navigationStore.state.transitPlanningPhase != .enrichingGeometry ? 1 : 0.55)
+        .disabled(navigationStore.state.status != .routePreview)
+        .opacity(navigationStore.state.status == .routePreview ? 1 : 0.55)
     }
 
     func navigateToRouteOrigin() {
@@ -778,7 +768,6 @@ extension ContentView {
 
     var isJourneyTimeControlDisabled: Bool {
         navigationStore.state.status != .routePreview
-            || navigationStore.state.transitPlanningPhase == .enrichingGeometry
     }
 
     var journeyTimeModeLabel: String {
@@ -948,21 +937,24 @@ extension ContentView {
             }
         }
         .buttonStyle(.plain)
-        .disabled(navigationStore.state.transitPlanningPhase == .enrichingGeometry)
         .accessibilityLabel("Trasa \(index), \(time(route.expectedTravelTime)), \(routeTransitSummary(route) ?? distance(route.distance))")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     func routeTransitSummary(_ route: NavigationRoute) -> String? {
         guard let journey = route.journey else { return nil }
-        let lines = journey.legs.filter { $0.mode != "WALK" }.compactMap(\.line)
+        let transitLegs = journey.legs.filter { $0.mode != "WALK" }
+        let lines = transitLegs.compactMap(\.line)
         guard !lines.isEmpty else { return nil }
         let walkingMinutes = journey.legs.filter { $0.mode == "WALK" }
             .reduce(0) { $0 + max(0, Int(ceil($1.arrival.timeIntervalSince($1.departure) / 60))) }
+        let span = "\(journey.departure.formatted(date: .omitted, time: .shortened)) → \(journey.arrival.formatted(date: .omitted, time: .shortened))"
         let walking = walkingMinutes > 0 ? "pieszo \(walkingMinutes) min" : nil
         let transfers = "\(journey.transferCount) \(transferCaption(journey.transferCount))"
-        let arrival = "przyjazd \(journey.arrival.formatted(date: .omitted, time: .shortened))"
-        return (lines + [walking, transfers, arrival].compactMap { $0 }).joined(separator: " · ")
+        let delay = transitLegs.compactMap(\.delaySeconds).first(where: { abs($0) >= 60 })
+            .map { delayLabel(TimeInterval($0)) }
+        return ([span, lines.joined(separator: " → "), walking, transfers, delay].compactMap { $0 })
+            .joined(separator: " · ")
     }
 
     func routeOptionTime(_ route: NavigationRoute) -> String {

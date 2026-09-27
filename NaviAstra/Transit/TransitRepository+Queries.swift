@@ -1,6 +1,137 @@
 import Foundation
 
 extension TransitRepository {
+    static func publicStop(_ stop: GTFSStop, database: GTFSDatabase) -> TransitStop {
+        let routes = database.routeIDsByStop[stop.id] ?? []
+        let lineNames = routes.compactMap { database.routes[$0]?.displayName }
+        let stationID = stop.parentStation?.isEmpty == false
+            ? stop.parentStation
+            : stop.locationType == 1 ? stop.id : nil
+        let station = stationID.flatMap { database.stopByID[$0] }
+        let stationRouteIDs: Set<String> = {
+            guard let stationID else { return routes }
+            let members = database.stopsByStationID[stationID] ?? [stop]
+            return Set(members.flatMap { database.routeIDsByStop[$0.id] ?? [] })
+        }()
+        let stationLineNames = stationRouteIDs.compactMap { database.routes[$0]?.displayName }
+        let modes = Set(stationRouteIDs.compactMap { routeID -> TransitStopMode? in
+            guard let route = database.routes[routeID] else { return nil }
+            return switch route.mode {
+            case "RAIL": .rail
+            case "TRAM": .tram
+            default: .bus
+            }
+        })
+        return TransitStop(id: stop.id, name: stop.name, address: stop.address,
+                           coordinate: stop.coordinate,
+                           isMajor: stop.locationType == 1 || Set(stationLineNames).count >= 4
+                               || modes.contains(.rail) && stop.parentStation?.isEmpty == false,
+                           lineIDs: Array(routes).sorted(), lines: Array(Set(lineNames)).sorted(),
+                           modes: modes,
+                           stationID: stationID,
+                           stationName: station?.name,
+                           stationCoordinate: station?.coordinate)
+    }
+
+    static func railwayAttribution(for database: GTFSDatabase) -> String {
+        let parts = database.railwayAttributions.isEmpty
+            ? ["PKP Polskie Linie Kolejowe S.A.", "Koleje Mazowieckie – KM sp. z o.o.",
+               "GTFS: Mikołaj Kuranowski (mkuran.pl)"]
+            : database.railwayAttributions
+        var text = parts.joined(separator: ", ")
+        if let version = database.railwayFeedVersion, !version.isEmpty {
+            text += " · wydanie \(version)"
+        }
+        if let retrievedAt = database.railwayFeedRetrievedAt {
+            text += " · pobrano \(retrievedAt.formatted(date: .abbreviated, time: .shortened))"
+        }
+        return text + " · dane przetworzone przez NaviAstra"
+    }
+
+    static func departures(database: GTFSDatabase, realtime: GTFSRealtimeSnapshot,
+                           stopID: String, after date: Date, limit: Int) -> [TransitDeparture] {
+        guard database.servedStopIDs.contains(stopID), limit > 0 else { return [] }
+        let instances = activeTripInstances(database: database, realtime: realtime,
+                                            after: date, onlyStopIDs: [stopID])
+        var result: [TransitDeparture] = []
+        for instance in instances {
+            for index in instance.times.indices where instance.times[index].stopID == stopID
+                && instance.times[index].isBoardable
+                && instance.times[index].departure >= date.addingTimeInterval(-30) {
+                let prediction = instance.times[index]
+                let departureID = "\(instance.trip.id)|\(instance.serviceDate)|\(instance.trip.stopTimes[index].sequence)"
+                    + (instance.frequencyStartSeconds.map { "|freq=\($0)" } ?? "")
+                result.append(TransitDeparture(
+                    id: departureID,
+                    stopID: stopID,
+                    routeID: instance.route.id,
+                    tripID: instance.trip.id,
+                    line: instance.trip.displayLine(for: instance.route),
+                    mode: instance.route.mode,
+                    destination: instance.trip.headsign.isEmpty
+                        ? instance.trip.stopTimes.last.flatMap { database.stopByID[$0.stopID]?.name } ?? "Kierunek nieznany"
+                        : instance.trip.headsign,
+                    scheduledDeparture: GTFSDate.serviceInstant(
+                        from: instance.serviceDate,
+                        seconds: instance.trip.stopTimes[index].departureSeconds + instance.scheduleShiftSeconds)
+                        ?? prediction.departure,
+                    estimatedDeparture: prediction.departure,
+                    delaySeconds: prediction.delaySeconds,
+                    hasRealtime: prediction.hasRealtime,
+                    colorHex: instance.route.colorHex,
+                    stopSequence: instance.trip.stopTimes[index].sequence,
+                    serviceDate: instance.serviceDate,
+                    scheduleShiftSeconds: instance.scheduleShiftSeconds,
+                    frequencyStartSeconds: instance.frequencyStartSeconds,
+                    frequencyHeadwaySeconds: instance.frequencyHeadwaySeconds,
+                    isFrequencyEstimate: instance.isFrequencyEstimate))
+            }
+        }
+        return result.sorted { $0.estimatedDeparture < $1.estimatedDeparture }
+            .prefix(limit).map { $0 }
+    }
+
+    private static func activeTripInstances(database: GTFSDatabase,
+                                            realtime: GTFSRealtimeSnapshot,
+                                            after departure: Date,
+                                            onlyStopIDs: Set<String>) -> [GTFSTripInstance] {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/Warsaw")!
+        let today = calendar.startOfDay(for: departure)
+        let finalDay = calendar.startOfDay(
+            for: departure.addingTimeInterval(maximumDepartureSearchWindow))
+        let serviceDates = (-1...(finalDay > today ? 1 : 0)).compactMap {
+            calendar.date(byAdding: .day, value: $0, to: today)
+        }
+        let tripIDs = Set(onlyStopIDs.flatMap { database.tripIDsByStop[$0] ?? [] })
+        let trips = tripIDs.compactMap { database.tripsByID[$0] }
+        var instances: [GTFSTripInstance] = []
+        for serviceDate in serviceDates {
+            let date = GTFSDate.string(from: serviceDate)
+            let weekday = GTFSDate.weekdayKey(for: serviceDate, calendar: calendar)
+            guard let serviceStart = GTFSDate.serviceStart(from: date) else { continue }
+            for trip in trips {
+                guard let route = database.routes[trip.routeID],
+                      serviceIsActive(trip.serviceID, on: date, weekday: weekday,
+                                      database: database) else { continue }
+                instances.append(contentsOf: GTFSTripInstanceBuilder.build(
+                    trip: trip, route: route, serviceDate: date,
+                    serviceStart: serviceStart, database: database, realtime: realtime,
+                    earliestArrival: departure.addingTimeInterval(-3_600),
+                    latestDeparture: departure.addingTimeInterval(maximumDepartureSearchWindow)))
+            }
+        }
+        return instances
+    }
+
+    private static func serviceIsActive(_ serviceID: String, on date: String, weekday: String,
+                                        database: GTFSDatabase) -> Bool {
+        if let exception = database.exceptions[serviceID]?[date] { return exception == 1 }
+        guard let calendar = database.calendars[serviceID] else { return false }
+        return date >= calendar.startDate && date <= calendar.endDate
+            && calendar.weekdayFlags[weekday] == true
+    }
+
     func departures(at stopID: String, limit: Int) async -> [TransitDeparture] {
         guard let database = try? await loadDatabase() else { return [] }
         let realtime = await loadRealtime()

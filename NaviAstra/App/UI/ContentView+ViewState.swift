@@ -293,7 +293,8 @@ extension ContentView {
 
     var usesFullBleedNavigationPanel: Bool {
         #if os(iOS)
-        isNavigating || navigationStore.state.status == .arrived || isIOSRoutePlanningPreview
+        isNavigating || navigationStore.state.status == .arrived || isIOSRoutePlanningPreview ||
+            !placeStore.selectedMapPlaces.isEmpty
         #else
         false
         #endif

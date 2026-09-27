@@ -31,6 +31,7 @@ struct ContentView: View {
     @State var savedPlaceMapGeocodingTask: Task<Void, Never>?
     @State var mapPlaceEstimateTask: Task<Void, Never>?
     @State var serverAddress = UserDefaults.standard.string(forKey: "routingServer") ?? "https://valhalla1.openstreetmap.de"
+    @AppStorage("transitousContact") var transitousContact = "dominikjaros99@icloud.com"
     @State var editingSavedPlace: SavedPlace?
     @State var placePendingRemoval: SavedPlace?
     @State var showPlaceRemovalConfirmation = false
@@ -39,6 +40,7 @@ struct ContentView: View {
     @State var isSavingPlace = false
     @State var destinationExpanded = false
     @State var routePreviewDetent: NavigationBottomSheetDetent = .medium
+    @State var selectedMapPlaceDetent: NavigationBottomSheetDetent = .medium
     @State var isJourneyTimePickerPresented = false
     @State var favoritePulseScale: CGFloat = 1
     @State var showFavoriteRemovalConfirmation = false
@@ -56,7 +58,6 @@ struct ContentView: View {
     @State var parkedCarPromptExpiresAt: Date?
     @State var trafficKey = ""
     @State var trafficConfigured = TrafficCredential.read() != nil
-    @State var isMapReady = false
     @State var discoveryDrawerCollapseRequest = 0
     @State var discoverySheetDetent: NavigationBottomSheetDetent = .medium
     @State var navigationPanelDetent: NavigationBottomSheetDetent = .medium

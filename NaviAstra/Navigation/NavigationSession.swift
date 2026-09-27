@@ -29,7 +29,8 @@ final class NavigationSession {
     private var didStartLocation = false
     var navigationTransitionTask: Task<Void, Never>?
     var routeProvider: RouteProvider
-    var transitProvider: TransitRouteProviding
+    var transitProvider: TransitRouteProvider
+    let transitDataProvider: TransitDataProviding
     var transitPlanningCancellationToken: TransitPlanningCancellationToken?
     var transitRefreshCancellationToken: TransitPlanningCancellationToken?
     var laterTransitPlanningCancellationToken: TransitPlanningCancellationToken?
@@ -97,6 +98,7 @@ final class NavigationSession {
     init(dependencies: NavigationSessionDependencies) {
         routeProvider = dependencies.routeProvider
         transitProvider = dependencies.transitProvider
+        transitDataProvider = dependencies.transitDataProvider
         speedLimitProvider = dependencies.speedLimitProvider
         roadDataProvider = dependencies.roadDataProvider
         trafficProvider = dependencies.trafficProvider
@@ -300,7 +302,6 @@ final class NavigationSession {
 
     func select(_ route: NavigationRoute) {
         guard state.status == .routePreview,
-              state.transitPlanningPhase != .enrichingGeometry,
               state.route?.id != route.id,
               let selectedRoute = state.routeOptions.first(where: { $0.id == route.id }) else { return }
         laterTransitRequestGeneration += 1
@@ -331,7 +332,6 @@ final class NavigationSession {
     }
     func begin() {
         guard state.status == .routePreview,
-              state.transitPlanningPhase != .enrichingGeometry,
               let route = state.route,
               (!usesJourneyVoiceGuidance || route.journey != nil) else { return }
         rerouteController.beginNavigation()

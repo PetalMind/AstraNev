@@ -169,7 +169,7 @@ extension NavigationSession {
 
     func estimatedSearchRoute(from origin: Coordinate, to destination: Destination,
                               mode: TransportMode) async throws -> SearchRouteEstimate? {
-        let departure = state.journeyTimeMode == .departAt ? state.journeyTargetTime : Date()
+        let departure = state.journeyTimeMode == .now ? Date() : state.journeyTargetTime
         let route: NavigationRoute?
         switch mode {
         case .transit:
@@ -180,8 +180,11 @@ extension NavigationSession {
                 target = await POIAccessResolver.shared.resolve(for: destination, mode: .walking)?.coordinate
                     ?? destination.coordinate
             }
-            route = try await transitProvider.calculateRoutes(from: origin, to: target,
-                                                               departingAt: departure).first
+            let journeys = try await transitProvider.routes(
+                from: origin, to: target, time: departure,
+                arriveBy: state.journeyTimeMode == .arriveBy,
+                preferences: .init(), cancellationToken: nil)
+            route = TransitNavigationRouteMapper.routes(from: journeys).first
         case .parkRide:
             let targets = await resolveAccessTargets(for: destination, mode: .parkRide)
             route = try await calculateParkRideRoutes(
@@ -198,7 +201,9 @@ extension NavigationSession {
     func calculateParkRideRoutes(from: Coordinate, to: Coordinate,
                                  departingAt requestedDeparture: Date = Date(),
                                  destination: Destination? = nil,
-                                 parkRideCarTarget: Coordinate? = nil) async throws -> [NavigationRoute] {
+                                 parkRideCarTarget: Coordinate? = nil,
+                                 cancellationToken: TransitPlanningCancellationToken? = nil) async throws -> [NavigationRoute] {
+        try cancellationToken?.checkCancellation()
         guard let provider = routeProvider as? AdvancedRouteProvider else {
             throw TransitRoutingError.noParkRide
         }
@@ -231,6 +236,7 @@ extension NavigationSession {
         let parkings: [NearbyPlaceCandidate]
         let (corridorCandidates, destinationCandidates) = await (corridorSearch, destinationSearch)
         try Task.checkCancellation()
+        try cancellationToken?.checkCancellation()
         var uniqueParkings: [String: NearbyPlaceCandidate] = [:]
         for parking in (corridorCandidates ?? []) + (destinationCandidates ?? []) {
             uniqueParkings[parking.id] = parking
@@ -239,14 +245,16 @@ extension NavigationSession {
             to.distance(to: $0.destination.coordinate) < to.distance(to: $1.destination.coordinate)
         }
         guard !parkings.isEmpty else { throw TransitRoutingError.noParkRide }
-        let selectedParkings = Array(parkings.prefix(12))
+        let selectedParkings = Array(parkings.prefix(3))
         let parkingTargets = await POIAccessResolver.shared.resolveMany(
             for: selectedParkings.map(\.destination), mode: .car)
         try Task.checkCancellation()
+        try cancellationToken?.checkCancellation()
         let departure = requestedDeparture
         var combined: [NavigationRoute] = []
         for index in selectedParkings.indices {
             try Task.checkCancellation()
+            try cancellationToken?.checkCancellation()
             let parking = selectedParkings[index]
             let parkingTarget = parkingTargets[index]?.coordinate ?? parking.destination.coordinate
             let carRoutes: [NavigationRoute]
@@ -259,17 +267,23 @@ extension NavigationSession {
             } catch {
                 continue
             }
+            try cancellationToken?.checkCancellation()
             guard let carRoute = carRoutes.first else { continue }
             let parkingArrival = departure.addingTimeInterval(carRoute.expectedTravelTime)
             let transitRoutes: [NavigationRoute]
             do {
                 transitRoutes = try await transitProvider.calculateRoutes(
-                    from: parkingTarget, to: to, departingAt: parkingArrival)
+                    from: parkingTarget, to: to, departingAt: parkingArrival,
+                    cancellationToken: cancellationToken)
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let error as TransitRouteError {
+                guard case .noRoute = error else { throw error }
+                continue
             } catch {
                 continue
             }
+            try cancellationToken?.checkCancellation()
             for transitRoute in transitRoutes.prefix(2) {
                 guard let journey = transitRoute.journey else { continue }
                 let carLeg = JourneyLeg(mode: "CAR", line: "P+R", from: "Początek",

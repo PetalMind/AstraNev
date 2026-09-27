@@ -96,90 +96,10 @@ nonisolated struct GTFSTripFrequency: Codable, Sendable {
     let exactTimes: Bool
 }
 
-nonisolated struct GTFSTripPatternKey: Hashable, Comparable {
-    let routeID: String
-    let directionID: String
-    let stopIDs: [String]
-
-    init(trip: GTFSTrip) {
-        routeID = trip.routeID
-        directionID = trip.directionID
-        stopIDs = trip.stopTimes.map(\.stopID)
-    }
-
-    static func < (left: GTFSTripPatternKey, right: GTFSTripPatternKey) -> Bool {
-        if left.routeID != right.routeID { return left.routeID < right.routeID }
-        if left.directionID != right.directionID { return left.directionID < right.directionID }
-        return left.stopIDs.lexicographicallyPrecedes(right.stopIDs)
-    }
-}
-
 nonisolated struct GTFSCalendar: Codable, Sendable {
     let startDate: String
     let endDate: String
     let weekdayFlags: [String: Bool]
-}
-
-nonisolated struct TransitStopSpatialIndex: Codable, Sendable {
-    private static let cellsPerDegree = 10.0
-    let stopIDsByCell: [String: [String]]
-
-    init(stops: [GTFSStop]) {
-        stopIDsByCell = Dictionary(grouping: stops, by: {
-            Self.cellKey(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude)
-        }).mapValues { $0.map(\.id) }
-    }
-
-    func nearbyStopIDs(to coordinate: Coordinate, within distance: Double) -> [String] {
-        let latitudeRadius = Int(ceil(distance / 110_574 * Self.cellsPerDegree)) + 1
-        let metersPerLongitudeDegree = max(1_000, 111_320 * abs(cos(coordinate.latitude * .pi / 180)))
-        let longitudeRadius = min(1_800,
-                                  Int(ceil(distance / metersPerLongitudeDegree * Self.cellsPerDegree)) + 1)
-        let centerLatitude = Int(floor(coordinate.latitude * Self.cellsPerDegree))
-        let centerLongitude = Int(floor(coordinate.longitude * Self.cellsPerDegree))
-        var ids: [String] = []
-        for latitude in (centerLatitude - latitudeRadius)...(centerLatitude + latitudeRadius) {
-            for longitude in (centerLongitude - longitudeRadius)...(centerLongitude + longitudeRadius) {
-                ids.append(contentsOf: stopIDsByCell["\(latitude):\(longitude)"] ?? [])
-            }
-        }
-        return ids
-    }
-
-    private static func cellKey(latitude: Double, longitude: Double) -> String {
-        "\(Int(floor(latitude * cellsPerDegree))):\(Int(floor(longitude * cellsPerDegree)))"
-    }
-}
-
-nonisolated struct TransitTransferGridCell: Hashable {
-    let latitude: Int
-    let longitude: Int
-}
-
-nonisolated struct GTFSServiceTripGroup: Codable, Sendable {
-    let serviceIndex: Int
-    let tripIndices: [Int]
-    let maximumScheduledDurationSeconds: Int
-    let scheduledTripIndices: [Int]?
-    let frequencyTripIndices: [Int]?
-
-    init(serviceIndex: Int, tripIndices: [Int], maximumScheduledDurationSeconds: Int,
-         scheduledTripIndices: [Int]? = nil, frequencyTripIndices: [Int]? = nil) {
-        self.serviceIndex = serviceIndex
-        self.tripIndices = tripIndices
-        self.maximumScheduledDurationSeconds = maximumScheduledDurationSeconds
-        self.scheduledTripIndices = scheduledTripIndices
-        self.frequencyTripIndices = frequencyTripIndices
-    }
-}
-
-nonisolated struct GTFSRoutePattern: Codable, Sendable {
-    let id: Int
-    let key: String?
-    let routeID: String
-    let stopIDs: [String]
-    let tripIndices: [Int]?
-    let tripsByService: [GTFSServiceTripGroup]?
 }
 
 nonisolated struct GTFSInputFeed: Sendable {

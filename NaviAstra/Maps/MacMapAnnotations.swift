@@ -128,6 +128,13 @@ final class TrafficMapAnnotationView: MKAnnotationView {
             label.textColor = .white
             addSubview(label)
             setAccessibilityLabel("\(clusterCount) zdarzeń drogowych")
+        } else if let text = presentation.markerText {
+            let label = NSTextField(labelWithString: text)
+            label.frame = NSRect(x: 0, y: 0, width: size, height: size)
+            label.alignment = .center
+            label.font = .systemFont(ofSize: text.count > 2 ? 10 : 13, weight: .bold)
+            label.textColor = .white
+            addSubview(label)
         } else {
             let glyphSize = size * 0.54
             let image = NSImageView(frame: NSRect(x: (size - glyphSize) / 2,

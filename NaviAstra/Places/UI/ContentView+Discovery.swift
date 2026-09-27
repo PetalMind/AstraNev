@@ -8,8 +8,8 @@ extension ContentView {
     func discoveryPanel(compact: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             searchButton
-            nearbyTransitCard
             if !compact {
+                nearbyTransitCard
                 HStack(alignment: .firstTextBaseline) {
                     Text("Ulubione")
                         .font(.headline.weight(.semibold))
@@ -71,7 +71,8 @@ extension ContentView {
                 .accessibilityLabel("Miejsca w pobliżu")
             }
         }
-        .padding(18)
+        .padding(.horizontal, 18)
+        .padding(.vertical, compact ? 4 : 18)
     }
 
     @ViewBuilder
@@ -90,6 +91,7 @@ extension ContentView {
                         }
                         Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
                     }
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -107,6 +109,7 @@ extension ContentView {
                                     .font(.caption.weight(.semibold).monospacedDigit())
                                     .foregroundStyle(transitDelayColor(departure.delaySeconds))
                             }
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                             .contentShape(Rectangle())
                         }
                     }
@@ -195,7 +198,7 @@ extension ContentView {
                         Image(systemName: "arrow.right")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(.secondary)
-                            .frame(width: 37, height: 42)
+                            .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)

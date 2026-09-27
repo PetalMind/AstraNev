@@ -38,11 +38,12 @@ nonisolated enum VoiceVerbosity: String, CaseIterable, Identifiable {
     func includes(_ type: RoadAlertType) -> Bool {
         switch self {
         case .concise:
-            type.isEnforcement || type == .speedLimitChange || type == .roadClosed || type == .accident
+            type.isVoiceAnnounceable &&
+                (type.isEnforcement || type == .speedLimitChange || type == .roadClosed || type == .accident)
         case .standard:
-            type != .congestion
+            type.isVoiceAnnounceable && type != .congestion
         case .detailed:
-            true
+            type.isVoiceAnnounceable
         }
     }
 

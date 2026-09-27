@@ -2,7 +2,8 @@ import Foundation
 
 struct NavigationSessionDependencies {
     let routeProvider: RouteProvider
-    let transitProvider: TransitRouteProviding
+    let transitProvider: TransitRouteProvider
+    let transitDataProvider: TransitDataProviding
     let speedLimitProvider: SpeedLimitProvider
     let roadDataProvider: RoadDataProvider
     let trafficProvider: TrafficProvider?
@@ -10,7 +11,8 @@ struct NavigationSessionDependencies {
     let voiceGuidance: VoiceGuidanceEngine
 
     static func live(routeEndpoint: URL, trafficAPIKey: String?,
-                     transitProvider: TransitRouteProviding? = nil) -> NavigationSessionDependencies {
+                     transitProvider: TransitRouteProvider? = nil,
+                     transitDataProvider: TransitDataProviding? = nil) -> NavigationSessionDependencies {
         let normalizedKey = trafficAPIKey?.trimmingCharacters(in: .whitespacesAndNewlines)
         let trafficProvider = normalizedKey.flatMap { $0.isEmpty ? nil : TomTomTrafficProvider(apiKey: $0) }
         let routing = NavigationRoutingDependencies.live(routeEndpoint: routeEndpoint,
@@ -18,6 +20,7 @@ struct NavigationSessionDependencies {
         return NavigationSessionDependencies(
             routeProvider: routing.routeProvider,
             transitProvider: routing.transitProvider,
+            transitDataProvider: transitDataProvider ?? LocalTransitDataProvider(),
             speedLimitProvider: routing.speedLimitProvider,
             roadDataProvider: OpenStreetMapRoadDataProvider(),
             trafficProvider: trafficProvider,
@@ -28,13 +31,12 @@ struct NavigationSessionDependencies {
 
 struct NavigationRoutingDependencies {
     let routeProvider: RouteProvider
-    let transitProvider: TransitRouteProviding
+    let transitProvider: TransitRouteProvider
     let speedLimitProvider: SpeedLimitProvider
 
     static func live(routeEndpoint: URL,
-                     transitProvider: TransitRouteProviding? = nil) -> NavigationRoutingDependencies {
-        let configuredTransitProvider = transitProvider?.usingWalkingRoutingEndpoint(routeEndpoint)
-            ?? TransitRouteProvider(walkingRoutingEndpoint: routeEndpoint)
+                     transitProvider: TransitRouteProvider? = nil) -> NavigationRoutingDependencies {
+        let configuredTransitProvider = transitProvider ?? TransitousRouteProvider()
         return NavigationRoutingDependencies(
             routeProvider: ValhallaRouteProvider(endpoint: routeEndpoint),
             transitProvider: configuredTransitProvider,

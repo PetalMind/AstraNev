@@ -77,20 +77,133 @@ extension ContentView {
         .buttonStyle(.plain)
     }
 
-    func selectedMapPlaceDetails(for result: SearchResult) -> some View {
-        ScrollView {
-            PlaceDetailsView(
-                result: result,
-                isSaved: isMapPlaceSaved(result),
-                onSave: { placeStore.add(result.navigationDestination) },
-                isNavigating: isNavigating,
-                primaryActionTitle: isNavigating ? "Dodaj przystanek" : "Wyznacz trasę",
-                onRouteFromPlace: { setMapPlaceAsRouteOrigin(result) },
-                onRemove: { removeFavorite(for: result.destination) },
-                onRename: { renameFavorite(for: result.destination, to: $0) },
-                onPlanRoute: { planRoute(from: result) })
-                .id(result.placeIdentity.cacheKey)
-                .padding()
+    var selectedMapPlacesPeek: some View {
+        let results = placeStore.selectedMapPlaces
+        let result = results.first
+        return Button {
+            withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+                selectedMapPlaceDetent = .medium
+            }
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(results.count == 1 ? (result?.destination.name ?? "Miejsce") : "Miejsca w pobliżu · \(results.count)")
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    if let result {
+                        Text(selectedMapPlaceCompactSummary(result))
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    } else {
+                        Text("Wybierz szczegóły jednego z miejsc")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(results.count == 1
+                            ? "\(result?.destination.name ?? "Miejsce"), \(result.map { selectedMapPlaceCompactSummary($0) } ?? "")"
+                            : "Miejsca w pobliżu, liczba: \(results.count)")
+        .accessibilityHint(results.count == 1 ? "Rozwiń szczegóły miejsca" : "Rozwiń listę miejsc")
+    }
+
+    private func selectedMapPlaceCompactSummary(_ result: SearchResult) -> String {
+        if let summary = result.travelSummary { return summary }
+        if let straightDistance = result.straightDistance {
+            return "W linii prostej · \(distance(straightDistance))"
+        }
+        return result.destination.address
+            ?? result.category?.replacingOccurrences(of: "_", with: " ").capitalized
+            ?? "Wybrane miejsce"
+    }
+
+    var selectedMapPlacesChoices: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Wybierz miejsce")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Spacer()
+                Text("\(placeStore.selectedMapPlaces.count)")
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(placeStore.selectedMapPlaces) { result in
+                Button {
+                    withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+                        presentMapPlace(result)
+                    }
+                } label: {
+                    HStack(spacing: 11) {
+                        Image(systemName: result.isPOI ? "mappin.and.ellipse" : "mappin")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 34, height: 34)
+                            .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 11))
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(result.destination.name)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            Text(result.destination.address
+                                 ?? result.category?.replacingOccurrences(of: "_", with: " ").capitalized
+                                 ?? "Miejsce")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 4)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
+                    .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Pokaż miejsce \(result.destination.name)")
+            }
+        }
+    }
+
+    @ViewBuilder
+    func selectedMapPlaceDetails(for result: SearchResult,
+                                 presentation: PlaceDetailsPresentation = .full,
+                                 embeddedInBottomSheet: Bool = false,
+                                 showsPrimaryAction: Bool = true) -> some View {
+        let details = PlaceDetailsView(
+            result: result,
+            isSaved: isMapPlaceSaved(result),
+            onSave: { placeStore.add(result.navigationDestination) },
+            isNavigating: isNavigating,
+            primaryActionTitle: isNavigating ? "Dodaj przystanek" : "Wyznacz trasę",
+            presentation: presentation,
+            embeddedInBottomSheet: embeddedInBottomSheet,
+            showsPrimaryAction: showsPrimaryAction,
+            onRouteFromPlace: { setMapPlaceAsRouteOrigin(result) },
+            onRemove: { removeFavorite(for: result.destination) },
+            onRename: { renameFavorite(for: result.destination, to: $0) },
+            onPlanRoute: { planRoute(from: result) })
+
+        if embeddedInBottomSheet {
+            details.id(result.placeIdentity.cacheKey)
+        } else {
+            ScrollView {
+                details
+                    .id(result.placeIdentity.cacheKey)
+                    .padding()
+            }
         }
     }
 
@@ -102,11 +215,13 @@ extension ContentView {
 
     func setMapPlaceAsRouteOrigin(_ result: SearchResult) {
         let destination = result.navigationDestination
-        placeStore.selectedMapPlaces = []
-        placeStore.recordSearch(destination)
         if navigationStore.state.destination == nil {
             openDestinationSearchAfterPlaceDismiss = true
         }
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+            placeStore.selectedMapPlaces = []
+        }
+        placeStore.recordSearch(destination)
         Task {
             await navigationStore.setRouteOrigin(RoutePoint(
                 destination, source: destination.poi == nil ? .search : .poi))
@@ -115,18 +230,13 @@ extension ContentView {
 
     func planRoute(from result: SearchResult) {
         let destination = result.navigationDestination
-        placeStore.selectedMapPlaces = []
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+            placeStore.selectedMapPlaces = []
+        }
         if isNavigating {
             Task { await navigationStore.addWaypoint(destination) }
         } else {
             selectDestination(destination)
-        }
-    }
-
-    func revealMapSplash() {
-        guard !isMapReady else { return }
-        withAnimation(.easeOut(duration: 0.35)) {
-            isMapReady = true
         }
     }
 
@@ -505,7 +615,7 @@ extension ContentView {
                 Image(systemName: "line.3.horizontal")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(darkStyle ? Color.white.opacity(0.72) : Color.secondary)
-                    .frame(width: 32, height: 34)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -518,7 +628,7 @@ extension ContentView {
                 Image(systemName: "xmark")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(darkStyle ? Color.white.opacity(0.72) : Color.secondary)
-                    .frame(width: 30, height: 34)
+                    .frame(width: 44, height: 44)
                     .background(darkStyle ? Color.white.opacity(0.06) : Color.primary.opacity(0.04),
                                 in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
@@ -558,7 +668,7 @@ extension ContentView {
                 Spacer(minLength: 0)
             }
             .foregroundStyle(Color.accentColor)
-            .frame(minHeight: 38)
+            .frame(minHeight: 44)
             .padding(.leading, 44)
             .contentShape(Rectangle())
         }

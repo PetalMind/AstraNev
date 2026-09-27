@@ -10,7 +10,7 @@ extension NavigationSession {
         requestGeneration += 1
         let generation = requestGeneration
         let mode = state.transportMode
-        let transitCancellationToken = mode == .transit
+        let transitCancellationToken = mode == .transit || mode == .parkRide
             ? TransitPlanningCancellationToken() : nil
         transitPlanningCancellationToken = transitCancellationToken
         defer {
@@ -84,7 +84,8 @@ extension NavigationSession {
             } else if state.transportMode == .parkRide {
                 let departure = requestedJourneyTimeMode == .departAt ? requestedJourneyTime : Date()
                 routes = try await calculateParkRideRoutes(from: origin, to: routeDestination,
-                                                            departingAt: departure)
+                                                            departingAt: departure,
+                                                            cancellationToken: transitCancellationToken)
             } else {
                 routes = try await calculateRoutes(from: origin, to: routeDestination)
             }
@@ -139,7 +140,7 @@ extension NavigationSession {
         state.route = firstRoute
         state.routeOptions = routes
         state.status = .routePreview
-        state.transitPlanningPhase = .enrichingGeometry
+        state.transitPlanningPhase = nil
         state.cameraState = .routeOverview
         lastTransitPlanRefresh = Date()
         updateProgress()

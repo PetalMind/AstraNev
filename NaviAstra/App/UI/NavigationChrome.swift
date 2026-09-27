@@ -102,6 +102,9 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
     private let maximumHeight: CGFloat
     private let accessibilityLabel: String
     private let appearance: NavigationBottomSheetAppearance
+    private let mediumHeightFraction: CGFloat
+    private let onClose: (() -> Void)?
+    private let closeAccessibilityLabel: String
     private let content: (NavigationBottomSheetDetent, CGFloat) -> Content
     private let footer: (NavigationBottomSheetDetent, CGFloat) -> Footer
     private let scrollSpaceName = UUID().uuidString
@@ -116,12 +119,18 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
          accessibilityLabel: String,
          appearance: NavigationBottomSheetAppearance = .navigation,
          isDragging: Binding<Bool>,
+         mediumHeightFraction: CGFloat = 0.48,
+         onClose: (() -> Void)? = nil,
+         closeAccessibilityLabel: String = "Zamknij panel",
          @ViewBuilder content: @escaping (NavigationBottomSheetDetent, CGFloat) -> Content,
          @ViewBuilder footer: @escaping (NavigationBottomSheetDetent, CGFloat) -> Footer) {
         self._detent = detent
         self.maximumHeight = maximumHeight
         self.accessibilityLabel = accessibilityLabel
         self.appearance = appearance
+        self.mediumHeightFraction = min(0.72, max(0.40, mediumHeightFraction))
+        self.onClose = onClose
+        self.closeAccessibilityLabel = closeAccessibilityLabel
         self._isDragging = isDragging
         self.content = content
         self.footer = footer
@@ -132,10 +141,13 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
     private var detentHeights: [CGFloat] {
         let expanded = expandedHeight
         if expanded < 240 {
-            return [max(42, expanded * 0.28), expanded * 0.62, expanded]
+            let peek = min(expanded * 0.6, max(84, expanded * 0.45))
+            let medium = min(expanded - 1, max(peek + 24, expanded * mediumHeightFraction))
+            return [peek, medium, expanded]
         }
-        let peek = min(132, max(96, expanded * 0.18))
-        let medium = min(expanded - 1, max(peek + 40, expanded * 0.48))
+        // The compact summary sits below a 60 pt grabber; keep enough room for both.
+        let peek = min(140, max(124, expanded * 0.18))
+        let medium = min(expanded - 1, max(peek + 40, expanded * mediumHeightFraction))
         return [peek, medium, expanded]
     }
 
@@ -190,7 +202,7 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
                 .coordinateSpace(name: scrollSpaceName)
                 .scrollIndicators(.hidden)
                 .scrollBounceBehavior(.basedOnSize)
-                .scrollDisabled(detent != .expanded)
+                .scrollDisabled(detent == .peek)
                 .simultaneousGesture(dragGesture(fromContent: true))
                 .onPreferenceChange(NavigationBottomSheetScrollOffsetKey.self) { minY in
                     scrollOffset = max(0, -minY)
@@ -211,29 +223,53 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
     }
 
     private var dragHandle: some View {
-        Button(action: advanceDetent) {
-            ZStack {
+        ZStack {
+            Button(action: advanceDetent) {
                 Capsule()
                     .fill(Color.white.opacity(0.55 + 0.25 * min(1, abs(height - restingHeight) / 30)))
                     .frame(width: 38, height: 5)
                     .scaleEffect(x: isDragging ? 1.06 : 1, y: 1, anchor: .center)
-                Image(systemName: selectedIndex == detentHeights.count - 1 ? "chevron.down" : "chevron.up")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(appearance == .navigation ? Color.white.opacity(0.48) : Color.secondary.opacity(0.5))
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .padding(.trailing, 18)
+                    .frame(width: 60, height: 44)
+                    .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity, minHeight: 60)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityValue(detent.title)
+            .accessibilityAdjustableAction { direction in
+                moveDetent(to: direction == .increment
+                           ? min(detentHeights.count - 1, selectedIndex + 1)
+                           : max(0, selectedIndex - 1))
+            }
+
+            HStack {
+                Spacer(minLength: 0)
+                if let onClose {
+                    Button(action: onClose) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(appearance == .navigation
+                                             ? Color.white.opacity(0.72)
+                                             : Color.secondary)
+                            .frame(width: 44, height: 44)
+                            .background(Color.primary.opacity(0.06), in: Circle())
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(closeAccessibilityLabel)
+                } else {
+                    Image(systemName: selectedIndex == detentHeights.count - 1 ? "chevron.down" : "chevron.up")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(appearance == .navigation
+                                         ? Color.white.opacity(0.48)
+                                         : Color.secondary.opacity(0.5))
+                        .frame(width: 40, height: 40)
+                        .accessibilityHidden(true)
+                }
+            }
+            .padding(.trailing, 16)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(accessibilityLabel)
-        .accessibilityValue(detent.title)
-        .accessibilityAdjustableAction { direction in
-            moveDetent(to: direction == .increment
-                       ? min(detentHeights.count - 1, selectedIndex + 1)
-                       : max(0, selectedIndex - 1))
-        }
+        .frame(maxWidth: .infinity, minHeight: 60)
+        .contentShape(Rectangle())
         .highPriorityGesture(dragGesture(fromContent: false))
     }
 
@@ -251,7 +287,14 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
                 if dragStartHeight == nil {
                     let isPullingUp = value.translation.height < 0
                     let canExpand = selectedIndex < detentHeights.count - 1
-                    guard !fromContent || (scrollOffset <= 1 && (!isPullingUp || canExpand)) else { return }
+                    if fromContent {
+                        guard scrollOffset <= 1 else { return }
+                        if isPullingUp {
+                            guard detent == .peek && canExpand else { return }
+                        } else {
+                            guard detent != .peek else { return }
+                        }
+                    }
                     dragStartHeight = restingHeight
                     dragStartTranslation = value.translation.height
                     ownsCurrentDrag = true
@@ -349,8 +392,6 @@ struct DiscoveryDrawer<Content: View>: View {
                               appearance: .discovery,
                               isDragging: $isDragging) { selectedDetent, _ in
             content(selectedDetent == .peek)
-                .padding(.horizontal, 18)
-                .padding(.vertical, selectedDetent == .peek ? 4 : 18)
         } footer: { _, _ in
             EmptyView()
         }

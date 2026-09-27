@@ -71,6 +71,45 @@ struct PlaceDetailsAttributesSection: View {
     }
 }
 
+struct PlaceDetailsCompactAttributesSection: View {
+    let details: PlaceDetails
+    @Binding var showHours: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let rawHours = details.openingHours, !rawHours.isEmpty,
+               details.osmParking?.openingHours == nil {
+                PlaceDetailsOpeningHoursSection(
+                    rawHours: rawHours,
+                    coordinate: details.coordinate,
+                    countryCode: details.countryCode,
+                    timeZoneIdentifier: details.timeZoneIdentifier,
+                    isExpanded: $showHours)
+            }
+
+            if let parking = details.parking, details.osmParking == nil {
+                Label("Parking: \(parking)", systemImage: "parkingsign.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let parking = details.osmParking {
+                HStack(spacing: 8) {
+                    Label("Parking · \(parking.tariff.status.title)", systemImage: "parkingsign.circle")
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    if let availableSpaces = parking.availableSpaces {
+                        Text("\(availableSpaces) wolne")
+                            .monospacedDigit()
+                    }
+                }
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 private struct PlaceDetailsOpeningHoursSection: View {
     let rawHours: String
     let coordinate: Coordinate?

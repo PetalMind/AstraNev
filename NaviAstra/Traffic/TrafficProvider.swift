@@ -175,6 +175,7 @@ extension TrafficIncidentSeverity {
 
 struct TrafficMapPresentation {
     let symbolName: String
+    let markerText: String?
     let colorHex: UInt32
     let markerSize: Double
     let priority: Int
@@ -183,6 +184,7 @@ struct TrafficMapPresentation {
 
     init(_ incident: TrafficIncident) {
         symbolName = incident.category.mapSymbolName
+        markerText = nil
         if incident.category == .unknown {
             switch incident.severity {
             case .major: colorHex = 0xE53935
@@ -200,10 +202,11 @@ struct TrafficMapPresentation {
 
     init(_ alert: RoadSafetyAlert) {
         symbolName = alert.type.symbolName
+        markerText = alert.type == .speedLimitSign ? alert.speedLimitKph.map(String.init) : nil
         colorHex = alert.type.mapColorHex
         priority = alert.type.mapPriority
         clusterPriority = priority * 10 + Self.colorPriority(colorHex)
-        markerSize = priority >= 3 ? 36 : priority == 2 ? 30 : 24
+        markerSize = markerText == nil ? (priority >= 3 ? 36 : priority == 2 ? 30 : 24) : 34
         isCritical = priority >= 3
     }
 
@@ -224,22 +227,24 @@ extension RoadAlertType {
         switch self {
         case .speedCamera, .averageSpeedStart, .averageSpeedEnd, .redLightCamera,
              .speedLimitChange, .variableSpeedLimit: 0x1976D2
-        case .accident, .roadClosed, .congestion: 0xE53935
+        case .speedLimitSign, .stopSign, .noEntrySign, .noOvertakingSign,
+             .weightLimitSign, .heightLimitSign, .accident, .roadClosed, .congestion: 0xE53935
         case .roadworks: 0xF57C00
-        case .railwayCrossing, .schoolZone, .dangerousCurve: 0xF9A825
+        case .giveWaySign, .trafficZoneSign, .trafficSign,
+             .railwayCrossing, .schoolZone, .dangerousCurve: 0xF9A825
         }
     }
 
     var mapPriority: Int {
         switch self {
         case .accident, .roadClosed, .congestion: 3
-        case .roadworks, .railwayCrossing, .dangerousCurve: 2
+        case .roadworks, .railwayCrossing, .dangerousCurve, .stopSign, .giveWaySign: 2
         default: 1
         }
     }
 
     var isImportantDuringNavigation: Bool {
-        isEnforcement || mapPriority >= 2
+        isEnforcement || mapPriority >= 2 || isTrafficSign
     }
 }
 

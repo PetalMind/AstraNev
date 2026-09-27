@@ -35,38 +35,38 @@ struct PlaceDetailsActionBar: View {
     let isSaved: Bool
     let favoritePulseScale: CGFloat
     let canRemoveSavedPlace: Bool
+    let showsPrimaryAction: Bool
     let onPlanRoute: () -> Void
     let onRouteFromPlace: (() -> Void)?
     let onToggleSavedState: () -> Void
 
     var body: some View {
         HStack(spacing: 9) {
-            Button(action: onPlanRoute) {
-                Label(primaryActionTitle,
-                      systemImage: isNavigating ? "plus" : "arrow.triangle.turn.up.right.diamond")
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity, minHeight: 42)
+            if showsPrimaryAction {
+                Button(action: onPlanRoute) {
+                    Label(primaryActionTitle,
+                          systemImage: isNavigating ? "plus" : "arrow.triangle.turn.up.right.diamond")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.borderedProminent)
             }
-            .buttonStyle(.borderedProminent)
 
             if let onRouteFromPlace, !isNavigating {
-                Menu {
-                    Button("Trasa z tego miejsca", systemImage: "arrowshape.turn.up.left") {
-                        onRouteFromPlace()
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .frame(width: 40, height: 42)
+                Button(action: onRouteFromPlace) {
+                    Label("Stąd", systemImage: "arrowshape.turn.up.left")
+                        .font(.caption.weight(.semibold))
+                        .frame(minWidth: 44, minHeight: 44)
                 }
                 .buttonStyle(.bordered)
-                .accessibilityLabel("Więcej opcji trasy")
+                .accessibilityLabel("Wyznacz trasę z tego miejsca")
             }
 
             Button(action: onToggleSavedState) {
                 Image(systemName: isSaved ? "heart.fill" : "heart")
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(isSaved ? Color.red : Color.secondary)
-                    .frame(width: 42, height: 42)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
                     .scaleEffect(favoritePulseScale)
             }

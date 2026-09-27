@@ -7,6 +7,12 @@ import AppKit
 import UIKit
 #endif
 
+enum PlaceDetailsPresentation: Equatable {
+    case compact
+    case medium
+    case full
+}
+
 struct PlaceDetailsView: View {
     let result: SearchResult
     let onSave: () -> Bool
@@ -17,6 +23,9 @@ struct PlaceDetailsView: View {
     let isNavigating: Bool
     let primaryActionTitle: String
     let supplementalDetails: [String]
+    let presentation: PlaceDetailsPresentation
+    let embeddedInBottomSheet: Bool
+    let showsPrimaryAction: Bool
 
     @State private var details: PlaceDetails?
     @State private var isSaved: Bool
@@ -40,6 +49,9 @@ struct PlaceDetailsView: View {
 
     init(result: SearchResult, isSaved: Bool, onSave: @escaping () -> Bool,
          isNavigating: Bool = false, primaryActionTitle: String = "Wyznacz trasę",
+         presentation: PlaceDetailsPresentation = .full,
+         embeddedInBottomSheet: Bool = false,
+         showsPrimaryAction: Bool = true,
          supplementalDetails: [String] = [],
          onRouteFromPlace: (() -> Void)? = nil,
          onRemove: (() -> Bool)? = nil,
@@ -53,6 +65,9 @@ struct PlaceDetailsView: View {
         self.onRename = onRename
         self.isNavigating = isNavigating
         self.primaryActionTitle = primaryActionTitle
+        self.presentation = presentation
+        self.embeddedInBottomSheet = embeddedInBottomSheet
+        self.showsPrimaryAction = showsPrimaryAction
         self.supplementalDetails = supplementalDetails
         _details = State(initialValue: PlaceDetails.partial(for: result))
         _isSaved = State(initialValue: isSaved)
@@ -60,69 +75,123 @@ struct PlaceDetailsView: View {
     }
 
     private var placeDetailsContent: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            if showsPlacePhoto {
+        VStack(alignment: .leading, spacing: presentation == .compact ? 12 : 11) {
+            if presentation != .compact && showsPlacePhoto {
                 placePhotoSection
             }
 
             PlaceDetailsHeroSummary(
                 title: details?.name ?? result.destination.name,
                 symbol: photoSymbol(for: details?.category ?? result.category ?? ""),
-                showsPOIIcon: result.isPOI && !showsPlacePhoto,
-                travelSummary: travelSummary)
+            showsPOIIcon: result.isPOI && !showsPlacePhoto,
+            travelSummary: travelSummary)
 
-            PlaceDetailsActionBar(
-                primaryActionTitle: primaryActionTitle,
-                isNavigating: isNavigating,
-                isSaved: isSaved,
-                favoritePulseScale: favoritePulseScale,
-                canRemoveSavedPlace: onRemove != nil,
-                onPlanRoute: onPlanRoute,
-                onRouteFromPlace: onRouteFromPlace,
-                onToggleSavedState: toggleSavedState)
+            if presentation == .medium {
+                compactDetailsSummary(includeCategory: false)
+            }
+
+            placeDetailsActionBar
 
             if let saveError {
                 Text(saveError).font(.caption).foregroundStyle(.red)
             }
 
-            Divider()
-            ForEach(supplementalDetails, id: \.self) { detail in
-                Label(detail, systemImage: "info.circle")
+            if presentation == .compact {
+                compactDetailsSummary()
+            } else if presentation == .full {
+                Divider()
+                if !supplementalDetails.isEmpty || details?.hasAdditionalInformation == true {
+                    Text("Szczegóły miejsca")
+                        .font(.headline.weight(.semibold))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                ForEach(supplementalDetails, id: \.self) { detail in
+                    Label(detail, systemImage: "info.circle")
+                        .font(.subheadline)
+                }
+                if let details {
+                    PlaceDetailsAttributesSection(details: details, showHours: $showHours)
+                }
+
+                if isLoading {
+                    ProgressView("Uzupełnianie informacji…")
+                        .font(.caption)
+                } else if let loadError {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(loadError).font(.caption).foregroundStyle(.secondary)
+                        Button("Spróbuj ponownie", systemImage: "arrow.clockwise") { retry += 1 }
+                            .font(.caption.weight(.semibold))
+                    }
+                } else if result.isPOI, details?.hasAdditionalInformation != true, supplementalDetails.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Brak dodatkowych informacji o tym miejscu.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button("Sprawdź ponownie", systemImage: "arrow.clockwise") { retry += 1 }
+                            .font(.caption.weight(.semibold))
+                    }
+                }
+
+                if let loadedAt {
+                    let sourceTitle = details?.source.title ?? "OpenStreetMap"
+                    Text("\(sourceTitle) · pobrano \(loadedAt.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else if let details {
+                    Text(details.source.title).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(embeddedInBottomSheet ? 0 : 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(embeddedInBottomSheet ? Color.clear : Color.primary.opacity(0.035),
+                    in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var placeDetailsActionBar: some View {
+        PlaceDetailsActionBar(
+            primaryActionTitle: primaryActionTitle,
+            isNavigating: isNavigating,
+            isSaved: isSaved,
+            favoritePulseScale: favoritePulseScale,
+            canRemoveSavedPlace: onRemove != nil,
+            showsPrimaryAction: showsPrimaryAction,
+            onPlanRoute: onPlanRoute,
+            onRouteFromPlace: onRouteFromPlace,
+            onToggleSavedState: toggleSavedState)
+    }
+
+    @ViewBuilder
+    private func compactDetailsSummary(includeCategory: Bool = true) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if includeCategory, let category = details?.category ?? result.category {
+                Label(category.replacingOccurrences(of: "_", with: " ").capitalized,
+                      systemImage: "tag")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            if let address = details?.address ?? result.destination.address, !address.isEmpty {
+                Label(address, systemImage: "mappin.and.ellipse")
                     .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
             }
             if let details {
-                PlaceDetailsAttributesSection(details: details, showHours: $showHours)
+                PlaceDetailsCompactAttributesSection(details: details, showHours: $showHours)
             }
-
             if isLoading {
                 ProgressView("Uzupełnianie informacji…")
                     .font(.caption)
             } else if let loadError {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(loadError).font(.caption).foregroundStyle(.secondary)
-                    Button("Spróbuj ponownie", systemImage: "arrow.clockwise") { retry += 1 }
-                        .font(.caption.weight(.semibold))
-                }
-            } else if result.isPOI, details?.hasAdditionalInformation != true, supplementalDetails.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Brak dodatkowych informacji o tym miejscu.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Button("Sprawdź ponownie", systemImage: "arrow.clockwise") { retry += 1 }
-                        .font(.caption.weight(.semibold))
-                }
-            }
-
-            if let loadedAt {
-                let sourceTitle = details?.source.title ?? "OpenStreetMap"
-                Text("\(sourceTitle) · pobrano \(loadedAt.formatted(date: .abbreviated, time: .shortened))")
-                    .font(.caption2).foregroundStyle(.secondary)
-            } else if let details {
-                Text(details.source.title).font(.caption2).foregroundStyle(.secondary)
+                Text(loadError)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if result.isPOI, details?.hasAdditionalInformation != true,
+                      (details?.address ?? result.destination.address) == nil {
+                Text("Brak dodatkowych informacji o tym miejscu.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
-        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 16))
     }
 
     var body: some View {
@@ -272,6 +341,7 @@ struct PlaceDetailsView: View {
             isLoadingDetails: isLoading,
             category: details?.category ?? result.category ?? "",
             brandName: details?.brand ?? result.brand ?? result.destination.name,
+            photoHeight: presentation == .medium ? 96 : 184,
             onRetry: { retry += 1 },
             onOpenLookAround: { showLookAround = true },
             onPlacePhotoLoadFailure: {

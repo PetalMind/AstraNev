@@ -48,7 +48,6 @@ struct MapLibreView: NSViewRepresentable {
     var onTransitVehicleSelect: (TransitVehicle) -> Void { scene.commands.onTransitVehicleSelect }
     var onParkedCarSelect: () -> Void { scene.commands.onParkedCarSelect }
     var onCyclingPathsStatus: (OSMCyclingPathsStatus) -> Void { scene.commands.onCyclingPathsStatus }
-    var onMapReady: () -> Void { scene.commands.onMapReady }
     var onMapPan: () -> Void { scene.commands.onMapPan }
     var onLongPress: (Coordinate) -> Void { scene.commands.onLongPress }
     @Environment(\.colorScheme) var colorScheme
@@ -365,11 +364,13 @@ struct MapLibreView: NSViewRepresentable {
                 pin.subtitle = incident.mapSubtitle
             }
             routeRenderer.updateIncidentOverlays(on: map, incidents: incidents)
-            let roadAlerts = ((!showsOnlyRouteEndpoints || isNavigating) ? parent.state.roadSafetyAlerts : [])
+            let showsRoadAlerts = !showsOnlyRouteEndpoints || isNavigating || parent.state.status == .routePreview
+            let roadAlerts = (showsRoadAlerts ? parent.state.roadSafetyAlerts : [])
                 .filter { alert in
                     guard let distance = alert.distanceAlongRoute else { return false }
+                    guard isNavigating else { return true }
                     return distance >= routeDistance - 60 && distance <= routeDistance + 20_000
-                        && (!isNavigating || alert.type.isImportantDuringNavigation)
+                        && alert.type.isImportantDuringNavigation
                 }
                 .sorted { ($0.distanceAlongRoute ?? .infinity) < ($1.distanceAlongRoute ?? .infinity) }
                 .prefix(40)
@@ -414,12 +415,7 @@ struct MapLibreView: NSViewRepresentable {
         }
 
         private func roadAlertSubtitle(_ alert: RoadSafetyAlert, routeDistance: Double) -> String {
-            guard let distance = alert.distanceAlongRoute else { return "© OpenStreetMap contributors" }
-            let remaining = max(0, distance - routeDistance)
-            let distanceText = remaining >= 1_000
-                ? String(format: "%.1f km", remaining / 1_000)
-                : "\(Int(remaining.rounded())) m"
-            return "\(distanceText) · © OpenStreetMap contributors"
+            alert.mapSubtitle(from: routeDistance)
         }
 
         private func updateTransitVehiclePins(on map: MKMapView) {
@@ -909,7 +905,6 @@ struct MapLibreView: NSViewRepresentable {
         func mapViewDidFinishRenderingMap(_ mapView: MKMapView, fullyRendered: Bool) {
             guard fullyRendered else { return }
             applyCameraIntent(to: mapView)
-            parent.onMapReady()
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {

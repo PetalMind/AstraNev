@@ -31,6 +31,15 @@ enum RoadAlertType: String, Codable, Equatable, Sendable {
     case averageSpeedStart
     case averageSpeedEnd
     case redLightCamera
+    case stopSign
+    case giveWaySign
+    case noEntrySign
+    case noOvertakingSign
+    case speedLimitSign
+    case weightLimitSign
+    case heightLimitSign
+    case trafficZoneSign
+    case trafficSign
     case speedLimitChange
     case variableSpeedLimit
     case accident
@@ -47,6 +56,15 @@ enum RoadAlertType: String, Codable, Equatable, Sendable {
         case .averageSpeedStart: "Początek odcinkowego pomiaru"
         case .averageSpeedEnd: "Koniec odcinkowego pomiaru"
         case .redLightCamera: "Rejestracja przejazdu na czerwonym świetle"
+        case .stopSign: "STOP"
+        case .giveWaySign: "Ustąp pierwszeństwa"
+        case .noEntrySign: "Zakaz wjazdu"
+        case .noOvertakingSign: "Zakaz wyprzedzania"
+        case .speedLimitSign: "Ograniczenie prędkości"
+        case .weightLimitSign: "Ograniczenie tonażowe"
+        case .heightLimitSign: "Ograniczenie wysokości"
+        case .trafficZoneSign: "Znak strefy ruchu"
+        case .trafficSign: "Znak drogowy"
         case .speedLimitChange: "Zmiana limitu prędkości"
         case .variableSpeedLimit: "Zmienny limit prędkości"
         case .accident: "Wypadek"
@@ -62,9 +80,16 @@ enum RoadAlertType: String, Codable, Equatable, Sendable {
     var symbolName: String {
         switch self {
         case .speedCamera, .redLightCamera: "camera.fill"
+        case .stopSign: "hand.raised.fill"
+        case .giveWaySign: "arrowtriangle.down.fill"
+        case .noEntrySign: "minus.circle.fill"
+        case .noOvertakingSign: "car.2.fill"
+        case .speedLimitSign, .speedLimitChange, .variableSpeedLimit: "speedometer"
+        case .weightLimitSign: "scalemass.fill"
+        case .heightLimitSign: "arrow.up.and.down"
+        case .trafficZoneSign: "building.2.fill"
+        case .trafficSign: "signpost.right.fill"
         case .averageSpeedStart, .averageSpeedEnd: "speedometer"
-        case .speedLimitChange: "speedometer"
-        case .variableSpeedLimit: "speedometer"
         case .accident: "car.side.front.open.fill"
         case .roadworks: "cone.fill"
         case .roadClosed: "road.lanes.curved.left"
@@ -81,6 +106,17 @@ enum RoadAlertType: String, Codable, Equatable, Sendable {
         default: false
         }
     }
+
+    nonisolated var isTrafficSign: Bool {
+        switch self {
+        case .stopSign, .giveWaySign, .noEntrySign, .noOvertakingSign,
+             .speedLimitSign, .weightLimitSign, .heightLimitSign,
+             .trafficZoneSign, .trafficSign: true
+        default: false
+        }
+    }
+
+    nonisolated var isVoiceAnnounceable: Bool { !isTrafficSign }
 }
 
 enum RoadAlertSource: String, Codable, Equatable, Sendable {
@@ -96,12 +132,34 @@ struct RoadSafetyAlert: Identifiable, Codable, Equatable, Sendable {
     let coordinate: Coordinate
     let source: RoadAlertSource
     var speedLimitKph: Int?
+    var signCode: String? = nil
     var distanceAlongRoute: Double?
     var distanceFromRoute: Double?
 
     var title: String {
+        if type == .speedLimitSign, signCode?.hasSuffix("B-34") == true {
+            return "Koniec ograniczenia prędkości"
+        }
+        if type == .speedLimitSign, let speedLimitKph {
+            return "Ograniczenie prędkości: \(speedLimitKph) km/h"
+        }
         if type == .speedLimitChange, let speedLimitKph {
             return "Limit zmienia się na \(speedLimitKph) km/h"
+        }
+        if type == .trafficSign, let signCode {
+            return "Znak drogowy \(signCode)"
+        }
+        if type == .trafficZoneSign, let signCode {
+            let code = signCode.split(separator: ",").last
+                .map { String($0).trimmingCharacters(in: .whitespaces) }
+                .flatMap { value in value.split(separator: ":").last.map { String($0) } }
+            switch code {
+            case "D-40": return "Strefa zamieszkania"
+            case "D-41": return "Koniec strefy zamieszkania"
+            case "D-42": return "Początek obszaru zabudowanego"
+            case "D-43": return "Koniec obszaru zabudowanego"
+            default: break
+            }
         }
         return type.title
     }
@@ -111,6 +169,11 @@ struct RoadSafetyAlert: Identifiable, Codable, Equatable, Sendable {
         return remaining >= 1_000
             ? String(format: "%.1f km", remaining / 1_000)
             : "\(Int(remaining.rounded())) m"
+    }
+
+    func mapSubtitle(from routeDistance: Double) -> String {
+        let sign = signCode.map { "\($0) · " } ?? ""
+        return "\(distanceText(from: routeDistance)) · \(sign)© OpenStreetMap contributors"
     }
 }
 
@@ -195,7 +258,7 @@ nonisolated struct RoadDataSnapshot: Codable, Sendable {
         var unique: [String: RoadSafetyAlert] = [:]
         for alert in alerts {
             guard let projection = MapMatcher.project(alert.coordinate, onto: route),
-                  projection.distanceFromRoute <= 90 else { continue }
+                  projection.distanceFromRoute <= (alert.type.isTrafficSign ? 45 : 90) else { continue }
             var matched = alert
             matched.distanceAlongRoute = projection.alongRoute
             matched.distanceFromRoute = projection.distanceFromRoute
@@ -310,7 +373,7 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
                 }
             }
         }
-        return String(format: "%016llx", hash)
+        return "road-signs-v2-" + String(format: "%016llx", hash)
     }
 
     private static func query(route: [Coordinate]) -> String {
@@ -331,6 +394,12 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
           \(roads)[\"maxspeed:type\"~\"^PL:\"];
           \(roads)[\"zone:traffic\"~\"^PL:\"];
           node(around:120,\(centers))[highway=\"speed_camera\"];
+          node(around:120,\(centers))[traffic_sign];
+          node(around:120,\(centers))[\"traffic_sign:forward\"];
+          node(around:120,\(centers))[\"traffic_sign:backward\"];
+          node(around:120,\(centers))[\"traffic_sign:maxspeed\"];
+          node(around:120,\(centers))[highway~\"^(stop|give_way)$\"];
+          node(around:120,\(centers))[railway=\"level_crossing\"];
           relation(around:120,\(centers))[type=\"enforcement\"][enforcement~\"^(maxspeed|average_speed|traffic_signals)$\"];
         );
         out geom;
@@ -379,14 +448,27 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
         var unique: [String: RoadSafetyAlert] = [:]
         for element in elements {
             guard element.type == "node", let latitude = element.lat, let longitude = element.lon,
-                  let tags = element.tags, tags["highway"] == "speed_camera" else { continue }
-            let type: RoadAlertType = tags["enforcement"] == "traffic_signals"
-                || tags["camera:type"] == "red_light" ? .redLightCamera : .speedCamera
-            let alert = RoadSafetyAlert(id: "osm-node-\(element.id)", type: type,
-                                        coordinate: Coordinate(latitude: latitude, longitude: longitude),
-                                        source: .openStreetMap,
-                                        speedLimitKph: SpeedLimitParser.parse(tags["maxspeed"]))
-            unique[alert.id] = alert
+                  let tags = element.tags else { continue }
+            let coordinate = Coordinate(latitude: latitude, longitude: longitude)
+            if tags["highway"] == "speed_camera" {
+                let type: RoadAlertType = tags["enforcement"] == "traffic_signals"
+                    || tags["camera:type"] == "red_light" ? .redLightCamera : .speedCamera
+                let alert = RoadSafetyAlert(id: "osm-node-\(element.id)", type: type,
+                                            coordinate: coordinate, source: .openStreetMap,
+                                            speedLimitKph: SpeedLimitParser.parse(tags["maxspeed"]))
+                unique[alert.id] = alert
+            }
+            if tags["railway"] == "level_crossing" {
+                let alert = RoadSafetyAlert(id: "osm-crossing-\(element.id)", type: .railwayCrossing,
+                                            coordinate: coordinate, source: .openStreetMap)
+                unique[alert.id] = alert
+            }
+            if let sign = trafficSign(from: tags) {
+                let alert = RoadSafetyAlert(id: "osm-sign-\(element.id)", type: sign.type,
+                                            coordinate: coordinate, source: .openStreetMap,
+                                            speedLimitKph: sign.speedLimit, signCode: sign.code)
+                unique[alert.id] = alert
+            }
         }
 
         for element in elements where element.type == "relation" {
@@ -431,6 +513,46 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
             }
         }
         return Array(unique.values)
+    }
+
+    private static func trafficSign(from tags: [String: String])
+        -> (type: RoadAlertType, code: String?, speedLimit: Int?)? {
+        if tags["highway"] == "stop" { return (.stopSign, "B-20", nil) }
+        if tags["highway"] == "give_way" { return (.giveWaySign, "A-7", nil) }
+
+        let rawCodes = [tags["traffic_sign"], tags["traffic_sign:forward"], tags["traffic_sign:backward"]]
+            .compactMap { $0 }
+        guard !rawCodes.isEmpty else {
+            guard let rawSpeed = tags["traffic_sign:maxspeed"] else { return nil }
+            return (.speedLimitSign, "B-33", SpeedLimitParser.parse(rawSpeed))
+        }
+        let codes = rawCodes.flatMap { $0.split(separator: ";") }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !codes.isEmpty else { return nil }
+        let normalizedCodes = codes.map { code in
+            String(code.split(separator: ":").last ?? Substring(code)).uppercased()
+        }
+        let displayCode = codes.joined(separator: ", ")
+        let speed = SpeedLimitParser.parse(tags["maxspeed"] ?? tags["traffic_sign:maxspeed"])
+        let knownTypes: [(Set<String>, RoadAlertType)] = [
+            (["D-51"], .speedCamera),
+            (["D-51A"], .averageSpeedStart),
+            (["D-51B"], .averageSpeedEnd),
+            (["B-20"], .stopSign),
+            (["A-7"], .giveWaySign),
+            (["B-2"], .noEntrySign),
+            (["B-25"], .noOvertakingSign),
+            (["B-33", "B-34", "MAXSPEED"], .speedLimitSign),
+            (["B-16"], .heightLimitSign),
+            (["B-18", "B-5"], .weightLimitSign),
+            (["D-40", "D-41", "D-42", "D-43"], .trafficZoneSign)
+        ]
+        let type = knownTypes.first { entry in
+            normalizedCodes.contains(where: { entry.0.contains($0) })
+        }?.1
+            ?? .trafficSign
+        return (type, displayCode, speed)
     }
 }
 

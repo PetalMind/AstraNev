@@ -14,11 +14,13 @@ struct AppDependencies {
         let configuredAddress = UserDefaults.standard.string(forKey: "routingServer") ?? ""
         let endpoint = URL(string: configuredAddress)
             ?? URL(string: "https://valhalla1.openstreetmap.de")!
-        let transitProvider = TransitRouteProvider(walkingRoutingEndpoint: endpoint)
+        let transitProvider = TransitousRouteProvider()
+        let transitDataProvider = LocalTransitDataProvider()
         let navigationDependencies = NavigationSessionDependencies.live(
             routeEndpoint: endpoint,
             trafficAPIKey: TrafficCredential.read(),
-            transitProvider: transitProvider)
+            transitProvider: transitProvider,
+            transitDataProvider: transitDataProvider)
         let placeStore = PlaceStore()
         let navigationStore = NavigationStore(
             session: NavigationSession(dependencies: navigationDependencies))
@@ -26,9 +28,9 @@ struct AppDependencies {
             router: AppRouter(),
             navigationStore: navigationStore,
             placeStore: placeStore,
-            searchStore: SearchStore(transitRepository: transitProvider),
+            searchStore: SearchStore(transitRepository: transitDataProvider),
             routePlanningStore: RoutePlanningStore(),
-            transitStore: TransitStore(repository: transitProvider),
+            transitStore: TransitStore(repository: transitDataProvider),
             mapStore: MapStore())
     }
 }

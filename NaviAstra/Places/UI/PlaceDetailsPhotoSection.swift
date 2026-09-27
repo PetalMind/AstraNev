@@ -9,6 +9,7 @@ struct PlaceDetailsPhotoSection: View {
     let isLoadingDetails: Bool
     let category: String
     let brandName: String
+    let photoHeight: CGFloat
     let onRetry: () -> Void
     let onOpenLookAround: () -> Void
     let onPlacePhotoLoadFailure: () async -> Void
@@ -56,7 +57,7 @@ struct PlaceDetailsPhotoSection: View {
                     }
                 }
                 .frame(maxWidth: .infinity)
-                .frame(height: 184)
+                .frame(height: photoHeight)
                 .clipped()
 
 #if os(iOS)

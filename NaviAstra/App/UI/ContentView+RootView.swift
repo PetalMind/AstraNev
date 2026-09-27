@@ -32,12 +32,14 @@ extension ContentView {
             onTransitVehicleSelect: { openTransitVehicle($0) },
             onParkedCarSelect: { openParkedCarDetails() },
             onCyclingPathsStatus: { mapStore.cyclingPathsStatus = $0 },
-            onMapReady: revealMapSplash,
             onMapPan: {
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
                     routePreviewDetent = .peek
                     destinationExpanded = false
                     navigationPanelDetent = .peek
+                    if !placeStore.selectedMapPlaces.isEmpty {
+                        selectedMapPlaceDetent = .peek
+                    }
                 }
                 if navigationState.destination == nil {
                     discoveryDrawerCollapseRequest += 1
@@ -102,6 +104,7 @@ extension ContentView {
 
     private var isMapBottomSheetExpanded: Bool {
 #if os(iOS)
+        if !placeStore.selectedMapPlaces.isEmpty { return selectedMapPlaceDetent == .expanded }
         if shouldShowDiscoveryDrawer { return discoverySheetDetent == .expanded }
         if isIOSRoutePlanningPreview { return routePreviewDetent == .expanded }
         if isNavigating { return navigationPanelDetent == .expanded }
@@ -148,6 +151,22 @@ extension ContentView {
 
     @ViewBuilder
     private func navigationMapPanel(in geometry: GeometryProxy) -> some View {
+#if os(iOS)
+        if !placeStore.selectedMapPlaces.isEmpty {
+            selectedMapPlacesBottomSheet(
+                maxHeight: min(geometry.size.height * 0.88,
+                               max(220, geometry.size.height - mapHeaderInset - 28)),
+                bottomInset: geometry.safeAreaInsets.bottom)
+        } else {
+            standardNavigationMapPanel(in: geometry)
+        }
+#else
+        standardNavigationMapPanel(in: geometry)
+#endif
+    }
+
+    @ViewBuilder
+    private func standardNavigationMapPanel(in geometry: GeometryProxy) -> some View {
         if shouldShowDiscoveryDrawer {
             DiscoveryDrawer(
                 maximumHeight: max(160, min(geometry.size.height * 0.88,
@@ -167,7 +186,8 @@ extension ContentView {
             if isNavigating {
                 journeyNavigationPanel(
                     maxHeight: min(geometry.size.height * 0.88,
-                                   max(220, geometry.size.height - mapHeaderInset - 28)))
+                                   max(220, geometry.size.height - mapHeaderInset - 28)),
+                    bottomInset: geometry.safeAreaInsets.bottom)
             } else {
                 activeScrollableMapPanel(in: geometry)
             }
@@ -217,7 +237,6 @@ extension ContentView {
             mapTopGradient
             mapInteractionLayer
             cyclingMapAttribution
-            mapLoadingOverlay
             parkedCarActionOverlay
             parkedCarToastOverlay
         }
@@ -266,15 +285,6 @@ extension ContentView {
         }
     }
 
-    @ViewBuilder
-    private var mapLoadingOverlay: some View {
-        if !isMapReady {
-            MapLoadingSplash()
-                .transition(.opacity)
-                .zIndex(1)
-        }
-    }
-
     private var parkedCarActionOverlay: some View {
         parkedCarFloatingAction
             .frame(maxWidth: 560, maxHeight: .infinity, alignment: .bottomTrailing)
@@ -300,7 +310,13 @@ extension ContentView {
 
     private var selectedMapPlacesSheetBinding: Binding<Bool> {
         Binding(
-            get: { !placeStore.selectedMapPlaces.isEmpty },
+            get: {
+#if os(iOS)
+                false
+#else
+                !placeStore.selectedMapPlaces.isEmpty
+#endif
+            },
             set: { isPresented in
                 if !isPresented { placeStore.selectedMapPlaces = [] }
             })
@@ -317,6 +333,65 @@ extension ContentView {
         guard openDestinationSearchAfterPlaceDismiss else { return }
         openDestinationSearchAfterPlaceDismiss = false
         presentSearch()
+    }
+
+    private func dismissSelectedMapPlaces() {
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+            placeStore.selectedMapPlaces = []
+        }
+    }
+
+    private func selectedMapPlacesBottomSheet(maxHeight: CGFloat, bottomInset: CGFloat = 0) -> some View {
+        NavigationBottomSheet(detent: $selectedMapPlaceDetent,
+                              maximumHeight: maxHeight,
+                              accessibilityLabel: "Szczegóły miejsca",
+                              appearance: .discovery,
+                              isDragging: $isMapBottomSheetDragging,
+                              mediumHeightFraction: 0.58,
+                              onClose: dismissSelectedMapPlaces,
+                              closeAccessibilityLabel: "Zamknij szczegóły miejsca") { detent, _ in
+            Group {
+                if detent == .peek {
+                    selectedMapPlacesPeek
+                } else if placeStore.selectedMapPlaces.count > 1 {
+                    selectedMapPlacesChoices
+                } else if let result = placeStore.selectedMapPlaces.first {
+                    selectedMapPlaceDetails(for: result,
+                                            presentation: detent == .expanded ? .full : .medium,
+                                            embeddedInBottomSheet: true,
+                                            showsPrimaryAction: false)
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, detent == .peek ? 4 : 10)
+            .padding(.bottom, detent == .peek ? 4 : 18)
+        } footer: { detent, _ in
+            if detent != .peek,
+               placeStore.selectedMapPlaces.count == 1,
+               let result = placeStore.selectedMapPlaces.first {
+                Button {
+                    planRoute(from: result)
+                } label: {
+                    Label(isNavigating ? "Dodaj przystanek" : "Wyznacz trasę",
+                          systemImage: isNavigating ? "plus" : "arrow.triangle.turn.up.right.diamond")
+                        .font(.headline.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 54)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .padding(.horizontal, 18)
+                .padding(.top, 8)
+                .padding(.bottom, max(12, min(22, bottomInset * 0.55)))
+                .background(.ultraThinMaterial)
+            } else {
+                EmptyView()
+            }
+        }
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+        .onDisappear {
+            mapPlaceEstimateTask?.cancel()
+            handleSelectedMapPlacesSheetDismissal()
+        }
     }
 
     private var rootPreferredColorScheme: ColorScheme? {
@@ -378,9 +453,6 @@ extension ContentView {
                 navigationStore.onTripFinished = { trip in placeStore.addTrip(trip) }
                 navigationStore.setAppIsForeground(scenePhase == .active)
                 navigationStore.startLocation()
-                try? await Task.sleep(nanoseconds: 12_000_000_000)
-                guard !Task.isCancelled, !isMapReady else { return }
-                revealMapSplash()
             }
             .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
                 Task { @MainActor in mapStore.reloadFromDefaults() }

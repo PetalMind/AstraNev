@@ -1,44 +1,16 @@
 import Foundation
 
-protocol TransitRouteProviding: Sendable {
+protocol TransitRouteProvider: Sendable {
     var region: TransitRegion { get }
 
-    func usingWalkingRoutingEndpoint(_ endpoint: URL) -> TransitRouteProviding
-
-    func calculateRoutes(
+    func routes(
         from: Coordinate,
         to: Coordinate,
-        parkRide: Bool,
-        departingAt: Date,
-        onProgress: TransitPlanningProgressHandler?,
-        onProvisionalRoutes: TransitProvisionalRoutesHandler?
-    ) async throws -> [NavigationRoute]
-
-    func calculateRoutes(
-        from: Coordinate,
-        to: Coordinate,
-        departingAt: Date,
-        onProgress: TransitPlanningProgressHandler?,
-        onProvisionalRoutes: TransitProvisionalRoutesHandler?,
+        time: Date,
+        arriveBy: Bool,
+        preferences: TransitRoutePreferences,
         cancellationToken: TransitPlanningCancellationToken?
-    ) async throws -> [NavigationRoute]
-
-    func calculateRoutesArrivingBy(
-        from: Coordinate,
-        to: Coordinate,
-        deadline: Date,
-        onProgress: TransitPlanningProgressHandler?,
-        shouldContinue: @escaping TransitPlanningContinuation
-    ) async throws -> [NavigationRoute]
-
-    func calculateRoutesArrivingBy(
-        from: Coordinate,
-        to: Coordinate,
-        deadline: Date,
-        onProgress: TransitPlanningProgressHandler?,
-        shouldContinue: @escaping TransitPlanningContinuation,
-        cancellationToken: TransitPlanningCancellationToken?
-    ) async throws -> [NavigationRoute]
+    ) async throws -> [TransitJourney]
 }
 
 protocol TransitDataProviding: Sendable {
@@ -75,102 +47,34 @@ extension TransitDataProviding {
     }
 }
 
-extension TransitRouteProviding {
-    func calculateRoutes(from: Coordinate, to: Coordinate, departingAt: Date,
-                         onProgress: TransitPlanningProgressHandler?,
-                         onProvisionalRoutes: TransitProvisionalRoutesHandler?,
-                         cancellationToken: TransitPlanningCancellationToken?) async throws -> [NavigationRoute] {
-        try cancellationToken?.checkCancellation()
-        let routes = try await calculateRoutes(from: from, to: to, parkRide: false,
-                                               departingAt: departingAt, onProgress: onProgress,
-                                               onProvisionalRoutes: onProvisionalRoutes)
-        try cancellationToken?.checkCancellation()
-        return routes
-    }
+enum TransitRouteError: Error, LocalizedError, Equatable {
+    case noRoute
+    case network
+    case timeout
+    case invalidResponse
+    case decoding
+    case rateLimited(retryAfter: TimeInterval?)
+    case serviceUnavailable
+    case contactRequired
 
-    func calculateRoutesArrivingBy(
-        from: Coordinate,
-        to: Coordinate,
-        deadline: Date,
-        onProgress: TransitPlanningProgressHandler?,
-        shouldContinue: @escaping TransitPlanningContinuation,
-        cancellationToken: TransitPlanningCancellationToken?
-    ) async throws -> [NavigationRoute] {
-        try cancellationToken?.checkCancellation()
-        let routes = try await calculateRoutesArrivingBy(from: from, to: to, deadline: deadline,
-                                                         onProgress: onProgress,
-                                                         shouldContinue: shouldContinue)
-        try cancellationToken?.checkCancellation()
-        return routes
-    }
-
-    func usingWalkingRoutingEndpoint(_ endpoint: URL) -> TransitRouteProviding {
-        self
-    }
-
-    func calculateRoutes(from: Coordinate, to: Coordinate,
-                         departingAt: Date) async throws -> [NavigationRoute] {
-        try await calculateRoutes(from: from, to: to, parkRide: false,
-                                  departingAt: departingAt, onProgress: nil,
-                                  onProvisionalRoutes: nil)
-    }
-
-    func calculateRoutes(from: Coordinate, to: Coordinate,
-                         departingAt: Date,
-                         onProgress: TransitPlanningProgressHandler?) async throws -> [NavigationRoute] {
-        try await calculateRoutes(from: from, to: to, parkRide: false,
-                                  departingAt: departingAt, onProgress: onProgress,
-                                  onProvisionalRoutes: nil)
-    }
-
-    func calculateRoutes(from: Coordinate, to: Coordinate,
-                         departingAt: Date,
-                         onProgress: TransitPlanningProgressHandler?,
-                         onProvisionalRoutes: TransitProvisionalRoutesHandler?) async throws -> [NavigationRoute] {
-        try await calculateRoutes(from: from, to: to, parkRide: false,
-                                  departingAt: departingAt, onProgress: onProgress,
-                                  onProvisionalRoutes: onProvisionalRoutes)
-    }
-
-    func calculateRoutesArrivingBy(
-        from: Coordinate,
-        to: Coordinate,
-        deadline: Date,
-        onProgress: TransitPlanningProgressHandler?,
-        shouldContinue: @escaping TransitPlanningContinuation
-    ) async throws -> [NavigationRoute] {
-        var lowerDeparture = deadline.addingTimeInterval(-18 * 60 * 60)
-        var upperDeparture = deadline
-        var bestRoutes: [NavigationRoute] = []
-        for _ in 0..<10 {
-            guard await shouldContinue() else { throw CancellationError() }
-            let interval = upperDeparture.timeIntervalSince(lowerDeparture)
-            guard interval > 60 else { break }
-            let departure = lowerDeparture.addingTimeInterval(interval / 2)
-            do {
-                let candidates = try await calculateRoutes(
-                    from: from, to: to, parkRide: false, departingAt: departure,
-                    onProgress: onProgress, onProvisionalRoutes: nil)
-                let eligible = candidates.filter { ($0.journey?.arrival ?? .distantFuture) <= deadline }
-                    .sorted(by: TransitCandidateRanker.latestDepartureComesBefore)
-                if let latest = eligible.first {
-                    if bestRoutes.first.map({
-                        TransitCandidateRanker.latestDepartureComesBefore(latest, $0)
-                    }) ?? true {
-                        bestRoutes = eligible
-                    }
-                    lowerDeparture = departure
-                } else {
-                    upperDeparture = departure
-                }
-            } catch TransitRoutingError.noJourney {
-                upperDeparture = departure
-            } catch TransitRoutingError.noJourneyBeforeArrivalDeadline {
-                upperDeparture = departure
-            }
+    var errorDescription: String? {
+        switch self {
+        case .noRoute:
+            "Nie znaleziono połączenia dla wybranej godziny."
+        case .network:
+            "Nie udało się połączyć z usługą Transitous. Sprawdź połączenie z internetem."
+        case .timeout:
+            "Usługa Transitous nie odpowiedziała na czas. Spróbuj ponownie później."
+        case .invalidResponse:
+            "Usługa Transitous zwróciła nieprawidłową odpowiedź."
+        case .decoding:
+            "Nie udało się odczytać odpowiedzi usługi Transitous."
+        case .rateLimited:
+            "Transitous ograniczył liczbę żądań. Poczekaj przed kolejną próbą."
+        case .serviceUnavailable:
+            "Usługa Transitous jest chwilowo niedostępna."
+        case .contactRequired:
+            "Uzupełnij kontakt aplikacji wymagany przez Transitous."
         }
-        guard await shouldContinue() else { throw CancellationError() }
-        guard !bestRoutes.isEmpty else { throw TransitRoutingError.noJourneyBeforeArrivalDeadline }
-        return bestRoutes
     }
 }

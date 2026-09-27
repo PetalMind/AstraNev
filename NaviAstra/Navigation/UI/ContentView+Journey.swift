@@ -13,39 +13,24 @@ extension ContentView {
 #endif
     }
 
-    func journeyNavigationPanel(maxHeight: CGFloat = 560) -> some View {
+    func journeyNavigationPanel(maxHeight: CGFloat = 560, bottomInset: CGFloat = 0) -> some View {
         NavigationBottomSheet(detent: $navigationPanelDetent,
                               maximumHeight: maxHeight,
                               accessibilityLabel: "Panel prowadzenia",
-                              isDragging: $isMapBottomSheetDragging) { detent, progress in
+                              isDragging: $isMapBottomSheetDragging,
+                              mediumHeightFraction: 0.42) { detent, _ in
             VStack(spacing: 0) {
-                Button {
-                    navigationPanelDetent = switch detent {
-                    case .peek: .medium
-                    case .medium: .expanded
-                    case .expanded: .medium
-                    }
-                } label: {
-                    HStack(spacing: 0) {
-                        journeySummaryMetric(value: time(navigationStore.state.progress?.remainingTime ?? 0), caption: "do celu")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        journeySummaryMetric(value: distance(navigationStore.state.progress?.remainingDistance ?? 0), caption: "pozostało")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        journeySummaryMetric(value: arrivalTime(navigationStore.state.progress?.remainingTime ?? 0), caption: navigationArrivalCaption)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Image(systemName: detent == .expanded ? "chevron.down" : "chevron.up")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Color.white.opacity(0.66))
-                            .padding(.leading, 8)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 18)
-                .padding(.top, 4)
-                .accessibilityLabel(detent == .expanded ? "Zwiń panel prowadzenia" : "Rozwiń panel prowadzenia")
+                journeyCompactGuidance(detent: detent)
+                    .padding(.horizontal, 18)
+                    .padding(.top, detent == .peek ? 0 : 4)
 
-                if detent != .peek {
+                if detent == .medium, navigationStore.state.destination != nil {
+                    journeyMediumDestinationSummary
+                        .padding(.horizontal, 18)
+                        .padding(.top, 8)
+                }
+
+                if detent == .expanded {
                     if navigationStore.state.transportMode == .transit, let transitLeg = activeTransitLeg {
                         Group {
                             if transitLeg.mode == "WALK" {
@@ -55,15 +40,27 @@ extension ContentView {
                             }
                         }
                         .padding(.horizontal, 18)
-                        .padding(.top, 16)
+                        .padding(.top, 14)
                     } else {
                         journeyDestinationRow
                             .padding(.horizontal, 18)
-                            .padding(.top, 16)
+                            .padding(.top, 14)
                     }
-                }
 
-                if detent == .expanded {
+                    if showsRoadManeuverTimeline {
+                        journeyRoadManeuverTimeline
+                            .padding(.horizontal, 18)
+                            .padding(.top, 14)
+                    } else if navigationStore.state.transportMode == .transit {
+                        transitJourneyTimeline
+                            .padding(.horizontal, 18)
+                            .padding(.top, 14)
+                    } else if navigationStore.state.transportMode == .parkRide {
+                        parkRideJourneyTimeline
+                            .padding(.horizontal, 18)
+                            .padding(.top, 14)
+                    }
+
                     VStack(alignment: .leading, spacing: 10) {
                         Rectangle()
                             .fill(Color.white.opacity(0.11))
@@ -75,37 +72,360 @@ extension ContentView {
 
                         journeyActionsGrid
 
-                        if navigationStore.state.transportMode == .transit {
-                            transitJourneyTimeline
-                        } else if navigationStore.state.transportMode == .parkRide {
-                            parkRideJourneyTimeline
-                        }
                     }
                     .padding(.horizontal, 18)
                     .padding(.top, 14)
                     .padding(.bottom, 18)
                 }
             }
-            .padding(.bottom, 10)
-            .opacity(detent == .peek ? 1 : max(0.82, progress))
+            .padding(.bottom, detent == .peek ? 2 : 10)
         } footer: { detent, _ in
             if detent == .peek {
                 EmptyView()
             } else {
                 HStack(spacing: 8) {
-                    journeyFooterAction(symbol: "arrow.triangle.branch", title: "Przegląd\ntrasy") {
-                        navigationStore.showRouteOverview()
-                        navigationPanelDetent = .medium
-                    }
-                    journeyFooterAction(symbol: "stop.circle.fill", title: "Zakończ\nnawigację", destructive: true) {
-                        navigationStore.stop()
-                    }
+                    journeyETASummaryAction
+                    journeyTripOptionsMenu
                 }
                 .padding(.horizontal, 18)
                 .padding(.top, 8)
-                .padding(.bottom, 14)
+                .padding(.bottom, max(12, min(22, bottomInset * 0.55)))
             }
         }
+    }
+
+    private func journeyCompactGuidance(detent: NavigationBottomSheetDetent) -> some View {
+        Button {
+            navigationPanelDetent = switch navigationPanelDetent {
+            case .peek: .medium
+            case .medium: .expanded
+            case .expanded: .medium
+            }
+        } label: {
+            Group {
+                if navigationStore.state.transportMode == .transit {
+                    transitNavigationHeader
+                } else if let progress = navigationStore.state.progress,
+                          let maneuver = progress.nextManeuver {
+                    HStack(spacing: 12) {
+                        Image(systemName: maneuver.iconName)
+                            .font(.system(size: 19, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 42, height: 42)
+                            .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(distance(progress.distanceToNextManeuver))
+                                .font(.system(size: 20, weight: .bold, design: .rounded).monospacedDigit())
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                            Text(maneuver.displayInstruction)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(Color.white.opacity(0.72))
+                                .lineLimit(1)
+                            if let streetLine = maneuver.streetLine {
+                                Text(streetLine)
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(Color.white.opacity(0.54))
+                                    .lineLimit(1)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                        if detent != .peek && navigationStore.state.transportMode == .car {
+                            laneGuidance
+                        } else if detent == .peek, let remainingTime = journeyRemainingTime {
+                            journeyPeekArrival(remainingTime)
+                        }
+                    }
+                } else if let progress = navigationStore.state.progress {
+                    HStack(spacing: 0) {
+                        journeySummaryMetric(value: time(progress.remainingTime), caption: "do celu")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        journeySummaryMetric(value: distance(progress.remainingDistance), caption: "pozostało")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        journeySummaryMetric(value: arrivalTime(progress.remainingTime), caption: navigationArrivalCaption)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } else {
+                    Text("Oczekiwanie na dane prowadzenia")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(Color.white.opacity(0.68))
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint(detent == .expanded
+                           ? "Zwiń panel prowadzenia"
+                           : "Rozwiń panel prowadzenia")
+        .accessibilityElement(children: .combine)
+    }
+
+    private func journeyPeekArrival(_ remainingTime: TimeInterval) -> some View {
+        VStack(alignment: .trailing, spacing: 1) {
+            Text(arrivalTime(remainingTime))
+                .font(.system(size: 14, weight: .bold, design: .rounded).monospacedDigit())
+                .foregroundStyle(.white)
+                .lineLimit(1)
+            Text(navigationArrivalCaption)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.58))
+                .lineLimit(1)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var journeyRemainingTime: TimeInterval? {
+        if navigationStore.state.transportMode == .transit,
+           let arrival = navigationStore.state.route?.journey?.arrival {
+            return max(0, arrival.timeIntervalSinceNow)
+        }
+        return navigationStore.state.progress?.remainingTime
+    }
+
+    private var journeyMediumDestinationSummary: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "flag.checkered")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 30, height: 30)
+                .background(Color.accentColor.opacity(0.13), in: RoundedRectangle(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Cel podróży")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.56))
+                Text(navigationStore.state.destination?.name ?? "")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var showsRoadManeuverTimeline: Bool {
+        switch navigationStore.state.transportMode {
+        case .car, .walking, .bicycle: true
+        case .transit, .parkRide: false
+        }
+    }
+
+    private var upcomingRoadManeuvers: [Maneuver] {
+        guard let route = navigationStore.state.route, !route.maneuvers.isEmpty else { return [] }
+        guard let progress = navigationStore.state.progress,
+              progress.geometryRouteID == route.id else { return route.maneuvers }
+        guard let nextManeuver = progress.nextManeuver,
+              let index = route.maneuvers.firstIndex(where: { $0.id == nextManeuver.id }) else { return [] }
+        return Array(route.maneuvers.dropFirst(index))
+    }
+
+    private var journeyRoadManeuverStartShapeIndex: Int {
+        guard let route = navigationStore.state.route,
+              let progress = navigationStore.state.progress,
+              progress.geometryRouteID == route.id,
+              let current = progress.nextManeuver else { return 0 }
+        return current.shapeIndex
+    }
+
+    @ViewBuilder
+    private var journeyRoadManeuverTimeline: some View {
+        if let route = navigationStore.state.route {
+            if route.maneuvers.isEmpty {
+                Label("Instrukcje manewrów niedostępne", systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(Color.white.opacity(0.58))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 4)
+            } else {
+                let maneuvers = upcomingRoadManeuvers
+                if !maneuvers.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Przebieg trasy")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.9))
+
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(maneuvers.enumerated()), id: \.element.id) { index, maneuver in
+                                let previousShapeIndex = index == 0
+                                    ? journeyRoadManeuverStartShapeIndex
+                                    : maneuvers[index - 1].shapeIndex
+                                let isCurrentManeuver = navigationStore.state.progress?.geometryRouteID == route.id
+                                    && navigationStore.state.progress?.nextManeuver?.id == maneuver.id
+                                let currentDistance = isCurrentManeuver
+                                    ? navigationStore.state.progress?.distanceToNextManeuver
+                                    : nil
+                                journeyRoadManeuverRow(
+                                    maneuver,
+                                    distanceToStep: currentDistance ?? routeDistance(
+                                        from: previousShapeIndex,
+                                        through: maneuver.shapeIndex,
+                                        on: route.coordinates),
+                                    isCurrent: isCurrentManeuver)
+
+                                if index < maneuvers.count - 1 {
+                                    Rectangle()
+                                        .fill(Color.white.opacity(0.15))
+                                        .frame(width: 2, height: 12)
+                                        .padding(.leading, 15)
+                                }
+                            }
+                        }
+                    }
+                    .padding(14)
+                    .modifier(NavigationGlassSurface(radius: 19))
+                }
+            }
+        }
+    }
+
+    private func journeyRoadManeuverRow(_ maneuver: Maneuver,
+                                       distanceToStep: Double?,
+                                       isCurrent: Bool) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: maneuver.iconName)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(isCurrent ? Color.accentColor : Color.white.opacity(0.7))
+                .frame(width: 32, height: 32)
+                .background(isCurrent ? Color.accentColor.opacity(0.13) : Color.white.opacity(0.055),
+                            in: RoundedRectangle(cornerRadius: 10))
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(maneuver.displayInstruction)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 4)
+                    if isCurrent {
+                        Text("Teraz")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                    } else if let distanceToStep, distanceToStep > 0 {
+                        Text(distance(distanceToStep))
+                            .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
+                            .foregroundStyle(Color.white.opacity(0.58))
+                            .lineLimit(1)
+                    }
+                }
+                if let streetLine = maneuver.streetLine {
+                    Text(streetLine)
+                        .font(.caption)
+                        .foregroundStyle(Color.white.opacity(0.58))
+                        .lineLimit(1)
+                }
+            }
+            .padding(.top, 2)
+        }
+        .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func routeDistance(from startIndex: Int, through endIndex: Int,
+                               on coordinates: [Coordinate]) -> Double? {
+        guard startIndex >= 0, endIndex > startIndex,
+              endIndex < coordinates.count else { return nil }
+        var totalDistance = 0.0
+        for index in startIndex..<endIndex {
+            totalDistance += coordinates[index].distance(to: coordinates[index + 1])
+        }
+        return totalDistance
+    }
+
+    private var journeyETASummaryAction: some View {
+        let remainingTime = journeyRemainingTime
+        let remainingDistance = navigationStore.state.progress?.remainingDistance
+        let isExpanded = navigationPanelDetent == .expanded
+
+        return Button {
+            navigationPanelDetent = isExpanded ? .medium : .expanded
+        } label: {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(remainingTime.map(arrivalTime) ?? "—")
+                        .font(.system(size: 18, weight: .bold, design: .rounded).monospacedDigit())
+                        .lineLimit(1)
+                    Text(journeyETASubtitle(time: remainingTime, distance: remainingDistance))
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Color.white.opacity(0.65))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.up")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.white.opacity(0.62))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 13)
+            .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+            .modifier(NavigationGlassSurface(radius: 16, interactive: true))
+            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(journeyETAAccessibilityLabel(time: remainingTime, distance: remainingDistance))
+        .accessibilityHint(isExpanded ? "Zwiń panel prowadzenia" : "Rozwiń panel prowadzenia")
+    }
+
+    private func journeyETASubtitle(time remainingTime: TimeInterval?, distance remainingDistance: Double?) -> String {
+        switch (remainingTime, remainingDistance) {
+        case let (remainingTime?, remainingDistance?):
+            "\(time(remainingTime)) · \(distance(remainingDistance)) do celu"
+        case let (remainingTime?, nil):
+            "\(time(remainingTime)) do celu"
+        case let (nil, remainingDistance?):
+            "\(distance(remainingDistance)) pozostało"
+        case (nil, nil):
+            "Dane ETA niedostępne"
+        }
+    }
+
+    private func journeyETAAccessibilityLabel(time remainingTime: TimeInterval?, distance remainingDistance: Double?) -> String {
+        switch (remainingTime, remainingDistance) {
+        case let (remainingTime?, remainingDistance?):
+            "Przyjazd o \(arrivalTime(remainingTime)), pozostało \(distance(remainingDistance)) i \(time(remainingTime))"
+        case let (remainingTime?, nil):
+            "Przyjazd o \(arrivalTime(remainingTime)), pozostało \(time(remainingTime))"
+        case let (nil, remainingDistance?):
+            "Pozostało \(distance(remainingDistance))"
+        case (nil, nil):
+            "Dane przyjazdu niedostępne"
+        }
+    }
+
+    private var journeyTripOptionsMenu: some View {
+        Menu {
+            Section("Podróż") {
+                Button("Przegląd trasy", systemImage: "map") {
+                    navigationStore.showRouteOverview()
+                    navigationPanelDetent = .medium
+                }
+
+                if supportsActiveTripWaypoints {
+                    Button("Dodaj przystanek", systemImage: "plus.circle") {
+                        addingWaypoint = true
+                        appRouter.present(.search)
+                    }
+                    .disabled(navigationStore.state.waypoints.count >= 8)
+                }
+            }
+
+            Button(role: .destructive) {
+                navigationStore.stop()
+            } label: {
+                Label("Zakończ nawigację", systemImage: "stop.circle")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.85))
+                .frame(width: 48, height: 48)
+                .modifier(NavigationGlassSurface(radius: 16, interactive: true))
+                .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Więcej opcji podróży")
     }
 
     var journeyDestinationRow: some View {
@@ -153,35 +473,6 @@ extension ContentView {
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    func journeyFooterAction(symbol: String, title: String, destructive: Bool = false,
-                                     action: @escaping () -> Void) -> some View {
-        Button(role: destructive ? .destructive : nil, action: action) {
-            HStack(spacing: 7) {
-                Image(systemName: symbol)
-                    .font(.system(size: 19, weight: .semibold))
-                Text(title)
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.8)
-            }
-            .foregroundStyle(destructive ? Color.red : Color.white.opacity(0.67))
-            .frame(maxWidth: .infinity, minHeight: 60)
-            .padding(.horizontal, 7)
-            .background {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(destructive ? Color.red.opacity(0.1) : Color.white.opacity(0.025))
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(destructive ? Color.red.opacity(0.24) : Color.white.opacity(0.08), lineWidth: 1)
-            }
-            .modifier(NavigationGlassSurface(radius: 18, interactive: true))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(title.replacingOccurrences(of: "\n", with: " "))
-    }
-
     @ViewBuilder
     var journeyActionsGrid: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 8)], spacing: 8) {
@@ -201,6 +492,7 @@ extension ContentView {
                     journeyActionLabel("Po trasie", symbol: "magnifyingglass")
                 }
             }
+#if os(macOS)
             if supportsActiveTripWaypoints {
                 Button {
                     addingWaypoint = true
@@ -210,7 +502,6 @@ extension ContentView {
                 }
                 .disabled(navigationStore.state.waypoints.count >= 8)
             }
-            #if os(macOS)
             Button {
                 navigationStore.showRouteOverview()
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
@@ -219,7 +510,7 @@ extension ContentView {
             } label: {
                 journeyActionLabel("Cała trasa", symbol: "map")
             }
-            #endif
+#endif
             if supportsActiveTripRoadPreferences {
                 Button {
                     routePlanningStore.loadPreferences(from: navigationStore)
@@ -426,6 +717,11 @@ extension ContentView {
     }
 
     func transitRealtimeStatus(for journey: Journey) -> String {
+        if journey.sourceID != nil {
+            return journey.realtimeFeedAvailable
+                ? "Dane realtime zwrócone przez Transitous"
+                : "Aktualne odjazdy według rozkładu Transitous"
+        }
         let time = journey.realtimeFeedUpdatedAt?.formatted(date: .omitted, time: .shortened)
         switch journey.realtimeFreshness {
         case .live:
@@ -760,16 +1056,31 @@ extension ContentView {
                         let stopsRemaining = tracking?.stopsUntilAlighting ?? upcomingStops.count
                         let isStopsExpanded = expandedTransitTimelineLegID == leg.id
                         HStack(alignment: .top, spacing: 11) {
-                            Image(systemName: leg.mode == "WALK" ? "figure.walk"
-                                : leg.mode == "RAIL" ? "train.side.front.car"
-                                : leg.mode == "TRAM" ? "tram.fill" : "bus.fill")
+                            Image(systemName: transitLegSymbol(for: leg))
                                 .font(.system(size: 14, weight: .semibold)).foregroundStyle(Color.accentColor)
                                 .frame(width: 30, height: 30)
                                 .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 9))
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(leg.mode == "WALK" ? "Idź do \(leg.to)" : "\(leg.line ?? "MPK") · \(leg.to)")
-                                    .font(.subheadline.weight(.semibold))
-                                Text("\(leg.departure.formatted(date: .omitted, time: .shortened)) · \(leg.from)")
+                                if leg.mode == "WALK" {
+                                    Text("Idź do \(leg.to)")
+                                        .font(.subheadline.weight(.semibold))
+                                } else {
+                                    HStack(spacing: 7) {
+                                        Text(leg.line ?? "Komunikacja")
+                                            .font(.caption.weight(.bold).monospacedDigit())
+                                            .foregroundStyle(.white)
+                                            .padding(.horizontal, 7).padding(.vertical, 4)
+                                            .background(mapTransitColor(leg.lineColorHex ?? 0x2867B2),
+                                                        in: RoundedRectangle(cornerRadius: 7))
+                                        Text(leg.direction ?? leg.to)
+                                            .font(.subheadline.weight(.semibold))
+                                            .lineLimit(1)
+                                    }
+                                    if let operatorName = leg.operatorName, !operatorName.isEmpty {
+                                        Text(operatorName).font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                }
+                                Text("\(transitLegTimeDescription(leg)) · \(leg.from) → \(leg.to)")
                                     .font(.caption).foregroundStyle(.secondary)
                                 if leg.mode != "WALK", !leg.transitStops.isEmpty {
                                     Button {
@@ -823,6 +1134,37 @@ extension ContentView {
                     }
                 }
             }
+        }
+    }
+
+    func transitLegTimeDescription(_ leg: JourneyLeg) -> String {
+        func time(_ date: Date) -> String { date.formatted(date: .omitted, time: .shortened) }
+        let departure: String
+        if let planned = leg.scheduledDeparture,
+           abs(leg.departure.timeIntervalSince(planned)) >= 30 {
+            departure = "\(time(planned)) plan. → \(time(leg.departure)) est."
+        } else {
+            departure = time(leg.departure)
+        }
+        let arrival: String
+        if let planned = leg.scheduledArrival,
+           abs(leg.arrival.timeIntervalSince(planned)) >= 30 {
+            arrival = "\(time(planned)) plan. → \(time(leg.arrival)) est."
+        } else {
+            arrival = time(leg.arrival)
+        }
+        return "\(departure)–\(arrival)"
+    }
+
+    func transitLegSymbol(for leg: JourneyLeg) -> String {
+        switch leg.mode.uppercased() {
+        case "WALK": "figure.walk"
+        case "TRAM": "tram.fill"
+        case "RAIL", "REGIONAL_RAIL", "REGIONAL_FAST_RAIL", "SUBURBAN", "SUBWAY", "METRO",
+             "LONG_DISTANCE", "NIGHT_RAIL", "HIGHSPEED_RAIL": "train.side.front.car"
+        case "FERRY": "ferry.fill"
+        case "BIKE": "bicycle"
+        default: "bus.fill"
         }
     }
 

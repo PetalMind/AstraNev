@@ -35,7 +35,7 @@ private struct TrafficMapEvent {
         id = "alert:\(alert.id)"
         coordinate = alert.coordinate
         title = alert.title
-        subtitle = "\(alert.distanceText(from: routeDistance)) · © OpenStreetMap contributors"
+        subtitle = alert.mapSubtitle(from: routeDistance)
         categoryLabel = alert.type.title
         presentation = TrafficMapPresentation(alert)
     }
@@ -66,7 +66,6 @@ struct MapLibreView: UIViewRepresentable {
     var onTransitVehicleSelect: (TransitVehicle) -> Void { scene.commands.onTransitVehicleSelect }
     var onParkedCarSelect: () -> Void { scene.commands.onParkedCarSelect }
     var onCyclingPathsStatus: (OSMCyclingPathsStatus) -> Void { scene.commands.onCyclingPathsStatus }
-    var onMapReady: () -> Void { scene.commands.onMapReady }
     var onMapPan: () -> Void { scene.commands.onMapPan }
     var onLongPress: (Coordinate) -> Void { scene.commands.onLongPress }
     @Environment(\.colorScheme) private var colorScheme
@@ -326,7 +325,6 @@ struct MapLibreView: UIViewRepresentable {
             updatePOIDensity(on: mapView)
             updateCyclingPaths(on: mapView)
             applyCameraIntent(to: mapView)
-            parent.onMapReady()
         }
 
         func mapViewRegionIsChanging(_ mapView: MLNMapView) {
@@ -441,11 +439,13 @@ struct MapLibreView: UIViewRepresentable {
             routeLayerRenderer.updateIncidentLines(on: map, incidents: shownIncidents)
             let routeDistance = parent.state.progress?.traveledDistance ?? 0
             let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
-            let roadAlerts = ((!showsOnlyRouteEndpoints || isNavigating) ? parent.state.roadSafetyAlerts : [])
+            let showsRoadAlerts = !showsOnlyRouteEndpoints || isNavigating || parent.state.status == .routePreview
+            let roadAlerts = (showsRoadAlerts ? parent.state.roadSafetyAlerts : [])
                 .filter { alert in
                     guard let distance = alert.distanceAlongRoute else { return false }
+                    guard isNavigating else { return true }
                     return distance >= routeDistance - 60 && distance <= routeDistance + 20_000
-                        && (!isNavigating || alert.type.isImportantDuringNavigation)
+                        && alert.type.isImportantDuringNavigation
                 }
                 .sorted { ($0.distanceAlongRoute ?? .infinity) < ($1.distanceAlongRoute ?? .infinity) }
                 .prefix(40)
@@ -976,6 +976,14 @@ struct MapLibreView: UIViewRepresentable {
                 label.textAlignment = .center
                 label.textColor = .white
                 label.font = .boldSystemFont(ofSize: 15)
+                marker.addSubview(label)
+            } else if let text = presentation.markerText {
+                let label = UILabel(frame: marker.bounds)
+                label.text = text
+                label.textAlignment = .center
+                label.textColor = .white
+                label.font = .systemFont(ofSize: text.count > 2 ? 10 : 13, weight: .bold)
+                label.adjustsFontSizeToFitWidth = true
                 marker.addSubview(label)
             } else {
                 let glyphSize = size * 0.54

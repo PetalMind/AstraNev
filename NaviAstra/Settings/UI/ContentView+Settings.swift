@@ -268,7 +268,12 @@ extension ContentView {
 
     private var settingsTransitSection: some View {
         Section("Komunikacja miejska · \(transitStore.region.displayName)") {
-            Text("Rozkłady, aktualizacje kursów, opóźnienia i komunikaty są pobierane z otwartych danych regionu. Mapa pokazuje świeże pozycje pojazdów. Rozkład jest zapisywany na urządzeniu i odświeżany raz dziennie.")
+            Text("Planowanie tras korzysta z publicznego API Transitous. Wyszukiwanie przystanków, tablice odjazdów i pozycje pojazdów nadal korzystają z danych regionu. API wymaga publicznego kontaktu w User-Agent; zasady Transitous proszą też o kontakt przed użyciem kosztownego routingu.")
+            TextField("Publiczny e-mail lub URL projektu · User-Agent", text: $transitousContact)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Link("Transitous · zasady API", destination: URL(string: "https://transitous.org/api/")!)
+            Link("Transitous · źródła danych", destination: URL(string: "https://transitous.org/sources/")!)
             Link(transitStore.region.dataPortalTitle, destination: transitStore.region.dataPortalURL)
             Link(transitStore.region.scheduleTitle, destination: transitStore.region.scheduleURL)
         }

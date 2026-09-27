@@ -22,6 +22,7 @@ struct Journey: Sendable {
     var railwayScheduleAttribution: String? = nil
     var originAccessStopID: String? = nil
     var destinationAccessStopID: String? = nil
+    var sourceID: String? = nil
 }
 
 struct JourneyLeg: Identifiable, Sendable {
@@ -49,6 +50,12 @@ struct JourneyLeg: Identifiable, Sendable {
     var isFrequencyEstimate = false
     var hasResolvedWalkingGeometry = false
     var walkingTimeIsApproximate = false
+    var scheduledDeparture: Date? = nil
+    var scheduledArrival: Date? = nil
+    var direction: String? = nil
+    var operatorName: String? = nil
+    var distance: Double? = nil
+    var isInterlined = false
 
     var plannedWalkingDuration: TimeInterval {
         walkingDuration ?? max(0, arrival.timeIntervalSince(departure) - minimumTransferTime)
@@ -66,6 +73,8 @@ struct TransitJourneyStop: Identifiable, Equatable, Sendable {
     let hasRealtime: Bool
     let sequence: Int
     var isSkipped = false
+    var scheduledArrival: Date? = nil
+    var scheduledDeparture: Date? = nil
 }
 
 struct TransitNavigationProgress: Equatable, Sendable {

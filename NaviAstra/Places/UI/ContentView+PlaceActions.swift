@@ -269,7 +269,10 @@ extension ContentView {
         if places.count == 1, let place = places.first {
             presentMapPlace(place)
         } else {
-            placeStore.selectedMapPlaces = places
+            withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+                selectedMapPlaceDetent = .medium
+                placeStore.selectedMapPlaces = places
+            }
         }
     }
 
@@ -291,7 +294,10 @@ extension ContentView {
         } else if let origin {
             selected.straightDistance = origin.distance(to: result.destination.coordinate)
         }
-        placeStore.selectedMapPlaces = [selected]
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+            selectedMapPlaceDetent = .medium
+            placeStore.selectedMapPlaces = [selected]
+        }
 
         guard canRequestETA, let origin else { return }
         let requestID = selected.id

@@ -6,17 +6,9 @@ nonisolated struct LoadedTransitDatabase: Sendable {
 }
 
 nonisolated struct PersistedTransitDatabase: Codable, Sendable {
-    static let currentSchemaVersion = 9
+    static let currentSchemaVersion = 10
     let schemaVersion: Int
     let database: GTFSDatabase
-}
-
-nonisolated struct PersistedTransferGraph: Codable, Sendable {
-    static let currentSchemaVersion = 3
-    let schemaVersion: Int
-    let fingerprint: String
-    let storedAt: Date
-    let footpathsByStopID: [String: [TransitFootpath]]
 }
 
 nonisolated struct LoadedGTFSArchive: Sendable {
@@ -40,61 +32,31 @@ nonisolated struct GTFSArchiveDownloadResult: Sendable {
 nonisolated enum TransitGTFSLoader {
     static func load(cacheDirectory: URL, feedURL: URL,
                      railwayFeedURL: URL, cityFeedFilename: String,
-                     planningID: UInt64?,
-                     trace: TransitPlanningTrace?,
                      existingDatabase: GTFSDatabase? = nil) async throws -> LoadedTransitDatabase {
         try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
         async let cityArchiveRequest = loadArchive(cacheDirectory: cacheDirectory,
-                                                   filename: cityFeedFilename, feedURL: feedURL,
-                                                   trace: trace, source: "City")
+                                                   filename: cityFeedFilename, feedURL: feedURL)
         async let railwayArchiveRequest = try? loadArchive(cacheDirectory: cacheDirectory,
                                                            filename: "polish-trains-gtfs.zip",
-                                                           feedURL: railwayFeedURL,
-                                                           trace: trace, source: "Railway")
+                                                           feedURL: railwayFeedURL)
         let cityArchive = try await cityArchiveRequest
         let railwayArchive = await railwayArchiveRequest
-        trace?.setCount("cityArchiveBytes", value: cityArchive.data.count)
-        trace?.setCount("railwayArchiveBytes", value: railwayArchive?.data.count ?? 0)
-        trace?.setCount("cityArchiveCached", value: cityArchive.wasCached ? 1 : 0)
-        trace?.setCount("railwayArchiveCached", value: railwayArchive?.wasCached == true ? 1 : 0)
         if Task.isCancelled { throw CancellationError() }
         var feeds = [GTFSInputFeed(data: cityArchive.data, prefix: "", retrievedAt: cityArchive.retrievedAt)]
         if let railwayArchive {
             feeds.append(GTFSInputFeed(data: railwayArchive.data, prefix: "rail/",
                                        retrievedAt: railwayArchive.retrievedAt))
         }
-        let fingerprintStartedAt = ProcessInfo.processInfo.systemUptime
         let feedFingerprint = TransitFeedFingerprint.make(feeds)
-        trace?.recordDuration("GTFSFingerprint", startedAt: fingerprintStartedAt)
         if let existingDatabase, existingDatabase.feedFingerprint == feedFingerprint {
-            trace?.setCount("compiledScheduleFingerprintHit", value: 1)
             return LoadedTransitDatabase(database: existingDatabase, wasCached: true)
         }
-        trace?.setCount("compiledScheduleFingerprintHit", value: 0)
-        let transferCacheURL = cacheDirectory.appendingPathComponent("transit-transfer-graph-v2.plist")
         func makeDatabase(_ inputFeeds: [GTFSInputFeed], fingerprint: String? = nil) throws -> GTFSDatabase {
-            let fingerprint = fingerprint ?? TransitFeedFingerprint.make(inputFeeds)
-            let cachedFootpaths = readTransferGraph(at: transferCacheURL, fingerprint: fingerprint)
-            trace?.setCount("transferGraphCacheHit", value: cachedFootpaths.map { _ in 1 } ?? 0)
-            let database = try GTFSDatabase(feeds: inputFeeds,
-                                            cachedFootpathsByStopID: cachedFootpaths?.footpathsByStopID,
-                                            feedFingerprint: fingerprint,
-                                            trace: trace)
-            if cachedFootpaths == nil {
-                persistTransferGraph(database.footpathsByStopID, fingerprint: fingerprint,
-                                     to: transferCacheURL)
-            }
-            return database
+            try GTFSDatabase(feeds: inputFeeds,
+                             feedFingerprint: fingerprint ?? TransitFeedFingerprint.make(inputFeeds))
         }
         let database: GTFSDatabase
         do {
-            let indexStartedAt = ProcessInfo.processInfo.systemUptime
-            let indexInterval = TransitSignposting.begin("ScheduleIndexBuild", planningID: planningID)
-            defer {
-                TransitSignposting.end("ScheduleIndexBuild", identifier: indexInterval,
-                                       planningID: planningID)
-                trace?.recordDuration("ScheduleIndexBuild", startedAt: indexStartedAt)
-            }
             do {
                 database = try makeDatabase(feeds, fingerprint: feedFingerprint)
             } catch {
@@ -106,42 +68,8 @@ nonisolated enum TransitGTFSLoader {
                                      wasCached: cityArchive.wasCached && (railwayArchive?.wasCached ?? true))
     }
 
-    private static func readTransferGraph(at url: URL, fingerprint: String) -> PersistedTransferGraph? {
-        do {
-            let data = try Data(contentsOf: url, options: .mappedIfSafe)
-            let cache = try PropertyListDecoder().decode(PersistedTransferGraph.self, from: data)
-            guard cache.schemaVersion == PersistedTransferGraph.currentSchemaVersion,
-                  cache.fingerprint == fingerprint,
-                  (0...30 * 24 * 60 * 60).contains(Date().timeIntervalSince(cache.storedAt)) else {
-                return nil
-            }
-            return cache
-        } catch {
-            return nil
-        }
-    }
-
-    private static func persistTransferGraph(_ footpaths: [String: [TransitFootpath]],
-                                             fingerprint: String, to url: URL) {
-        do {
-            let cache = PersistedTransferGraph(
-                schemaVersion: PersistedTransferGraph.currentSchemaVersion,
-                fingerprint: fingerprint,
-                storedAt: Date(),
-                footpathsByStopID: footpaths
-            )
-            let encoder = PropertyListEncoder()
-            encoder.outputFormat = .binary
-            try encoder.encode(cache).write(to: url, options: .atomic)
-        } catch {
-            // A failed derived cache write must never prevent GTFS use.
-        }
-    }
-
     private static func loadArchive(cacheDirectory: URL, filename: String,
-                                    feedURL: URL, trace: TransitPlanningTrace?, source: String) async throws -> LoadedGTFSArchive {
-        let startedAt = ProcessInfo.processInfo.systemUptime
-        defer { trace?.recordDuration("\(source)ArchiveResolve", startedAt: startedAt) }
+                                    feedURL: URL) async throws -> LoadedGTFSArchive {
         let archiveURL = cacheDirectory.appendingPathComponent(filename)
         let cachedData = try? Data(contentsOf: archiveURL, options: .mappedIfSafe)
         let isFresh = (try? archiveURL.resourceValues(forKeys: [.contentModificationDateKey])
@@ -157,12 +85,8 @@ nonisolated enum TransitGTFSLoader {
         let storedValidators = readValidators(at: validatorsURL)
         let cachedValidators = cachedData != nil && storedValidators?.sourceURL == feedURL.absoluteString
             ? storedValidators : nil
-        var downloadStartedAt: TimeInterval?
         do {
-            let startedAt = ProcessInfo.processInfo.systemUptime
-            downloadStartedAt = startedAt
             let result = try await download(feedURL, validators: cachedValidators)
-            trace?.recordDuration("\(source)ArchiveDownload", startedAt: startedAt)
             if result.notModified {
                 guard let cachedData, cachedData.count > 22 else {
                     throw TransitRoutingError.invalidResponse
@@ -178,14 +102,8 @@ nonisolated enum TransitGTFSLoader {
             writeValidators(result.validators, to: validatorsURL)
             return LoadedGTFSArchive(data: data, wasCached: false, retrievedAt: Date())
         } catch is CancellationError {
-            if let downloadStartedAt {
-                trace?.recordDuration("\(source)ArchiveDownload", startedAt: downloadStartedAt)
-            }
             throw CancellationError()
         } catch {
-            if let downloadStartedAt {
-                trace?.recordDuration("\(source)ArchiveDownload", startedAt: downloadStartedAt)
-            }
             if let cachedData, cachedData.count > 22 {
                 let retrievedAt = try? archiveURL.resourceValues(forKeys: [.contentModificationDateKey])
                     .contentModificationDate

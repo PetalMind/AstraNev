@@ -410,8 +410,8 @@ extension NavigationSession {
     }
     func refreshTransitVehicles(near coordinate: Coordinate) {
         guard let refreshInterval = energyPolicyEngine.currentPolicy.transitRefreshInterval else { return }
-        guard let provider = transitProvider as? any TransitDataProviding else { return }
-        let coverage = transitProvider.region
+        let provider = transitDataProvider
+        let coverage = transitDataProvider.region
         guard coordinate.distance(to: coverage.coverageCenter) <= coverage.coverageRadiusMeters else {
             if insideTransitCoverage {
                 insideTransitCoverage = false
