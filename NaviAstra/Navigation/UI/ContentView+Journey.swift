@@ -183,34 +183,35 @@ extension ContentView {
                         .padding(.horizontal, 18)
                         .padding(.top, 14)
 
+                }
+            }
+            .padding(.bottom, detent == .peek ? 2 : 10)
+        } footer: { detent, _ in
+            if detent == .expanded {
+                VStack(spacing: 0) {
+                    journeyNavigationPrimaryActions
+                        .padding(.horizontal, 18)
+                        .padding(.top, 10)
+
+                    Rectangle()
+                        .fill(Color.white.opacity(0.12))
+                        .frame(height: 1)
+
                     Button(role: .destructive) {
-                        showStopNavigationConfirmation = true
+                        navigationStore.stop()
                     } label: {
                         Label("Zakończ nawigację", systemImage: "stop.fill")
                             .font(.subheadline.weight(.semibold))
                             .frame(maxWidth: .infinity, minHeight: 48)
                             .foregroundStyle(.red)
-                            .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                            .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
                     }
                     .buttonStyle(.plain)
                     .padding(.horizontal, 18)
-                    .padding(.top, 12)
-
+                    .padding(.top, 10)
+                    .padding(.bottom, 18)
                 }
             }
-            .padding(.bottom, detent == .peek ? 2 : 10)
-        } footer: { _, _ in
-            EmptyView()
-        }
-        .confirmationDialog("Zakończyć nawigację?",
-                            isPresented: $showStopNavigationConfirmation,
-                            titleVisibility: .visible) {
-            Button("Zakończ nawigację", role: .destructive) {
-                navigationStore.stop()
-            }
-            Button("Kontynuuj", role: .cancel) { }
-        } message: {
-            Text("Bieżące prowadzenie zostanie zakończone.")
         }
     }
 
@@ -219,7 +220,7 @@ extension ContentView {
         let remainingDistance = navigationStore.state.progress?.remainingDistance
 
         return Button {
-            navigationPanelDetent = detent == .expanded ? .medium : (detent == .peek ? .medium : .expanded)
+            navigationPanelDetent = detent == .expanded ? .medium : .expanded
         } label: {
             HStack(spacing: 4) {
                 journeySummaryMetric(value: remainingTime.map(arrivalTime) ?? "—", caption: "ETA")
@@ -240,32 +241,12 @@ extension ContentView {
 
     private var journeyNavigationQuickActions: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("W trakcie podróży")
+            Text("Pozostałe opcje")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white.opacity(0.9))
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 8)], spacing: 8) {
-                Menu {
-                    ForEach(activeJourneyNearbyCategories) { category in
-                        Button(category.title, systemImage: category.symbol) {
-                            presentNearbyAfterMenuDismissal(category)
-                        }
-                    }
-                } label: {
-                    journeyNavigationActionLabel("Po trasie", symbol: "magnifyingglass")
-                }
-
-                if supportsActiveTripWaypoints {
-                    Button {
-                        addingWaypoint = true
-                        appRouter.present(.search)
-                    } label: {
-                        journeyNavigationActionLabel("Dodaj przystanek", symbol: "plus.circle")
-                    }
-                    .disabled(navigationStore.state.waypoints.count >= 8)
-                }
-
                 Menu {
                     mapLayerMenuActions
                 } label: {
@@ -287,6 +268,34 @@ extension ContentView {
             }
             .buttonStyle(.plain)
         }
+    }
+
+    private var journeyNavigationPrimaryActions: some View {
+        HStack(spacing: 8) {
+            Menu {
+                ForEach(activeJourneyNearbyCategories) { category in
+                    Button(category.title, systemImage: category.symbol) {
+                        presentNearbyAfterMenuDismissal(category)
+                    }
+                }
+            } label: {
+                journeyNavigationActionLabel("Po trasie", symbol: "magnifyingglass")
+            }
+            .frame(maxWidth: .infinity)
+
+            if supportsActiveTripWaypoints {
+                Button {
+                    addingWaypoint = true
+                    appRouter.present(.search)
+                } label: {
+                    journeyNavigationActionLabel("Dodaj przystanek", symbol: "plus.circle")
+                }
+                .buttonStyle(.plain)
+                .disabled(navigationStore.state.waypoints.count >= 8)
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     private func journeyNavigationActionLabel(_ title: String, symbol: String) -> some View {

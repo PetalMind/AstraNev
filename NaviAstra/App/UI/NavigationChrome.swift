@@ -104,6 +104,7 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
     private let appearance: NavigationBottomSheetAppearance
     private let mediumHeightFraction: CGFloat
     private let minimumPeekHeight: CGFloat?
+    private let hidesExpandedChevron: Bool
     private let onClose: (() -> Void)?
     private let closeAccessibilityLabel: String
     private let content: (NavigationBottomSheetDetent, CGFloat) -> Content
@@ -122,6 +123,7 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
          isDragging: Binding<Bool>,
          mediumHeightFraction: CGFloat = 0.48,
          minimumPeekHeight: CGFloat? = nil,
+         hidesExpandedChevron: Bool = false,
          onClose: (() -> Void)? = nil,
          closeAccessibilityLabel: String = "Zamknij panel",
          @ViewBuilder content: @escaping (NavigationBottomSheetDetent, CGFloat) -> Content,
@@ -132,6 +134,7 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
         self.appearance = appearance
         self.mediumHeightFraction = min(0.72, max(0.28, mediumHeightFraction))
         self.minimumPeekHeight = minimumPeekHeight
+        self.hidesExpandedChevron = hidesExpandedChevron
         self.onClose = onClose
         self.closeAccessibilityLabel = closeAccessibilityLabel
         self._isDragging = isDragging
@@ -263,7 +266,7 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(closeAccessibilityLabel)
-                } else {
+                } else if !hidesExpandedChevron || selectedIndex < detentHeights.count - 1 {
                     Image(systemName: selectedIndex == detentHeights.count - 1 ? "chevron.down" : "chevron.up")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(appearance == .navigation

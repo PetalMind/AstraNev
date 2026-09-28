@@ -5,6 +5,14 @@ import UIKit
 #endif
 
 extension ContentView {
+    var arLaunchReadinessTaskKey: String {
+        let state = navigationStore.state
+        let coordinate = state.location?.coordinate
+        let latitudeBucket = coordinate.map { Int(($0.latitude * 100).rounded()) } ?? 0
+        let longitudeBucket = coordinate.map { Int(($0.longitude * 100).rounded()) } ?? 0
+        return "\(latitudeBucket):\(longitudeBucket):\(String(describing: state.gpsQuality)):\(state.route?.id.uuidString ?? "none"): \(state.progress?.nextManeuver?.id ?? -1)"
+    }
+
     func discoveryPanel(compact: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             searchButton
@@ -300,10 +308,24 @@ extension ContentView {
                                     .font(.system(size: 17, weight: .semibold))
                                     .foregroundStyle(Color.accentColor)
                             }
+                            .overlay {
+                                Circle()
+                                    .stroke(arLaunchReadiness.color, lineWidth: 3)
+                                    .padding(-3)
+                            }
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Otwórz nawigację AR")
-                        .accessibilityHint("Pokaż strzałki trasy w widoku kamery")
+                        .accessibilityHint(arLaunchReadiness.explanation)
+                        .task(id: arLaunchReadinessTaskKey) {
+                            arLaunchReadiness = .checking
+                            let readiness = await ARLaunchReadinessChecker.check(
+                                location: navigationStore.state.location,
+                                route: navigationStore.state.route,
+                                progress: navigationStore.state.progress)
+                            guard !Task.isCancelled else { return }
+                            arLaunchReadiness = readiness
+                        }
                     }
 #endif
                     Button {

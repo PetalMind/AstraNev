@@ -374,12 +374,14 @@ final class NavigationSession {
         navigationTransitionTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(cameraTransitionDelay))
             guard !Task.isCancelled, let self else { return }
-            await self.mapCameraController.waitForNavigationCameraUpdate()
-            guard !Task.isCancelled, self.state.status == .navigating else { return }
-            self.updateNavigationCameraState()
+            // Traffic I/O must not wait for the route projection. On long routes
+            // the projection can take noticeably longer than the camera delay.
             if self.state.transportMode == .car {
                 self.refreshTraffic(force: true, forceRouteRefresh: !hasFreshRouteTraffic)
             }
+            await self.mapCameraController.waitForNavigationCameraUpdate()
+            guard !Task.isCancelled, self.state.status == .navigating else { return }
+            self.updateNavigationCameraState()
         }
         if let destination = state.destination, let route = state.route {
             tripSession = TripSession(destination: destination, waypoints: state.waypoints,

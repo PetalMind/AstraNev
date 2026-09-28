@@ -166,7 +166,8 @@ extension ContentView {
                               isDragging: $isMapBottomSheetDragging,
                               mediumHeightFraction: 0.72,
                               minimumPeekHeight: navigationStore.state.route != nil || navigationStore.state.status == .error
-                                  ? 220 : nil) { detent, _ in
+                                  ? 220 : nil,
+                              hidesExpandedChevron: true) { detent, _ in
             Group {
                 switch detent {
                 case .peek:
@@ -185,8 +186,9 @@ extension ContentView {
                     }
                 case .expanded:
                     VStack(spacing: 10) {
+                        routePlanningExpandedHeader
                         routePlanningTransportSelector
-                        routePlanningEndpoints
+                        routePlanningCompactEndpoints
 
                         if navigationStore.state.transportMode == .transit || navigationStore.state.transportMode == .parkRide {
                             journeyTimeControl
@@ -194,26 +196,24 @@ extension ContentView {
                         }
 
                         if let route = navigationStore.state.route {
-                            routePlanningAlternatives(for: route)
-                            if detent == .expanded {
-                                Button {
-                                    withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
-                                        routePlanningDetailsExpanded.toggle()
-                                    }
-                                } label: {
-                                    Label(routePlanningDetailsExpanded ? "Ukryj szczegóły trasy" : "Szczegóły trasy",
-                                          systemImage: routePlanningDetailsExpanded ? "chevron.up" : "chevron.down")
-                                        .font(.subheadline.weight(.semibold))
-                                        .foregroundStyle(Color.accentColor)
-                                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                                        .contentShape(Rectangle())
+                            routePlanningExpandedRouteOptions(for: route)
+                            Button {
+                                withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
+                                    routePlanningDetailsExpanded.toggle()
                                 }
-                                .buttonStyle(.plain)
-                                .accessibilityHint(routePlanningDetailsExpanded
-                                                   ? "Ukryj ustawienia i szczegóły trasy"
-                                                   : "Pokaż ustawienia i szczegóły trasy")
+                            } label: {
+                                Label(routePlanningDetailsExpanded ? "Ukryj szczegóły trasy" : "Szczegóły trasy",
+                                      systemImage: routePlanningDetailsExpanded ? "chevron.up" : "chevron.down")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(Color.accentColor)
+                                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                    .contentShape(Rectangle())
                             }
-                            if detent == .expanded && routePlanningDetailsExpanded {
+                            .buttonStyle(.plain)
+                            .accessibilityHint(routePlanningDetailsExpanded
+                                               ? "Ukryj ustawienia i szczegóły trasy"
+                                               : "Pokaż ustawienia i szczegóły trasy")
+                            if routePlanningDetailsExpanded {
                                 routePlanningDetails(for: route, showsManeuvers: false)
                                     .transition(.opacity.combined(with: .move(edge: .top)))
                             }
@@ -226,10 +226,15 @@ extension ContentView {
             .padding(.horizontal, 16)
             .padding(.bottom, detent == .peek ? 0 : 4)
         } footer: { detent, _ in
-            routePlanningFooter(bottomInset: bottomInset,
-                                compact: detent != .expanded || maxHeight < 360,
-                                showsSecondaryActions: detent != .peek &&
-                                    (detent == .expanded || maxHeight >= 600))
+            if detent == .expanded, navigationStore.state.status == .routePreview {
+                EmptyView()
+            } else {
+                routePlanningFooter(bottomInset: bottomInset,
+                                    compact: detent != .expanded || maxHeight < 360,
+                                    medium: detent == .medium && maxHeight >= 360,
+                                    showsSecondaryActions: detent != .peek &&
+                                        (detent == .expanded || maxHeight >= 600))
+            }
         }
         .frame(maxWidth: 560)
         .frame(maxWidth: .infinity)
@@ -313,6 +318,75 @@ extension ContentView {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .modifier(NavigationGlassSurface(radius: 19, interactive: true))
+    }
+
+    private var routePlanningExpandedHeader: some View {
+        HStack(spacing: 12) {
+            if let url = routePlanningShareURL {
+                ShareLink(item: url) {
+                    routePlanningHeaderIcon("square.and.arrow.up", accessibilityLabel: "Udostępnij trasę")
+                }
+                .buttonStyle(.plain)
+            } else {
+                Button {} label: {
+                    routePlanningHeaderIcon("square.and.arrow.up", accessibilityLabel: "Udostępnianie trasy niedostępne")
+                }
+                .buttonStyle(.plain)
+                .disabled(true)
+                .opacity(0.5)
+            }
+
+            Spacer(minLength: 0)
+
+            VStack(spacing: 5) {
+                Text("Trasa")
+                    .font(.system(size: 18, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+
+                if navigationStore.state.transportMode == .car {
+                    routePlanningAvoidTollsChip
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            Button {
+                navigationStore.stop()
+            } label: {
+                routePlanningHeaderIcon("xmark", accessibilityLabel: "Zamknij planowanie trasy")
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity, minHeight: 56)
+    }
+
+    private func routePlanningHeaderIcon(_ symbol: String, accessibilityLabel: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 18, weight: .semibold))
+            .foregroundStyle(Color.white.opacity(0.92))
+            .frame(width: 44, height: 44)
+            .background(Color.white.opacity(0.09), in: Circle())
+            .contentShape(Circle())
+            .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var routePlanningAvoidTollsChip: some View {
+        let isEnabled = navigationStore.state.routingPreferences.avoidTolls
+        return Button {
+            var preferences = navigationStore.state.routingPreferences
+            preferences.avoidTolls.toggle()
+            Task { await navigationStore.updateRoutingPreferences(preferences) }
+        } label: {
+            Text("Unikaj opłat")
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+                .background(isEnabled ? Color.accentColor : Color.white.opacity(0.12), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Unikaj dróg płatnych")
+        .accessibilityValue(isEnabled ? "Włączone" : "Wyłączone")
     }
 
     private var routePlanningPeek: some View {
@@ -520,67 +594,78 @@ extension ContentView {
     }
 
     @ViewBuilder
-    private func routePlanningAlternatives(for selectedRoute: NavigationRoute) -> some View {
-        let routes = routePlanningOptions.filter { $0.id != selectedRoute.id }
+    private func routePlanningExpandedRouteOptions(for selectedRoute: NavigationRoute) -> some View {
+        let routes = routePlanningOptions.sorted { $0.expectedTravelTime < $1.expectedTravelTime }
+        let fastestRouteID = routes.min { $0.expectedTravelTime < $1.expectedTravelTime }?.id
         if !routes.isEmpty {
-            VStack(alignment: .leading, spacing: 7) {
-                Text("Alternatywne trasy")
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Color.white.opacity(0.84))
-
-                ForEach(routes) { route in
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.25)) { navigationStore.select(route) }
-                    } label: {
-                        HStack(alignment: .top, spacing: 9) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(time(route.expectedTravelTime))
-                                    .font(.system(size: 15, weight: .bold, design: .rounded).monospacedDigit())
-                                    .foregroundStyle(Color.white.opacity(0.88))
-                                    .lineLimit(1)
-                                if let journey = route.journey {
-                                    routePlanningJourneyOverview(journey, darkStyle: true, compact: true)
-                                } else {
-                                    Text(distance(route.distance))
-                                        .font(.system(size: 11, weight: .medium, design: .rounded))
-                                        .foregroundStyle(Color.white.opacity(0.57))
-                                }
-                            }
-                            Spacer(minLength: 3)
-                            VStack(alignment: .trailing, spacing: 2) {
-                                Text("Alternatywna")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(Color.white.opacity(0.76))
-                                Text(routePlanningDifference(route, from: selectedRoute))
-                                    .font(.system(size: 10, weight: .medium, design: .rounded).monospacedDigit())
-                                    .foregroundStyle(Color.white.opacity(0.55))
-                            }
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(Color.white.opacity(0.5))
-                                .padding(.leading, 3)
-                        }
-                        .padding(.horizontal, 13)
-                        .padding(.vertical, 9)
-                        .frame(maxWidth: .infinity, minHeight: 55, alignment: .leading)
-                        .modifier(NavigationGlassSurface(radius: 17, interactive: true))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 17, style: .continuous)
-                                .strokeBorder(Color.white.opacity(0.07), lineWidth: 1)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Alternatywna trasa, \(time(route.expectedTravelTime)), \(distance(route.distance))\(routePlanningAccessibilitySummary(route))")
+            VStack(spacing: 8) {
+                ForEach(Array(routes.enumerated()), id: \.element.id) { item in
+                    routePlanningExpandedRouteCard(
+                        item.element,
+                        index: item.offset,
+                        isSelected: item.element.id == selectedRoute.id,
+                        isFastest: item.element.id == fastestRouteID)
                 }
             }
         }
     }
 
-    private func routePlanningDifference(_ route: NavigationRoute, from selectedRoute: NavigationRoute) -> String {
-        let difference = route.expectedTravelTime - selectedRoute.expectedTravelTime
-        let minutes = Int(ceil(abs(difference) / 60))
-        guard minutes > 0 else { return "Podobny czas" }
-        return difference > 0 ? "+\(minutes) min" : "\(minutes) min szybciej"
+    private func routePlanningExpandedRouteCard(_ route: NavigationRoute, index: Int,
+                                                isSelected: Bool,
+                                                isFastest: Bool) -> some View {
+        HStack(spacing: 12) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.25)) { navigationStore.select(route) }
+            } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(time(route.expectedTravelTime))
+                        .font(.system(size: 21, weight: .bold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Text("U celu \(routePlanningArrivalTime(route)) · \(distance(route.distance))")
+                        .font(.system(size: 14, weight: .medium, design: .rounded).monospacedDigit())
+                        .foregroundStyle(Color.white.opacity(0.68))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    if let journey = route.journey {
+                        routePlanningJourneyOverview(journey, darkStyle: true, compact: true)
+                    }
+                    if isFastest {
+                        Text("Najszybsza")
+                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color.green)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 84, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Trasa \(index + 1), \(time(route.expectedTravelTime)), \(distance(route.distance))\(routePlanningAccessibilitySummary(route))")
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
+
+            routePlanningStartAction(compact: true, expandedCard: true) {
+                startRoutePlanningOption(route)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 108, alignment: .leading)
+        .modifier(NavigationGlassSurface(radius: 21, interactive: true))
+        .overlay {
+            RoundedRectangle(cornerRadius: 21, style: .continuous)
+                .strokeBorder(isSelected ? Color.accentColor : Color.white.opacity(0.08),
+                              lineWidth: isSelected ? 2 : 1)
+        }
+        .animation(.easeInOut(duration: 0.2), value: isSelected)
+    }
+
+    private func startRoutePlanningOption(_ route: NavigationRoute) {
+        guard navigationStore.state.status == .routePreview else { return }
+        navigationStore.select(route)
+        if isRouteOriginAwayFromUser {
+            navigateToRouteOrigin()
+        } else {
+            navigationStore.begin()
+        }
     }
 
     private func routePlanningDetails(for route: NavigationRoute, showsManeuvers: Bool = true) -> some View {
@@ -892,12 +977,12 @@ extension ContentView {
         }
     }
 
-    private func routePlanningFooter(bottomInset: CGFloat, compact: Bool,
+    private func routePlanningFooter(bottomInset: CGFloat, compact: Bool, medium: Bool,
                                     showsSecondaryActions: Bool) -> some View {
         VStack(spacing: 7) {
             if navigationStore.state.status == .routePreview,
                let route = navigationStore.state.route {
-                routePlanningSelectedRouteCard(route, compact: compact)
+                routePlanningSelectedRouteCard(route, compact: compact, medium: medium)
             } else if navigationStore.state.status == .error {
                 Button {
                     Task { await navigationStore.planRoute() }
@@ -969,35 +1054,37 @@ extension ContentView {
         }
     }
 
-    private func routePlanningSelectedRouteCard(_ route: NavigationRoute, compact: Bool) -> some View {
+    private func routePlanningSelectedRouteCard(_ route: NavigationRoute, compact: Bool,
+                                                medium: Bool) -> some View {
         let routes = routePlanningCarouselRoutes
         let selectedIndex = routes.firstIndex(where: { $0.id == route.id }) ?? 0
 
-        return HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: compact ? 3 : 5) {
+        return HStack(spacing: medium ? 14 : (compact ? 12 : 16)) {
+            VStack(alignment: .leading, spacing: medium ? 5 : (compact ? 3 : 7)) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(time(route.expectedTravelTime))
-                        .font(.system(size: compact ? 23 : 28, weight: .bold, design: .rounded).monospacedDigit())
+                        .font(.system(size: medium ? 30 : (compact ? 23 : 34), weight: .bold, design: .rounded).monospacedDigit())
                         .foregroundStyle(.white)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                     Spacer(minLength: 0)
                     if routes.count > 1 {
                         Text("\(selectedIndex + 1) / \(routes.count)")
-                            .font(.caption.weight(.semibold).monospacedDigit())
+                            .font((medium ? Font.headline : (compact ? Font.caption : Font.subheadline))
+                                .weight(.semibold).monospacedDigit())
                             .foregroundStyle(Color.white.opacity(0.62))
                     }
                 }
 
                 Text("U celu \(routePlanningArrivalTime(route)) · \(distance(route.distance))")
-                    .font(.system(size: compact ? 11 : 12, weight: .medium, design: .rounded).monospacedDigit())
+                    .font(.system(size: medium ? 14 : (compact ? 11 : 14), weight: .medium, design: .rounded).monospacedDigit())
                     .foregroundStyle(Color.white.opacity(0.7))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
 
                 if !compact, let traffic = routePlanningTrafficSummary(for: route) {
                     Label(traffic.title, systemImage: traffic.symbol)
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: medium ? 11 : 12, weight: .semibold))
                         .foregroundStyle(traffic.color)
                         .lineLimit(1)
                 }
@@ -1013,7 +1100,7 @@ extension ContentView {
                         }
                         .accessibilityHidden(true)
                         Text("Przesuń, aby zmienić trasę")
-                            .font(.system(size: 10, weight: .medium))
+                            .font(.system(size: compact && !medium ? 10 : 12, weight: .medium))
                             .foregroundStyle(Color.white.opacity(0.55))
                             .lineLimit(1)
                     }
@@ -1021,10 +1108,10 @@ extension ContentView {
             }
 
             Spacer(minLength: 0)
-            routePlanningStartAction(compact: true)
+            routePlanningStartAction(compact: true, emphasized: medium || !compact, medium: medium)
         }
-        .padding(compact ? 9 : 12)
-        .frame(maxWidth: .infinity, minHeight: compact ? 70 : 96, alignment: .leading)
+        .padding(medium ? 12 : (compact ? 9 : 16))
+        .frame(maxWidth: .infinity, minHeight: medium ? 112 : (compact ? 70 : 208), alignment: .leading)
         .modifier(NavigationGlassSurface(radius: 20, interactive: true))
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { value in
@@ -1056,26 +1143,31 @@ extension ContentView {
         }
     }
 
-    private func routePlanningStartAction(compact: Bool = false) -> some View {
+    private func routePlanningStartAction(compact: Bool = false, emphasized: Bool = false,
+                                          medium: Bool = false, expandedCard: Bool = false,
+                                          action: (() -> Void)? = nil) -> some View {
         let canStart = navigationStore.state.status == .routePreview && navigationStore.state.route != nil
         return Button {
-            if isRouteOriginAwayFromUser {
+            if let action {
+                action()
+            } else if isRouteOriginAwayFromUser {
                 navigateToRouteOrigin()
             } else {
                 navigationStore.begin()
             }
         } label: {
-            VStack(spacing: compact ? 4 : 10) {
+            VStack(spacing: compact && !emphasized && !expandedCard ? 4 : 9) {
                 Image(systemName: isRouteOriginAwayFromUser ? "location.magnifyingglass" : "location.fill")
-                    .font(.system(size: compact ? 18 : 17, weight: .bold))
+                    .font(.system(size: compact ? (medium || expandedCard ? 22 : (emphasized ? 26 : 18)) : 17, weight: .bold))
                 Text(compact ? "Start" : (isRouteOriginAwayFromUser ? "Nawiguj do startu" : "Rozpocznij nawigację"))
-                    .font(.system(size: compact ? 13 : 15, weight: .bold, design: .rounded))
+                    .font(.system(size: compact ? (medium ? 17 : (expandedCard ? 16 : (emphasized ? 20 : 13))) : 15, weight: .bold, design: .rounded))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
             }
             .foregroundStyle(.white)
-            .frame(maxWidth: compact ? nil : .infinity, minHeight: compact ? 58 : 56)
-            .frame(width: compact ? 72 : nil)
+            .frame(maxWidth: compact ? nil : .infinity,
+                   minHeight: compact ? (medium ? 88 : (expandedCard ? 92 : (emphasized ? 130 : 58))) : 56)
+            .frame(width: compact ? (medium ? 88 : (expandedCard ? 92 : (emphasized ? 112 : 72))) : nil)
             .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)

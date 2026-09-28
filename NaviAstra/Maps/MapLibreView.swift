@@ -555,7 +555,7 @@ struct MapLibreView: UIViewRepresentable {
             routeLayerRenderer.updateIncidentLines(on: map, incidents: shownIncidents)
             let routeDistance = parent.state.progress?.traveledDistance ?? 0
             let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
-            let showsRoadAlerts = !showsOnlyRouteEndpoints || isNavigating || parent.state.status == .routePreview
+            let showsRoadAlerts = !showsOnlyRouteEndpoints || isNavigating
             let roadAlerts = (showsRoadAlerts ? parent.state.roadSafetyAlerts : [])
                 .filter { alert in
                     guard let distance = alert.distanceAlongRoute else { return false }
@@ -934,7 +934,7 @@ struct MapLibreView: UIViewRepresentable {
                 }
                 let marker = MLNAnnotationView(reuseIdentifier: nil)
                 marker.frame = CGRect(x: 0, y: 0, width: 32, height: 32)
-                marker.backgroundColor = .systemBlue
+                marker.backgroundColor = UIColor(red: 0, green: 0.624, blue: 0.722, alpha: 1)
                 marker.layer.cornerRadius = 16
                 let label = UILabel(frame: marker.bounds)
                 label.text = String(index + 1)
@@ -974,7 +974,7 @@ struct MapLibreView: UIViewRepresentable {
                 let view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) ?? MLNAnnotationView(reuseIdentifier: identifier)
                 if view.subviews.isEmpty {
                     let marker = UIView(frame: CGRect(x: 0, y: 0, width: 28, height: 28))
-                    marker.backgroundColor = .systemBlue
+                    marker.backgroundColor = UIColor(red: 0, green: 0.624, blue: 0.722, alpha: 1)
                     marker.layer.cornerRadius = 14
                     marker.layer.borderWidth = 2.5
                     marker.layer.borderColor = UIColor.white.cgColor
@@ -1000,7 +1000,7 @@ struct MapLibreView: UIViewRepresentable {
                     ?? MLNAnnotationView(reuseIdentifier: identifier)
                 if view.subviews.isEmpty {
                     let marker = UIImageView(image: UIImage(systemName: "a.circle.fill"))
-                    marker.tintColor = .systemBlue
+                    marker.tintColor = UIColor(red: 0.533, green: 0.024, blue: 0.808, alpha: 1)
                     marker.contentMode = .scaleAspectFit
                     marker.frame = CGRect(x: 0, y: 0, width: 34, height: 34)
                     view.addSubview(marker)

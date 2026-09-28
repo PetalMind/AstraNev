@@ -374,7 +374,7 @@ struct MapLibreView: NSViewRepresentable {
                 pin.subtitle = incident.mapSubtitle
             }
             routeRenderer.updateIncidentOverlays(on: map, incidents: incidents)
-            let showsRoadAlerts = !showsOnlyRouteEndpoints || isNavigating || parent.state.status == .routePreview
+            let showsRoadAlerts = !showsOnlyRouteEndpoints || isNavigating
             let roadAlerts = (showsRoadAlerts ? parent.state.roadSafetyAlerts : [])
                 .filter { alert in
                     guard let distance = alert.distanceAlongRoute else { return false }

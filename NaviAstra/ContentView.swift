@@ -63,11 +63,11 @@ struct ContentView: View {
     @State var navigationPanelDetent: NavigationBottomSheetDetent = .medium
     @State var isMapBottomSheetDragging = false
     @State var isARNavigationPresented = false
+    @State var arLaunchReadiness: ARLaunchReadiness = .checking
     @State var routeStopDropTargetID: String?
     @State var routeStopReorderFeedbackToken = 0
     @State var journeyGuidanceExpanded = false
     @State var currentStepExpandedOverride: Bool? = nil
-    @State var showStopNavigationConfirmation = false
     @State var routePlanningDetailsExpanded = false
     @State var expandedTransitStopsLegID: UUID?
     @State var expandedTransitTimelineLegID: UUID?

@@ -146,6 +146,11 @@ extension ContentView {
             }
 
             navigationMapPanel(in: geometry)
+                .overlay(alignment: .topLeading) {
+                    cyclingMapAttribution
+                        .padding(.leading, 18)
+                        .alignmentGuide(.top) { $0[.bottom] + 6 }
+                }
                 .onGeometryChange(for: CGFloat.self) {
                     $0.size.height + geometry.safeAreaInsets.bottom +
                         (usesFullBleedNavigationPanel ? 0 : 24)
@@ -213,12 +218,8 @@ extension ContentView {
             if isNavigating {
                 let availablePanelHeight = min(geometry.size.height * 0.88,
                                                max(220, geometry.size.height - mapHeaderInset - 28))
-                let panelHeight = navigationStore.state.transportMode == .transit ||
-                    navigationStore.state.transportMode == .parkRide
-                    ? availablePanelHeight
-                    : min(260, availablePanelHeight)
                 journeyNavigationPanel(
-                    maxHeight: panelHeight)
+                    maxHeight: availablePanelHeight)
             } else {
                 activeScrollableMapPanel(in: geometry)
             }
@@ -270,7 +271,6 @@ extension ContentView {
 #if os(iOS)
             navigationSpeedOverlay
 #endif
-            cyclingMapAttribution
             parkedCarActionOverlay
             parkedCarToastOverlay
         }
@@ -311,11 +311,6 @@ extension ContentView {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
                 .background(.regularMaterial, in: Capsule())
-                .frame(maxWidth: 560, maxHeight: .infinity, alignment: .bottomLeading)
-                .padding(.leading, 18)
-                .padding(.bottom, mapPanelInset + 9)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                .zIndex(2)
         }
     }
 
