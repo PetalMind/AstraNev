@@ -25,37 +25,33 @@ extension ContentView {
         return Array(shortcuts.prefix(6))
     }
 
-    var recentPlaceShortcuts: [PlaceShortcut] {
-        var candidates: [(date: Date, shortcut: PlaceShortcut)] = []
+    var recentPlaceShortcuts: [RecentPlaceShortcut] {
+        var candidates: [RecentPlaceShortcut] = []
         for search in placeStore.searches {
-            candidates.append((search.searchedAt, PlaceShortcut(
+            candidates.append(RecentPlaceShortcut(
                 id: "recent-\(search.id.uuidString)",
-                title: search.destination.name,
-                symbol: "clock.arrow.circlepath",
                 destination: search.destination,
-                isRecent: true
-            )))
+                usedAt: search.searchedAt
+            ))
         }
 
         for trip in placeStore.trips {
-            candidates.append((trip.endedAt, PlaceShortcut(
+            candidates.append(RecentPlaceShortcut(
                 id: "trip-\(trip.id.uuidString)",
-                title: trip.destination.name,
-                symbol: "clock.arrow.circlepath",
                 destination: trip.destination,
-                isRecent: true
-            )))
+                usedAt: trip.endedAt
+            ))
         }
 
-        var shortcuts: [PlaceShortcut] = []
-        for candidate in candidates.sorted(by: { $0.date > $1.date }) {
-            guard shortcuts.count < 6 else { break }
-            guard !shortcuts.contains(where: {
-                $0.destination.coordinate == candidate.shortcut.destination.coordinate
+        var recent: [RecentPlaceShortcut] = []
+        for candidate in candidates.sorted(by: { $0.usedAt > $1.usedAt }) {
+            guard recent.count < 6 else { break }
+            guard !recent.contains(where: {
+                $0.destination.coordinate == candidate.destination.coordinate
             }) else { continue }
-            shortcuts.append(candidate.shortcut)
+            recent.append(candidate)
         }
-        return shortcuts
+        return recent
     }
 
     var quickETADestinationFingerprint: String {
@@ -125,77 +121,151 @@ extension ContentView {
     @ViewBuilder
     func speedCard(at now: Date) -> some View {
         let fresh = navigationStore.state.location.map { now.timeIntervalSince($0.timestamp) < 15 } ?? false
-        let speed = fresh ? navigationStore.state.location?.speed : nil
-        let current = speed.flatMap { $0 >= 0 ? Int(($0 * 3.6).rounded()) : nil }
-        let limit = fresh ? navigationStore.state.speedLimitKph : nil
+        let speed = navigationStore.state.location?.speed
+        let current: Int? = speed.flatMap { value -> Int? in
+            guard value.isFinite, fresh || value <= 0 else { return nil }
+            return Int((max(0, value) * 3.6).rounded())
+        }
+        let limit = navigationStore.state.speedLimitKph
         let aboveLimit = speedWarningsEnabled && (current.map { value in limit.map { value > $0 + 5 } ?? false } ?? false)
         let routeDistance = navigationStore.state.progress?.traveledDistance ?? 0
-        let nextRoadAlert = navigationStore.state.roadSafetyAlerts
+        let nextRoadAlert = nextNavigationRoadSafetyAlert
+        let speedDescription = current.map { "Prędkość \($0) kilometrów na godzinę" } ?? "Prędkość niedostępna"
+        let accessibilityDescription = [
+            limit.map { "Limit \($0) kilometrów na godzinę" },
+            speedDescription,
+            navigationStore.state.speedLimitSource.map { "Źródło limitu: \($0.shortTitle)" },
+            nextRoadAlert.map { "\($0.title), za \($0.distanceText(from: routeDistance))" }
+        ].compactMap { $0 }.joined(separator: ", ")
+
+        VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: 6) {
+                if let limit {
+                    VStack(spacing: 3) {
+                        Text(String(limit))
+                            .font(.system(size: 20, weight: .bold, design: .rounded).monospacedDigit())
+                            .foregroundStyle(.black)
+                            .frame(width: 54, height: 54)
+                            .background(Color.white, in: Circle())
+                            .overlay(Circle().strokeBorder(Color.red, lineWidth: 4))
+                            .shadow(color: .black.opacity(0.12), radius: 9, y: 4)
+                            .accessibilityHidden(true)
+                        if let source = navigationStore.state.speedLimitSource {
+                            Text(source.shortTitle)
+                                .font(.system(size: 8, weight: .semibold))
+                                .foregroundStyle(.primary.opacity(0.82))
+                                .lineLimit(1)
+                        }
+                    }
+                    .frame(width: 76)
+                }
+
+                VStack(spacing: 0) {
+                    Text(current.map(String.init) ?? "—")
+                        .font(.system(size: 29, weight: .bold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(aboveLimit ? Color.red : Color.black)
+                        .contentTransition(.numericText())
+                    Text("km/h")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.black.opacity(0.62))
+                }
+                .frame(width: 76, height: 62)
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 17, style: .continuous)
+                    .strokeBorder(aboveLimit ? Color.red.opacity(0.8) : Color.black.opacity(0.08), lineWidth: aboveLimit ? 2 : 1))
+                .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+                .accessibilityHidden(true)
+            }
+
+            if let alert = nextRoadAlert {
+                HStack(spacing: 9) {
+                    roadAlertSymbol(alert)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(alert.title)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text(alert.distanceText(from: routeDistance))
+                            .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .modifier(NavigationGlassSurface(radius: 15))
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(alert.title), \(alert.distanceText(from: routeDistance))")
+            } else if let message = navigationStore.state.speedLimitMessage {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+
+            if current == nil {
+                Label(navigationStore.state.location == nil
+                      ? "Prędkość niedostępna"
+                      : (fresh ? "Odczyt prędkości niedostępny" : "Brak świeżego odczytu GPS"),
+                      systemImage: "location.slash")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: 230, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityDescription)
+    }
+
+    var nextNavigationRoadSafetyAlert: RoadSafetyAlert? {
+        let routeDistance = navigationStore.state.progress?.traveledDistance ?? 0
+        return navigationStore.state.roadSafetyAlerts
             .filter { alert in
-                guard alert.type.isEnforcement || alert.type == .speedLimitChange,
+                guard alert.type.isTrafficSign || alert.type.isEnforcement || alert.type == .speedLimitChange,
                       let distance = alert.distanceAlongRoute else { return false }
                 return distance >= routeDistance && distance <= routeDistance + 2_000
             }
             .min { ($0.distanceAlongRoute ?? .infinity) < ($1.distanceAlongRoute ?? .infinity) }
+    }
 
-        if let current {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    if let limit {
-                        Text(String(limit))
-                            .font(.system(size: 18, weight: .bold, design: .rounded).monospacedDigit())
-                            .frame(width: 38, height: 38)
-                            .background(.background, in: Circle())
-                            .overlay(Circle().strokeBorder(Color.primary.opacity(0.12), lineWidth: 2))
-                            .accessibilityLabel("Limit \(limit) kilometrów na godzinę")
-                    }
-                    VStack(spacing: 0) {
-                        Text(String(current))
-                            .font(.system(size: 21, weight: .bold, design: .rounded).monospacedDigit())
-                            .foregroundStyle(aboveLimit ? .red : .primary)
-                            .contentTransition(.numericText())
-                        Text(navigationStore.state.speedLimitSource.map { "\($0.shortTitle) · km/h" } ?? "km/h")
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                if let alert = nextRoadAlert {
-                    HStack(spacing: 5) {
-                        Image(systemName: alert.type.symbolName)
-                        Text("\(alert.title) · \(alert.distanceText(from: routeDistance))")
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
-                    }
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.orange)
-                    .accessibilityElement(children: .combine)
-                } else if let message = navigationStore.state.speedLimitMessage {
-                    Label(message, systemImage: "exclamationmark.triangle")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                } else if case .loading = navigationStore.state.roadSafetyStatus {
-                    Label("Pobieranie ostrzeżeń drogowych…", systemImage: "arrow.triangle.2.circlepath")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else if case .unavailable = navigationStore.state.roadSafetyStatus {
-                    Label("Ostrzeżenia drogowe niedostępne", systemImage: "wifi.slash")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                if case .available = navigationStore.state.roadSafetyStatus {
-                    Text("© OpenStreetMap contributors")
-                        .font(.system(size: 8, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(7)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .strokeBorder(aboveLimit ? Color.red.opacity(0.7) : Color.primary.opacity(0.07), lineWidth: 1.5))
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(limit.map { "Prędkość \(current) kilometrów na godzinę, limit \($0)" } ??
-                                "Prędkość \(current) kilometrów na godzinę")
+    var hasUpcomingRoadSafetyWarning: Bool {
+        let routeDistance = navigationStore.state.progress?.traveledDistance ?? 0
+        return navigationStore.state.roadSafetyAlerts.contains { alert in
+            guard let distance = alert.distanceAlongRoute else { return false }
+            return distance >= routeDistance && distance <= routeDistance + 2_000
+        }
+    }
+
+    @ViewBuilder
+    private func roadAlertSymbol(_ alert: RoadSafetyAlert) -> some View {
+        switch alert.type {
+        case .stopSign:
+            Text("STOP")
+                .font(.system(size: 9, weight: .black, design: .rounded))
+                .foregroundStyle(.white)
+                .frame(width: 38, height: 38)
+                .background(.red, in: RoadStopSignShape())
+                .overlay(RoadStopSignShape().stroke(.white, lineWidth: 1.5).padding(3))
+        case .speedLimitSign:
+            Text(alert.signCode?.hasSuffix("B-34") == true
+                 ? "END" : (alert.speedLimitKph.map(String.init) ?? "?"))
+                .font(.system(size: alert.speedLimitKph == nil ? 9 : 13, weight: .bold, design: .rounded))
+                .foregroundStyle(.red)
+                .frame(width: 38, height: 38)
+                .background(.white, in: Circle())
+                .overlay(Circle().strokeBorder(.red, lineWidth: 3))
+        default:
+            Image(systemName: alert.type.symbolName)
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(alert.type.isEnforcement ? Color.white : Color.orange)
+                .frame(width: 36, height: 36)
+                .background(
+                    alert.type.isEnforcement ? Color.accentColor : Color.orange.opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         }
     }
 
@@ -466,5 +536,25 @@ extension ContentView {
         guard abs(seconds) >= 60 else { return "Na czas" }
         let sign = seconds > 0 ? "+" : "−"
         return sign + time(abs(seconds))
+    }
+}
+
+private struct RoadStopSignShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let cut = min(rect.width, rect.height) * 0.29
+        let points = [
+            CGPoint(x: rect.minX + cut, y: rect.minY),
+            CGPoint(x: rect.maxX - cut, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.minY + cut),
+            CGPoint(x: rect.maxX, y: rect.maxY - cut),
+            CGPoint(x: rect.maxX - cut, y: rect.maxY),
+            CGPoint(x: rect.minX + cut, y: rect.maxY),
+            CGPoint(x: rect.minX, y: rect.maxY - cut),
+            CGPoint(x: rect.minX, y: rect.minY + cut)
+        ]
+        return Path { path in
+            path.addLines(points)
+            path.closeSubpath()
+        }
     }
 }

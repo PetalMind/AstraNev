@@ -176,6 +176,8 @@ extension TrafficIncidentSeverity {
 struct TrafficMapPresentation {
     let symbolName: String
     let markerText: String?
+    let roadSign: RoadSignSymbol?
+    let isDirectionUncertain: Bool
     let colorHex: UInt32
     let markerSize: Double
     let priority: Int
@@ -185,6 +187,8 @@ struct TrafficMapPresentation {
     init(_ incident: TrafficIncident) {
         symbolName = incident.category.mapSymbolName
         markerText = nil
+        roadSign = nil
+        isDirectionUncertain = false
         if incident.category == .unknown {
             switch incident.severity {
             case .major: colorHex = 0xE53935
@@ -203,10 +207,14 @@ struct TrafficMapPresentation {
     init(_ alert: RoadSafetyAlert) {
         symbolName = alert.type.symbolName
         markerText = alert.type == .speedLimitSign ? alert.speedLimitKph.map(String.init) : nil
+        roadSign = alert.type.isTrafficSign || alert.type == .railwayCrossing
+            ? RoadSignSymbol(alert) : nil
+        isDirectionUncertain = alert.hasDirectionalSignTag == true
         colorHex = alert.type.mapColorHex
         priority = alert.type.mapPriority
         clusterPriority = priority * 10 + Self.colorPriority(colorHex)
-        markerSize = markerText == nil ? (priority >= 3 ? 36 : priority == 2 ? 30 : 24) : 34
+        markerSize = roadSign.map { Double($0.displaySize) }
+            ?? (markerText == nil ? (priority >= 3 ? 36 : priority == 2 ? 30 : 24) : 34)
         isCritical = priority >= 3
     }
 
@@ -238,7 +246,8 @@ extension RoadAlertType {
     var mapPriority: Int {
         switch self {
         case .accident, .roadClosed, .congestion: 3
-        case .roadworks, .railwayCrossing, .dangerousCurve, .stopSign, .giveWaySign: 2
+        case .roadworks, .railwayCrossing, .dangerousCurve, .stopSign, .giveWaySign,
+             .noEntrySign, .speedLimitSign: 2
         default: 1
         }
     }

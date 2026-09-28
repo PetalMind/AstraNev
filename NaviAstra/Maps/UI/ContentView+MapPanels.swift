@@ -263,11 +263,16 @@ extension ContentView {
     var header: some View {
         HStack(alignment: .top, spacing: 10) {
             if isNavigating {
+#if os(iOS)
+                // Active iOS guidance is rendered by the dedicated overlay.
+                EmptyView()
+#else
                 if navigationStore.state.transportMode == .transit || parkRideIsUsingTransitLeg {
                     transitNavigationHeader
                 } else {
-                    maneuverCard
+                    currentStepGuidanceCard
                 }
+#endif
             } else if hasRoutePreviewContext {
                 routePreviewHeader
             } else {
@@ -600,27 +605,9 @@ extension ContentView {
 
             Spacer(minLength: 3)
 
-            Menu {
-                if index > 0 {
-                    Button("Bliżej punktu startowego", systemImage: "arrow.up") {
-                        Task { await navigationStore.moveWaypoint(waypoint.id, by: -1) }
-                    }
-                }
-                if index + 1 < navigationStore.state.waypoints.count {
-                    Button("Bliżej celu", systemImage: "arrow.down") {
-                        Task { await navigationStore.moveWaypoint(waypoint.id, by: 1) }
-                    }
-                }
-            } label: {
-                Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(darkStyle ? Color.white.opacity(0.72) : Color.secondary)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(navigationStore.state.status != .routePreview || navigationStore.state.waypoints.count < 2)
-            .accessibilityLabel("Zmień kolejność przystanku \(index + 1)")
+            routeStopDragHandle(identifier: waypoint.id.uuidString,
+                                label: "przystanek \(index + 1)",
+                                darkStyle: darkStyle)
 
             Button {
                 Task { await navigationStore.removeWaypoint(waypoint.id) }
@@ -638,19 +625,14 @@ extension ContentView {
         }
         .frame(minHeight: 44)
         .dropDestination(for: String.self) { draggedIDs, location in
-            guard navigationStore.state.status == .routePreview,
-                  let draggedIDString = draggedIDs.first,
-                  let draggedID = UUID(uuidString: draggedIDString),
-                  let sourceIndex = navigationStore.state.waypoints.firstIndex(where: { $0.id == draggedID }) else {
-                return false
-            }
-
-            let targetInsertionIndex = index + (location.y >= 22 ? 1 : 0)
-            let finalIndex = targetInsertionIndex - (sourceIndex < targetInsertionIndex ? 1 : 0)
-            Task { await navigationStore.reorderWaypoint(draggedID, to: finalIndex) }
-            return true
+            guard let draggedID = draggedIDs.first else { return false }
+            return acceptRouteStopDrop(draggedID,
+                                       targetID: waypoint.id.uuidString,
+                                       insertAfterTarget: location.y >= 22)
+        } isTargeted: { isTargeted in
+            updateRouteStopDropTarget(waypoint.id.uuidString, isTargeted: isTargeted)
         }
-        .draggable(waypoint.id.uuidString)
+        .modifier(RouteStopDropTargetHighlight(isTargeted: routeStopDropTargetID == waypoint.id.uuidString))
         .accessibilityHint("Przeciągnij przystanek, aby zmienić jego kolejność na trasie")
     }
 
@@ -660,16 +642,25 @@ extension ContentView {
             addingWaypoint = true
             appRouter.present(.search)
         } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: 11) {
                 Image(systemName: "plus")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 35, height: 35)
+                    .background {
+                        Circle().fill(
+                            LinearGradient(colors: [Color.accentColor, Color.accentColor.opacity(0.78)],
+                                           startPoint: .topLeading,
+                                           endPoint: .bottomTrailing))
+                    }
                 Text("Dodaj przystanek")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 15, weight: .medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
                 Spacer(minLength: 0)
             }
             .foregroundStyle(Color.accentColor)
-            .frame(minHeight: 44)
-            .padding(.leading, 44)
+            .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

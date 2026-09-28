@@ -166,6 +166,43 @@ extension NavigationSession {
         if let final = state.destination { await preview(final) }
     }
 
+    func reorderRouteStop(_ stopID: String, to targetIndex: Int) async {
+        guard state.status == .routePreview,
+              let destination = state.destination,
+              let origin = state.routeOrigin ?? state.location.map({
+                  RoutePoint(Destination(name: "Twoja lokalizacja", coordinate: $0.coordinate),
+                             source: .currentLocation)
+              }) else { return }
+
+        var stops = [EditableRouteStop(id: "route-origin", destination: origin.destination,
+                                       originSource: origin.source)]
+        stops += state.waypoints.map {
+            EditableRouteStop(id: $0.id.uuidString, destination: $0, originSource: nil)
+        }
+        stops.append(EditableRouteStop(id: "route-destination", destination: destination,
+                                       originSource: nil))
+
+        guard let sourceIndex = stops.firstIndex(where: { $0.id == stopID }) else { return }
+        let movedStop = stops.remove(at: sourceIndex)
+        let insertionIndex = min(max(targetIndex, 0), stops.count)
+        guard sourceIndex != insertionIndex else { return }
+        stops.insert(movedStop, at: insertionIndex)
+
+        guard let firstStop = stops.first, let lastStop = stops.last else { return }
+        let newWaypoints = Array(stops.dropFirst().dropLast()).map(\.destination)
+        let newWaypointIDs = Set(newWaypoints.map(\.id))
+        state.routeOrigin = RoutePoint(firstStop.destination,
+                                       source: firstStop.originSource ?? (firstStop.destination.poi == nil ? .search : .poi))
+        state.waypoints = newWaypoints
+        state.destination = lastStop.destination
+        let pendingIDs = Set(state.pendingWaypointIDs)
+        state.pendingWaypointIDs = state.waypoints.map(\.id).filter { pendingIDs.contains($0) }
+        state.waypointNavigationTargets = Dictionary(
+            uniqueKeysWithValues: state.waypointNavigationTargets.filter { newWaypointIDs.contains($0.key) })
+        state.evChargingStops = []
+        await preview(lastStop.destination)
+    }
+
     func optimizeWaypoints() async {
         guard state.waypoints.count >= 2, let destination = state.destination,
               let origin = await resolvedRouteOriginCoordinate(for: state.transportMode) else { return }
@@ -192,4 +229,10 @@ extension NavigationSession {
         }
     }
 
+}
+
+private struct EditableRouteStop {
+    let id: String
+    let destination: Destination
+    let originSource: RoutePointSource?
 }

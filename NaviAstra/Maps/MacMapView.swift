@@ -47,6 +47,7 @@ struct MapLibreView: NSViewRepresentable {
     var onTransitStopSelect: (TransitStop) -> Void { scene.commands.onTransitStopSelect }
     var onTransitVehicleSelect: (TransitVehicle) -> Void { scene.commands.onTransitVehicleSelect }
     var onParkedCarSelect: () -> Void { scene.commands.onParkedCarSelect }
+    var onRouteSelect: (UUID) -> Void { scene.commands.onRouteSelect }
     var onCyclingPathsStatus: (OSMCyclingPathsStatus) -> Void { scene.commands.onCyclingPathsStatus }
     var onMapPan: () -> Void { scene.commands.onMapPan }
     var onLongPress: (Coordinate) -> Void { scene.commands.onLongPress }
@@ -151,12 +152,17 @@ struct MapLibreView: NSViewRepresentable {
                                shouldRequireFailureOf otherGestureRecognizer: NSGestureRecognizer) -> Bool {
             guard let click = gestureRecognizer as? NSClickGestureRecognizer,
                   let other = otherGestureRecognizer as? NSClickGestureRecognizer else { return false }
+            if click.numberOfClicksRequired == 1, let map,
+               routeRenderer.routeID(near: click.location(in: map), on: map) != nil {
+                return false
+            }
             return click.numberOfClicksRequired == 1 && other.numberOfClicksRequired == 2
         }
 
         @objc func placeClicked(_ recognizer: NSClickGestureRecognizer) {
             guard let map, recognizer.state == .ended else { return }
             let point = recognizer.location(in: map)
+            if routeRenderer.containsETAMarker(at: point, on: map) { return }
             if let pin = parkedCarPin {
                 let screen = map.convert(pin.coordinate, toPointTo: map)
                 if hypot(screen.x - point.x, screen.y - point.y) < 30 { return }
@@ -176,6 +182,10 @@ struct MapLibreView: NSViewRepresentable {
                 let screen = map.convert($0.coordinate, toPointTo: map)
                 return hypot(screen.x - point.x, screen.y - point.y) < 24
             }) { return }
+            if let routeID = routeRenderer.routeID(near: point, on: map) {
+                parent.onRouteSelect(routeID)
+                return
+            }
             let coordinate = map.convert(point, toCoordinateFrom: map)
             let edge = map.convert(NSPoint(x: point.x + 24, y: point.y), toCoordinateFrom: map)
             let center = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
@@ -521,7 +531,12 @@ struct MapLibreView: NSViewRepresentable {
                 max(0, Double(map.bounds.height) - effectiveIntent.padding.top - 100))
             if cameraState == .routeOverview, !enteringOverview, !newOverview, !cameraCommandChanged,
                !routePreviewPaddingChanged, !cameraModeChanged,
-               let route = parent.state.route, isMostlyVisible(route.coordinates, on: map) { return }
+               let route = parent.state.route {
+                let overviewCoordinates = parent.state.status == .routePreview
+                    ? (parent.state.alternatives + [route]).flatMap(\.coordinates)
+                    : route.coordinates
+                if isMostlyVisible(overviewCoordinates, on: map) { return }
+            }
             if intent == lastIntent && !enteringOverview && !newOverview && !cameraCommandChanged &&
                 !routePreviewPaddingChanged && !cameraModeChanged && !cameraStateChanged { return }
             if cameraMode == .flat && !cameraState.usesNavigationPerspective {
@@ -531,7 +546,7 @@ struct MapLibreView: NSViewRepresentable {
             }
             if cameraState == .routeOverview, lastOverviewRouteID != nil,
                let route = parent.state.route, lastStatus == .routePreview {
-                effectiveIntent.bounds = route.coordinates
+                effectiveIntent.bounds = (parent.state.alternatives + [route]).flatMap(\.coordinates)
             }
             programmaticCamera = true
             MacMapCameraAnimator.apply(effectiveIntent, state: cameraState, to: map)
@@ -606,9 +621,18 @@ struct MapLibreView: NSViewRepresentable {
 
         func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
             guard let annotation = view.annotation else { return }
+            if let routeID = routeRenderer.routeID(forETAMarker: annotation) {
+                mapView.deselectAnnotation(annotation, animated: false)
+                parent.onRouteSelect(routeID)
+                return
+            }
             if let pin = parkedCarPin, annotation === pin {
                 mapView.deselectAnnotation(annotation, animated: false)
                 parent.onParkedCarSelect()
+                return
+            }
+            if let signMarker = view as? TrafficMapAnnotationView, signMarker.isShowingRoadSign {
+                signMarker.setRoadSignSelected(true)
                 return
             }
             if annotation is MKClusterAnnotation || incidentPins.contains(where: { $0 === annotation })
@@ -640,10 +664,12 @@ struct MapLibreView: NSViewRepresentable {
             guard let annotation = view.annotation,
                   annotation is MKClusterAnnotation || incidentPins.contains(where: { $0 === annotation })
                     || roadAlertPins.contains(where: { $0 === annotation }) else { return }
+            (view as? TrafficMapAnnotationView)?.setRoadSignSelected(false)
             view.layer?.setAffineTransform(.identity)
         }
 
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            if let marker = routeRenderer.annotationView(for: annotation) { return marker }
             if let pin = parkedCarPin, annotation === pin {
                 let marker = MKAnnotationView(annotation: annotation, reuseIdentifier: "parked-car")
                 marker.frame = NSRect(x: 0, y: 0, width: 64, height: 54)
@@ -680,14 +706,20 @@ struct MapLibreView: NSViewRepresentable {
                 return marker
             }
             if let cluster = annotation as? MKClusterAnnotation {
-                let presentation = cluster.memberAnnotations.compactMap { trafficPresentation(for: $0) }
-                    .max { $0.clusterPriority < $1.clusterPriority } ?? TrafficMapPresentation(
+                let memberPresentations = cluster.memberAnnotations.compactMap { trafficPresentation(for: $0) }
+                let presentation = memberPresentations.filter { $0.roadSign != nil }
+                    .max { $0.clusterPriority < $1.clusterPriority }
+                    ?? memberPresentations.max { $0.clusterPriority < $1.clusterPriority }
+                    ?? TrafficMapPresentation(
                         TrafficIncident(id: "cluster", description: "Zdarzenia drogowe",
                                         coordinate: Coordinate(latitude: cluster.coordinate.latitude,
                                                               longitude: cluster.coordinate.longitude),
                                         delaySeconds: nil, category: .unknown, severity: .unknown))
                 let marker = TrafficMapAnnotationView(annotation: annotation, reuseIdentifier: "traffic-cluster")
-                marker.render(presentation: presentation, clusterCount: cluster.memberAnnotations.count)
+                let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
+                marker.render(presentation: presentation,
+                              clusterCount: cluster.memberAnnotations.count,
+                              isNavigating: isNavigating)
                 return marker
             }
             if let index = incidentPins.firstIndex(where: { $0 === annotation }),
@@ -746,7 +778,8 @@ struct MapLibreView: NSViewRepresentable {
                 let alert = shownRoadAlerts[alertIndex]
                 let marker = TrafficMapAnnotationView(annotation: annotation,
                                                       reuseIdentifier: "road-alert-\(alert.type.rawValue)")
-                marker.render(presentation: TrafficMapPresentation(alert))
+                let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
+                marker.render(presentation: TrafficMapPresentation(alert), isNavigating: isNavigating)
                 return marker
             }
 

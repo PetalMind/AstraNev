@@ -28,6 +28,7 @@ struct DestinationSearchSheet: View {
     @State private var showSaveAlert = false
     @State private var contactsAccessStatus = ContactsAccessStatus.current()
     @State private var isRequestingContactsAccess = false
+    @State private var speechInput = SearchSpeechInput()
     @FocusState private var isSearchFocused: Bool
 
     private var query: String {
@@ -210,6 +211,16 @@ struct DestinationSearchSheet: View {
     private var searchMainContent: some View {
         VStack(alignment: .leading, spacing: 16) {
             searchField
+            if speechInput.isListening {
+                Label("Słucham… Powiedz nazwę miejsca lub przystanku.", systemImage: "waveform")
+                    .font(.caption)
+                    .foregroundStyle(Color.accentColor)
+            }
+            if let message = speechInput.errorMessage {
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             if let savedPlaceNotice {
                 Label(savedPlaceNotice, systemImage: "checkmark.circle.fill")
                     .font(.caption.weight(.medium))
@@ -251,6 +262,12 @@ struct DestinationSearchSheet: View {
     }
 
     private func handleScenePhaseChange(_ phase: ScenePhase) {
+        if phase == .background {
+            if speechInput.isStarting || speechInput.isListening {
+                speechInput.stop(keepAudioSessionActive: navigationStore.state.status == .navigating)
+            }
+            return
+        }
         guard phase == .active, !isRequestingContactsAccess else { return }
         let previousStatus = contactsAccessStatus
         contactsAccessStatus = ContactsAccessStatus.current()
@@ -260,6 +277,7 @@ struct DestinationSearchSheet: View {
     }
 
     private func cleanUpSearch() {
+        speechInput.stop(keepAudioSessionActive: navigationStore.state.status == .navigating)
         searchStore.cancelSearches()
         let closingSearchID = searchStore.currentRequestID
         Task { @MainActor in
@@ -392,12 +410,42 @@ struct DestinationSearchSheet: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Wyczyść wyszukiwanie")
             }
+
+            Button(action: toggleSpeechInput) {
+                Group {
+                    if speechInput.isStarting {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: speechInput.isListening ? "stop.fill" : "mic.fill")
+                            .foregroundStyle(speechInput.isListening ? .red : .secondary)
+                            .symbolEffect(.pulse, isActive: speechInput.isListening)
+                    }
+                }
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(speechInput.isListening || speechInput.isStarting
+                                ? "Zatrzymaj wyszukiwanie głosowe" : "Wyszukaj głosowo")
+            .accessibilityHint("Wypowiedz nazwę miejsca, adresu, linii lub przystanku.")
         }
         .font(.body)
         .padding(.horizontal, 15)
         .frame(height: 52)
         .background(.regularMaterial, in: Capsule())
         .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08)))
+    }
+
+    private func toggleSpeechInput() {
+        isSearchFocused = false
+        if speechInput.isListening || speechInput.isStarting {
+            speechInput.stop(keepAudioSessionActive: navigationStore.state.status == .navigating)
+        } else {
+            speechInput.start(keepAudioSessionActive: navigationStore.state.status == .navigating) { transcript in
+                query = transcript
+            }
+        }
     }
 
     private var quickPlacesSection: some View {

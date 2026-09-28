@@ -15,6 +15,129 @@ extension ContentView {
         }
     }
 
+    private var routePlanningCarouselRoutes: [NavigationRoute] {
+        var routes = navigationStore.state.routeOptions
+        if let selected = navigationStore.state.route,
+           !routes.contains(where: { $0.id == selected.id }) {
+            routes.insert(selected, at: 0)
+        }
+        return routes
+    }
+
+    private var routeStopIdentifiers: [String] {
+        ["route-origin"] + navigationStore.state.waypoints.map { $0.id.uuidString } + ["route-destination"]
+    }
+
+    func acceptRouteStopDrop(_ sourceID: String, targetID: String, insertAfterTarget: Bool) -> Bool {
+        defer { routeStopDropTargetID = nil }
+        guard navigationStore.state.status == .routePreview,
+              sourceID != targetID else { return false }
+
+        if (sourceID == "route-origin" && targetID == "route-destination") ||
+            (sourceID == "route-destination" && targetID == "route-origin") {
+            swapRouteEndpoints()
+            routeStopReorderFeedbackToken += 1
+            return true
+        }
+
+        let stopIDs = routeStopIdentifiers
+        guard let sourceIndex = stopIDs.firstIndex(of: sourceID),
+              let targetIndex = stopIDs.firstIndex(of: targetID) else { return false }
+        let insertionIndex = targetIndex + (insertAfterTarget ? 1 : 0)
+        let finalIndex = insertionIndex - (sourceIndex < insertionIndex ? 1 : 0)
+        guard sourceIndex != finalIndex else { return true }
+        Task { await navigationStore.reorderRouteStop(sourceID, to: finalIndex) }
+        routeStopReorderFeedbackToken += 1
+        return true
+    }
+
+    func updateRouteStopDropTarget(_ identifier: String, isTargeted: Bool) {
+        if isTargeted {
+            routeStopDropTargetID = identifier
+        } else if routeStopDropTargetID == identifier {
+            routeStopDropTargetID = nil
+        }
+    }
+
+    private func moveRouteStopForAccessibility(_ sourceID: String, by offset: Int) {
+        guard let sourceIndex = routeStopIdentifiers.firstIndex(of: sourceID),
+              routeStopIdentifiers.indices.contains(sourceIndex + offset) else { return }
+        let targetID = routeStopIdentifiers[sourceIndex + offset]
+        _ = acceptRouteStopDrop(sourceID,
+                                targetID: targetID,
+                                insertAfterTarget: offset > 0)
+    }
+
+    @ViewBuilder
+    func routeStopDragHandle(identifier: String, label: String, darkStyle: Bool = true) -> some View {
+        if navigationStore.state.status == .routePreview {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(routeStopDropTargetID == identifier
+                                 ? Color.accentColor
+                                 : (darkStyle ? Color.white.opacity(0.86) : Color.primary.opacity(0.72)))
+                .frame(width: 44, height: 44)
+                .background {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(routeStopDropTargetID == identifier
+                              ? Color.accentColor.opacity(0.14)
+                              : (darkStyle ? Color.white.opacity(0.075) : Color.primary.opacity(0.045)))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(darkStyle ? Color.white.opacity(0.1) : Color.primary.opacity(0.09), lineWidth: 1)
+                }
+                .contentShape(Rectangle())
+                .draggable(identifier) { routeStopDragPreview(label: label) }
+                .accessibilityLabel("Zmień kolejność: \(label)")
+                .accessibilityHint("Przeciągnij uchwyt na pozycję docelową. Możesz też użyć dostępnych akcji.")
+                .accessibilityActions {
+                    if let index = routeStopIdentifiers.firstIndex(of: identifier) {
+                        if index > 0 {
+                            Button("Bliżej punktu startowego") {
+                                moveRouteStopForAccessibility(identifier, by: -1)
+                            }
+                        }
+                        if index + 1 < routeStopIdentifiers.count {
+                            Button("Bliżej celu") {
+                                moveRouteStopForAccessibility(identifier, by: 1)
+                            }
+                        }
+                    }
+                }
+        } else {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(darkStyle ? Color.white.opacity(0.3) : Color.secondary.opacity(0.55))
+                .frame(width: 44, height: 44)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private func routeStopDragPreview(label: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(Color.accentColor)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Zmień kolejność")
+                    .font(.system(size: 13, weight: .semibold))
+                Text(label)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.68))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(.white)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .modifier(NavigationGlassSurface(radius: 16, interactive: true))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.accentColor.opacity(0.48), lineWidth: 1)
+        }
+    }
+
     private var routePlanningShareURL: URL? {
         guard let origin = routeOriginPoint, let destination = navigationStore.state.destination else { return nil }
         let originValue = origin.isCurrentLocation
@@ -41,25 +164,29 @@ extension ContentView {
                               maximumHeight: maxHeight,
                               accessibilityLabel: "Podgląd trasy",
                               isDragging: $isMapBottomSheetDragging,
-                              mediumHeightFraction: 0.62) { detent, _ in
+                              mediumHeightFraction: 0.72,
+                              minimumPeekHeight: navigationStore.state.route != nil || navigationStore.state.status == .error
+                                  ? 220 : nil) { detent, _ in
             Group {
                 switch detent {
                 case .peek:
-                    routePlanningPeek
+                    if maxHeight < 300 || (navigationStore.state.route == nil && navigationStore.state.status != .error) {
+                        EmptyView()
+                    } else {
+                        routePlanningPeek
+                    }
                 case .medium:
-                    VStack(spacing: 8) {
-                        routePlanningCompactEndpoints
+                    VStack(spacing: 6) {
                         routePlanningTransportSelector
-                        if let route = navigationStore.state.route {
-                            routePlanningOverview(route, compact: true)
-                        } else {
+                        routePlanningCompactEndpoints
+                        if navigationStore.state.route == nil {
                             routePlanningUnavailable
                         }
                     }
                 case .expanded:
                     VStack(spacing: 10) {
-                        routePlanningEndpoints
                         routePlanningTransportSelector
+                        routePlanningEndpoints
 
                         if navigationStore.state.transportMode == .transit || navigationStore.state.transportMode == .parkRide {
                             journeyTimeControl
@@ -67,10 +194,27 @@ extension ContentView {
                         }
 
                         if let route = navigationStore.state.route {
-                            routePlanningOverview(route)
                             routePlanningAlternatives(for: route)
                             if detent == .expanded {
-                                routePlanningDetails(for: route)
+                                Button {
+                                    withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
+                                        routePlanningDetailsExpanded.toggle()
+                                    }
+                                } label: {
+                                    Label(routePlanningDetailsExpanded ? "Ukryj szczegóły trasy" : "Szczegóły trasy",
+                                          systemImage: routePlanningDetailsExpanded ? "chevron.up" : "chevron.down")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(Color.accentColor)
+                                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityHint(routePlanningDetailsExpanded
+                                                   ? "Ukryj ustawienia i szczegóły trasy"
+                                                   : "Pokaż ustawienia i szczegóły trasy")
+                            }
+                            if detent == .expanded && routePlanningDetailsExpanded {
+                                routePlanningDetails(for: route, showsManeuvers: false)
                                     .transition(.opacity.combined(with: .move(edge: .top)))
                             }
                         } else {
@@ -80,70 +224,91 @@ extension ContentView {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.bottom, detent == .peek ? 0 : 8)
+            .padding(.bottom, detent == .peek ? 0 : 4)
         } footer: { detent, _ in
-            if detent == .peek {
-                EmptyView()
-            } else {
-                routePlanningFooter(bottomInset: bottomInset)
-            }
+            routePlanningFooter(bottomInset: bottomInset,
+                                compact: detent != .expanded || maxHeight < 360,
+                                showsSecondaryActions: detent != .peek &&
+                                    (detent == .expanded || maxHeight >= 600))
         }
         .frame(maxWidth: 560)
         .frame(maxWidth: .infinity)
+        .sensoryFeedback(.selection, trigger: routeStopReorderFeedbackToken)
     }
 
     private var routePlanningCompactEndpoints: some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 5) {
-                Button { appRouter.present(.originPicker) } label: {
-                    HStack(spacing: 8) {
-                        Circle().fill(Color.accentColor).frame(width: 8, height: 8)
-                        Text(routeOriginPoint?.name ?? "Twoja lokalizacja")
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .font(.system(size: 13, weight: .semibold))
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: routeOriginPoint?.isCurrentLocation == true ? "location.north.fill" : "a.circle.fill")
+                    .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .contentShape(Rectangle())
+                    .frame(width: 31, height: 31)
+                    .background(Color.accentColor, in: Circle())
+
+                Button { appRouter.present(.originPicker) } label: {
+                    Text(routeOriginPoint?.name ?? "Twoja lokalizacja")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, minHeight: 47, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Punkt startowy: \(routeOriginPoint?.name ?? "Twoja lokalizacja")")
 
-                Button(action: presentSearch) {
-                    HStack(spacing: 8) {
-                        Circle().fill(Color.red.opacity(0.9)).frame(width: 8, height: 8)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(navigationStore.state.destination?.name ?? "Dokąd?")
-                                .lineLimit(1)
-                            if !navigationStore.state.waypoints.isEmpty {
-                                Text("Punkty po drodze: \(navigationStore.state.waypoints.count)")
-                                    .font(.system(size: 10, weight: .medium))
-                                    .foregroundStyle(Color.white.opacity(0.55))
-                                    .lineLimit(1)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .font(.system(size: 13, weight: .semibold))
+                Button(action: swapRouteEndpoints) {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.62))
+                        .frame(width: 36, height: 36)
+                        .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(navigationStore.state.destination == nil || routeOriginPoint == nil)
+                .accessibilityLabel("Zamień punkt startowy i cel")
+
+                routeStopDragHandle(identifier: "route-origin", label: "punkt startowy")
+            }
+            .dropDestination(for: String.self) { draggedIDs, location in
+                guard let draggedID = draggedIDs.first else { return false }
+                return acceptRouteStopDrop(draggedID, targetID: "route-origin", insertAfterTarget: location.y >= 22)
+            } isTargeted: { isTargeted in
+                updateRouteStopDropTarget("route-origin", isTargeted: isTargeted)
+            }
+            .modifier(RouteStopDropTargetHighlight(isTargeted: routeStopDropTargetID == "route-origin"))
+
+            routeWaypointRows(darkStyle: true)
+            routeWaypointConnector(darkStyle: true)
+
+            HStack(spacing: 10) {
+                Text("B")
+                    .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .contentShape(Rectangle())
+                    .frame(width: 31, height: 31)
+                    .background(Color.red.opacity(0.9), in: Circle())
+
+                Button(action: presentSearch) {
+                    Text(navigationStore.state.destination?.name ?? "Dokąd?")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, minHeight: 47, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Cel podróży: \(navigationStore.state.destination?.name ?? "Nie wybrano")")
-            }
 
-            Button(action: swapRouteEndpoints) {
-                Image(systemName: "arrow.up.arrow.down")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.white.opacity(0.78))
-                    .frame(width: 44, height: 44)
-                    .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                routeStopDragHandle(identifier: "route-destination", label: "cel podróży")
             }
-            .buttonStyle(.plain)
-            .disabled(navigationStore.state.destination == nil || routeOriginPoint == nil)
-            .accessibilityLabel("Zamień punkt startowy i cel")
+            .dropDestination(for: String.self) { draggedIDs, location in
+                guard let draggedID = draggedIDs.first else { return false }
+                return acceptRouteStopDrop(draggedID, targetID: "route-destination", insertAfterTarget: location.y >= 22)
+            } isTargeted: { isTargeted in
+                updateRouteStopDropTarget("route-destination", isTargeted: isTargeted)
+            }
+            .modifier(RouteStopDropTargetHighlight(isTargeted: routeStopDropTargetID == "route-destination"))
+
+            routeWaypointAddButton()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -160,33 +325,41 @@ extension ContentView {
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
                         .foregroundStyle(.white)
                         .lineLimit(1)
-                    if let route = navigationStore.state.route {
-                        Text("\(time(route.expectedTravelTime)) · \(distance(route.distance))")
-                            .font(.system(size: 12, weight: .medium, design: .rounded).monospacedDigit())
-                            .foregroundStyle(Color.white.opacity(0.66))
-                            .lineLimit(1)
+                    if navigationStore.state.status == .error {
+                        Text(navigationStore.state.errorMessage ?? "Nie udało się wyznaczyć trasy.")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Color.white.opacity(0.78))
+                            .lineLimit(2)
                     } else {
-                        Text("Trasa jest przygotowywana")
+                        Text("Start: \(routeOriginPoint?.name ?? "Twoja lokalizacja")")
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(Color.white.opacity(0.66))
+                            .lineLimit(1)
                     }
                 }
                 Spacer(minLength: 0)
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.55))
             }
             .contentShape(Rectangle())
             .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(routePlanningPeekAccessibilityLabel)
-        .accessibilityHint("Rozwiń podgląd trasy")
+        .accessibilityHint("Rozwiń panel, aby zobaczyć przystanki i alternatywne trasy")
     }
 
     private var routePlanningPeekAccessibilityLabel: String {
         let destination = navigationStore.state.destination?.name ?? "wybranego celu"
         guard let route = navigationStore.state.route else {
+            if navigationStore.state.status == .error {
+                let details = navigationStore.state.errorMessage.map { ". \($0)" } ?? ""
+                return "Nie udało się wyznaczyć trasy do \(destination)\(details)"
+            }
             return "Trasa do \(destination) jest przygotowywana"
         }
-        return "Trasa do \(destination), \(time(route.expectedTravelTime)), \(distance(route.distance))"
+        return "Trasa do \(destination), \(time(route.expectedTravelTime)), przyjazd \(routePlanningArrivalTime(route)), \(distance(route.distance))"
     }
 
     private var routePlanningEndpoints: some View {
@@ -212,6 +385,7 @@ extension ContentView {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Punkt startowy: \(routeOriginPoint?.name ?? "Twoja lokalizacja")")
+                routeStopDragHandle(identifier: "route-origin", label: "punkt startowy")
                 Button(action: swapRouteEndpoints) {
                     Image(systemName: "arrow.up.arrow.down")
                         .font(.system(size: 14, weight: .semibold))
@@ -222,6 +396,13 @@ extension ContentView {
                 .disabled(navigationStore.state.destination == nil || routeOriginPoint == nil)
                 .accessibilityLabel("Zamień punkt startowy i cel")
             }
+            .dropDestination(for: String.self) { draggedIDs, location in
+                guard let draggedID = draggedIDs.first else { return false }
+                return acceptRouteStopDrop(draggedID, targetID: "route-origin", insertAfterTarget: location.y >= 24)
+            } isTargeted: { isTargeted in
+                updateRouteStopDropTarget("route-origin", isTargeted: isTargeted)
+            }
+            .modifier(RouteStopDropTargetHighlight(isTargeted: routeStopDropTargetID == "route-origin"))
 
             routeWaypointRows(darkStyle: true)
             routeWaypointConnector(darkStyle: true)
@@ -257,7 +438,15 @@ extension ContentView {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(isDestinationFavorite ? "Usuń cel z ulubionych" : "Zapisz cel w ulubionych")
+                routeStopDragHandle(identifier: "route-destination", label: "cel podróży")
             }
+            .dropDestination(for: String.self) { draggedIDs, location in
+                guard let draggedID = draggedIDs.first else { return false }
+                return acceptRouteStopDrop(draggedID, targetID: "route-destination", insertAfterTarget: location.y >= 24)
+            } isTargeted: { isTargeted in
+                updateRouteStopDropTarget("route-destination", isTargeted: isTargeted)
+            }
+            .modifier(RouteStopDropTargetHighlight(isTargeted: routeStopDropTargetID == "route-destination"))
 
             routeWaypointAddButton()
         }
@@ -267,74 +456,36 @@ extension ContentView {
     }
 
     private var routePlanningTransportSelector: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 7) {
-                ForEach(TransportMode.allCases) { mode in
-                    let selected = navigationStore.state.transportMode == mode
-                    Button {
-                        Task { await navigationStore.selectTransportMode(mode) }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: mode.symbol)
-                                .font(.system(size: 14, weight: .semibold))
-                            Text(mode.title)
-                                .font(.system(size: 11, weight: .semibold))
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.8)
+        HStack(spacing: 3) {
+            ForEach(routePlanningTransportModes) { mode in
+                let selected = navigationStore.state.transportMode == mode
+                Button {
+                    Task { await navigationStore.selectTransportMode(mode) }
+                } label: {
+                    Image(systemName: mode.symbol)
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(selected ? 1 : 0.78))
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .background {
+                            if selected {
+                                RoundedRectangle(cornerRadius: 27, style: .continuous)
+                                    .fill(Color.white.opacity(0.19))
+                            }
                         }
-                        .foregroundStyle(selected ? Color.accentColor : Color.white.opacity(0.65))
-                        .padding(.horizontal, 11)
-                        .frame(minHeight: 44)
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .strokeBorder(selected ? Color.accentColor.opacity(0.7) : Color.white.opacity(0.045),
-                                              lineWidth: selected ? 1.2 : 1)
-                        }
-                        .modifier(NavigationGlassSurface(radius: 14, interactive: true))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(mode.title)
-                    .accessibilityAddTraits(selected ? .isSelected : [])
+                        .contentShape(RoundedRectangle(cornerRadius: 27, style: .continuous))
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(mode.title)
+                .accessibilityAddTraits(selected ? .isSelected : [])
             }
         }
-        .scrollIndicators(.hidden)
-        .scrollDisabled(false)
+        .padding(4)
+        .modifier(NavigationGlassSurface(radius: 32, interactive: true))
         .animation(.spring(response: 0.34, dampingFraction: 0.88), value: navigationStore.state.transportMode)
     }
 
-    private func routePlanningOverview(_ route: NavigationRoute, compact: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: compact ? 2 : 5) {
-            Text(time(route.expectedTravelTime))
-                .font(.system(size: compact ? 27 : 31, weight: .bold, design: .rounded).monospacedDigit())
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-            Text("\(distance(route.distance)) · Przyjazd \(routePlanningArrivalTime(route))")
-                .font(.system(size: compact ? 11 : 12, weight: .medium, design: .rounded).monospacedDigit())
-                .foregroundStyle(Color.white.opacity(0.67))
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-            if !compact, navigationStore.state.transportMode == .transit, let journey = route.journey {
-                routePlanningJourneyOverview(journey, darkStyle: true, compact: true)
-            }
-            if let traffic = routePlanningTrafficSummary(for: route) {
-                Label(traffic.title, systemImage: traffic.symbol)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(traffic.color)
-                    .lineLimit(1)
-            }
-            if !compact, !route.chargingStops.isEmpty {
-                Text("Postoje na ładowanie: \(route.chargingStops.count) · +\(Int((route.chargingDuration / 60).rounded())) min")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Color.white.opacity(0.56))
-                    .lineLimit(1)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(compact ? 11 : 14)
-        .modifier(NavigationGlassSurface(radius: compact ? 19 : 23))
-        .accessibilityElement(children: .combine)
+    private var routePlanningTransportModes: [TransportMode] {
+        [.car, .walking, .transit, .bicycle, .parkRide]
     }
 
     private func routePlanningArrivalTime(_ route: NavigationRoute) -> String {
@@ -370,15 +521,14 @@ extension ContentView {
 
     @ViewBuilder
     private func routePlanningAlternatives(for selectedRoute: NavigationRoute) -> some View {
-        let routes = routePlanningOptions
-        if routes.count > 1 {
+        let routes = routePlanningOptions.filter { $0.id != selectedRoute.id }
+        if !routes.isEmpty {
             VStack(alignment: .leading, spacing: 7) {
                 Text("Alternatywne trasy")
                     .font(.system(size: 14, weight: .semibold, design: .rounded))
                     .foregroundStyle(Color.white.opacity(0.84))
 
-                ForEach(Array(routes.enumerated()), id: \.element.id) { _, route in
-                    let isSelected = route.id == selectedRoute.id
+                ForEach(routes) { route in
                     Button {
                         withAnimation(.easeInOut(duration: 0.25)) { navigationStore.select(route) }
                     } label: {
@@ -386,7 +536,7 @@ extension ContentView {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(time(route.expectedTravelTime))
                                     .font(.system(size: 15, weight: .bold, design: .rounded).monospacedDigit())
-                                    .foregroundStyle(.white)
+                                    .foregroundStyle(Color.white.opacity(0.88))
                                     .lineLimit(1)
                                 if let journey = route.journey {
                                     routePlanningJourneyOverview(journey, darkStyle: true, compact: true)
@@ -398,18 +548,16 @@ extension ContentView {
                             }
                             Spacer(minLength: 3)
                             VStack(alignment: .trailing, spacing: 2) {
-                                Text(isSelected ? "Wybrana" : "Alternatywna")
+                                Text("Alternatywna")
                                     .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(isSelected ? Color.accentColor : Color.white.opacity(0.76))
-                                if !isSelected {
-                                    Text(routePlanningDifference(route, from: selectedRoute))
-                                        .font(.system(size: 10, weight: .medium, design: .rounded).monospacedDigit())
-                                        .foregroundStyle(Color.white.opacity(0.55))
-                                }
+                                    .foregroundStyle(Color.white.opacity(0.76))
+                                Text(routePlanningDifference(route, from: selectedRoute))
+                                    .font(.system(size: 10, weight: .medium, design: .rounded).monospacedDigit())
+                                    .foregroundStyle(Color.white.opacity(0.55))
                             }
-                            Image(systemName: isSelected ? "checkmark.circle.fill" : "chevron.right")
+                            Image(systemName: "chevron.right")
                                 .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(isSelected ? Color.accentColor : Color.white.opacity(0.5))
+                                .foregroundStyle(Color.white.opacity(0.5))
                                 .padding(.leading, 3)
                         }
                         .padding(.horizontal, 13)
@@ -418,13 +566,11 @@ extension ContentView {
                         .modifier(NavigationGlassSurface(radius: 17, interactive: true))
                         .overlay {
                             RoundedRectangle(cornerRadius: 17, style: .continuous)
-                                .strokeBorder(isSelected ? Color.accentColor.opacity(0.85) : Color.white.opacity(0.07),
-                                              lineWidth: isSelected ? 1.3 : 1)
+                                .strokeBorder(Color.white.opacity(0.07), lineWidth: 1)
                         }
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("\(isSelected ? "Wybrana trasa" : "Alternatywna trasa"), \(time(route.expectedTravelTime)), \(distance(route.distance))\(routePlanningAccessibilitySummary(route))")
-                    .accessibilityAddTraits(isSelected ? .isSelected : [])
+                    .accessibilityLabel("Alternatywna trasa, \(time(route.expectedTravelTime)), \(distance(route.distance))\(routePlanningAccessibilitySummary(route))")
                 }
             }
         }
@@ -437,9 +583,9 @@ extension ContentView {
         return difference > 0 ? "+\(minutes) min" : "\(minutes) min szybciej"
     }
 
-    private func routePlanningDetails(for route: NavigationRoute) -> some View {
+    private func routePlanningDetails(for route: NavigationRoute, showsManeuvers: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            if !route.maneuvers.isEmpty {
+            if showsManeuvers, !route.maneuvers.isEmpty {
                 VStack(alignment: .leading, spacing: 9) {
                     Text("Przebieg trasy")
                         .font(.system(size: 14, weight: .semibold))
@@ -468,16 +614,18 @@ extension ContentView {
 
             waypointDetails
 
-            VStack(alignment: .leading, spacing: 7) {
-                Text("Opcje trasy")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white)
-                routePreferenceToggle("Unikaj autostrad", keyPath: \.avoidHighways)
-                routePreferenceToggle("Unikaj dróg płatnych", keyPath: \.avoidTolls)
-                routePreferenceToggle("Unikaj promów", keyPath: \.avoidFerries)
-                routePreferenceToggle("Unikaj dróg gruntowych", keyPath: \.avoidUnpaved)
+            if navigationStore.state.transportMode == .car {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("Opcje jazdy")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                    routePreferenceToggle("Unikaj autostrad", keyPath: \.avoidHighways)
+                    routePreferenceToggle("Unikaj dróg płatnych", keyPath: \.avoidTolls)
+                    routePreferenceToggle("Unikaj promów", keyPath: \.avoidFerries)
+                    routePreferenceToggle("Unikaj dróg gruntowych", keyPath: \.avoidUnpaved)
+                }
+                .tint(Color.accentColor)
             }
-            .tint(Color.accentColor)
 
             if !route.chargingStops.isEmpty {
                 VStack(alignment: .leading, spacing: 7) {
@@ -732,85 +880,184 @@ extension ContentView {
         return ", \(lineSummary), wsiadasz \(departure.formatted(date: .omitted, time: .shortened)), przyjazd \(journey.arrival.formatted(date: .omitted, time: .shortened)), pieszo \(transitMetricTime(journey.walkingDuration)), \(journey.transferCount) \(transferCaption(journey.transferCount)), \(routePlanningRealtimeSummary(for: journey).title)"
     }
 
+    @ViewBuilder
     private var routePlanningUnavailable: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            if navigationStore.state.status == .routeCalculating {
-                HStack(spacing: 9) {
-                    ProgressView()
-                    Text(navigationStore.state.transportMode == .transit ? "Szukam połączeń…" : "Wyznaczanie trasy…")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Color.white.opacity(0.75))
-                }
-            } else {
-                Text(navigationStore.state.errorMessage ?? "Nie udało się wyznaczyć trasy.")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.white.opacity(0.75))
+        if navigationStore.state.status == .error {
+            Text(navigationStore.state.errorMessage ?? "Nie udało się wyznaczyć trasy.")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.75))
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .modifier(NavigationGlassSurface(radius: 19))
+        }
+    }
+
+    private func routePlanningFooter(bottomInset: CGFloat, compact: Bool,
+                                    showsSecondaryActions: Bool) -> some View {
+        VStack(spacing: 7) {
+            if navigationStore.state.status == .routePreview,
+               let route = navigationStore.state.route {
+                routePlanningSelectedRouteCard(route, compact: compact)
+            } else if navigationStore.state.status == .error {
                 Button {
                     Task { await navigationStore.planRoute() }
                 } label: {
-                    Label("Spróbuj ponownie", systemImage: "arrow.clockwise")
-                        .font(.system(size: 13, weight: .semibold))
+                    Label(compact ? "Ponów" : "Spróbuj ponownie", systemImage: "arrow.clockwise")
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity, minHeight: 43)
-                        .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .frame(maxWidth: .infinity, minHeight: 52)
+                        .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
                 .buttonStyle(.plain)
+            } else if navigationStore.state.status == .routeCalculating {
+                HStack(spacing: 9) {
+                    ProgressView()
+                    Text(navigationStore.state.transportMode == .transit ? "Szukam połączeń…" : "Wyznaczanie trasy…")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(Color.white.opacity(0.78))
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+            }
+
+            if showsSecondaryActions {
+                routePlanningSecondaryActions(compact: compact)
             }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .modifier(NavigationGlassSurface(radius: 19))
+        .padding(.horizontal, 14)
+        .padding(.top, compact ? 0 : 8)
+        .padding(.bottom, compact ? 8 : max(12, min(22, bottomInset * 0.55)))
+        .background(Color.black.opacity(0.08))
     }
 
-    private func routePlanningFooter(bottomInset: CGFloat) -> some View {
-        VStack(spacing: 8) {
-            routePlanningStartAction
+    private func routePlanningSecondaryActions(compact: Bool) -> some View {
+        HStack(spacing: 10) {
+            Button {
+                navigationStore.stop()
+            } label: {
+                Label("Anuluj trasę", systemImage: "xmark")
+                    .font(compact ? .system(size: 13, weight: .medium) : .subheadline.weight(.medium))
+                    .frame(maxWidth: .infinity, minHeight: compact ? 38 : 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.white.opacity(0.7))
+            .accessibilityLabel("Anuluj trasę")
 
-            HStack(spacing: 10) {
-                Button {
-                    navigationStore.stop()
-                } label: {
-                    Label("Anuluj trasę", systemImage: "xmark")
-                        .font(.subheadline.weight(.medium))
-                        .frame(maxWidth: .infinity, minHeight: 44)
+            if let url = routePlanningShareURL {
+                ShareLink(item: url) {
+                    Label("Udostępnij", systemImage: "square.and.arrow.up")
+                        .font(compact ? .system(size: 13, weight: .medium) : .subheadline.weight(.medium))
+                        .frame(maxWidth: .infinity, minHeight: compact ? 38 : 44)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(Color.white.opacity(0.7))
-                .accessibilityLabel("Anuluj trasę")
-
-                if let url = routePlanningShareURL {
-                    ShareLink(item: url) {
-                        Label("Udostępnij", systemImage: "square.and.arrow.up")
-                            .font(.subheadline.weight(.medium))
-                            .frame(maxWidth: .infinity, minHeight: 44)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.white.opacity(0.7))
-                    .accessibilityLabel("Udostępnij trasę")
-                } else {
-                    Button {} label: {
-                        Label("Udostępnij", systemImage: "square.and.arrow.up")
-                            .font(.subheadline.weight(.medium))
-                            .frame(maxWidth: .infinity, minHeight: 44)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.white.opacity(0.42))
-                    .disabled(true)
-                    .accessibilityLabel("Udostępnianie trasy niedostępne")
+                .accessibilityLabel("Udostępnij trasę")
+            } else {
+                Button {} label: {
+                    Label("Udostępnij", systemImage: "square.and.arrow.up")
+                        .font(compact ? .system(size: 13, weight: .medium) : .subheadline.weight(.medium))
+                        .frame(maxWidth: .infinity, minHeight: compact ? 38 : 44)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.white.opacity(0.42))
+                .disabled(true)
+                .accessibilityLabel("Udostępnianie trasy niedostępne")
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
-        .padding(.bottom, max(12, min(22, bottomInset * 0.55)))
-        .background(Color.black.opacity(0.08))
     }
 
-    private var routePlanningStartAction: some View {
-        let canStart = navigationStore.state.status == .routePreview
+    private func routePlanningSelectedRouteCard(_ route: NavigationRoute, compact: Bool) -> some View {
+        let routes = routePlanningCarouselRoutes
+        let selectedIndex = routes.firstIndex(where: { $0.id == route.id }) ?? 0
+
+        return HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: compact ? 3 : 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(time(route.expectedTravelTime))
+                        .font(.system(size: compact ? 23 : 28, weight: .bold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    Spacer(minLength: 0)
+                    if routes.count > 1 {
+                        Text("\(selectedIndex + 1) / \(routes.count)")
+                            .font(.caption.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(Color.white.opacity(0.62))
+                    }
+                }
+
+                Text("U celu \(routePlanningArrivalTime(route)) · \(distance(route.distance))")
+                    .font(.system(size: compact ? 11 : 12, weight: .medium, design: .rounded).monospacedDigit())
+                    .foregroundStyle(Color.white.opacity(0.7))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+
+                if !compact, let traffic = routePlanningTrafficSummary(for: route) {
+                    Label(traffic.title, systemImage: traffic.symbol)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(traffic.color)
+                        .lineLimit(1)
+                }
+
+                if routes.count > 1 {
+                    HStack(spacing: 6) {
+                        HStack(spacing: 4) {
+                            ForEach(routes.indices, id: \.self) { index in
+                                Capsule()
+                                    .fill(index == selectedIndex ? Color.accentColor : Color.white.opacity(0.28))
+                                    .frame(width: index == selectedIndex ? 13 : 5, height: 5)
+                            }
+                        }
+                        .accessibilityHidden(true)
+                        Text("Przesuń, aby zmienić trasę")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Color.white.opacity(0.55))
+                            .lineLimit(1)
+                    }
+                }
+            }
+
+            Spacer(minLength: 0)
+            routePlanningStartAction(compact: true)
+        }
+        .padding(compact ? 9 : 12)
+        .frame(maxWidth: .infinity, minHeight: compact ? 70 : 96, alignment: .leading)
+        .modifier(NavigationGlassSurface(radius: 20, interactive: true))
+        .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { value in
+            guard routes.count > 1, abs(value.translation.width) > abs(value.translation.height) * 1.25,
+                  abs(value.translation.width) >= 36 else { return }
+            selectAdjacentRoute(by: value.translation.width < 0 ? 1 : -1)
+        })
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Wybrana trasa, \(time(route.expectedTravelTime)), przyjazd \(routePlanningArrivalTime(route)), \(distance(route.distance))")
+        .accessibilityValue(routes.isEmpty ? "Wybrana trasa" : "Trasa \(selectedIndex + 1) z \(routes.count)")
+        .accessibilityHint(routes.count > 1 ? "Przesuń w lewo lub prawo, aby wybrać inną trasę. Możesz też użyć regulacji VoiceOver." : "")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: selectAdjacentRoute(by: 1)
+            case .decrement: selectAdjacentRoute(by: -1)
+            @unknown default: break
+            }
+        }
+    }
+
+    private func selectAdjacentRoute(by offset: Int) {
+        guard navigationStore.state.status == .routePreview,
+              let selectedID = navigationStore.state.route?.id else { return }
+        let routes = routePlanningCarouselRoutes
+        guard let selectedIndex = routes.firstIndex(where: { $0.id == selectedID }),
+              routes.indices.contains(selectedIndex + offset) else { return }
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+            navigationStore.select(routes[selectedIndex + offset])
+        }
+    }
+
+    private func routePlanningStartAction(compact: Bool = false) -> some View {
+        let canStart = navigationStore.state.status == .routePreview && navigationStore.state.route != nil
         return Button {
             if isRouteOriginAwayFromUser {
                 navigateToRouteOrigin()
@@ -818,16 +1065,17 @@ extension ContentView {
                 navigationStore.begin()
             }
         } label: {
-            HStack(spacing: 10) {
+            VStack(spacing: compact ? 4 : 10) {
                 Image(systemName: isRouteOriginAwayFromUser ? "location.magnifyingglass" : "location.fill")
-                    .font(.system(size: 17, weight: .bold))
-                Text(isRouteOriginAwayFromUser ? "Nawiguj do startu" : "Rozpocznij nawigację")
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .font(.system(size: compact ? 18 : 17, weight: .bold))
+                Text(compact ? "Start" : (isRouteOriginAwayFromUser ? "Nawiguj do startu" : "Rozpocznij nawigację"))
+                    .font(.system(size: compact ? 13 : 15, weight: .bold, design: .rounded))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
             }
             .foregroundStyle(.white)
-            .frame(maxWidth: .infinity, minHeight: 56)
+            .frame(maxWidth: compact ? nil : .infinity, minHeight: compact ? 58 : 56)
+            .frame(width: compact ? 72 : nil)
             .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -841,4 +1089,21 @@ extension ContentView {
         .accessibilityLabel(isRouteOriginAwayFromUser ? "Nawiguj do punktu startowego" : "Rozpocznij nawigację")
     }
 
+}
+
+struct RouteStopDropTargetHighlight: ViewModifier {
+    let isTargeted: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(isTargeted ? Color.accentColor.opacity(0.14) : Color.clear)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(isTargeted ? Color.accentColor.opacity(0.8) : Color.clear, lineWidth: 1.5)
+            }
+            .animation(.easeOut(duration: 0.16), value: isTargeted)
+    }
 }

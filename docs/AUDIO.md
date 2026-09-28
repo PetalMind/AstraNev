@@ -1,6 +1,6 @@
 # Audio i komunikaty głosowe
 
-Dokument opisuje syntezę mowy w NaviAstra: źródła zdarzeń, harmonogram wypowiedzi, priorytety, tryby podróży, ustawienia i zachowanie sesji audio. Aplikacja używa `AVSpeechSynthesizer`; nie odtwarza tu muzyki ani plików dźwiękowych i nie nagrywa mikrofonu.
+Dokument opisuje syntezę mowy w NaviAstra: źródła zdarzeń, harmonogram wypowiedzi, priorytety, tryby podróży, ustawienia i zachowanie sesji audio. Aplikacja używa `AVSpeechSynthesizer` do komunikatów nawigacyjnych. Wyszukiwarka korzysta osobno z `Speech` i mikrofonu wyłącznie po uruchomieniu przycisku wyszukiwania głosowego.
 
 ## Architektura
 
@@ -18,6 +18,10 @@ AVSpeechSynthesizer
 ```
 
 `NavigationSession` dostarcza kontekst GPS i trasę. `VoiceGuidanceEngine` zamienia go na komunikaty, a prywatny `VoiceAnnouncementScheduler` decyduje, czy wypowiedź może rozpocząć się teraz, czekać, przerwać inną albo zostać pominięta. Obsługa audio nie zmienia geometrii ani wyboru trasy.
+
+## Głosowe wyszukiwanie
+
+Wyszukiwarka prosi system o osobne uprawnienia do rozpoznawania mowy i mikrofonu dopiero po dotknięciu przycisku mikrofonu. `SFSpeechRecognizer` używa polskiego locale, a rozpoznawane fragmenty na bieżąco uzupełniają pole zapytania i uruchamiają standardowe wyszukiwanie. Ponowne dotknięcie przycisku albo zamknięcie wyszukiwarki kończy nasłuchiwanie. Wymagane opisy prywatności są skonfigurowane dla iOS i macOS.
 
 ## Źródła i rodzaje komunikatów
 
@@ -96,6 +100,7 @@ Na macOS `AVSpeechSynthesizer` jest wywoływany bez `AVAudioSession`; wybór urz
 
 | Obszar | Plik i symbol |
 |---|---|
+| Wyszukiwanie głosowe | [`SearchSpeechInput.swift`](../NaviAstra/Search/SearchSpeechInput.swift) — uprawnienia, przechwytywanie audio i polska transkrypcja |
 | Ustawienia głosu i kolejka | [`VoiceGuidanceEngine.swift`](../NaviAstra/Navigation/VoiceGuidanceEngine.swift) — `VoiceGuidancePreferences`, `VoiceGuidanceEngine`, `VoiceAnnouncementScheduler` |
 | Integracja z GPS, podróżą i przyjazdem | [`NavigationSession+Progress.swift`](../NaviAstra/Navigation/NavigationSession+Progress.swift) — `updateProgress()`, `updateJourneyVoiceProgress()`, `updateTransitVoice(for:journey:)`, `arriveAtDestination()` |
 | Tekst manewru | [`Models.swift`](../NaviAstra/Navigation/Models.swift) — `Maneuver.spokenInstruction` |

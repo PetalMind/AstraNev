@@ -14,6 +14,115 @@ private final class PuckDisplayLinkTarget: NSObject {
     }
 }
 
+@MainActor
+private final class RoadSignMapLibreAnnotationView: MLNAnnotationView {
+    private var host: UIHostingController<RoadSignView>?
+    private var badge: UILabel?
+    private var symbol: RoadSignSymbol?
+    private var signSize: CGFloat = 24
+    private var isRoadSignSelected = false
+
+    func render(
+        symbol: RoadSignSymbol,
+        size: CGFloat,
+        clusterCount: Int? = nil,
+        directionUncertain: Bool = false
+    ) {
+        self.symbol = symbol
+        signSize = size
+
+        let frameSize = max(
+            size + 8,
+            clusterCount == nil ? 0 : 38
+        )
+
+        frame = CGRect(
+            x: 0,
+            y: 0,
+            width: frameSize,
+            height: frameSize
+        )
+
+        backgroundColor = .clear
+        layer.borderWidth = 0
+        layer.shadowOpacity = 0
+
+        if let host {
+            host.rootView = RoadSignView(
+                symbol: symbol,
+                size: size,
+                isSelected: isRoadSignSelected
+            )
+        } else {
+            let controller = UIHostingController(
+                rootView: RoadSignView(
+                    symbol: symbol,
+                    size: size,
+                    isSelected: isRoadSignSelected
+                )
+            )
+
+            controller.view.backgroundColor = .clear
+            controller.view.isUserInteractionEnabled = false
+            controller.view.frame = bounds
+            controller.view.autoresizingMask = [
+                .flexibleWidth,
+                .flexibleHeight
+            ]
+
+            addSubview(controller.view)
+            host = controller
+        }
+
+        host?.view.frame = bounds
+        host?.view.alpha = directionUncertain ? 0.66 : 1
+
+        badge?.removeFromSuperview()
+        badge = nil
+
+        if let clusterCount, clusterCount > 1 {
+            let label = UILabel(
+                frame: CGRect(
+                    x: frameSize - 19,
+                    y: 0,
+                    width: 19,
+                    height: 13
+                )
+            )
+
+            label.text = "+\(clusterCount - 1)"
+            label.textAlignment = .center
+            label.textColor = .white
+            label.font = .systemFont(ofSize: 8, weight: .bold)
+            label.backgroundColor = UIColor(
+                white: 0.12,
+                alpha: 0.92
+            )
+            label.layer.cornerRadius = 6.5
+            label.clipsToBounds = true
+
+            addSubview(label)
+            badge = label
+        }
+    }
+
+    func setRoadSignSelected(_ selected: Bool) {
+        guard isRoadSignSelected != selected,
+              let symbol
+        else {
+            return
+        }
+
+        isRoadSignSelected = selected
+
+        host?.rootView = RoadSignView(
+            symbol: symbol,
+            size: signSize,
+            isSelected: selected
+        )
+    }
+}
+
 private struct TrafficMapEvent {
     let id: String
     let coordinate: Coordinate
@@ -65,6 +174,7 @@ struct MapLibreView: UIViewRepresentable {
     var onTransitStopSelect: (TransitStop) -> Void { scene.commands.onTransitStopSelect }
     var onTransitVehicleSelect: (TransitVehicle) -> Void { scene.commands.onTransitVehicleSelect }
     var onParkedCarSelect: () -> Void { scene.commands.onParkedCarSelect }
+    var onRouteSelect: (UUID) -> Void { scene.commands.onRouteSelect }
     var onCyclingPathsStatus: (OSMCyclingPathsStatus) -> Void { scene.commands.onCyclingPathsStatus }
     var onMapPan: () -> Void { scene.commands.onMapPan }
     var onLongPress: (Coordinate) -> Void { scene.commands.onLongPress }
@@ -253,15 +363,9 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         @objc func tappedPOI(_ recognizer: UITapGestureRecognizer) {
-            guard recognizer.state == .ended, let map, let style = map.style else { return }
-            let layerIDs = Set(style.layers.compactMap { layer -> String? in
-                guard let symbolLayer = layer as? MLNSymbolStyleLayer,
-                      symbolLayer.sourceLayerIdentifier == "poi" else { return nil }
-                return symbolLayer.identifier
-            })
-            guard !layerIDs.isEmpty else { return }
+            guard recognizer.state == .ended, let map else { return }
             let point = recognizer.location(in: map)
-            let touchRect = CGRect(origin: point, size: .zero).insetBy(dx: -22, dy: -22)
+            guard !routeLayerRenderer.containsETAMarker(at: point, on: map) else { return }
             let tappedCoordinate = map.convert(point, toCoordinateFrom: map)
             let tappedLocation = CLLocation(latitude: tappedCoordinate.latitude, longitude: tappedCoordinate.longitude)
             let appAnnotations = searchPins + trafficEventPins + Array(transitVehiclePins.values)
@@ -270,6 +374,18 @@ struct MapLibreView: UIViewRepresentable {
                 let location = CLLocation(latitude: annotation.coordinate.latitude, longitude: annotation.coordinate.longitude)
                 return location.distance(from: tappedLocation) < 25
             }) else { return }
+            if let routeID = routeLayerRenderer.routeID(near: point, on: map) {
+                parent.onRouteSelect(routeID)
+                return
+            }
+            guard let style = map.style else { return }
+            let layerIDs = Set(style.layers.compactMap { layer -> String? in
+                guard let symbolLayer = layer as? MLNSymbolStyleLayer,
+                      symbolLayer.sourceLayerIdentifier == "poi" else { return nil }
+                return symbolLayer.identifier
+            })
+            guard !layerIDs.isEmpty else { return }
+            let touchRect = CGRect(origin: point, size: .zero).insetBy(dx: -22, dy: -22)
             var candidates: [String: (result: SearchResult, distance: CLLocationDistance)] = [:]
             for feature in map.visibleFeatures(in: touchRect, styleLayerIdentifiers: layerIDs).compactMap({ $0 as? MLNPointFeature }) {
                 let attributes = feature.attributes
@@ -660,7 +776,10 @@ struct MapLibreView: UIViewRepresentable {
             if cameraState == .routeOverview, !enteringOverview, !newOverview, !cameraCommandChanged,
                !routePreviewPaddingChanged, !cameraModeChanged,
                let route = parent.state.route {
-                if isMostlyVisible(route.coordinates, on: map) { return }
+                let overviewCoordinates = parent.state.status == .routePreview
+                    ? (parent.state.alternatives + [route]).flatMap(\.coordinates)
+                    : route.coordinates
+                if isMostlyVisible(overviewCoordinates, on: map) { return }
             }
             if intent == lastIntent && !enteringOverview && !newOverview && !cameraCommandChanged &&
                !routePreviewPaddingChanged && !cameraModeChanged && !cameraStateChanged { return }
@@ -681,7 +800,7 @@ struct MapLibreView: UIViewRepresentable {
             }
             if cameraState == .routeOverview, lastOverviewRouteID != nil,
                let route = parent.state.route, lastStatus == .routePreview {
-                effectiveIntent.bounds = route.coordinates
+                effectiveIntent.bounds = (parent.state.alternatives + [route]).flatMap(\.coordinates)
             }
             programmaticCamera = true
             cameraAnimationGeneration &+= 1
@@ -725,6 +844,11 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MLNMapView, didSelect annotation: MLNAnnotation) {
+            if let routeID = routeLayerRenderer.routeID(forETAMarker: annotation) {
+                mapView.deselectAnnotation(annotation, animated: false)
+                parent.onRouteSelect(routeID)
+                return
+            }
             if let pin = parkedCarPin, annotation === pin {
                 mapView.deselectAnnotation(annotation, animated: false)
                 parent.onParkedCarSelect()
@@ -744,6 +868,7 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MLNMapView, viewFor annotation: MLNAnnotation) -> MLNAnnotationView? {
+            if let marker = routeLayerRenderer.annotationView(for: annotation, on: mapView) { return marker }
             if let pin = parkedCarPin, annotation === pin {
                 let identifier = "parked-car"
                 let marker = mapView.dequeueReusableAnnotationView(withIdentifier: identifier)
@@ -782,9 +907,11 @@ struct MapLibreView: UIViewRepresentable {
             }
             if let index = trafficEventPins.firstIndex(where: { $0 === annotation }),
                shownTrafficEventGroups.indices.contains(index),
-               let event = shownTrafficEventGroups[index].max(by: {
+               let event = (shownTrafficEventGroups[index].filter { $0.presentation.roadSign != nil }
+                    .max(by: { $0.presentation.clusterPriority < $1.presentation.clusterPriority })
+                    ?? shownTrafficEventGroups[index].max(by: {
                    $0.presentation.clusterPriority < $1.presentation.clusterPriority
-               }) {
+               })) {
                 return trafficMarkerView(for: annotation,
                                          reuseIdentifier: "traffic-event-\(event.id)",
                                          presentation: event.presentation,
@@ -954,6 +1081,18 @@ struct MapLibreView: UIViewRepresentable {
                                        reuseIdentifier: String,
                                        presentation: TrafficMapPresentation,
                                        clusterCount: Int? = nil) -> MLNAnnotationView {
+            if let roadSign = presentation.roadSign {
+                let marker = RoadSignMapLibreAnnotationView(reuseIdentifier: reuseIdentifier)
+                let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
+                marker.render(symbol: roadSign,
+                              size: roadSign.displaySize(isNavigating: isNavigating),
+                              clusterCount: clusterCount,
+                              directionUncertain: presentation.isDirectionUncertain)
+                marker.isAccessibilityElement = true
+                marker.accessibilityLabel = annotation.title ?? "Znak drogowy"
+                marker.accessibilityHint = annotation.subtitle.flatMap { $0 }
+                return marker
+            }
             let marker = MLNAnnotationView(reuseIdentifier: reuseIdentifier)
             let size = CGFloat(clusterCount == nil ? presentation.markerSize : 38)
             marker.frame = CGRect(x: 0, y: 0, width: size, height: size)
@@ -1000,11 +1139,19 @@ struct MapLibreView: UIViewRepresentable {
         func mapView(_ mapView: MLNMapView, didSelect view: MLNAnnotationView) {
             guard let annotation = view.annotation,
                   trafficEventPins.contains(where: { $0 === annotation }) else { return }
+            if let signMarker = view as? RoadSignMapLibreAnnotationView {
+                signMarker.setRoadSignSelected(true)
+                return
+            }
             let scale = 42 / max(1, view.bounds.width)
             UIView.animate(withDuration: 0.16) { view.transform = CGAffineTransform(scaleX: scale, y: scale) }
         }
 
         func mapView(_ mapView: MLNMapView, didDeselect view: MLNAnnotationView) {
+            if let signMarker = view as? RoadSignMapLibreAnnotationView {
+                signMarker.setRoadSignSelected(false)
+                return
+            }
             UIView.animate(withDuration: 0.14) { view.transform = .identity }
         }
 
@@ -1043,6 +1190,7 @@ struct MapLibreView: UIViewRepresentable {
             marker.accessibilityHint = annotation.subtitle.flatMap { $0 }
         }
 
+        // MapLibre exposes callout eligibility through its delegate; MLNAnnotationView has no canShowCallout property.
         func mapView(_ mapView: MLNMapView, annotationCanShowCallout annotation: MLNAnnotation) -> Bool {
             transitVehiclePins.values.contains { $0 === annotation }
                 || transitStopRenderer.contains(annotation)
@@ -1130,31 +1278,57 @@ struct MapLibreView: UIViewRepresentable {
             }
         }
 
-        private func clusteredTrafficEvents(_ events: [TrafficMapEvent], on map: MLNMapView,
-                                            isNavigating: Bool) -> [[TrafficMapEvent]] {
-            guard map.zoomLevel < 13.2, !isNavigating, events.count > 1 else {
+        private func clusteredTrafficEvents(
+            _ events: [TrafficMapEvent],
+            on map: MLNMapView,
+            isNavigating: Bool
+        ) -> [[TrafficMapEvent]] {
+            guard events.count > 1 else {
                 return events.map { [$0] }
             }
-            let points = events.map { map.convert($0.coordinate.cl, toPointTo: map) }
+
+            let overviewClustering = map.zoomLevel < 13.2 && !isNavigating
+            let groupingDistance: CGFloat = overviewClustering ? 44 : 22
+
+            let points = events.map {
+                map.convert($0.coordinate.cl, toPointTo: map)
+            }
+
             var remaining = Set(events.indices)
             var groups: [[TrafficMapEvent]] = []
+
             while let first = remaining.min() {
                 remaining.remove(first)
+
                 var component = [first]
                 var frontier = [first]
+
                 while let current = frontier.popLast() {
                     let matches = remaining.filter { candidate in
-                        hypot(points[current].x - points[candidate].x,
-                              points[current].y - points[candidate].y) < 44
+                        let areNearbySigns =
+                            events[current].presentation.roadSign != nil &&
+                            events[candidate].presentation.roadSign != nil
+
+                        guard overviewClustering || areNearbySigns else {
+                            return false
+                        }
+
+                        return hypot(
+                            points[current].x - points[candidate].x,
+                            points[current].y - points[candidate].y
+                        ) < groupingDistance
                     }
+
                     for match in matches {
                         remaining.remove(match)
                         frontier.append(match)
                         component.append(match)
                     }
                 }
+
                 groups.append(component.map { events[$0] })
             }
+
             return groups
         }
 

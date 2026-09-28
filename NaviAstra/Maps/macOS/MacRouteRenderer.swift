@@ -18,11 +18,19 @@ private struct MacIncidentLineRenderItem: Equatable {
     let colorHex: UInt32
 }
 
+private struct MacRouteETAMapItem {
+    let data: RouteETAMarkerData
+    let annotation: MKPointAnnotation
+}
+
 /// Manages route and road incident geometry, overlays, styles, and transitions on MapKit.
 final class MacRouteRenderer {
     private var parent: MapLibreView
     private weak var map: MKMapView?
     private var routeOverlays: [StyledOverlay] = []
+    private var routeETAMapItems: [MacRouteETAMapItem] = []
+    private var shownRouteETAMarkers: [RouteETAMarkerData]?
+    private var shownRouteETAMarkerDark: Bool?
     private var incidentOverlays: [String: [StyledOverlay]] = [:]
     private var incidentOverlayRenderItems: [MacIncidentLineRenderItem] = []
     private var shownRouteTrafficSegments: [RouteTrafficSegment] = []
@@ -108,6 +116,121 @@ final class MacRouteRenderer {
 
         updateActiveRouteProgress(on: map)
         updateTraveledOverlay(on: map)
+        updatePlanningETAMarkers(on: map)
+    }
+
+    private func updatePlanningETAMarkers(on map: MKMapView) {
+        let markers = RouteETAMarkerData.planningMarkers(in: parent.state)
+        let isDark = parent.colorScheme == .dark
+        guard markers != shownRouteETAMarkers || isDark != shownRouteETAMarkerDark else { return }
+
+        map.removeAnnotations(routeETAMapItems.map(\.annotation))
+        routeETAMapItems = markers.map { data in
+            let annotation = MKPointAnnotation()
+            annotation.coordinate = data.coordinate.cl
+            annotation.title = data.timeText
+            annotation.subtitle = data.isSelected ? "Wybrana trasa" : "Alternatywna trasa"
+            return MacRouteETAMapItem(data: data, annotation: annotation)
+        }
+        shownRouteETAMarkers = markers
+        shownRouteETAMarkerDark = isDark
+        map.addAnnotations(routeETAMapItems.map(\.annotation))
+    }
+
+    func annotationView(for annotation: MKAnnotation) -> MKAnnotationView? {
+        guard let item = routeETAMapItems.first(where: { $0.annotation === annotation }) else { return nil }
+        let width = max(58, CGFloat(item.data.timeText.count) * 7.5 + 20)
+        let marker = MKAnnotationView(annotation: annotation, reuseIdentifier: "route-eta")
+        marker.frame = NSRect(x: 0, y: 0, width: width, height: 30)
+        marker.centerOffset = CGPoint(x: 0, y: -3)
+        marker.wantsLayer = true
+        let dark = parent.colorScheme == .dark
+        let backgroundHex = item.data.isSelected
+            ? (dark ? RouteColorPalette.activeDark : RouteColorPalette.activeLight)
+            : (dark ? RouteColorPalette.alternativeDark : RouteColorPalette.alternativeLight)
+        marker.layer?.backgroundColor = color(hex: backgroundHex,
+                                              opacity: item.data.isSelected ? 1 : 0.96).cgColor
+        marker.layer?.cornerRadius = 15
+        marker.layer?.borderWidth = item.data.isSelected ? 1.5 : 1
+        marker.layer?.borderColor = NSColor.white.withAlphaComponent(item.data.isSelected ? 0.96 : 0.72).cgColor
+        marker.layer?.shadowColor = NSColor.black.cgColor
+        marker.layer?.shadowOpacity = 0.24
+        marker.layer?.shadowRadius = 4
+        marker.layer?.shadowOffset = CGSize(width: 0, height: 2)
+
+        let label = NSTextField(labelWithString: item.data.timeText)
+        label.frame = marker.bounds
+        label.alignment = .center
+        label.textColor = .white
+        label.font = .systemFont(ofSize: 12, weight: item.data.isSelected ? .bold : .semibold)
+        marker.addSubview(label)
+        marker.setAccessibilityLabel(
+            "\(item.data.isSelected ? "Wybrana trasa" : "Alternatywna trasa"), \(item.data.timeText)")
+        marker.displayPriority = .required
+        marker.canShowCallout = false
+        marker.alphaValue = 0
+        let scaleAnimation = CAKeyframeAnimation(keyPath: "transform.scale")
+        scaleAnimation.values = [0.88, 1.04, 1]
+        scaleAnimation.duration = 0.24
+        scaleAnimation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        marker.layer?.add(scaleAnimation, forKey: "route-eta-appearance")
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.2
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            marker.animator().alphaValue = 1
+        }, completionHandler: nil)
+        return marker
+    }
+
+    func routeID(forETAMarker annotation: MKAnnotation) -> UUID? {
+        routeETAMapItems.first(where: { $0.annotation === annotation })?.data.routeID
+    }
+
+    func containsETAMarker(at point: CGPoint, on map: MKMapView) -> Bool {
+        routeETAMapItems.contains { item in
+            let width = max(58, CGFloat(item.data.timeText.count) * 7.5 + 20)
+            let coordinatePoint = map.convert(item.annotation.coordinate, toPointTo: map)
+            let frame = CGRect(x: coordinatePoint.x - width / 2,
+                               y: coordinatePoint.y - 18,
+                               width: width,
+                               height: 30).insetBy(dx: -4, dy: -4)
+            return frame.contains(point)
+        }
+    }
+
+    func routeID(near point: CGPoint, on map: MKMapView) -> UUID? {
+        guard parent.state.status == .routePreview else { return nil }
+        var routes = parent.state.routeOptions
+        if let selected = parent.state.route, !routes.contains(where: { $0.id == selected.id }) {
+            routes.append(selected)
+        }
+
+        var closestRouteID: UUID?
+        var closestDistance = CGFloat.greatestFiniteMagnitude
+        let selectedID = parent.state.route?.id
+        for route in routes where route.coordinates.count > 1 {
+            let screenPoints = route.coordinates.map { map.convert($0.cl, toPointTo: map) }
+            for (start, end) in zip(screenPoints, screenPoints.dropFirst()) {
+                let distance = distance(from: point, toSegmentFrom: start, to: end)
+                let isCloser = distance < closestDistance - 0.5
+                let activeRouteIsAsClose = route.id == selectedID &&
+                    abs(distance - closestDistance) < 0.5
+                if closestRouteID == nil || isCloser || activeRouteIsAsClose {
+                    closestDistance = distance
+                    closestRouteID = route.id
+                }
+            }
+        }
+        return closestDistance <= 22 ? closestRouteID : nil
+    }
+
+    private func distance(from point: CGPoint, toSegmentFrom start: CGPoint, to end: CGPoint) -> CGFloat {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let lengthSquared = dx * dx + dy * dy
+        guard lengthSquared > 0 else { return hypot(point.x - start.x, point.y - start.y) }
+        let projection = max(0, min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared))
+        return hypot(point.x - (start.x + projection * dx), point.y - (start.y + projection * dy))
     }
 
     func updateTrafficOverlay(on map: MKMapView) {
@@ -530,7 +653,10 @@ final class MacRouteRenderer {
     }
 
     private func activeRouteColor(dark: Bool) -> UInt32 {
-        switch parent.state.transportMode {
+        if parent.state.status == .routePreview {
+            return dark ? RouteColorPalette.activeDark : RouteColorPalette.activeLight
+        }
+        return switch parent.state.transportMode {
         case .car, .transit, .parkRide: dark ? RouteColorPalette.activeDark : RouteColorPalette.activeLight
         case .walking: RouteColorPalette.walking
         case .bicycle: RouteColorPalette.cycling

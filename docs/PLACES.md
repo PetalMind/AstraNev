@@ -16,6 +16,8 @@ Ten dokument opisuje, skąd NaviAstra bierze informacje o POI (punktach zaintere
 
 Photon i Apple MapKit obsługują bieżące podpowiedzi podczas wpisywania. [GUGiK UUG](https://services.gugik.gov.pl/uug/opis.html) nie jest odpytywany przy każdym znaku: zapytanie do UUG uruchamia się po zatwierdzeniu wyszukiwania z klawiatury. Dla polskiego adresu z numerem budynku UUG ma pierwszeństwo tylko wtedy, gdy zwróci jeden jednoznaczny rekord ze zgodnym numerem, miejscowością i — jeśli podano — ulicą. Dla ulicy lub miejscowości jest źródłem uzupełniającym; w zwykłym wyszukiwaniu jest używany, gdy Photon i MapKit nic nie zwrócą. Żądania jawnie przekazują `srid=4326`, a `exact_number=1` tylko dla adresu z numerem; aplikacja nie ustawia domyślnej dokładności dopasowania ani limitu wyników.
 
+Przycisk mikrofonu uruchamia polskie rozpoznawanie mowy. Rozpoznany tekst trafia do tego samego pola i uruchamia bieżące wyszukiwanie miejsc albo transportu; dotknięcie przycisku stop kończy nasłuchiwanie. System poprosi osobno o zgodę na rozpoznawanie mowy i mikrofon.
+
 Po wybraniu polskiego punktu adresowego z numerem budynku z wyniku Photon lub MapKit aplikacja może jeszcze pobrać dokładniejszą współrzędną z UUG. Dłuższe dotknięcie mapy na iOS, podwójne kliknięcie na macOS oraz wyszukanie współrzędnych może wywołać `GetAddressReverse`. Żądanie wysyłane jest tylko dla współrzędnych w przybliżonym prostokącie obejmującym Polskę (48–56°N, 13–25°E). Karta celu pokazuje wtedy najbliższy adres i odległość od wskazanego punktu; współrzędna celu pozostaje dokładnie tam, gdzie użytkownik ją wskazał.
 
 Aplikacja korzysta obecnie bezpośrednio z UUG. Nie ma lokalnego indeksu PRG ani backendu PostGIS; UUG nie zastępuje podpowiedzi adresowych podczas pisania.

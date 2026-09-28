@@ -31,6 +31,10 @@ extension ContentView {
             onTransitStopSelect: { openTransitStop($0) },
             onTransitVehicleSelect: { openTransitVehicle($0) },
             onParkedCarSelect: { openParkedCarDetails() },
+            onRouteSelect: { routeID in
+                guard let route = navigationState.routeOptions.first(where: { $0.id == routeID }) else { return }
+                navigationStore.select(route)
+            },
             onCyclingPathsStatus: { mapStore.cyclingPathsStatus = $0 },
             onMapPan: {
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
@@ -114,11 +118,16 @@ extension ContentView {
 
     private func mapControlStack(in geometry: GeometryProxy) -> some View {
         VStack(spacing: 12) {
-            header
-                .padding(.horizontal, usesFullBleedNavigationPanel ? 16 : 0)
-                .onGeometryChange(for: CGFloat.self) {
-                    $0.size.height + geometry.safeAreaInsets.top + 20
-                } action: { mapHeaderInset = $0 }
+            VStack(alignment: .leading, spacing: 8) {
+                header
+#if os(iOS)
+                journeyNavigationGuidanceOverlay
+#endif
+            }
+            .padding(.horizontal, usesFullBleedNavigationPanel ? 16 : 0)
+            .onGeometryChange(for: CGFloat.self) {
+                $0.size.height + geometry.safeAreaInsets.top + 20
+            } action: { mapHeaderInset = $0 }
 
             if let message = navigationStore.state.errorMessage ?? placeStore.errorMessage {
                 errorNotice(message)
@@ -147,6 +156,24 @@ extension ContentView {
         .padding(.top, 8)
         .padding(.bottom, usesFullBleedNavigationPanel ? -geometry.safeAreaInsets.bottom : 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: navigationStore.state.route?.id) { _, _ in
+            journeyGuidanceExpanded = false
+            currentStepExpandedOverride = nil
+            routePlanningDetailsExpanded = false
+        }
+        .onChange(of: navigationStore.state.progress?.nextManeuver?.id) { _, _ in
+            journeyGuidanceExpanded = false
+            currentStepExpandedOverride = nil
+        }
+        .onChange(of: isCurrentStepGuidanceExpanded) { _, expanded in
+            if !expanded { journeyGuidanceExpanded = false }
+        }
+        .onChange(of: isNavigating) { _, navigating in
+            if !navigating {
+                journeyGuidanceExpanded = false
+                currentStepExpandedOverride = nil
+            }
+        }
     }
 
     @ViewBuilder
@@ -184,10 +211,14 @@ extension ContentView {
         } else {
 #if os(iOS)
             if isNavigating {
+                let availablePanelHeight = min(geometry.size.height * 0.88,
+                                               max(220, geometry.size.height - mapHeaderInset - 28))
+                let panelHeight = navigationStore.state.transportMode == .transit ||
+                    navigationStore.state.transportMode == .parkRide
+                    ? availablePanelHeight
+                    : min(260, availablePanelHeight)
                 journeyNavigationPanel(
-                    maxHeight: min(geometry.size.height * 0.88,
-                                   max(220, geometry.size.height - mapHeaderInset - 28)),
-                    bottomInset: geometry.safeAreaInsets.bottom)
+                    maxHeight: panelHeight)
             } else {
                 activeScrollableMapPanel(in: geometry)
             }
@@ -236,11 +267,35 @@ extension ContentView {
             mapCanvas
             mapTopGradient
             mapInteractionLayer
+#if os(iOS)
+            navigationSpeedOverlay
+#endif
             cyclingMapAttribution
             parkedCarActionOverlay
             parkedCarToastOverlay
         }
     }
+
+#if os(iOS)
+    @ViewBuilder
+    private var navigationSpeedOverlay: some View {
+        if isNavigating && isOnRoadDrivingLeg && !isMapBottomSheetExpanded {
+            TimelineView(.periodic(from: .now, by: 5)) { context in
+                VStack(alignment: .leading, spacing: 8) {
+                    speedCard(at: context.date)
+                    navigationTrafficIncidentBanner
+                    navigationRoadDataFooter
+                }
+            }
+            .frame(maxWidth: 230, alignment: .leading)
+            .frame(maxWidth: 560, maxHeight: .infinity, alignment: .bottomLeading)
+            .padding(.leading, 16)
+            .padding(.bottom, mapPanelInset + 12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+            .zIndex(2)
+        }
+    }
+#endif
 
     private var mapCanvas: some View {
         MapLibreView(scene: navigationMapScene)
@@ -412,6 +467,21 @@ extension ContentView {
                 await refreshTransitJourneyDetails()
             }
             .preferredColorScheme(rootPreferredColorScheme)
+#if os(iOS)
+            .fullScreenCover(isPresented: $isARNavigationPresented) {
+                if let route = navigationStore.state.route {
+                    ARNavigationView(route: route,
+                                     progress: navigationStore.state.progress,
+                                     location: navigationStore.state.location,
+                                     onClose: { isARNavigationPresented = false })
+                } else {
+                    ContentUnavailableView("Brak aktywnej trasy", systemImage: "location.slash")
+                }
+            }
+            .onChange(of: isNavigating) { _, active in
+                if !active { isARNavigationPresented = false }
+            }
+#endif
     }
 
     private var rootContentWithPrimarySheets: some View {

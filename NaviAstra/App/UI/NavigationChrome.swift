@@ -103,6 +103,7 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
     private let accessibilityLabel: String
     private let appearance: NavigationBottomSheetAppearance
     private let mediumHeightFraction: CGFloat
+    private let minimumPeekHeight: CGFloat?
     private let onClose: (() -> Void)?
     private let closeAccessibilityLabel: String
     private let content: (NavigationBottomSheetDetent, CGFloat) -> Content
@@ -120,6 +121,7 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
          appearance: NavigationBottomSheetAppearance = .navigation,
          isDragging: Binding<Bool>,
          mediumHeightFraction: CGFloat = 0.48,
+         minimumPeekHeight: CGFloat? = nil,
          onClose: (() -> Void)? = nil,
          closeAccessibilityLabel: String = "Zamknij panel",
          @ViewBuilder content: @escaping (NavigationBottomSheetDetent, CGFloat) -> Content,
@@ -128,7 +130,8 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
         self.maximumHeight = maximumHeight
         self.accessibilityLabel = accessibilityLabel
         self.appearance = appearance
-        self.mediumHeightFraction = min(0.72, max(0.40, mediumHeightFraction))
+        self.mediumHeightFraction = min(0.72, max(0.28, mediumHeightFraction))
+        self.minimumPeekHeight = minimumPeekHeight
         self.onClose = onClose
         self.closeAccessibilityLabel = closeAccessibilityLabel
         self._isDragging = isDragging
@@ -141,12 +144,16 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
     private var detentHeights: [CGFloat] {
         let expanded = expandedHeight
         if expanded < 240 {
-            let peek = min(expanded * 0.6, max(84, expanded * 0.45))
+            let basePeek = min(expanded * 0.6, max(84, expanded * 0.45))
+            let maximumPeek = max(basePeek, expanded - 40)
+            let peek = min(maximumPeek, max(basePeek, minimumPeekHeight ?? basePeek))
             let medium = min(expanded - 1, max(peek + 24, expanded * mediumHeightFraction))
             return [peek, medium, expanded]
         }
         // The compact summary sits below a 60 pt grabber; keep enough room for both.
-        let peek = min(140, max(124, expanded * 0.18))
+        let basePeek = min(140, max(124, expanded * 0.18))
+        let maximumPeek = max(basePeek, expanded - 60)
+        let peek = min(maximumPeek, max(basePeek, minimumPeekHeight ?? basePeek))
         let medium = min(expanded - 1, max(peek + 40, expanded * mediumHeightFraction))
         return [peek, medium, expanded]
     }

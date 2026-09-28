@@ -133,6 +133,8 @@ struct RoadSafetyAlert: Identifiable, Codable, Equatable, Sendable {
     let source: RoadAlertSource
     var speedLimitKph: Int?
     var signCode: String? = nil
+    var signValue: String? = nil
+    var hasDirectionalSignTag: Bool? = nil
     var distanceAlongRoute: Double?
     var distanceFromRoute: Double?
 
@@ -147,6 +149,7 @@ struct RoadSafetyAlert: Identifiable, Codable, Equatable, Sendable {
             return "Limit zmienia się na \(speedLimitKph) km/h"
         }
         if type == .trafficSign, let signCode {
+            if signCode.hasSuffix("B-5") { return "Zakaz wjazdu samochodów ciężarowych" }
             return "Znak drogowy \(signCode)"
         }
         if type == .trafficZoneSign, let signCode {
@@ -158,6 +161,8 @@ struct RoadSafetyAlert: Identifiable, Codable, Equatable, Sendable {
             case "D-41": return "Koniec strefy zamieszkania"
             case "D-42": return "Początek obszaru zabudowanego"
             case "D-43": return "Koniec obszaru zabudowanego"
+            case "B-43": return "Strefa ograniczonej prędkości\(speedLimitKph.map { ": \($0) km/h" } ?? "")"
+            case "B-44": return "Koniec strefy ograniczonej prędkości\(speedLimitKph.map { ": \($0) km/h" } ?? "")"
             default: break
             }
         }
@@ -398,6 +403,8 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
           node(around:120,\(centers))[\"traffic_sign:forward\"];
           node(around:120,\(centers))[\"traffic_sign:backward\"];
           node(around:120,\(centers))[\"traffic_sign:maxspeed\"];
+          node(around:120,\(centers))[\"traffic_sign:maxweight\"];
+          node(around:120,\(centers))[\"traffic_sign:maxheight\"];
           node(around:120,\(centers))[highway~\"^(stop|give_way)$\"];
           node(around:120,\(centers))[railway=\"level_crossing\"];
           relation(around:120,\(centers))[type=\"enforcement\"][enforcement~\"^(maxspeed|average_speed|traffic_signals)$\"];
@@ -460,13 +467,17 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
             }
             if tags["railway"] == "level_crossing" {
                 let alert = RoadSafetyAlert(id: "osm-crossing-\(element.id)", type: .railwayCrossing,
-                                            coordinate: coordinate, source: .openStreetMap)
+                                            coordinate: coordinate, source: .openStreetMap,
+                                            signCode: "railway=level_crossing")
                 unique[alert.id] = alert
             }
             if let sign = trafficSign(from: tags) {
                 let alert = RoadSafetyAlert(id: "osm-sign-\(element.id)", type: sign.type,
                                             coordinate: coordinate, source: .openStreetMap,
-                                            speedLimitKph: sign.speedLimit, signCode: sign.code)
+                                            speedLimitKph: sign.speedLimit, signCode: sign.code,
+                                            signValue: sign.value,
+                                            hasDirectionalSignTag: tags["traffic_sign:forward"] != nil
+                                                || tags["traffic_sign:backward"] != nil)
                 unique[alert.id] = alert
             }
         }
@@ -516,15 +527,23 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
     }
 
     private static func trafficSign(from tags: [String: String])
-        -> (type: RoadAlertType, code: String?, speedLimit: Int?)? {
-        if tags["highway"] == "stop" { return (.stopSign, "B-20", nil) }
-        if tags["highway"] == "give_way" { return (.giveWaySign, "A-7", nil) }
+        -> (type: RoadAlertType, code: String?, speedLimit: Int?, value: String?)? {
+        if tags["highway"] == "stop" { return (.stopSign, "B-20", nil, nil) }
+        if tags["highway"] == "give_way" { return (.giveWaySign, "A-7", nil, nil) }
 
         let rawCodes = [tags["traffic_sign"], tags["traffic_sign:forward"], tags["traffic_sign:backward"]]
             .compactMap { $0 }
         guard !rawCodes.isEmpty else {
-            guard let rawSpeed = tags["traffic_sign:maxspeed"] else { return nil }
-            return (.speedLimitSign, "B-33", SpeedLimitParser.parse(rawSpeed))
+            if let rawSpeed = tags["traffic_sign:maxspeed"] {
+                return (.speedLimitSign, "B-33", SpeedLimitParser.parse(rawSpeed), nil)
+            }
+            if let rawWeight = tags["traffic_sign:maxweight"] {
+                return (.weightLimitSign, "B-18", nil, metricSignValue(rawWeight, unit: "t"))
+            }
+            if let rawHeight = tags["traffic_sign:maxheight"] {
+                return (.heightLimitSign, "B-16", nil, metricSignValue(rawHeight, unit: "m"))
+            }
+            return nil
         }
         let codes = rawCodes.flatMap { $0.split(separator: ";") }
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -545,14 +564,47 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
             (["B-25"], .noOvertakingSign),
             (["B-33", "B-34", "MAXSPEED"], .speedLimitSign),
             (["B-16"], .heightLimitSign),
-            (["B-18", "B-5"], .weightLimitSign),
-            (["D-40", "D-41", "D-42", "D-43"], .trafficZoneSign)
+            (["B-18"], .weightLimitSign),
+            (["B-5"], .trafficSign),
+            (["D-40", "D-41", "D-42", "D-43", "B-43", "B-44"], .trafficZoneSign)
         ]
         let type = knownTypes.first { entry in
             normalizedCodes.contains(where: { entry.0.contains($0) })
         }?.1
             ?? .trafficSign
-        return (type, displayCode, speed)
+        let signValue: String?
+        if normalizedCodes.contains("B-18") {
+            signValue = metricSignValue(tags["traffic_sign:maxweight"] ?? tags["maxweight"], unit: "t")
+        } else if normalizedCodes.contains("B-16") {
+            signValue = metricSignValue(tags["traffic_sign:maxheight"] ?? tags["maxheight"], unit: "m")
+        } else {
+            signValue = nil
+        }
+        return (type, displayCode, speed, signValue)
+    }
+
+    private static func metricSignValue(_ rawValue: String?, unit: String) -> String? {
+        guard let rawValue else { return nil }
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let number = trimmed.prefix { $0.isNumber || $0 == "." || $0 == "," }
+            .replacingOccurrences(of: ".", with: ",")
+        guard !number.isEmpty,
+              Double(number.replacingOccurrences(of: ",", with: ".")) != nil else { return nil }
+        let suffix = trimmed.dropFirst(trimmed.prefix { $0.isNumber || $0 == "." || $0 == "," }.count)
+            .trimmingCharacters(in: .whitespaces)
+        if unit == "t", suffix == "kg" {
+            guard let kilograms = Double(number.replacingOccurrences(of: ",", with: ".")) else { return nil }
+            let tonnes = kilograms / 1_000
+            let formatted = tonnes.rounded() == tonnes
+                ? String(Int(tonnes)) : String(format: "%.2f", tonnes).replacingOccurrences(of: #"0+$"#, with: "", options: .regularExpression)
+                    .replacingOccurrences(of: #"\.$"#, with: "", options: .regularExpression)
+            return "\(formatted.replacingOccurrences(of: ".", with: ",")) t"
+        }
+        guard suffix.isEmpty || suffix == unit || (unit == "m" && suffix == "meter")
+                || (unit == "t" && (suffix == "ton" || suffix == "tonne" || suffix == "tons")) else {
+            return nil
+        }
+        return "\(number) \(unit)"
     }
 }
 

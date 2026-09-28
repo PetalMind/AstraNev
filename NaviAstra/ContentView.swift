@@ -62,6 +62,13 @@ struct ContentView: View {
     @State var discoverySheetDetent: NavigationBottomSheetDetent = .medium
     @State var navigationPanelDetent: NavigationBottomSheetDetent = .medium
     @State var isMapBottomSheetDragging = false
+    @State var isARNavigationPresented = false
+    @State var routeStopDropTargetID: String?
+    @State var routeStopReorderFeedbackToken = 0
+    @State var journeyGuidanceExpanded = false
+    @State var currentStepExpandedOverride: Bool? = nil
+    @State var showStopNavigationConfirmation = false
+    @State var routePlanningDetailsExpanded = false
     @State var expandedTransitStopsLegID: UUID?
     @State var expandedTransitTimelineLegID: UUID?
     @State var quickETAEstimates: [String: PlaceRouteEstimate] = [:]
@@ -109,4 +116,10 @@ struct PlaceShortcut: Identifiable {
     var isRecent: Bool
     var estimatedMinutes: Int? = nil
     var estimatedDistanceMeters: Double? = nil
+}
+
+struct RecentPlaceShortcut: Identifiable {
+    var id: String
+    var destination: Destination
+    var usedAt: Date
 }

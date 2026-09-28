@@ -74,6 +74,7 @@ final class NavigationStore {
     func removeWaypoint(_ id: UUID) async { await session.removeWaypoint(id) }
     func moveWaypoint(_ id: UUID, by offset: Int) async { await session.moveWaypoint(id, by: offset) }
     func reorderWaypoint(_ id: UUID, to index: Int) async { await session.reorderWaypoint(id, to: index) }
+    func reorderRouteStop(_ id: String, to index: Int) async { await session.reorderRouteStop(id, to: index) }
     func optimizeWaypoints() async { await session.optimizeWaypoints() }
 
     func searchNearbyPlaces(_ category: NearbyPlaceCategory, nearDestination: Bool = false,

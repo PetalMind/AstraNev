@@ -1,5 +1,51 @@
 import Foundation
 
+struct RouteETAMarkerData: Equatable {
+    let routeID: UUID
+    let coordinate: Coordinate
+    let timeText: String
+    let isSelected: Bool
+
+    @MainActor
+    static func planningMarkers(in state: NavigationState) -> [RouteETAMarkerData] {
+        guard state.status == .routePreview else { return [] }
+
+        var routes = state.routeOptions
+        if let selectedRoute = state.route,
+           !routes.contains(where: { $0.id == selectedRoute.id }) {
+            routes.append(selectedRoute)
+        }
+        guard !routes.isEmpty else { return [] }
+
+        let selectedID = state.route?.id
+        let orderedRoutes = routes.filter { $0.id != selectedID } + routes.filter { $0.id == selectedID }
+        var placedCoordinates: [Coordinate] = []
+        return orderedRoutes.compactMap { route in
+            guard route.coordinates.count > 1, route.expectedTravelTime.isFinite else { return nil }
+            let routeLength = RouteGeometrySplitter.length(of: route.coordinates)
+            guard routeLength.isFinite, routeLength > 0 else { return nil }
+            let candidates = [0.5, 0.35, 0.65, 0.2, 0.8].compactMap { fraction in
+                RouteGeometrySplitter.split(route.coordinates, atDistance: routeLength * fraction)
+                    .completed.last
+            }
+            guard let coordinate = candidates.max(by: { lhs, rhs in
+                clearance(of: lhs, from: placedCoordinates) < clearance(of: rhs, from: placedCoordinates)
+            }) else { return nil }
+            placedCoordinates.append(coordinate)
+            let minutes = max(1, Int(ceil(route.expectedTravelTime / 60)))
+            return RouteETAMarkerData(routeID: route.id,
+                                      coordinate: coordinate,
+                                      timeText: "\(minutes) min",
+                                      isSelected: route.id == selectedID)
+        }
+    }
+
+    private static func clearance(of coordinate: Coordinate, from placedCoordinates: [Coordinate]) -> Double {
+        guard !placedCoordinates.isEmpty else { return .infinity }
+        return placedCoordinates.map { coordinate.distance(to: $0) }.min() ?? .infinity
+    }
+}
+
 struct RouteLegGeometry {
     let targetID: UUID?
     let active: [Coordinate]

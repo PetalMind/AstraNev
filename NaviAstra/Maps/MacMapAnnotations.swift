@@ -2,6 +2,7 @@
 import AppKit
 import MapKit
 import QuartzCore
+import SwiftUI
 
 final class TransitStopMapAnnotationView: MKAnnotationView {
     private var shownPresentation: TransitStopMapPresentation?
@@ -104,11 +105,66 @@ final class TransitStopMapAnnotationView: MKAnnotationView {
 }
 
 final class TrafficMapAnnotationView: MKAnnotationView {
-    func render(presentation: TrafficMapPresentation, clusterCount: Int? = nil) {
+    private var shownPresentation: TrafficMapPresentation?
+    private var shownClusterCount: Int?
+    private var shownNavigating = false
+    private var selectedRoadSign = false
+
+    var isShowingRoadSign: Bool { shownPresentation?.roadSign != nil }
+
+    func render(presentation: TrafficMapPresentation, clusterCount: Int? = nil,
+                isNavigating: Bool = false, isSelected: Bool = false) {
+        shownPresentation = presentation
+        shownClusterCount = clusterCount
+        shownNavigating = isNavigating
+        selectedRoadSign = isSelected
         subviews.forEach { $0.removeFromSuperview() }
-        let size = CGFloat(clusterCount == nil ? presentation.markerSize : 38)
+        let roadSignSize = presentation.roadSign?.displaySize(isNavigating: isNavigating)
+        let size = CGFloat(clusterCount == nil
+            ? (roadSignSize.map { Double($0 + 8) } ?? presentation.markerSize)
+            : 38)
         frame = NSRect(x: 0, y: 0, width: size, height: size)
         wantsLayer = true
+
+        if let roadSign = presentation.roadSign, let roadSignSize {
+            layer?.backgroundColor = NSColor.clear.cgColor
+            layer?.cornerRadius = 0
+            layer?.borderWidth = 0
+            layer?.shadowColor = NSColor.black.cgColor
+            layer?.shadowOpacity = 0.12
+            layer?.shadowRadius = 2
+            let artworkFrame = NSRect(x: (size - roadSignSize - 8) / 2,
+                                      y: (size - roadSignSize - 8) / 2,
+                                      width: roadSignSize + 8, height: roadSignSize + 8)
+            let host = NSHostingView(rootView: RoadSignView(symbol: roadSign,
+                                                            size: roadSignSize,
+                                                            isSelected: isSelected))
+            host.frame = artworkFrame
+            host.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
+            host.wantsLayer = true
+            host.layer?.backgroundColor = NSColor.clear.cgColor
+            host.alphaValue = presentation.isDirectionUncertain ? 0.66 : 1
+            addSubview(host)
+
+            if let clusterCount, clusterCount > 1 {
+                let badge = NSTextField(labelWithString: "+\(clusterCount - 1)")
+                badge.frame = NSRect(x: size - 20, y: size - 13, width: 20, height: 13)
+                badge.alignment = .center
+                badge.font = .boldSystemFont(ofSize: 8)
+                badge.textColor = .white
+                badge.wantsLayer = true
+                badge.layer?.backgroundColor = NSColor(calibratedWhite: 0.12, alpha: 0.92).cgColor
+                badge.layer?.cornerRadius = 6.5
+                addSubview(badge)
+            }
+            canShowCallout = true
+            clusteringIdentifier = clusterCount == nil ? "traffic-events" : nil
+            displayPriority = .defaultHigh
+            setAccessibilityLabel(annotation?.title ?? "Znak drogowy")
+            setAccessibilityRole(.button)
+            return
+        }
+
         let color = NSColor(calibratedRed: CGFloat((presentation.colorHex >> 16) & 0xff) / 255,
                             green: CGFloat((presentation.colorHex >> 8) & 0xff) / 255,
                             blue: CGFloat(presentation.colorHex & 0xff) / 255, alpha: 1)
@@ -152,6 +208,13 @@ final class TrafficMapAnnotationView: MKAnnotationView {
         clusteringIdentifier = clusterCount == nil ? "traffic-events" : nil
         displayPriority = .defaultHigh
         setAccessibilityRole(.button)
+    }
+
+    func setRoadSignSelected(_ selected: Bool) {
+        guard isShowingRoadSign, selectedRoadSign != selected,
+              let shownPresentation else { return }
+        render(presentation: shownPresentation, clusterCount: shownClusterCount,
+               isNavigating: shownNavigating, isSelected: selected)
     }
 }
 #endif

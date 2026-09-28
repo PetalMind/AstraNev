@@ -9,7 +9,6 @@ extension ContentView {
         VStack(alignment: .leading, spacing: 12) {
             searchButton
             if !compact {
-                nearbyTransitCard
                 HStack(alignment: .firstTextBaseline) {
                     Text("Ulubione")
                         .font(.headline.weight(.semibold))
@@ -22,29 +21,6 @@ extension ContentView {
                     quickDestinationShelf(savedPlaceShortcuts)
                 } else {
                     Text("Zapisz Dom, Pracę lub ulubiony adres, aby mieć je zawsze pod ręką.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Ostatnie miejsca")
-                        .font(.headline.weight(.semibold))
-                    Spacer()
-                    Button {
-                        appRouter.present(.history)
-                    } label: {
-                        Label("Historia", systemImage: "clock.arrow.circlepath")
-                            .font(.subheadline.weight(.medium))
-                            .frame(minHeight: 44)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.accentColor)
-                    .accessibilityLabel("Historia podróży")
-                }
-                if !recentPlaceShortcuts.isEmpty {
-                    quickDestinationShelf(recentPlaceShortcuts)
-                } else {
-                    Text("Ostatnio wybrane miejsca pojawią się tutaj.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -69,6 +45,33 @@ extension ContentView {
                 }
                 .scrollIndicators(.visible)
                 .accessibilityLabel("Miejsca w pobliżu")
+
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Ostatnie miejsca")
+                        .font(.headline.weight(.semibold))
+                    Spacer()
+                    Button {
+                        appRouter.present(.history)
+                    } label: {
+                        Label("Historia", systemImage: "clock.arrow.circlepath")
+                            .font(.subheadline.weight(.medium))
+                            .frame(minHeight: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+                    .accessibilityLabel("Historia podróży")
+                }
+                if !recentPlaceShortcuts.isEmpty {
+                    VStack(spacing: 7) {
+                        ForEach(recentPlaceShortcuts.prefix(3)) { shortcut in
+                            recentPlaceRow(shortcut)
+                        }
+                    }
+                } else {
+                    Text("Ostatnio wybrane miejsca pojawią się tutaj.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(.horizontal, 18)
@@ -211,6 +214,51 @@ extension ContentView {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private func recentPlaceRow(_ shortcut: RecentPlaceShortcut) -> some View {
+        Button {
+            withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+                selectDestination(shortcut.destination)
+            }
+        } label: {
+            HStack(spacing: 11) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 34, height: 34)
+                    .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 11))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(shortcut.destination.name)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(shortcut.destination.address ?? "Ostatnio wybrane miejsce")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 4)
+
+                Text(shortcut.usedAt, style: .relative)
+                    .font(.caption2.weight(.medium).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: 62, alignment: .leading)
+            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Otwórz ostatnie miejsce: \(shortcut.destination.name)")
+        .accessibilityHint(shortcut.destination.address ?? "Ostatnio wybrane miejsce")
+    }
+
     func voiceSliderRow(title: String, value: Binding<Double>,
                                 range: ClosedRange<Double>, valueDescription: String) -> some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -228,14 +276,36 @@ extension ContentView {
     func mapControl(compact: Bool) -> some View {
         let layout = compact ? AnyLayout(HStackLayout(spacing: 10)) : AnyLayout(VStackLayout(spacing: 10))
         return HStack(alignment: .bottom) {
+#if os(macOS)
             if isNavigating && isOnRoadDrivingLeg {
-                TimelineView(.periodic(from: .now, by: 5)) { context in
-                    speedCard(at: context.date)
+                VStack(alignment: .leading, spacing: 8) {
+                    TimelineView(.periodic(from: .now, by: 5)) { context in
+                        speedCard(at: context.date)
+                    }
+                    navigationTrafficIncidentBanner
+                    navigationRoadDataFooter
                 }
             }
+#endif
             Spacer()
             layout {
                 if isNavigating {
+#if os(iOS)
+                    if navigationStore.state.transportMode == .walking {
+                        Button {
+                            isARNavigationPresented = true
+                        } label: {
+                            circleSurface {
+                                Image(systemName: "viewfinder")
+                                    .font(.system(size: 17, weight: .semibold))
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Otwórz nawigację AR")
+                        .accessibilityHint("Pokaż strzałki trasy w widoku kamery")
+                    }
+#endif
                     Button {
                         navigationStore.setVoiceEnabled(!navigationStore.state.voiceEnabled)
                     } label: {

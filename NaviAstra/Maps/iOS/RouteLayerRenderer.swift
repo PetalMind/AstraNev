@@ -41,9 +41,17 @@ struct RouteLayerRenderContext {
     let previousStatus: NavigationStatus?
 }
 
+private struct RouteETAMapItem {
+    let data: RouteETAMarkerData
+    let annotation: MLNPointAnnotation
+}
+
 @MainActor
 final class RouteLayerRenderer {
     private var routeLines: [StyledLine] = []
+    private var routeETAMapItems: [RouteETAMapItem] = []
+    private var shownRouteETAMarkers: [RouteETAMarkerData]?
+    private var shownRouteETAMarkerDark: Bool?
     private var incidentLinesByID: [String: [StyledLine]] = [:]
     private var incidentLineRenderItems: [IncidentLineRenderItem] = []
     private var activeRouteSource: MLNShapeSource?
@@ -122,6 +130,117 @@ final class RouteLayerRenderer {
         }
 
         updateActiveRouteGeometryProgress(on: map)
+        updatePlanningETAMarkers(on: map)
+    }
+
+    private func updatePlanningETAMarkers(on map: MLNMapView) {
+        let markers = RouteETAMarkerData.planningMarkers(in: parent.state)
+        let isDark = parent.colorScheme == .dark
+        guard markers != shownRouteETAMarkers || isDark != shownRouteETAMarkerDark else { return }
+
+        map.removeAnnotations(routeETAMapItems.map(\.annotation))
+        routeETAMapItems = markers.map { data in
+            let annotation = MLNPointAnnotation()
+            annotation.coordinate = data.coordinate.cl
+            annotation.title = data.timeText
+            annotation.subtitle = data.isSelected ? "Wybrana trasa" : "Alternatywna trasa"
+            return RouteETAMapItem(data: data, annotation: annotation)
+        }
+        shownRouteETAMarkers = markers
+        shownRouteETAMarkerDark = isDark
+        map.addAnnotations(routeETAMapItems.map(\.annotation))
+    }
+
+    func annotationView(for annotation: MLNAnnotation, on _: MLNMapView) -> MLNAnnotationView? {
+        guard let item = routeETAMapItems.first(where: { $0.annotation === annotation }) else { return nil }
+        let width = max(58, CGFloat(item.data.timeText.count) * 7.5 + 20)
+        let marker = MLNAnnotationView(reuseIdentifier: "route-eta")
+        marker.frame = CGRect(x: 0, y: 0, width: width, height: 30)
+        marker.centerOffset = CGVector(dx: 0, dy: -3)
+        let dark = parent.colorScheme == .dark
+        let background = item.data.isSelected
+            ? (dark ? RouteColorPalette.activeDark : RouteColorPalette.activeLight)
+            : (dark ? RouteColorPalette.alternativeDark : RouteColorPalette.alternativeLight)
+        marker.backgroundColor = color(hex: background, opacity: item.data.isSelected ? 1 : 0.96)
+        marker.layer.cornerRadius = 15
+        marker.layer.borderWidth = item.data.isSelected ? 1.5 : 1
+        marker.layer.borderColor = UIColor.white.withAlphaComponent(item.data.isSelected ? 0.96 : 0.72).cgColor
+        marker.layer.shadowColor = UIColor.black.cgColor
+        marker.layer.shadowOpacity = 0.24
+        marker.layer.shadowRadius = 4
+        marker.layer.shadowOffset = CGSize(width: 0, height: 2)
+
+        let label = UILabel(frame: marker.bounds)
+        label.text = item.data.timeText
+        label.textAlignment = .center
+        label.textColor = .white
+        label.font = .systemFont(ofSize: 12, weight: item.data.isSelected ? .bold : .semibold)
+        marker.addSubview(label)
+        marker.isAccessibilityElement = true
+        marker.accessibilityLabel =
+            "\(item.data.isSelected ? "Wybrana trasa" : "Alternatywna trasa"), \(item.data.timeText)"
+        marker.alpha = 0
+        marker.transform = CGAffineTransform(scaleX: 0.88, y: 0.88)
+        DispatchQueue.main.async {
+            UIView.animate(withDuration: 0.24, delay: 0,
+                           usingSpringWithDamping: 0.78, initialSpringVelocity: 0.35,
+                           options: [.beginFromCurrentState, .allowUserInteraction]) {
+                marker.alpha = 1
+                marker.transform = .identity
+            }
+        }
+        return marker
+    }
+
+    func routeID(forETAMarker annotation: MLNAnnotation) -> UUID? {
+        routeETAMapItems.first(where: { $0.annotation === annotation })?.data.routeID
+    }
+
+    func containsETAMarker(at point: CGPoint, on map: MLNMapView) -> Bool {
+        routeETAMapItems.contains { item in
+            let width = max(58, CGFloat(item.data.timeText.count) * 7.5 + 20)
+            let coordinatePoint = map.convert(item.annotation.coordinate, toPointTo: map)
+            let frame = CGRect(x: coordinatePoint.x - width / 2,
+                               y: coordinatePoint.y - 18,
+                               width: width,
+                               height: 30).insetBy(dx: -4, dy: -4)
+            return frame.contains(point)
+        }
+    }
+
+    func routeID(near point: CGPoint, on map: MLNMapView) -> UUID? {
+        guard parent.state.status == .routePreview else { return nil }
+        var routes = parent.state.routeOptions
+        if let selected = parent.state.route, !routes.contains(where: { $0.id == selected.id }) {
+            routes.append(selected)
+        }
+
+        var closestRouteID: UUID?
+        var closestDistance = CGFloat.greatestFiniteMagnitude
+        let selectedID = parent.state.route?.id
+        for route in routes where route.coordinates.count > 1 {
+            let screenPoints = route.coordinates.map { map.convert($0.cl, toPointTo: map) }
+            for (start, end) in zip(screenPoints, screenPoints.dropFirst()) {
+                let distance = distance(from: point, toSegmentFrom: start, to: end)
+                let isCloser = distance < closestDistance - 0.5
+                let activeRouteIsAsClose = route.id == selectedID &&
+                    abs(distance - closestDistance) < 0.5
+                if closestRouteID == nil || isCloser || activeRouteIsAsClose {
+                    closestDistance = distance
+                    closestRouteID = route.id
+                }
+            }
+        }
+        return closestDistance <= 22 ? closestRouteID : nil
+    }
+
+    private func distance(from point: CGPoint, toSegmentFrom start: CGPoint, to end: CGPoint) -> CGFloat {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let lengthSquared = dx * dx + dy * dy
+        guard lengthSquared > 0 else { return hypot(point.x - start.x, point.y - start.y) }
+        let projection = max(0, min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared))
+        return hypot(point.x - (start.x + projection * dx), point.y - (start.y + projection * dy))
     }
 
     func updateTrafficSegments(on map: MLNMapView, context: RouteLayerRenderContext) {
@@ -598,7 +717,10 @@ final class RouteLayerRenderer {
     }
 
     private func activeRouteColor(dark: Bool) -> UInt32 {
-        switch parent.state.transportMode {
+        if parent.state.status == .routePreview {
+            return dark ? RouteColorPalette.activeDark : RouteColorPalette.activeLight
+        }
+        return switch parent.state.transportMode {
         case .car, .transit, .parkRide: dark ? RouteColorPalette.activeDark : RouteColorPalette.activeLight
         case .walking: RouteColorPalette.walking
         case .bicycle: RouteColorPalette.cycling

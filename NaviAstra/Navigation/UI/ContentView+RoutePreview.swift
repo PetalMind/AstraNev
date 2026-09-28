@@ -55,29 +55,6 @@ extension ContentView {
                 }
             }
 
-            if navigationStore.state.transportMode == .car, let incident = nextRouteTrafficIncident {
-                HStack(spacing: 7) {
-                    Image(systemName: incident.isRoadClosure ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
-                        .foregroundStyle(incident.isRoadClosure ? Color.red : Color.orange)
-                    Text("\(incident.category.mapLabel) · za \(distance(max(0, (incident.distanceAlongRoute ?? 0) - (navigationStore.state.progress?.traveledDistance ?? 0))))")
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                    Spacer(minLength: 0)
-                    if let delay = incident.delaySeconds, delay > 0 {
-                        Text("+\(max(1, Int((Double(delay) / 60).rounded()))) min")
-                            .fontWeight(.semibold)
-                            .monospacedDigit()
-                    }
-                }
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.primary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
-                .accessibilityElement(children: .combine)
-            }
-
             if let maneuver = navigationStore.state.progress?.nextManeuver,
                let exitNumber = maneuver.exitNumber {
                 HStack(spacing: 6) {
@@ -95,8 +72,65 @@ extension ContentView {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
-        .modifier(NavigationGlassSurface(radius: 21))
         .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    var navigationTrafficIncidentBanner: some View {
+        if isNavigating, navigationStore.state.transportMode == .car,
+           let incident = nextRouteTrafficIncident {
+            HStack(spacing: 9) {
+                Image(systemName: incident.isRoadClosure ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(incident.isRoadClosure ? Color.red : Color.orange)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("\(incident.category.mapLabel) · za \(distance(max(0, (incident.distanceAlongRoute ?? 0) - (navigationStore.state.progress?.traveledDistance ?? 0))))")
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    if let delay = incident.delaySeconds, delay > 0 {
+                        Text("+\(max(1, Int((Double(delay) / 60).rounded()))) min")
+                            .font(.caption2.weight(.medium))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: 230, alignment: .leading)
+            .modifier(NavigationGlassSurface(radius: 17))
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    @ViewBuilder
+    var navigationRoadDataFooter: some View {
+        if case .available = navigationStore.state.roadSafetyStatus {
+            VStack(alignment: .leading, spacing: 4) {
+                if !hasUpcomingRoadSafetyWarning {
+                    Label("Brak ostrzeżeń do 2 km", systemImage: "checkmark.circle")
+                        .font(.system(size: 13, weight: .medium))
+                        .lineLimit(1)
+                }
+                Text("© OpenStreetMap contributors")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: 230, alignment: .leading)
+        } else if case .loading = navigationStore.state.roadSafetyStatus {
+            Label("Pobieranie ostrzeżeń…", systemImage: "arrow.triangle.2.circlepath")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        } else if case .unavailable = navigationStore.state.roadSafetyStatus {
+            Label("Ostrzeżenia drogowe niedostępne", systemImage: "wifi.slash")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
     }
 
     var nextRouteTrafficIncident: TrafficIncident? {
@@ -912,7 +946,7 @@ extension ContentView {
             VStack(alignment: .leading, spacing: 3) {
                 Text(routeOptionTime(route))
                     .font(.system(size: 15, weight: .semibold, design: .rounded).monospacedDigit())
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
                 if !isSelected {
