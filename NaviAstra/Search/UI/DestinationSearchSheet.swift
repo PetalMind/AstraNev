@@ -820,7 +820,7 @@ struct DestinationSearchSheet: View {
             VStack(alignment: .leading, spacing: 7) {
                 sectionHeading("Transport publiczny")
                 if isTransitSearching && transitResults.stops.isEmpty && transitResults.lines.isEmpty {
-                    ProgressView("Szukam linii i przystanków…").font(.caption).padding(.vertical, 5)
+                    ProgressView("Szukam przystanków i lokalnych linii…").font(.caption).padding(.vertical, 5)
                 }
                 if !transitResults.lines.isEmpty {
                     Text("Linie").font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.top, 3)

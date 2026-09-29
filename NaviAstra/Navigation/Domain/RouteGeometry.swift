@@ -32,10 +32,20 @@ struct RouteETAMarkerData: Equatable {
                 clearance(of: lhs, from: placedCoordinates) < clearance(of: rhs, from: placedCoordinates)
             }) else { return nil }
             placedCoordinates.append(coordinate)
-            let minutes = max(1, Int(ceil(route.expectedTravelTime / 60)))
+            let totalMinutes = max(1, Int(ceil(route.expectedTravelTime / 60)))
+            let hours = totalMinutes / 60
+            let minutes = totalMinutes % 60
+            let timeText: String
+            if hours == 0 {
+                timeText = "\(totalMinutes) min"
+            } else if minutes == 0 {
+                timeText = "\(hours) godz."
+            } else {
+                timeText = "\(hours) godz. \(minutes) min"
+            }
             return RouteETAMarkerData(routeID: route.id,
                                       coordinate: coordinate,
-                                      timeText: "\(minutes) min",
+                                      timeText: timeText,
                                       isSelected: route.id == selectedID)
         }
     }

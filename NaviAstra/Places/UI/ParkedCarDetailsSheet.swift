@@ -210,10 +210,10 @@ struct ParkedCarDetailsSheet: View {
 
     private func saveDetails() {
         var updated = displayedCar
-        updated.floor = floor.nilIfBlank
-        updated.sector = sector.nilIfBlank
-        updated.spot = spot.nilIfBlank
-        updated.note = note.nilIfBlank
+        updated.floor = floor.parkedCarNilIfBlank
+        updated.sector = sector.parkedCarNilIfBlank
+        updated.spot = spot.parkedCarNilIfBlank
+        updated.note = note.parkedCarNilIfBlank
         updated.parkingExpiresAt = hasParkingExpiry ? parkingExpiry : nil
         displayedCar = updated
         onUpdate(updated)
@@ -247,7 +247,7 @@ struct ParkedCarDetailsSheet: View {
 }
 
 private extension String {
-    var nilIfBlank: String? {
+    var parkedCarNilIfBlank: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }

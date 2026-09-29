@@ -6,8 +6,11 @@ import Foundation
 final class TransitStore {
     private let repository: TransitDataProviding
     private var detailRequestID = UUID()
+    @ObservationIgnored private var mapStopsTask: Task<Void, Never>?
+    @ObservationIgnored private var mapStopsRequestID = UUID()
 
     var region: TransitRegion { repository.region }
+    private(set) var mapStops: [TransitStop] = []
 
     var selectedSheet: TransitSheetSelection?
     var selectedStopID: String?
@@ -111,6 +114,31 @@ final class TransitStore {
         await repository.search(query, near: coordinate)
     }
 
+    func updateMapStops(in viewport: TransitMapViewport) {
+        mapStopsTask?.cancel()
+        mapStopsRequestID = UUID()
+        let requestID = mapStopsRequestID
+
+        guard viewport.isValid, viewport.zoom >= 13 else {
+            mapStops = []
+            return
+        }
+
+        mapStopsTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(350))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, let self,
+                  self.mapStopsRequestID == requestID else { return }
+            let stops = await self.repository.mapStops(in: viewport)
+            guard !Task.isCancelled, self.mapStopsRequestID == requestID else { return }
+            self.mapStops = stops
+            self.mapStopsTask = nil
+        }
+    }
+
     func lineDetails(for routeID: String) async -> TransitLineDetails? {
         await repository.lineDetails(for: routeID)
     }
@@ -127,6 +155,10 @@ final class TransitStore {
                      fromStopSequence: Int) async -> TransitTripDetails? {
         await repository.tripDetails(tripID: tripID, serviceDate: serviceDate,
                                      fromStopSequence: fromStopSequence)
+    }
+
+    func tripDetails(tripID: String, fromStopID: String?) async -> TransitTripDetails? {
+        await repository.tripDetails(tripID: tripID, fromStopID: fromStopID)
     }
 
     func tripDetails(tripID: String, serviceDate: String, fromStopSequence: Int,
@@ -150,6 +182,11 @@ final class TransitStore {
 
     func railwayScheduleAttribution() async -> String? {
         await repository.railwayScheduleAttribution()
+    }
+
+    func railwayScheduleAttribution(for stopID: String?) async -> String? {
+        guard stopID?.hasPrefix(TransitousTransitDataProvider.stopIDPrefix) != true else { return nil }
+        return await repository.railwayScheduleAttribution()
     }
 
     private func apply(line: TransitLineDetails?, trip: TransitTripDetails?) {

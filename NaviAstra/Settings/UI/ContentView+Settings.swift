@@ -267,15 +267,16 @@ extension ContentView {
     }
 
     private var settingsTransitSection: some View {
-        Section("Komunikacja miejska · \(transitStore.region.displayName)") {
-            Text("Planowanie tras korzysta z publicznego API Transitous. Wyszukiwanie przystanków, tablice odjazdów i pozycje pojazdów nadal korzystają z danych regionu. API wymaga publicznego kontaktu w User-Agent; zasady Transitous proszą też o kontakt przed użyciem kosztownego routingu.")
+        Section("Komunikacja publiczna") {
+            Text("Trasy, wyszukiwanie przystanków, odjazdy i przystanki widoczne na mapie korzystają z Transitous w obsługiwanych regionach. Dostępność i realtime zależą od źródeł danych Transitous. Rzeczywiste pozycje pojazdów są obecnie dostępne tylko z feedu MPK Łódź.")
+            Text("Zapytania o trasę i przystanki oraz obszar widoczny na mapie są wysyłane do Transitous. Usługa wymaga publicznego kontaktu w User-Agent; jej zasady proszą też o kontakt przed użyciem kosztownego routingu.")
             TextField("Publiczny e-mail lub URL projektu · User-Agent", text: $transitousContact)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
             Link("Transitous · zasady API", destination: URL(string: "https://transitous.org/api/")!)
             Link("Transitous · źródła danych", destination: URL(string: "https://transitous.org/sources/")!)
-            Link(transitStore.region.dataPortalTitle, destination: transitStore.region.dataPortalURL)
-            Link(transitStore.region.scheduleTitle, destination: transitStore.region.scheduleURL)
+            Link("MPK Łódź · otwarte dane", destination: transitStore.region.dataPortalURL)
+            Link("MPK Łódź · rozkład jazdy", destination: transitStore.region.scheduleURL)
         }
     }
 

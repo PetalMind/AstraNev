@@ -36,6 +36,7 @@ extension ContentView {
                 navigationStore.select(route)
             },
             onCyclingPathsStatus: { mapStore.cyclingPathsStatus = $0 },
+            onTransitViewportChange: { transitStore.updateMapStops(in: $0) },
             onMapPan: {
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
                     routePreviewDetent = .peek
@@ -68,7 +69,7 @@ extension ContentView {
             energyPolicy: navigationStore.energyPolicy,
             transit: MapSceneTransitData(
                 vehicles: navigationState.transitVehicles,
-                stops: navigationState.transitStops,
+                stops: transitStopsForMap(navigationState.transitStops),
                 selectedStopID: selectedTransitStopID,
                 selectedRouteID: selectedTransitRouteID,
                 selectedTripID: selectedTransitTripID,

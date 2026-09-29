@@ -66,6 +66,22 @@ extension ContentView {
         return selectedTransitTripStopIDs
     }
 
+    func transitStopsForMap(_ regionalStops: [TransitStop]) -> [TransitStop] {
+        var result: [TransitStop] = []
+        for stop in transitStore.mapStops + regionalStops {
+            let isDuplicate = result.contains { existing in
+                if existing.id == stop.id { return true }
+                let sameNamedStop = existing.mapStationNameKey == stop.mapStationNameKey
+                    && !existing.mapStationNameKey.isEmpty
+                let sameModes = existing.mapModes.isEmpty || stop.mapModes.isEmpty
+                    || !Set(existing.mapModes).isDisjoint(with: stop.mapModes)
+                return sameNamedStop && sameModes && existing.coordinate.distance(to: stop.coordinate) <= 60
+            }
+            if !isDuplicate { result.append(stop) }
+        }
+        return result
+    }
+
     var activeNavigationTransitLeg: JourneyLeg? {
         guard isNavigating, let legs = navigationStore.state.route?.journey?.legs else { return nil }
         if let index = navigationStore.state.transitProgress?.legIndex, legs.indices.contains(index) {

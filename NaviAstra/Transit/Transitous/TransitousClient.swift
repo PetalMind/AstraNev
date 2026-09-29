@@ -84,11 +84,33 @@ actor TransitousClient {
         let expiresAt: Date
     }
 
+    private struct ValueCache<Value: Sendable> {
+        let value: Value
+        let expiresAt: Date
+    }
+
+    private struct StopSearchKey: Hashable {
+        let query: String
+        let latitude: Int?
+        let longitude: Int?
+    }
+
+    private struct MapStopsKey: Hashable {
+        let south: Int
+        let west: Int
+        let north: Int
+        let east: Int
+    }
+
     private let configuration: TransitousClientConfiguration
     private let transport: TransitousTransport
     private let logger = Logger(subsystem: "STDMSolution.NaviAstra", category: "Transitous")
     private let cacheTTL: TimeInterval
     private var cache: [CacheKey: CacheEntry] = [:]
+    private var stopSearchCache: [StopSearchKey: ValueCache<[TransitousGeocodeMatchDTO]>] = [:]
+    private var mapStopsCache: [MapStopsKey: ValueCache<[TransitousPlaceDTO]>] = [:]
+    private var stopTimesCache: [String: ValueCache<TransitousStopTimesResponseDTO>] = [:]
+    private var tripCache: [String: ValueCache<TransitousItineraryDTO>] = [:]
     private var rateLimitedUntil: Date?
 
     init(configuration: TransitousClientConfiguration = .init(),
@@ -195,6 +217,163 @@ actor TransitousClient {
             cache[key] = CacheEntry(response: decoded, expiresAt: Date().addingTimeInterval(cacheTTL))
             return decoded
         }
+    }
+
+    func searchStops(_ query: String, near coordinate: Coordinate?) async throws
+        -> [TransitousGeocodeMatchDTO] {
+        try Task.checkCancellation()
+        let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count >= 2 else { return [] }
+        let key = StopSearchKey(
+            query: normalized.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current),
+            latitude: coordinate.map { Int(($0.latitude * 1_000).rounded()) },
+            longitude: coordinate.map { Int(($0.longitude * 1_000).rounded()) })
+        if let cached = stopSearchCache[key], cached.expiresAt > Date() { return cached.value }
+
+        var queryItems = [
+            URLQueryItem(name: "text", value: normalized),
+            URLQueryItem(name: "type", value: "STOP"),
+            URLQueryItem(name: "mode", value: "BUS,COACH,TRAM,SUBWAY,RAIL,REGIONAL_RAIL,FERRY"),
+            URLQueryItem(name: "language", value: "pl"),
+            URLQueryItem(name: "numResults", value: "10")
+        ]
+        if let coordinate {
+            queryItems.append(URLQueryItem(name: "place", value: Self.coordinateParameter(coordinate)))
+        }
+        let matches: [TransitousGeocodeMatchDTO] = try await get(
+            path: ["v1", "geocode"], queryItems: queryItems, timeout: 12)
+        stopSearchCache[key] = ValueCache(value: matches, expiresAt: Date().addingTimeInterval(45))
+        if stopSearchCache.count > 96 {
+            stopSearchCache = stopSearchCache.filter { $0.value.expiresAt > Date() }
+        }
+        return matches
+    }
+
+    func stops(in viewport: TransitMapViewport) async throws -> [TransitousPlaceDTO] {
+        try Task.checkCancellation()
+        guard viewport.isValid, viewport.zoom >= 13 else { return [] }
+        let key = MapStopsKey(south: Int((viewport.south * 10_000).rounded()),
+                              west: Int((viewport.west * 10_000).rounded()),
+                              north: Int((viewport.north * 10_000).rounded()),
+                              east: Int((viewport.east * 10_000).rounded()))
+        if let cached = mapStopsCache[key], cached.expiresAt > Date() { return cached.value }
+
+        let modes = ["BUS", "COACH", "TRAM", "SUBWAY", "RAIL", "REGIONAL_RAIL", "FERRY"]
+        var queryItems = [
+            URLQueryItem(name: "min", value: viewport.apiMinimum),
+            URLQueryItem(name: "max", value: viewport.apiMaximum),
+            URLQueryItem(name: "grouped", value: "true"),
+            URLQueryItem(name: "language", value: "pl")
+        ]
+        queryItems.append(contentsOf: modes.map { URLQueryItem(name: "modes", value: $0) })
+        let stops: [TransitousPlaceDTO] = try await get(
+            path: ["v6", "map", "stops"], queryItems: queryItems, timeout: 15)
+        mapStopsCache[key] = ValueCache(value: stops, expiresAt: Date().addingTimeInterval(45))
+        if mapStopsCache.count > 64 {
+            mapStopsCache = mapStopsCache.filter { $0.value.expiresAt > Date() }
+        }
+        return stops
+    }
+
+    func departures(at stopID: String, limit: Int) async throws -> TransitousStopTimesResponseDTO {
+        try Task.checkCancellation()
+        let normalizedLimit = min(20, max(1, limit))
+        let cacheKey = "\(stopID)|\(normalizedLimit)"
+        if let cached = stopTimesCache[cacheKey], cached.expiresAt > Date() { return cached.value }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let queryItems = [
+            URLQueryItem(name: "stopId", value: stopID),
+            URLQueryItem(name: "time", value: formatter.string(from: Date())),
+            URLQueryItem(name: "arriveBy", value: "false"),
+            URLQueryItem(name: "direction", value: "LATER"),
+            URLQueryItem(name: "n", value: String(normalizedLimit)),
+            URLQueryItem(name: "realtimeMode", value: "REALTIME"),
+            URLQueryItem(name: "withAlerts", value: "true"),
+            URLQueryItem(name: "language", value: "pl")
+        ]
+        let response: TransitousStopTimesResponseDTO = try await get(
+            path: ["v6", "stoptimes"], queryItems: queryItems, timeout: 15)
+        stopTimesCache[cacheKey] = ValueCache(value: response, expiresAt: Date().addingTimeInterval(12))
+        if stopTimesCache.count > 128 {
+            stopTimesCache = stopTimesCache.filter { $0.value.expiresAt > Date() }
+        }
+        return response
+    }
+
+    func trip(_ tripID: String) async throws -> TransitousItineraryDTO {
+        try Task.checkCancellation()
+        if let cached = tripCache[tripID], cached.expiresAt > Date() { return cached.value }
+        let queryItems = [
+            URLQueryItem(name: "tripId", value: tripID),
+            URLQueryItem(name: "withScheduledSkippedStops", value: "true"),
+            URLQueryItem(name: "detailedLegs", value: "true"),
+            URLQueryItem(name: "joinInterlinedLegs", value: "false"),
+            URLQueryItem(name: "language", value: "pl")
+        ]
+        let response: TransitousItineraryDTO = try await get(
+            path: ["v6", "trip"], queryItems: queryItems, timeout: 15)
+        tripCache[tripID] = ValueCache(value: response, expiresAt: Date().addingTimeInterval(20))
+        if tripCache.count > 128 {
+            tripCache = tripCache.filter { $0.value.expiresAt > Date() }
+        }
+        return response
+    }
+
+    private func get<Response: Decodable & Sendable>(path: [String], queryItems: [URLQueryItem],
+                                                       timeout: TimeInterval) async throws -> Response {
+        try Task.checkCancellation()
+        guard configuration.userAgent != nil else { throw TransitRouteError.contactRequired }
+        if let rateLimitedUntil, rateLimitedUntil > Date() {
+            throw TransitRouteError.rateLimited(retryAfter: rateLimitedUntil.timeIntervalSinceNow)
+        }
+        let request = try makeGET(path: path, queryItems: queryItems, timeout: timeout)
+        let responseData: (Data, HTTPURLResponse)
+        do {
+            responseData = try await transport.data(for: request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .timedOut {
+            throw TransitRouteError.timeout
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            throw TransitRouteError.network
+        }
+        let (data, httpResponse) = responseData
+        guard (200...299).contains(httpResponse.statusCode) else {
+            if httpResponse.statusCode == 429 {
+                let retryAfter = Self.retryAfter(from: httpResponse) ?? 30
+                rateLimitedUntil = Date().addingTimeInterval(max(30, retryAfter))
+                throw TransitRouteError.rateLimited(retryAfter: retryAfter)
+            }
+            if httpResponse.statusCode >= 500 { throw TransitRouteError.serviceUnavailable }
+            throw TransitRouteError.invalidResponse
+        }
+        do {
+            return try JSONDecoder().decode(Response.self, from: data)
+        } catch {
+            throw TransitRouteError.decoding
+        }
+    }
+
+    private func makeGET(path: [String], queryItems: [URLQueryItem], timeout: TimeInterval) throws -> URLRequest {
+        guard configuration.baseURL.scheme == "https",
+              let userAgent = configuration.userAgent else { throw TransitRouteError.contactRequired }
+        let endpoint = path.reduce(configuration.baseURL) { $0.appendingPathComponent($1) }
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else {
+            throw TransitRouteError.invalidResponse
+        }
+        components.queryItems = queryItems
+        guard let url = components.url else { throw TransitRouteError.invalidResponse }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = timeout
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return request
     }
 
     private func makeRequest(from origin: Coordinate, to destination: Coordinate, time: Date,

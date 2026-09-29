@@ -93,32 +93,56 @@ struct TransitNavigationProgress: Equatable, Sendable {
 
 nonisolated enum TransitStopMode: String, CaseIterable, Hashable, Sendable {
     case rail
+    case metro
     case tram
     case bus
+    case ferry
 
     var symbolName: String {
         switch self {
         case .rail: "train.side.front.car"
+        case .metro: "tram.fill"
         case .tram: "tram.fill"
         case .bus: "bus.fill"
+        case .ferry: "ferry.fill"
         }
     }
 
     var title: String {
         switch self {
         case .rail: "Kolej"
+        case .metro: "Metro"
         case .tram: "Tramwaj"
         case .bus: "Autobus"
+        case .ferry: "Prom"
         }
     }
 
     var accentHex: UInt32 {
         switch self {
         case .rail: 0x263B70
+        case .metro: 0x673AB7
         case .tram: 0xD83B43
         case .bus: 0x2878D0
+        case .ferry: 0x178A82
         }
     }
+}
+
+struct TransitMapViewport: Equatable, Sendable {
+    let south: Double
+    let west: Double
+    let north: Double
+    let east: Double
+    let zoom: Double
+
+    var isValid: Bool {
+        south.isFinite && west.isFinite && north.isFinite && east.isFinite && zoom.isFinite
+            && south < north && west < east
+    }
+
+    var apiMinimum: String { "\(south),\(east)" }
+    var apiMaximum: String { "\(north),\(west)" }
 }
 
 nonisolated enum TransitStopImportance: Int, Comparable, Sendable {
@@ -176,7 +200,7 @@ struct TransitStop: Identifiable, Equatable, Sendable {
     var mapImportance: TransitStopImportance {
         if isMultimodal { return isMajor ? .regionalHub : .interchange }
         if isRailway { return isMajor ? .regionalHub : .railStation }
-        if mapModes.contains(.tram) { return isMajor ? .tramMajor : .tram }
+        if mapModes.contains(.tram) || mapModes.contains(.metro) { return isMajor ? .tramMajor : .tram }
         return isMajor ? .busMajor : .bus
     }
 
@@ -238,14 +262,17 @@ struct TransitStop: Identifiable, Equatable, Sendable {
         if zoom < 14.5 {
             return isRailway || isTransitHub || mapImportance == .tramMajor || mapImportance == .busMajor
         }
-        if zoom < 16 { return isRailway || isTransitHub || mapModes.contains(.tram) || mapImportance == .busMajor }
+        if zoom < 16 {
+            return isRailway || isTransitHub || mapModes.contains(.tram) || mapModes.contains(.metro)
+                || mapImportance == .busMajor
+        }
         return true
     }
 
     var mapMarkerSize: CGFloat {
         if isRailway { return isMajor ? 36 : 32 }
         if mapModes.count > 1 { return 34 }
-        if mapModes.contains(.tram) { return isMajor ? 30 : 27 }
+        if mapModes.contains(.tram) || mapModes.contains(.metro) { return isMajor ? 30 : 27 }
         return isMajor ? 26 : 22
     }
 

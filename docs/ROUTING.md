@@ -1,13 +1,13 @@
 # Jak NaviAstra wyznacza trasę
 
-Ten dokument opisuje bieżącą implementację routingu. Głównym koordynatorem jest `NavigationSession`; osobni dostawcy obliczają trasy drogowe oraz połączenia kolejowe i MPK. Mapa tylko prezentuje otrzymaną geometrię — nie wyszukuje samodzielnie dróg.
+Ten dokument opisuje bieżącą implementację routingu. Głównym koordynatorem jest `NavigationSession`; dostawcy obliczają trasy drogowe oraz połączenia komunikacją publiczną. Mapa prezentuje otrzymaną geometrię i widoczne przystanki.
 
 ## W skrócie
 
 - Początek trasy to ostatnia zaakceptowana pozycja GPS. Cel pochodzi z wyszukiwania, mapy albo wybranego miejsca.
-- Wybrany tryb transportu decyduje o silniku: Valhalla dla samochodu, marszu i roweru; planer GTFS dla krajowych pociągów i MPK Łódź; połączenie obu silników dla P+R.
+- Wybrany tryb transportu decyduje o silniku: Valhalla dla samochodu, marszu i roweru; Transitous dla komunikacji publicznej i jej odcinka w P+R.
 - Dla tras drogowych warianty zwraca serwer Valhalla. Podczas nawigacji TomTom może zmienić wybór na szybszy z już zwróconych wariantów; serwer Valhalla nadal dostarcza geometrię i podstawowe czasy.
-- Planer transportu publicznego łączy krajowy rozkład pociągów PKP/ŁKA i innych przewoźników z rozkładem MPK Łódź. Macierz Valhalli wybiera osiągalne stacje i przystanki, routing pieszy wyznacza geometrię dojścia, a transfery korzystają z grafu GTFS i są sprawdzane przed zwróceniem trasy.
+- Transitous wyznacza połączenia w regionach objętych jego feedami. Pokrycie zależy od dostępnych danych, a rzeczywiste pozycje pojazdów są obecnie dostępne wyłącznie z feedu MPK Łódź.
 - Dane TomTom wpływają na pozostały czas i wybór wśród wariantów Valhalli. Zdarzenie zamknięcia jest rozpoznawane po polu kategorii, a nie po tekście opisu.
 
 ## Przebieg obliczenia
@@ -57,45 +57,22 @@ Te ustawienia aplikacja przekazuje wyłącznie dla samochodu. Faktyczny wariant 
 
 Można dodać do ośmiu przystanków. Zwykłe wyznaczanie trasy zachowuje ich bieżącą kolejność. Dla samochodu, marszu i roweru dostępna jest osobna optymalizacja kolejności przez endpoint Valhalli `/optimized_route`. Aplikacja sprawdza długość zwróconej listy i zakres indeksów, po czym zmienia kolejność punktów i ponownie liczy trasę.
 
-## Komunikacja: kolej i MPK Łódź
+## Komunikacja publiczna
 
-Pełny, osobny opis przetwarzania feedów, doboru przystanków, transferów, aktualizacji realtime, kosztu wariantów i walidacji geometrii znajduje się w [docs/TRANSIT_ROUTING.md](TRANSIT_ROUTING.md). Poniższa sekcja zachowuje krótsze omówienie w kontekście całego routingu.
+Szczegóły źródeł, endpointów, wyszukiwania, tablic odjazdów, danych mapy, cache i ograniczeń zasięgu opisuje [docs/TRANSIT_ROUTING.md](TRANSIT_ROUTING.md). W skrócie: `TransitousRouteProvider` planuje podróż dla współrzędnych GPS i celu, a `TransitousTransitDataProvider` obsługuje wyszukiwanie przystanków, rozkłady, alerty i przystanki mapy. Działa to w regionach objętych Transitous; Łódź nie jest granicą planowania.
 
-`TransitRouteProvider` łączy miejski rozkład MPK i jego feedy GTFS-Realtime z krajowym rozkładem pociągów PKP PLK/ŁKA i feedem aktualizacji czasu przejazdu. Te publiczne źródła pobierane są bez klucza API. Identyfikatory krajowego feedu dostają prefiks `rail/`, aby nie kolidowały z identyfikatorami MPK. Surowe archiwa GTFS i skompilowana baza indeksów są cache'owane przez 24 godziny; skompilowany indeks jest zapisany jako binarny plist ze znacznikiem wersji schematu, a jego zapis nie blokuje pierwszego wyniku. Obowiązywanie kursów jest liczone według kalendarza `Europe/Warsaw`, z uwzględnieniem wyjątków kalendarza GTFS. Dane realtime mają stan `live` do 90 sekund, `degraded` do 180 sekund, `stale` powyżej 180 sekund albo `unavailable`, gdy feed nie ma poprawnego znacznika czasu. Nieświeże aktualizacje nie zmieniają czasów kursów; odświeżenie realtime działa w tle, gdy nie ma świeżej migawki.
-
-### Wybór połączeń
-
-Planer używa rund w stylu RAPTOR i stosuje następujące kryteria:
-
-- Dla każdego końca uwzględnia wszystkie obsługiwane stacje i przystanki z dostępnych feedów, bez limitu odległości, czasu dojścia ani liczby kandydatów. Przybliżone czasy marszu służą do wstępnego wyszukania połączeń; dokładne macierze Valhalli `/sources_to_targets` są pobierane dla przystanków użytych w kandydujących wariantach, w porcjach po 20 celów.
-- Wynik macierzy pieszej może zawierać od razu geometrię. Planer zachowuje takie odcinki w pamięci podręcznej geometrii. Gdy macierz nie odpowiada, nie wysyła osobnego `/route` dla każdego przystanku: używa dostępnych wyników i cache, a brakujące dojścia szacuje z odległości w linii prostej, mnożąc ją przez 1,5 i przyjmując 0,9 m/s. Takie czasy i odcinki są oznaczone jako przybliżone w podsumowaniu trasy. Dla wybranych końcowych wariantów brakującą geometrię dokładnych dojść pobiera `/route`, bez zmiany czasu z macierzy.
-- Po znalezieniu kandydatów interfejs pokazuje wstępną trasę, zanim skończy się pobieranie brakujących geometrii pieszych. W czasie weryfikacji geometria jest uzupełniana dla kandydatów pokazanych w podglądzie; wybór wariantu i rozpoczęcie nawigacji pozostają zablokowane do zakończenia walidacji przesiadek. Gdy pobranie geometrii nie powiedzie się, zachowywany jest orientacyjny przebieg; jeśli dokładna geometria wykaże, że transfer nie mieści się w czasie, ten wariant jest odrzucany.
-- Rozpatruje kursy w oknie do 18 godzin i szuka podróży bez sztywnego limitu liczby przejazdów pojazdem. Planowanie obejmuje stacje z krajowego feedu, więc cel podróży może leżeć poza województwem łódzkim.
-- Przy standardowym planowaniu żądany czas odjazdu to bieżąca chwila. Interfejs silnika przyjmuje też inny czas, ale `NavigationSession` przekazuje `Date()`.
-- Przy przesiadce na tym samym przystanku wymaga co najmniej 60 sekund. Dane `transfers.txt` (w tym zakaz transferu typu 3), przejścia z `pathways.txt`, wspólna `parent_station` oraz osobne przystanki do 350 m budują skierowany graf dojść. Bufory z GTFS są zachowywane, a wybrane dojścia muszą zmieścić się w rzeczywistym czasie między kursami.
-- Uwzględnia aktualizacje czasu przejazdu i odwołane kursy z realtime, jeśli feed jest dostępny. Bez aktualizacji używa godzin rozkładowych. Komunikaty są dołączane do tras, których linii lub przystanków dotyczą.
-- Planer nie odcina odjazdów limitem 2 kursów na wzorzec ani 48 kursów na przystanek. W każdej rundzie zachowuje niedominowane etykiety czasu przyjazdu, łącznego chodzenia i liczby przesiadek.
-
-Warianty ocenia koszt uogólniony:
-
-```text
-czas jazdy + 1,6 × chodzenie + 1,25 × oczekiwanie + 4 min × liczba przesiadek
-```
-
-Planer zachowuje do trzech różnych wariantów: najniższy koszt uogólniony, najszybszy, z najmniejszą liczbą przesiadek lub z najmniejszą ilością chodzenia. Planowanie rejestruje osobno czas do pierwszego kandydata i czas do zakończenia walidacji geometrii. Geometria kursu pochodzi z kształtu GTFS, jeśli jest dostępny; w przeciwnym razie jest odtwarzana z pozycji przystanków.
-
-Graf transferów nie ogranicza liczby kolejnych przejść ani łącznego czasu chodzenia. Planer łączy przystanki MPK Łódź z krajową siecią kolejową. Brak kursów łączących początek z celem w przeszukiwanym oknie, niekompletny rozkład albo niedostępne usługi tras mogą zakończyć planowanie błędem. Przy awarii macierzy pieszej planer może zwrócić wariant z jawnie oznaczonym przybliżeniem dojścia; nie gwarantuje wtedy dokładnej trasy pieszego dojścia.
+Lokalne indeksy GTFS pozostają źródłem uzupełniającego wyszukiwania i lokalnych szczegółów. Feed pozycji pojazdów MPK jest niezależny od globalnego routingu i ograniczony do jego zasięgu. Aplikacja nie wyświetla pozycji pojazdu tam, gdzie nie ma odpowiedniego feedu.
 
 ## P+R
 
-Tryb P+R łączy trasę samochodem do parkingu i dalszą podróż MPK:
+Tryb P+R łączy trasę samochodem do parkingu i dalszą podróż komunikacją publiczną:
 
 1. Valhalla liczy bazową trasę samochodową do celu. OpenStreetMap/Overpass wyszukuje parkingi w korytarzu ostatnich 40 km trasy oraz w promieniu 15 km od celu. Kandydaci muszą mieć tag `amenity=parking` i `park_ride=yes`.
 2. Dla maksymalnie dwunastu kandydatów Valhalla liczy trasę samochodową. Używany jest pierwszy wariant samochodowy.
-3. Planer MPK szuka połączenia z parkingu do celu, z czasem odjazdu ustawionym na przewidywany przyjazd samochodem.
+3. Transitous szuka połączenia z parkingu do celu, z czasem odjazdu ustawionym na przewidywany przyjazd samochodem.
 4. Wyniki są sortowane według łącznego kosztu jazdy, chodzenia, oczekiwania i przesiadek; zwracane są maksymalnie trzy warianty.
 
-Wynik zawiera odcinek samochodowy oraz odcinki piesze i komunikacyjne z planera MPK. Dostępność parkingu, wolnych miejsc ani czas parkowania nie są sprawdzane. W trybie P+R automatyczne przeliczanie po zejściu z geometrii trasy jest wyłączone.
+Wynik zawiera odcinek samochodowy oraz odcinki piesze i komunikacyjne z Transitous. Dostępność parkingu, wolnych miejsc ani czas parkowania nie są sprawdzane. W trybie P+R automatyczne przeliczanie po zejściu z geometrii trasy jest wyłączone.
 
 ## Szczegóły parkingu
 
@@ -141,15 +118,15 @@ Publiczny Overpass służy tu jako źródło prototypowe. Repozytorium nie zawie
 
 ## Co wpływa na wynik, a czego aplikacja nie gwarantuje
 
-Jakość tras drogowych zależy od danych i konfiguracji serwera Valhalla. Routing kolejowy i MPK dodatkowo wymaga dostępnego Valhalla Matrix i geometrii dla pieszych. Rozkład kolejowy zależy od krajowego GTFS i aktualizacji PKP PLK, a komunikacja MPK od GTFS/GTFS-Realtime Łodzi. P+R i ładowarki EV zależą od oznaczeń i metadanych OpenStreetMap. Aplikacja wymaga internetu do wyznaczania tras i nie ma trybu routingu offline.
+Jakość tras drogowych zależy od danych i konfiguracji serwera Valhalla. Routing komunikacją publiczną zależy od pokrycia, dostępności oraz aktualności danych Transitous. Rzeczywiste pozycje pojazdów zależą od feedu MPK Łódź. P+R i ładowarki EV zależą od oznaczeń i metadanych OpenStreetMap. Aplikacja wymaga internetu do wyznaczania tras i nie ma trybu routingu offline.
 
-Wyników nie należy interpretować jako gwarancji najkrótszej drogi, dostępności parkingu lub ładowarki ani rzeczywistego czasu przejazdu. Dla samochodu podstawowy wybór tras wykonuje Valhalla; dla pociągów i MPK stosowane są opisane powyżej heurystyki czasu jazdy, przesiadek i dojścia.
+Wyników nie należy interpretować jako gwarancji najkrótszej drogi, dostępności parkingu lub ładowarki ani rzeczywistego czasu przejazdu. Dla samochodu podstawowy wybór tras wykonuje Valhalla; połączenia komunikacyjne i ich czasy zależą od danych i wyniku API Transitous.
 
 ## Główne miejsca w kodzie
 
 - `NaviAstra/Navigation/NavigationSession.swift` — stan sesji i cykl życia; rozszerzenia `NavigationSession+Routing.swift`, `NavigationSession+Progress.swift` i `NavigationSession+Traffic.swift` obsługują trasę, postęp, ruch i rerouting.
 - `NaviAstra/Navigation/ValhallaRouteProvider.swift` — żądania `/route` i `/optimized_route`, preferencje i dekodowanie wyniku.
-- `NaviAstra/Transit/TransitRouteProvider.swift` — pobieranie GTFS/GTFS-Realtime, wyszukiwanie przystanków, ranking i budowanie połączeń.
+- `NaviAstra/Transit/Transitous/TransitousRouteProvider.swift` i `TransitousClient.swift` — planowanie połączeń przez Transitous.
 - `NaviAstra/Navigation/Models.swift` — tryby transportu, preferencje, modele tras i etapów podróży.
 - `NaviAstra/Places/NearbyPlaceProvider.swift` — wyszukiwanie parkingów, P+R i ładowarek oraz odczyt ich metadanych OpenStreetMap.
 - `NaviAstra/Navigation/UI/ContentView+RoutePreview.swift` i `ContentView+Journey.swift` — ustawienia EV, postoje i podsumowanie aktywnej podróży.

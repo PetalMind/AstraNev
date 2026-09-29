@@ -17,6 +17,7 @@ protocol TransitDataProviding: Sendable {
     var region: TransitRegion { get }
 
     func vehiclePositions(near coordinate: Coordinate) async -> TransitVehicleFeed
+    func mapStops(in viewport: TransitMapViewport) async -> [TransitStop]
     func departures(at stopID: String, limit: Int) async -> [TransitDeparture]
     func departures(at stopIDs: [String], limit: Int) async -> [TransitDeparture]
     func alerts(for stopID: String) async -> [String]
@@ -31,9 +32,16 @@ protocol TransitDataProviding: Sendable {
     func tripDetails(tripID: String, serviceDate: String, fromStopSequence: Int,
                      scheduleShiftSeconds: Int, frequencyStartSeconds: Int?,
                      frequencyHeadwaySeconds: Int?, isFrequencyEstimate: Bool) async -> TransitTripDetails?
+    func tripDetails(tripID: String, fromStopID: String?) async -> TransitTripDetails?
 }
 
 extension TransitDataProviding {
+    func mapStops(in viewport: TransitMapViewport) async -> [TransitStop] { [] }
+
+    func tripDetails(tripID: String, fromStopID: String?) async -> TransitTripDetails? {
+        await tripDetails(tripID: tripID, serviceDate: "", fromStopSequence: 0)
+    }
+
     func departures(at stopID: String) async -> [TransitDeparture] {
         await departures(at: stopID, limit: 10)
     }

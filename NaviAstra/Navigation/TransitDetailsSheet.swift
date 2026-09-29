@@ -112,8 +112,12 @@ struct TransitDetailsSheet: View {
 
     private func modeLabel(_ mode: String) -> String {
         switch mode {
-        case "RAIL": "Pociąg"
+        case "RAIL", "REGIONAL_RAIL", "REGIONAL_FAST_RAIL", "SUBURBAN", "SUBURBAN_RAIL",
+             "LONG_DISTANCE", "NIGHT_RAIL", "HIGHSPEED_RAIL": "Pociąg"
+        case "SUBWAY", "METRO": "Metro"
         case "TRAM": "Tramwaj"
+        case "FERRY": "Prom"
+        case "COACH": "Autobus dalekobieżny"
         default: "Autobus"
         }
     }
@@ -129,6 +133,14 @@ struct TransitDetailsSheet: View {
         case .vehicle(let vehicle): vehicle.mode == "RAIL"
         case .departure(let departure): departure.mode == "RAIL"
         case .line(let line): line.mode == "RAIL"
+        }
+    }
+
+    private var selectedAttributionStopID: String? {
+        switch selection {
+        case .stop(let stop): stop.id
+        case .departure(let departure): departure.stopID
+        case .vehicle, .line: nil
         }
     }
 
@@ -269,7 +281,8 @@ struct TransitDetailsSheet: View {
 
     private func loadDetails() async {
         isLoading = true
-        railwayAttribution = selectedIsRail ? await transitStore.railwayScheduleAttribution() : nil
+        railwayAttribution = selectedIsRail
+            ? await transitStore.railwayScheduleAttribution(for: selectedAttributionStopID) : nil
         await refreshDetails()
         isLoading = false
     }

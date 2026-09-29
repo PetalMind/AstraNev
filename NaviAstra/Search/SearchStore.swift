@@ -3,7 +3,7 @@ import Observation
 
 enum DestinationSearchScope: String, CaseIterable, Identifiable {
     case places = "Miejsca"
-    case transit = "Kolej i MPK"
+    case transit = "Transport publiczny"
 
     var id: String { rawValue }
 }

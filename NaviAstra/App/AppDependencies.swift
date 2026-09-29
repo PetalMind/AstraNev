@@ -15,7 +15,7 @@ struct AppDependencies {
         let endpoint = URL(string: configuredAddress)
             ?? URL(string: "https://valhalla1.openstreetmap.de")!
         let transitProvider = TransitousRouteProvider()
-        let transitDataProvider = LocalTransitDataProvider()
+        let transitDataProvider = TransitousTransitDataProvider()
         let navigationDependencies = NavigationSessionDependencies.live(
             routeEndpoint: endpoint,
             trafficAPIKey: TrafficCredential.read(),

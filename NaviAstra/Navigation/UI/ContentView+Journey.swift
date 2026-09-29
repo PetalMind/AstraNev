@@ -4,6 +4,28 @@ import AVFoundation
 import UIKit
 #endif
 
+private enum JourneySummaryMetricEmphasis {
+    case primary
+    case secondary
+    case tertiary
+
+    var valueSize: CGFloat {
+        switch self {
+        case .primary: 24
+        case .secondary: 20
+        case .tertiary: 18
+        }
+    }
+
+    var valueWeight: Font.Weight {
+        switch self {
+        case .primary: .bold
+        case .secondary: .semibold
+        case .tertiary: .medium
+        }
+    }
+}
+
 extension ContentView {
     var journeyPanel: some View {
 #if os(iOS)
@@ -223,14 +245,17 @@ extension ContentView {
             navigationPanelDetent = detent == .expanded ? .medium : .expanded
         } label: {
             HStack(spacing: 4) {
-                journeySummaryMetric(value: remainingTime.map(arrivalTime) ?? "—", caption: "ETA")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                journeySummaryMetric(value: remainingTime.map(time) ?? "—", caption: "Pozostało")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                journeySummaryMetric(value: remainingDistance.map(distance) ?? "—", caption: "Do celu")
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                journeySummaryMetric(value: remainingTime.map(arrivalTime) ?? "—", caption: "ETA",
+                                     emphasis: .primary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                journeySummaryMetric(value: remainingTime.map(time) ?? "—", caption: "Pozostało",
+                                     emphasis: .secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                journeySummaryMetric(value: remainingDistance.map(distance) ?? "—", caption: "Do celu",
+                                     emphasis: .tertiary)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
-            .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: 52, alignment: .center)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -565,16 +590,21 @@ extension ContentView {
         .accessibilityElement(children: .combine)
     }
 
-    func journeySummaryMetric(value: String, caption: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+    private func journeySummaryMetric(value: String, caption: String,
+                                      emphasis: JourneySummaryMetricEmphasis) -> some View {
+        VStack(alignment: .center, spacing: 2) {
             Text(value)
-                .font(.system(size: 20, weight: .bold, design: .rounded).monospacedDigit())
+                .font(.system(size: emphasis.valueSize,
+                              weight: emphasis.valueWeight,
+                              design: .rounded).monospacedDigit())
                 .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
             Text(caption)
                 .font(.system(size: 12, weight: .medium, design: .rounded))
                 .foregroundStyle(Color.white.opacity(0.56))
+                .multilineTextAlignment(.center)
                 .lineLimit(1)
         }
         .fixedSize(horizontal: false, vertical: true)
@@ -870,14 +900,22 @@ extension ContentView {
             let nextRide = legs.indices.first { index in
                 index >= activeIndex && legs[index].tripID != nil
             }.map { legs[$0] }
-            if let leg = nextRide, let tripID = leg.tripID,
-               let serviceDate = leg.serviceDate, let sequence = leg.transitStops.first?.sequence {
-                let tripDetails = await transitStore.tripDetails(
-                    tripID: tripID, serviceDate: serviceDate, fromStopSequence: sequence,
-                    scheduleShiftSeconds: leg.scheduleShiftSeconds,
-                    frequencyStartSeconds: leg.frequencyStartSeconds,
-                    frequencyHeadwaySeconds: leg.frequencyHeadwaySeconds,
-                    isFrequencyEstimate: leg.isFrequencyEstimate)
+            if let leg = nextRide, let tripID = leg.tripID {
+                let tripDetails: TransitTripDetails?
+                if tripID.hasPrefix(TransitousTransitDataProvider.tripIDPrefix) {
+                    tripDetails = await transitStore.tripDetails(
+                        tripID: tripID, fromStopID: leg.transitStops.first?.stopID)
+                } else if let serviceDate = leg.serviceDate,
+                          let sequence = leg.transitStops.first?.sequence {
+                    tripDetails = await transitStore.tripDetails(
+                        tripID: tripID, serviceDate: serviceDate, fromStopSequence: sequence,
+                        scheduleShiftSeconds: leg.scheduleShiftSeconds,
+                        frequencyStartSeconds: leg.frequencyStartSeconds,
+                        frequencyHeadwaySeconds: leg.frequencyHeadwaySeconds,
+                        isFrequencyEstimate: leg.isFrequencyEstimate)
+                } else {
+                    tripDetails = nil
+                }
                 guard !Task.isCancelled else { return }
                 navigationStore.updateTransitTripDetails(tripDetails, tripID: tripID)
                 let lineDetails: TransitLineDetails?
@@ -1267,7 +1305,8 @@ extension ContentView {
         switch leg.mode.uppercased() {
         case "WALK": "figure.walk"
         case "TRAM": "tram.fill"
-        case "RAIL", "REGIONAL_RAIL", "REGIONAL_FAST_RAIL", "SUBURBAN", "SUBWAY", "METRO",
+        case "SUBWAY", "METRO": "tram.fill"
+        case "RAIL", "REGIONAL_RAIL", "REGIONAL_FAST_RAIL", "SUBURBAN", "SUBURBAN_RAIL",
              "LONG_DISTANCE", "NIGHT_RAIL", "HIGHSPEED_RAIL": "train.side.front.car"
         case "FERRY": "ferry.fill"
         case "BIKE": "bicycle"
@@ -1384,6 +1423,8 @@ extension ContentView {
         case "WALK": "figure.walk"
         case "RAIL": "train.side.front.car"
         case "TRAM": "tram.fill"
+        case "SUBWAY", "METRO": "tram.fill"
+        case "FERRY": "ferry.fill"
         default: "bus.fill"
         }
     }
@@ -1394,6 +1435,8 @@ extension ContentView {
         case "WALK": "Pieszo · \(leg.to)"
         case "RAIL": "\(leg.line ?? "Pociąg") · \(leg.to)"
         case "TRAM": "\(leg.line.flatMap { $0.isEmpty ? nil : $0 } ?? "Tramwaj") · \(leg.to)"
+        case "SUBWAY", "METRO": "\(leg.line ?? "Metro") · \(leg.to)"
+        case "FERRY": "\(leg.line ?? "Prom") · \(leg.to)"
         default: "\(leg.line ?? "Autobus") · \(leg.to)"
         }
     }

@@ -176,6 +176,7 @@ struct MapLibreView: UIViewRepresentable {
     var onParkedCarSelect: () -> Void { scene.commands.onParkedCarSelect }
     var onRouteSelect: (UUID) -> Void { scene.commands.onRouteSelect }
     var onCyclingPathsStatus: (OSMCyclingPathsStatus) -> Void { scene.commands.onCyclingPathsStatus }
+    var onTransitViewportChange: (TransitMapViewport) -> Void { scene.commands.onTransitViewportChange }
     var onMapPan: () -> Void { scene.commands.onMapPan }
     var onLongPress: (Coordinate) -> Void { scene.commands.onLongPress }
     @Environment(\.colorScheme) private var colorScheme
@@ -1201,6 +1202,13 @@ struct MapLibreView: UIViewRepresentable {
         func mapView(_ mapView: MLNMapView, regionDidChangeAnimated animated: Bool) {
             let center = Coordinate(latitude: mapView.centerCoordinate.latitude, longitude: mapView.centerCoordinate.longitude)
             scheduleSearchMapCenterUpdate(center)
+            let visibleBounds = mapView.visibleCoordinateBounds
+            parent.onTransitViewportChange(TransitMapViewport(
+                south: visibleBounds.sw.latitude,
+                west: visibleBounds.sw.longitude,
+                north: visibleBounds.ne.latitude,
+                east: visibleBounds.ne.longitude,
+                zoom: Double(mapView.zoomLevel)))
 
             let wasProgrammaticCamera = programmaticCamera
             if wasProgrammaticCamera { programmaticCamera = false }

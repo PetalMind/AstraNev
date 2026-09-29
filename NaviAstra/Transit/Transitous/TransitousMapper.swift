@@ -58,18 +58,18 @@ enum TransitousMapper {
             ? max(Int(departure.timeIntervalSince(scheduledDeparture).rounded()),
                  Int(arrival.timeIntervalSince(scheduledArrival).rounded()))
             : nil
-        let line = dto.displayName?.nilIfBlank
-            ?? dto.routeShortName?.nilIfBlank
-            ?? dto.tripShortName?.nilIfBlank
-            ?? dto.routeLongName?.nilIfBlank
+        let line = dto.displayName?.transitousNilIfBlank
+            ?? dto.routeShortName?.transitousNilIfBlank
+            ?? dto.tripShortName?.transitousNilIfBlank
+            ?? dto.routeLongName?.transitousNilIfBlank
         let alerts = dto.alerts?.map(\.headerText).filter { !$0.isEmpty } ?? []
         return TransitLeg(
             id: "\(itineraryID)-\(legIndex)",
             mode: mode,
             sourceMode: dto.mode,
             line: line,
-            direction: dto.headsign?.nilIfBlank ?? dto.tripTo?.name.nilIfBlank,
-            operatorName: dto.agencyName?.nilIfBlank,
+            direction: dto.headsign?.transitousNilIfBlank ?? dto.tripTo?.name.transitousNilIfBlank,
+            operatorName: dto.agencyName?.transitousNilIfBlank,
             fromStop: dto.from.name,
             toStop: dto.to.name,
             fromCoordinate: from,
@@ -83,8 +83,8 @@ enum TransitousMapper {
             geometry: geometry,
             distance: max(0, dto.distance ?? Self.distance(of: geometry)),
             realtimeAvailable: dto.realTime && mode.isTransit,
-            routeID: dto.routeId,
-            tripID: dto.tripId,
+            routeID: dto.routeId.map { "\(TransitousTransitDataProvider.routeIDPrefix)\($0)" },
+            tripID: dto.tripId.map { "\(TransitousTransitDataProvider.tripIDPrefix)\($0)" },
             lineColorHex: Self.colorValue(dto.routeColor),
             alerts: alerts,
             isInterlined: dto.interlineWithPreviousLeg == true)
@@ -95,8 +95,8 @@ enum TransitousMapper {
                                  itineraryID: String, legIndex: Int) -> [TransitJourneyStop] {
         var seen = Set<String>()
         return places.enumerated().compactMap { index, place in
-            let stopID = place.stopId ?? "\(itineraryID)-\(legIndex)-\(index)"
-            guard seen.insert(stopID).inserted else { return nil }
+            let rawStopID = place.stopId ?? "\(itineraryID)-\(legIndex)-\(index)"
+            guard seen.insert(rawStopID).inserted else { return nil }
             let scheduledArrival = TransitousDateParser.date(place.scheduledArrival)
             let scheduledDeparture = TransitousDateParser.date(place.scheduledDeparture)
             let actualArrival = TransitousDateParser.date(place.arrival) ?? scheduledArrival
@@ -109,7 +109,7 @@ enum TransitousMapper {
             ].compactMap { $0 }.max()
             return TransitJourneyStop(
                 id: "\(itineraryID)-\(legIndex)-\(index)",
-                stopID: stopID,
+                stopID: "\(TransitousTransitDataProvider.stopIDPrefix)\(rawStopID)",
                 name: place.name,
                 coordinate: coordinate(for: place),
                 arrival: actualArrival,
@@ -132,7 +132,7 @@ enum TransitousMapper {
         case "BUS", "COACH": .bus
         case "TRAM": .tram
         case "RAIL", "REGIONAL_RAIL", "REGIONAL_FAST_RAIL", "LONG_DISTANCE", "NIGHT_RAIL", "HIGHSPEED_RAIL": .train
-        case "SUBURBAN": .suburbanRail
+        case "SUBURBAN", "SUBURBAN_RAIL": .suburbanRail
         case "SUBWAY", "METRO": .metro
         case "FERRY": .ferry
         case "BIKE": .bicycle
@@ -141,13 +141,50 @@ enum TransitousMapper {
         }
     }
 
-    private static func colorValue(_ color: String?) -> UInt32? {
+    static func colorValue(_ color: String?) -> UInt32? {
         guard var value = color?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
             return nil
         }
         if value.hasPrefix("#") { value.removeFirst() }
         if value.count == 8 { value = String(value.suffix(6)) }
         return UInt32(value, radix: 16)
+    }
+
+    static func date(_ value: String?) -> Date? {
+        TransitousDateParser.date(value)
+    }
+
+    static func tripDetails(from itinerary: TransitousItineraryDTO,
+                            currentStopID: String? = nil,
+                            currentStopSequence: Int? = nil) -> TransitTripDetails? {
+        guard let index = itinerary.legs.firstIndex(where: { $0.mode.uppercased() != "WALK" }),
+              let leg = try? map(itinerary.legs[index], itineraryID: itinerary.id, legIndex: index),
+              !leg.intermediateStops.isEmpty else { return nil }
+        let stops = leg.intermediateStops.sorted { $0.sequence < $1.sequence }
+        let stopIndex: Int
+        if let currentStopID,
+           let matchingIndex = stops.firstIndex(where: { $0.stopID == currentStopID
+               || $0.stopID == "\(TransitousTransitDataProvider.stopIDPrefix)\(currentStopID)" }) {
+            stopIndex = matchingIndex
+        } else if let currentStopSequence {
+            stopIndex = min(max(0, currentStopSequence), stops.count - 1)
+        } else {
+            stopIndex = 0
+        }
+        let currentStop = stops[stopIndex]
+        return TransitTripDetails(
+            tripID: leg.tripID ?? "\(TransitousTransitDataProvider.tripIDPrefix)\(itinerary.id)",
+            line: leg.line ?? "",
+            mode: leg.sourceMode,
+            destination: leg.direction ?? leg.toStop,
+            currentStopName: currentStop.name,
+            currentStopID: currentStop.stopID,
+            pastStops: Array(stops.prefix(stopIndex)),
+            nextStops: Array(stops.dropFirst(stopIndex + 1)),
+            vehicle: nil,
+            activeAlert: leg.alerts.first,
+            colorHex: leg.lineColorHex ?? 0x2867B2,
+            coordinates: leg.geometry)
     }
 
     private static func distance(of coordinates: [Coordinate]) -> Double {
@@ -204,8 +241,8 @@ private enum TransitousPolylineDecoder {
     }
 }
 
-private extension String {
-    var nilIfBlank: String? {
+extension String {
+    var transitousNilIfBlank: String? {
         let value = trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? nil : value
     }
