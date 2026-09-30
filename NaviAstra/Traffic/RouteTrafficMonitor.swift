@@ -17,6 +17,7 @@ nonisolated struct RouteTrafficSegment: Equatable, Sendable, Identifiable {
     let endDistance: Double
     let coordinates: [Coordinate]
     let colorHex: UInt32
+    let isRoadClosure: Bool
 }
 
 /// Selects a useful traffic horizon and queries small boxes along the active route corridor.
@@ -90,7 +91,8 @@ struct RouteTrafficMonitor {
                 startDistance: clippedStart,
                 endDistance: clippedEnd,
                 coordinates: coordinates,
-                colorHex: sample.flow.overlayColorHex)
+                colorHex: sample.flow.overlayColorHex,
+                isRoadClosure: sample.flow.roadClosure)
         }
     }
 

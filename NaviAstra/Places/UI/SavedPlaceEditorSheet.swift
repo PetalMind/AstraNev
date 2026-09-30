@@ -34,7 +34,7 @@ struct SavedPlaceEditorSheet: View {
                     if place.sourceContactIdentifier != nil {
                         Label("Adres powiązany z Kontaktami", systemImage: "person.crop.circle")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.naviTextSecondary)
                     }
                 }
 
@@ -47,7 +47,7 @@ struct SavedPlaceEditorSheet: View {
                                 } label: {
                                     Image(systemName: option.symbol)
                                         .font(.system(size: 17, weight: .semibold))
-                                        .foregroundStyle(icon == option ? Color.accentColor : Color.secondary)
+                                        .foregroundStyle(icon == option ? Color.accentColor : Color.naviTextSecondary)
                                         .frame(maxWidth: .infinity, minHeight: 42)
                                         .background(icon == option ? Color.accentColor.opacity(0.1) : .clear,
                                                     in: RoundedRectangle(cornerRadius: 10))
@@ -61,7 +61,7 @@ struct SavedPlaceEditorSheet: View {
                 } else {
                     Section("Ikona") {
                         Label(place.kind.title, systemImage: place.kind.defaultIcon.symbol)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.naviTextSecondary)
                     }
                 }
 

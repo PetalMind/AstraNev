@@ -15,6 +15,7 @@ enum PlaceDetailsPresentation: Equatable {
 
 struct PlaceDetailsView: View {
     let result: SearchResult
+    private let isFavoriteFromParent: Bool
     let onSave: () -> Bool
     let onRemove: (() -> Bool)?
     let onRename: ((String) -> Bool)?
@@ -29,8 +30,8 @@ struct PlaceDetailsView: View {
 
     @State private var details: PlaceDetails?
     @State private var isSaved: Bool
+    @State private var favoriteFeedback: FavoriteFeedback?
     @State private var saveError: String?
-    @State private var showSavedConfirmation = false
     @State private var showRemoveConfirmation = false
     @State private var showRenamePrompt = false
     @State private var savedName = ""
@@ -58,6 +59,7 @@ struct PlaceDetailsView: View {
          onRename: ((String) -> Bool)? = nil,
          onPlanRoute: @escaping () -> Void) {
         self.result = result
+        self.isFavoriteFromParent = isSaved
         self.onSave = onSave
         self.onPlanRoute = onPlanRoute
         self.onRouteFromPlace = onRouteFromPlace
@@ -76,24 +78,28 @@ struct PlaceDetailsView: View {
 
     private var placeDetailsContent: some View {
         VStack(alignment: .leading, spacing: presentation == .compact ? 12 : 11) {
+            PlaceDetailsHeroSummary(
+                title: details?.name ?? result.destination.name,
+                symbol: photoSymbol(for: details?.category ?? result.category ?? ""),
+                showsPOIIcon: result.isPOI && !showsPlacePhoto,
+                travelSummary: travelSummary)
+
             if presentation != .compact && showsPlacePhoto {
                 placePhotoSection
             }
 
-            PlaceDetailsHeroSummary(
-                title: details?.name ?? result.destination.name,
-                symbol: photoSymbol(for: details?.category ?? result.category ?? ""),
-            showsPOIIcon: result.isPOI && !showsPlacePhoto,
-            travelSummary: travelSummary)
-
             if presentation == .medium {
-                compactDetailsSummary(includeCategory: false)
+                compactDetailsSummary()
             }
 
             placeDetailsActionBar
 
+            if favoriteFeedback != nil {
+                FavoriteFeedbackOverlay(feedback: $favoriteFeedback)
+            }
+
             if let saveError {
-                Text(saveError).font(.caption).foregroundStyle(.red)
+                Text(saveError).font(.caption).foregroundStyle(Color(naviHex: NaviAstraColorPalette.danger))
             }
 
             if presentation == .compact {
@@ -118,14 +124,14 @@ struct PlaceDetailsView: View {
                         .font(.caption)
                 } else if let loadError {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(loadError).font(.caption).foregroundStyle(.secondary)
+                        Text(loadError).font(.caption).foregroundStyle(Color.naviTextSecondary)
                         Button("Spróbuj ponownie", systemImage: "arrow.clockwise") { retry += 1 }
                             .font(.caption.weight(.semibold))
                     }
                 } else if result.isPOI, details?.hasAdditionalInformation != true, supplementalDetails.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Brak dodatkowych informacji o tym miejscu.")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(Color.naviTextSecondary)
                         Button("Sprawdź ponownie", systemImage: "arrow.clockwise") { retry += 1 }
                             .font(.caption.weight(.semibold))
                     }
@@ -134,9 +140,9 @@ struct PlaceDetailsView: View {
                 if let loadedAt {
                     let sourceTitle = details?.source.title ?? "OpenStreetMap"
                     Text("\(sourceTitle) · pobrano \(loadedAt.formatted(date: .abbreviated, time: .shortened))")
-                        .font(.caption2).foregroundStyle(.secondary)
+                        .font(.caption2).foregroundStyle(Color.naviTextSecondary)
                 } else if let details {
-                    Text(details.source.title).font(.caption2).foregroundStyle(.secondary)
+                    Text(details.source.title).font(.caption2).foregroundStyle(Color.naviTextSecondary)
                 }
             }
         }
@@ -166,12 +172,12 @@ struct PlaceDetailsView: View {
                 Label(category.replacingOccurrences(of: "_", with: " ").capitalized,
                       systemImage: "tag")
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
             }
             if let address = details?.address ?? result.destination.address, !address.isEmpty {
                 Label(address, systemImage: "mappin.and.ellipse")
                     .font(.subheadline)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(Color.naviTextPrimary)
                     .textSelection(.enabled)
             }
             if let details {
@@ -181,14 +187,18 @@ struct PlaceDetailsView: View {
                 ProgressView("Uzupełnianie informacji…")
                     .font(.caption)
             } else if let loadError {
-                Text(loadError)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(loadError)
+                        .font(.caption)
+                        .foregroundStyle(Color.naviTextSecondary)
+                    Button("Spróbuj ponownie", systemImage: "arrow.clockwise") { retry += 1 }
+                        .font(.caption.weight(.semibold))
+                }
             } else if result.isPOI, details?.hasAdditionalInformation != true,
                       (details?.address ?? result.destination.address) == nil {
                 Text("Brak dodatkowych informacji o tym miejscu.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -196,19 +206,14 @@ struct PlaceDetailsView: View {
 
     var body: some View {
         placeDetailsContent
-        .confirmationDialog("Dodano do Ulubionych", isPresented: $showSavedConfirmation,
-                            titleVisibility: .visible) {
-            if onRename != nil {
-                Button("Zmień nazwę") { showRenamePrompt = true }
-            }
-            Button("Gotowe", role: .cancel) { }
-        } message: {
-            Text(result.destination.name)
-        }
         .confirmationDialog("Usunąć z Ulubionych?", isPresented: $showRemoveConfirmation,
                             titleVisibility: .visible) {
             Button("Usuń", role: .destructive) {
-                if onRemove?() == true { isSaved = false }
+                if onRemove?() == true {
+                    isSaved = false
+                } else {
+                    saveError = "Nie udało się usunąć miejsca z Ulubionych."
+                }
             }
             Button("Anuluj", role: .cancel) { }
         } message: {
@@ -229,6 +234,9 @@ struct PlaceDetailsView: View {
 #endif
         .task(id: detailsRefreshKey) {
             await loadPlaceDetails()
+        }
+        .onChange(of: isFavoriteFromParent) { _, newValue in
+            isSaved = newValue
         }
     }
 
@@ -286,12 +294,31 @@ struct PlaceDetailsView: View {
             return
         }
         guard onSave() else {
-            saveError = "Nie udało się zapisać miejsca na urządzeniu."
+            saveError = nil
+            favoriteFeedback = FavoriteFeedback(message: "Nie udało się zapisać miejsca",
+                                                symbol: "exclamationmark.triangle.fill")
             return
         }
         isSaved = true
         saveError = nil
-        showSavedConfirmation = true
+        favoriteFeedback = FavoriteFeedback(
+            message: "Dodano do Ulubionych",
+            detail: "Przypięto do szybkich skrótów",
+            undoAction: onRemove.map { remove in
+                {
+                    if remove() {
+                        isSaved = false
+                        saveError = nil
+                        favoriteFeedback = FavoriteFeedback(message: "Cofnięto dodanie")
+                    } else {
+                        favoriteFeedback = FavoriteFeedback(message: "Nie udało się cofnąć zapisu",
+                                                             symbol: "exclamationmark.triangle.fill")
+                    }
+                }
+            },
+            secondaryAction: onRename.map { _ in
+                { showRenamePrompt = true; savedName = result.destination.name }
+            })
         withAnimation(.spring(response: 0.15, dampingFraction: 0.52)) {
             favoritePulseScale = 1.18
         }
@@ -434,6 +461,7 @@ private extension PlaceDetails {
         address != nil || openingHours != nil || phone != nil || website != nil ||
             imageURL != nil || wikimediaCommons != nil || wikidataID != nil || brandWikidataID != nil ||
             wheelchair != nil || parking != nil || osmParking != nil || driveThrough != nil
+            || internetAccess != nil || takeaway != nil || delivery != nil || outdoorSeating != nil
     }
 }
 
@@ -455,64 +483,92 @@ struct PlaceSearchResultRow: View {
     var primaryMetaLine: String? = nil
     var onExpand: (() -> Void)? = nil
 
+    @State private var savedOverride: Bool? = nil
+    @State private var favoriteFeedback: FavoriteFeedback? = nil
+    @State private var showRemoveFavoriteConfirmation = false
+    @State private var showRenamePrompt = false
+    @State private var savedName = ""
+
+    private var showsAsSaved: Bool { savedOverride ?? isSaved }
+
     private var allSupplementalDetails: [String] {
         expandedDetails ?? supplementalDetails
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button {
-                let expands = !isExpanded
-                withAnimation(.easeInOut(duration: 0.2)) { isExpanded = expands }
-                if expands { onExpand?() }
-            } label: {
-                HStack(spacing: 13) {
-                    Text("\(index)")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Color.accentColor)
-                        .frame(width: 38, height: 38)
-                        .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(result.destination.name)
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.primary)
-                        if showsSourceSubtitle {
-                            Text(result.subtitle)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+            HStack(spacing: 7) {
+                Button {
+                    let expands = !isExpanded
+                    withAnimation(.easeInOut(duration: 0.2)) { isExpanded = expands }
+                    if expands { onExpand?() }
+                } label: {
+                    HStack(spacing: 13) {
+                        Text("\(index)")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 38, height: 38)
+                            .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(result.destination.name)
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(Color.naviTextPrimary)
+                            if showsSourceSubtitle {
+                                Text(result.subtitle)
+                                    .font(.caption)
+                                    .foregroundStyle(Color.naviTextSecondary)
+                            }
+                            if let primaryMetaLine {
+                                Text(primaryMetaLine)
+                                    .font(.caption)
+                                    .foregroundStyle(Color.naviTextSecondary)
+                                    .lineLimit(1)
+                            }
+                            if let summary = result.travelSummary {
+                                Text(summary)
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(Color.naviTextSecondary)
+                                    .lineLimit(1)
+                            }
+                            ForEach(supplementalDetails, id: \.self) { detail in
+                                Text(detail)
+                                    .font(.caption)
+                                    .foregroundStyle(Color.naviTextSecondary)
+                                    .lineLimit(1)
+                            }
                         }
-                        if let primaryMetaLine {
-                            Text(primaryMetaLine)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                        if let summary = result.travelSummary {
-                            Text(summary)
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                        ForEach(supplementalDetails, id: \.self) { detail in
-                            Text(detail)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tertiary)
                     }
-                    Spacer(minLength: 0)
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.tertiary)
+                    .padding(.vertical, 8)
+                    .contentShape(Rectangle())
                 }
-                .padding(.vertical, 8)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .accessibilityHint(isExpanded ? "Ukryj szczegóły miejsca" : "Pokaż szczegóły miejsca")
+
+                if !isExpanded {
+                    Button(action: toggleFavorite) {
+                        Image(systemName: showsAsSaved ? "heart.fill" : "heart")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(showsAsSaved ? Color.accentColor : Color.naviTextSecondary)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(showsAsSaved ? "Usuń z Ulubionych" : "Dodaj do Ulubionych")
+                    .accessibilityHint(showsAsSaved ? "Wymaga potwierdzenia" : "Zapisz to miejsce na później")
+                    .disabled(showsAsSaved && onRemove == nil)
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityHint(isExpanded ? "Ukryj szczegóły miejsca" : "Pokaż szczegóły miejsca")
+
+            if favoriteFeedback != nil {
+                FavoriteFeedbackOverlay(feedback: $favoriteFeedback)
+            }
 
             if isExpanded {
-                PlaceDetailsView(result: result, isSaved: isSaved, onSave: onSave,
+                PlaceDetailsView(result: result, isSaved: showsAsSaved, onSave: onSave,
                                  isNavigating: isNavigating, primaryActionTitle: primaryActionTitle,
                                  supplementalDetails: allSupplementalDetails,
                                  onRemove: onRemove, onRename: onRename,
@@ -522,5 +578,139 @@ struct PlaceSearchResultRow: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+        .confirmationDialog("Usunąć z Ulubionych?", isPresented: $showRemoveFavoriteConfirmation,
+                            titleVisibility: .visible) {
+            Button("Usuń", role: .destructive) {
+                if onRemove?() == true {
+                    savedOverride = false
+                    favoriteFeedback = FavoriteFeedback(message: "Usunięto z Ulubionych")
+                } else {
+                    favoriteFeedback = FavoriteFeedback(message: "Nie udało się usunąć miejsca",
+                                                        symbol: "exclamationmark.triangle.fill")
+                }
+            }
+            Button("Anuluj", role: .cancel) { }
+        } message: {
+            Text(result.destination.name)
+        }
+        .alert("Zmień nazwę", isPresented: $showRenamePrompt) {
+            TextField("Nazwa miejsca", text: $savedName)
+            Button("Zapisz") {
+                if onRename?(savedName) != true {
+                    favoriteFeedback = FavoriteFeedback(message: "Nie udało się zmienić nazwy miejsca")
+                }
+            }
+            Button("Anuluj", role: .cancel) { }
+        }
+        .onChange(of: isSaved) { _, _ in
+            savedOverride = nil
+        }
+    }
+
+    private func toggleFavorite() {
+        if showsAsSaved {
+            showRemoveFavoriteConfirmation = true
+            return
+        }
+        guard onSave() else {
+            favoriteFeedback = FavoriteFeedback(message: "Nie udało się zapisać miejsca",
+                                                symbol: "exclamationmark.triangle.fill")
+            return
+        }
+        savedOverride = true
+        favoriteFeedback = FavoriteFeedback(
+            message: "Dodano do Ulubionych",
+            detail: "Przypięto do szybkich skrótów",
+            undoAction: onRemove.map { remove in
+                {
+                    if remove() {
+                        savedOverride = false
+                        favoriteFeedback = FavoriteFeedback(message: "Cofnięto dodanie")
+                    } else {
+                        favoriteFeedback = FavoriteFeedback(message: "Nie udało się cofnąć zapisu",
+                                                             symbol: "exclamationmark.triangle.fill")
+                    }
+                }
+            },
+            secondaryAction: onRename.map { _ in
+                { savedName = result.destination.name; showRenamePrompt = true }
+            })
+    }
+}
+
+struct FavoriteFeedback: Identifiable {
+    let id = UUID()
+    let message: String
+    var symbol: String = "checkmark.circle.fill"
+    var detail: String? = nil
+    var undoAction: (() -> Void)? = nil
+    var secondaryAction: (() -> Void)? = nil
+}
+
+struct FavoriteFeedbackOverlay: View {
+    @Binding var feedback: FavoriteFeedback?
+
+    var body: some View {
+        if let feedback {
+            HStack(spacing: 10) {
+                Image(systemName: feedback.symbol)
+                    .foregroundStyle(Color(naviHex: feedback.symbol == "exclamationmark.triangle.fill"
+                        ? NaviAstraColorPalette.warning : NaviAstraColorPalette.danger))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(feedback.message)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(Color.naviTextPrimary)
+                    if let detail = feedback.detail {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(Color.naviTextSecondary)
+                    }
+                }
+
+                Spacer(minLength: 4)
+
+                if let undoAction = feedback.undoAction {
+                    Button("Cofnij") {
+                        dismissThen(undoAction)
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+                }
+
+                if let secondaryAction = feedback.secondaryAction {
+                    Button("Zmień") {
+                        dismissThen(secondaryAction)
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 17, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.08))
+            }
+            .shadow(color: .black.opacity(0.12), radius: 12, y: 5)
+            .padding(.horizontal, 14)
+            .padding(.top, 8)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .zIndex(20)
+            .accessibilityElement(children: .contain)
+            .task(id: feedback.id) {
+                let feedbackID = feedback.id
+                try? await Task.sleep(for: .seconds(4))
+                guard !Task.isCancelled, self.feedback?.id == feedbackID else { return }
+                withAnimation(.easeOut(duration: 0.18)) { self.feedback = nil }
+            }
+        }
+    }
+
+    private func dismissThen(_ action: () -> Void) {
+        withAnimation(.easeOut(duration: 0.15)) { feedback = nil }
+        action()
     }
 }

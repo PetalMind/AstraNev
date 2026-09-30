@@ -10,10 +10,12 @@ final class MapStore {
     var mapTrafficVisible: Bool { didSet { persist(mapTrafficVisible, forKey: "mapTrafficVisible") } }
     var mapPOICategories: Int { didSet { persist(mapPOICategories, forKey: "mapPOICategories") } }
     var mapPOIVisible: Bool { didSet { persist(mapPOIVisible, forKey: "mapPOIVisible") } }
+    var mapSafetyPOICategories: Int { didSet { persist(mapSafetyPOICategories, forKey: "mapSafetyPOICategories") } }
     var mapBuildingsVisible: Bool { didSet { persist(mapBuildingsVisible, forKey: "mapBuildingsVisible") } }
     var mapTransitVisible: Bool { didSet { persist(mapTransitVisible, forKey: "mapTransitVisible") } }
     var mapCyclingVisible: Bool { didSet { persist(mapCyclingVisible, forKey: "mapCyclingVisible") } }
     var cyclingPathsStatus: OSMCyclingPathsStatus = .disabled
+    var roadPOIStatus: MapRoadPOIStatus = .disabled
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private var isReloading = false
@@ -26,6 +28,7 @@ final class MapStore {
         mapTrafficVisible = defaults.object(forKey: "mapTrafficVisible") as? Bool ?? true
         mapPOICategories = defaults.object(forKey: "mapPOICategories") as? Int ?? MapPOICategory.allMask
         mapPOIVisible = defaults.object(forKey: "mapPOIVisible") as? Bool ?? true
+        mapSafetyPOICategories = defaults.object(forKey: "mapSafetyPOICategories") as? Int ?? MapSafetyPOICategory.allMask
         mapBuildingsVisible = defaults.object(forKey: "mapBuildingsVisible") as? Bool ?? true
         mapTransitVisible = defaults.object(forKey: "mapTransitVisible") as? Bool ?? false
         mapCyclingVisible = defaults.object(forKey: "mapCyclingVisible") as? Bool ?? false
@@ -43,7 +46,10 @@ final class MapStore {
                 buildings3D: capabilities.supports3DBuildings && mapBuildingsVisible,
                 transit: capabilities.supportsTransitOverlay && mapTransitVisible,
                 cycling: capabilities.supportsCyclingOverlay && mapCyclingVisible),
-            poiCategories: Set(MapPOICategory.allCases.filter { mapPOICategories & $0.mask != 0 }))
+            poiCategories: Set(MapPOICategory.allCases.filter { mapPOICategories & $0.mask != 0 }),
+            safetyPOICategories: Set(MapSafetyPOICategory.allCases.filter {
+                mapSafetyPOICategories & $0.mask != 0
+            }))
     }
 
     func reloadFromDefaults() {
@@ -54,6 +60,7 @@ final class MapStore {
         mapTrafficVisible = defaults.object(forKey: "mapTrafficVisible") as? Bool ?? true
         mapPOICategories = defaults.object(forKey: "mapPOICategories") as? Int ?? MapPOICategory.allMask
         mapPOIVisible = defaults.object(forKey: "mapPOIVisible") as? Bool ?? true
+        mapSafetyPOICategories = defaults.object(forKey: "mapSafetyPOICategories") as? Int ?? MapSafetyPOICategory.allMask
         mapBuildingsVisible = defaults.object(forKey: "mapBuildingsVisible") as? Bool ?? true
         mapTransitVisible = defaults.object(forKey: "mapTransitVisible") as? Bool ?? false
         mapCyclingVisible = defaults.object(forKey: "mapCyclingVisible") as? Bool ?? false

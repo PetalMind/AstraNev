@@ -66,7 +66,7 @@ struct RoadSignView: View {
     let size: CGFloat
     var isSelected = false
 
-    private var red: Color { Color(red: 0.82, green: 0.04, blue: 0.08) }
+    private var red: Color { Color(naviHex: NaviAstraColorPalette.roadSignRed) }
     private var blue: Color { Color(red: 0.02, green: 0.22, blue: 0.52) }
 
     var body: some View {
@@ -77,9 +77,9 @@ struct RoadSignView: View {
 
             if isSelected {
                 Circle()
-                    .stroke(Color.cyan.opacity(0.95), lineWidth: 1.7)
+                    .stroke(Color.accentColor.opacity(0.95), lineWidth: 1.7)
                     .frame(width: size + 5, height: size + 5)
-                    .shadow(color: .cyan.opacity(0.35), radius: 3)
+                    .shadow(color: Color.accentColor.opacity(0.35), radius: 3)
             }
         }
         .frame(width: size + 8, height: size + 8)

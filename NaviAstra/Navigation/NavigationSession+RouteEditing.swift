@@ -3,6 +3,11 @@ import Foundation
 extension NavigationSession {
     func estimatedCarRouteEstimate(to destination: Destination) async -> PlaceRouteEstimate? {
         guard let origin = state.location?.coordinate else { return nil }
+        return await estimatedCarRouteEstimate(to: destination, from: origin)
+    }
+
+    func estimatedCarRouteEstimate(to destination: Destination,
+                                   from origin: Coordinate) async -> PlaceRouteEstimate? {
         let target: Coordinate
         if destination.poi != nil {
             target = await POIAccessResolver.shared.resolve(for: destination, mode: .car)?.coordinate

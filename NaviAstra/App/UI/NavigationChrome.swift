@@ -7,63 +7,60 @@ import UIKit
 struct NavigationGlassSurface: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.colorScheme) private var colorScheme
     var radius: CGFloat = 26
     var interactive = false
 
     @ViewBuilder
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        let tint = colorScheme == .dark
+            ? Color(naviHex: NaviAstraColorPalette.navigationSurface).opacity(0.8)
+            : Color.white.opacity(0.88)
         if reduceTransparency || contrast == .increased {
             content
-                .background(.background, in: shape)
+                .background(colorScheme == .dark
+                    ? Color(naviHex: NaviAstraColorPalette.navigationSurface)
+                    : Color.white, in: shape)
                 .overlay(shape.strokeBorder(Color.primary.opacity(0.2)))
         } else if #available(iOS 26.0, macOS 26.0, *) {
             content
-                .glassEffect(.regular.interactive(interactive), in: shape)
+                .glassEffect(.regular.tint(tint).interactive(interactive), in: shape)
         } else {
             content
-                .background(.regularMaterial, in: shape)
+                .background {
+                    shape.fill(.regularMaterial)
+                        .overlay(shape.fill(tint))
+                }
                 .overlay(shape.strokeBorder(.white.opacity(0.3)))
                 .shadow(color: .black.opacity(0.1), radius: 18, y: 6)
         }
     }
 }
 
-/// A shared translucent shell for the route preview, active trip, and arrival panels.
+struct NavigationStableSurface: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    var radius: CGFloat = 20
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        content
+            .background(Color(naviHex: colorScheme == .dark
+                ? NaviAstraColorPalette.navigationSurface : 0xF9FCFF), in: shape)
+            .overlay(shape.strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.13 : 0.09), lineWidth: 1))
+            .shadow(color: .black.opacity(colorScheme == .dark ? 0.24 : 0.1), radius: 16, y: 5)
+    }
+}
+
+/// Stable dark HUD surface for active navigation and arrival.
 struct NavigationGlassPanelSurface: ViewModifier {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.colorSchemeContrast) private var contrast
     let shape: UnevenRoundedRectangle
 
-    @ViewBuilder
     func body(content: Content) -> some View {
-        Group {
-            if reduceTransparency || contrast == .increased {
-                content
-                    .background(Color(red: 0.045, green: 0.075, blue: 0.12).opacity(0.98), in: shape)
-                    .overlay(shape.strokeBorder(Color.white.opacity(0.22), lineWidth: 1))
-            } else if #available(iOS 26.0, macOS 26.0, *) {
-                content
-                    .background(shape.fill(Color(red: 0.045, green: 0.075, blue: 0.12).opacity(0.18)))
-                    .glassEffect(.regular.interactive(), in: shape)
-                    .overlay(shape.strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
-            } else {
-                content
-                    .background {
-                        ZStack {
-                            shape.fill(.ultraThinMaterial)
-                            shape.fill(
-                                LinearGradient(
-                                    colors: [Color(red: 0.12, green: 0.18, blue: 0.26).opacity(0.44),
-                                             Color(red: 0.045, green: 0.075, blue: 0.12).opacity(0.58)],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing))
-                        }
-                    }
-                    .overlay(shape.strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
-            }
-        }
-        .shadow(color: .black.opacity(0.28), radius: 22, y: -8)
+        content
+            .background(Color(naviHex: NaviAstraColorPalette.navigationSurface), in: shape)
+            .overlay(shape.strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
+            .shadow(color: .black.opacity(0.28), radius: 22, y: -8)
     }
 }
 
@@ -185,7 +182,9 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
     @ViewBuilder
     private var styledSheet: some View {
         if appearance == .navigation {
-            sheetBody.modifier(NavigationGlassPanelSurface(shape: sheetShape))
+            sheetBody
+                .modifier(NavigationGlassPanelSurface(shape: sheetShape))
+                .environment(\.colorScheme, .dark)
         } else {
             sheetBody.modifier(NavigationGlassSurface(radius: cornerRadius))
         }
@@ -259,7 +258,7 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(appearance == .navigation
                                              ? Color.white.opacity(0.72)
-                                             : Color.secondary)
+                                             : Color.naviTextSecondary)
                             .frame(width: 44, height: 44)
                             .background(Color.primary.opacity(0.06), in: Circle())
                             .contentShape(Circle())

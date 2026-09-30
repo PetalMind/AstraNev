@@ -207,6 +207,10 @@ struct ParkingInformation: Codable, Equatable, Sendable {
     let streetSides: [ParkingSideRule]
     let dataSources: [ParkingDataSource]
     let availableSpaces: Int?
+    let disabledCapacity: Int?
+    let covered: String?
+    let supervised: String?
+    let surface: String?
 
     static func fromOSMTags(_ tags: [String: String]) -> ParkingInformation? {
         let streetSides = ParkingSide.allCases.compactMap { side -> ParkingSideRule? in
@@ -254,7 +258,9 @@ struct ParkingInformation: Codable, Equatable, Sendable {
                                   parkingType: tags["parking"],
                                   streetSides: streetSides,
                                   dataSources: [.openStreetMap],
-                                  availableSpaces: nil)
+                                  availableSpaces: nil,
+                                  disabledCapacity: tags["capacity:disabled"].flatMap(Int.init).flatMap { $0 > 0 ? $0 : nil },
+                                  covered: tags["covered"], supervised: tags["supervised"], surface: tags["surface"])
     }
 
     static var unknown: ParkingInformation {
@@ -266,7 +272,8 @@ struct ParkingInformation: Codable, Equatable, Sendable {
                            capacity: nil, maxStay: nil, maxStayMinutes: nil,
                            maxStayConditional: nil, openingHours: nil,
                            access: nil, accessConditional: nil, parkingType: nil,
-                           streetSides: [], dataSources: [], availableSpaces: nil)
+                           streetSides: [], dataSources: [], availableSpaces: nil,
+                           disabledCapacity: nil, covered: nil, supervised: nil, surface: nil)
     }
 
     private static func parseDurationMinutes(_ value: String?) -> Int? {

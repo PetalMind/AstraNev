@@ -35,7 +35,7 @@ struct TransitDetailsSheet: View {
                     selectionContents
                     if let railwayAttribution {
                         Text(railwayAttribution)
-                            .font(.caption2).foregroundStyle(.secondary)
+                            .font(.caption2).foregroundStyle(Color.naviTextSecondary)
                     }
                 }
                 .padding(18)
@@ -83,7 +83,7 @@ struct TransitDetailsSheet: View {
                     Text(modeLabel(line.mode))
                         .font(.headline)
                     if !line.directions.isEmpty {
-                        Text(line.directions).font(.subheadline).foregroundStyle(.secondary)
+                        Text(line.directions).font(.subheadline).foregroundStyle(Color.naviTextSecondary)
                     }
                 }
             }
@@ -92,7 +92,7 @@ struct TransitDetailsSheet: View {
                 let stop = line.stops[index]
                 HStack(spacing: 12) {
                     Text("\(index + 1)").font(.caption.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(.secondary).frame(width: 24)
+                        .foregroundStyle(Color.naviTextSecondary).frame(width: 24)
                     Text(stop.name).font(.subheadline)
                     Spacer()
                 }
@@ -149,7 +149,7 @@ struct TransitDetailsSheet: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(stop.name).font(.title2.weight(.bold))
             if let address = stop.address, !address.isEmpty {
-                Text(address).font(.subheadline).foregroundStyle(.secondary)
+                Text(address).font(.subheadline).foregroundStyle(Color.naviTextSecondary)
             }
             if stop.mapModes.count > 1 {
                 HStack(spacing: 10) {
@@ -158,7 +158,7 @@ struct TransitDetailsSheet: View {
                             .font(.caption.weight(.medium))
                     }
                 }
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.naviTextSecondary)
             }
         }
         VStack(alignment: .leading, spacing: 8) {
@@ -169,7 +169,7 @@ struct TransitDetailsSheet: View {
             }
             if departures.isEmpty, !isLoading {
                 Text("Brak kolejnych odjazdów w opublikowanym rozkładzie.")
-                    .font(.subheadline).foregroundStyle(.secondary).padding(.vertical, 8)
+                    .font(.subheadline).foregroundStyle(Color.naviTextSecondary).padding(.vertical, 8)
             }
             ForEach(departures) { departure in
                 Button { onSelectDeparture(departure) } label: {
@@ -185,7 +185,7 @@ struct TransitDetailsSheet: View {
                   ? "Czasy z aktualizacji na żywo"
                   : "Brak danych live · pokazano rozkład",
                   systemImage: departures.contains(where: \.hasRealtime) ? "dot.radiowaves.left.and.right" : "clock")
-                .font(.footnote).foregroundStyle(.secondary)
+                .font(.footnote).foregroundStyle(Color.naviTextSecondary)
         }
     }
 
@@ -198,28 +198,28 @@ struct TransitDetailsSheet: View {
                     Text(tripDetails.destination.isEmpty ? "Kierunek nieznany" : tripDetails.destination)
                         .font(.title3.weight(.semibold))
                     Text(modeLabel(tripDetails.mode))
-                        .font(.subheadline).foregroundStyle(.secondary)
+                        .font(.subheadline).foregroundStyle(Color.naviTextSecondary)
                 }
                 Spacer(minLength: 0)
             }
             if let actualVehicle = tripDetails.vehicle ?? vehicle {
                 Label("Pozycja z pojazdu · \(actualVehicle.updatedAt.formatted(date: .omitted, time: .shortened))",
                       systemImage: "location.fill")
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .font(.footnote).foregroundStyle(Color.naviTextSecondary)
             } else {
                 Label("Dane z rozkładu", systemImage: "clock")
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .font(.footnote).foregroundStyle(Color.naviTextSecondary)
             }
             if let headway = tripDetails.frequencyHeadwaySeconds {
                 Label("\(tripDetails.isFrequencyEstimate ? "Odjazdy orientacyjne" : "Kursy") co \(max(1, Int((Double(headway) / 60).rounded()))) min",
                       systemImage: tripDetails.isFrequencyEstimate ? "clock.badge.questionmark" : "clock")
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .font(.footnote).foregroundStyle(Color.naviTextSecondary)
             }
             if vehicle != nil {
                 ForEach(tripDetails.pastStops) { stop in
                     HStack(spacing: 9) {
-                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.secondary)
-                        Text(stop.name).font(.subheadline).foregroundStyle(.secondary)
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.naviTextSecondary)
+                        Text(stop.name).font(.subheadline).foregroundStyle(Color.naviTextSecondary)
                         Spacer()
                         Text(stop.arrival.formatted(date: .omitted, time: .shortened))
                             .font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
@@ -231,7 +231,7 @@ struct TransitDetailsSheet: View {
                     Circle().fill(Color.accentColor).frame(width: 9, height: 9)
                     Text(currentStopName).font(.subheadline.weight(.semibold))
                     Spacer()
-                    Text(currentStopStatus).font(.caption).foregroundStyle(.secondary)
+                    Text(currentStopStatus).font(.caption).foregroundStyle(Color.naviTextSecondary)
                 }
                 .padding(12)
                 .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
@@ -247,16 +247,16 @@ struct TransitDetailsSheet: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(stop.name).font(.subheadline.weight(.medium))
                             Text(stop.arrival.formatted(date: .omitted, time: .shortened))
-                                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                .font(.caption.monospacedDigit()).foregroundStyle(Color.naviTextSecondary)
                         }
                         Spacer()
                         if let delay = stop.delaySeconds, abs(delay) >= 30 {
                             Text(delayLabel(delay)).font(.caption.weight(.semibold))
                                 .foregroundStyle(delayColor(delay))
                         } else if stop.isSkipped {
-                            Text("pomijany").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                            Text("pomijany").font(.caption.weight(.medium)).foregroundStyle(Color.naviTextSecondary)
                         } else if stop.hasRealtime {
-                            Text("live").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                            Text("live").font(.caption.weight(.medium)).foregroundStyle(Color.naviTextSecondary)
                         }
                     }
                     .padding(.vertical, 4)
@@ -273,10 +273,10 @@ struct TransitDetailsSheet: View {
 
     private func alertCard(_ message: String) -> some View {
         Label(message, systemImage: "exclamationmark.triangle.fill")
-            .font(.subheadline).foregroundStyle(.orange)
+            .font(.subheadline).foregroundStyle(Color(naviHex: NaviAstraColorPalette.warning))
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
-            .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
+            .background(Color(naviHex: NaviAstraColorPalette.warning).opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
     }
 
     private func loadDetails() async {
@@ -320,22 +320,22 @@ private struct TransitDepartureRow: View {
             HStack(spacing: 11) {
                 TransitLineBadge(title: departure.line, color: departure.colorHex)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(departure.destination).font(.subheadline.weight(.medium)).foregroundStyle(.primary).lineLimit(1)
+                    Text(departure.destination).font(.subheadline.weight(.medium)).foregroundStyle(Color.naviTextPrimary).lineLimit(1)
                     HStack(spacing: 5) {
                         Text("rozkład \(departure.scheduledDeparture.formatted(date: .omitted, time: .shortened))")
                         if departure.hasRealtime { Text("·"); Label("live", systemImage: "dot.radiowaves.left.and.right") }
                     }
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .font(.caption).foregroundStyle(Color.naviTextSecondary).lineLimit(1)
                 }
                 Spacer(minLength: 4)
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(eta(at: departure.estimatedDeparture, now: context.date))
-                        .font(.headline.monospacedDigit()).foregroundStyle(.primary)
+                        .font(.headline.monospacedDigit()).foregroundStyle(Color.naviTextPrimary)
                     if let delay = departure.delaySeconds, abs(delay) >= 30 {
                         Text(delayLabel(delay)).font(.caption2.weight(.semibold)).foregroundStyle(delayColor(delay))
                     } else {
                         Text(departure.estimatedDeparture.formatted(date: .omitted, time: .shortened))
-                            .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                            .font(.caption2.monospacedDigit()).foregroundStyle(Color.naviTextSecondary)
                     }
                 }
                 Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
@@ -378,8 +378,8 @@ private func delayLabel(_ seconds: Int) -> String {
 private func delayColor(_ seconds: Int) -> Color {
     guard seconds > 0 else { return .secondary }
     let minutes = abs(seconds) / 60
-    if minutes > 5 { return .red }
-    if minutes >= 3 { return .orange }
+    if minutes > 5 { return Color(naviHex: NaviAstraColorPalette.danger) }
+    if minutes >= 3 { return Color(naviHex: NaviAstraColorPalette.warning) }
     return .secondary
 }
 

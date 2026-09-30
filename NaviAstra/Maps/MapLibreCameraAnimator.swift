@@ -9,7 +9,9 @@ enum MapLibreCameraAnimator {
         guard isValid(intent.target), intent.zoom.isFinite, intent.pitch.isFinite,
               intent.bearing.isFinite else { return false }
         let validBounds = intent.bounds.filter(isValid)
-        if !validBounds.isEmpty, state == .destinationPreview || state == .routeOverview || state == .arrived {
+        if !validBounds.isEmpty,
+           state == .destinationPreview || state == .routeOverview || state == .arrived ||
+            state.usesNavigationPerspective {
             let camera = map.camera
             camera.pitch = CGFloat(intent.pitch)
             camera.heading = intent.bearing
@@ -26,10 +28,11 @@ enum MapLibreCameraAnimator {
         }
         let camera = map.camera
         camera.centerCoordinate = intent.target.cl
-        guard map.zoomLevel.isFinite, camera.altitude.isFinite else { return false }
-        let targetAltitude = camera.altitude * pow(2, map.zoomLevel - intent.zoom)
+        let pitch = min(60, max(0, intent.pitch))
+        let targetAltitude = MLNAltitudeForZoomLevel(
+            intent.zoom, CGFloat(pitch), intent.target.latitude, map.bounds.size)
         guard targetAltitude.isFinite else { return false }
-        camera.pitch = CGFloat(min(60, max(0, intent.pitch)))
+        camera.pitch = CGFloat(pitch)
         camera.heading = intent.bearing.truncatingRemainder(dividingBy: 360)
         camera.altitude = max(120, targetAltitude)
         let defaultDuration: TimeInterval = switch state {

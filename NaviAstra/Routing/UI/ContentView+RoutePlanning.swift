@@ -1,5 +1,28 @@
 import SwiftUI
 
+private struct RoutePlanningEndpointMarker: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let symbolName: String
+    var isCurrentLocation = false
+
+    var body: some View {
+        Image(systemName: symbolName)
+            .font(.system(size: symbolName == "flag.fill" ? 13 : 14, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 31, height: 31)
+            .background(Color(naviHex: markerColor), in: Circle())
+    }
+
+    private var markerColor: UInt32 {
+        if isCurrentLocation {
+            return colorScheme == .dark ? NaviAstraColorPalette.userLocationNight : NaviAstraColorPalette.userLocationDay
+        }
+        return colorScheme == .dark
+            ? NaviAstraColorPalette.textPrimaryNight
+            : NaviAstraColorPalette.textPrimaryDay
+    }
+}
+
 extension ContentView {
     private var routePlanningOptions: [NavigationRoute] {
         var routes = navigationStore.state.routeOptions
@@ -108,7 +131,7 @@ extension ContentView {
         } else {
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(darkStyle ? Color.white.opacity(0.3) : Color.secondary.opacity(0.55))
+                .foregroundStyle(darkStyle ? Color.white.opacity(0.3) : Color.naviTextSecondary.opacity(0.55))
                 .frame(width: 44, height: 44)
                 .accessibilityHidden(true)
         }
@@ -124,10 +147,10 @@ extension ContentView {
                     .font(.system(size: 13, weight: .semibold))
                 Text(label)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color.white.opacity(0.68))
+                    .foregroundStyle(Color.naviTextSecondary.opacity(0.68))
                     .lineLimit(1)
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(Color.naviTextPrimary)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -163,6 +186,7 @@ extension ContentView {
         NavigationBottomSheet(detent: $routePreviewDetent,
                               maximumHeight: maxHeight,
                               accessibilityLabel: "Podgląd trasy",
+                              appearance: .discovery,
                               isDragging: $isMapBottomSheetDragging,
                               mediumHeightFraction: 0.72,
                               minimumPeekHeight: navigationStore.state.route != nil || navigationStore.state.status == .error
@@ -244,16 +268,14 @@ extension ContentView {
     private var routePlanningCompactEndpoints: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Image(systemName: routeOriginPoint?.isCurrentLocation == true ? "location.north.fill" : "a.circle.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 31, height: 31)
-                    .background(Color.accentColor, in: Circle())
+                RoutePlanningEndpointMarker(
+                    symbolName: routeOriginPoint?.isCurrentLocation == true ? "location.north.fill" : "a.circle.fill",
+                    isCurrentLocation: routeOriginPoint?.isCurrentLocation == true)
 
                 Button { appRouter.present(.originPicker) } label: {
                     Text(routeOriginPoint?.name ?? "Twoja lokalizacja")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.naviTextPrimary)
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, minHeight: 47, alignment: .leading)
                         .contentShape(Rectangle())
@@ -264,9 +286,9 @@ extension ContentView {
                 Button(action: swapRouteEndpoints) {
                     Image(systemName: "arrow.up.arrow.down")
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(0.62))
+                        .foregroundStyle(Color.naviTextSecondary.opacity(0.62))
                         .frame(width: 36, height: 36)
-                        .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .disabled(navigationStore.state.destination == nil || routeOriginPoint == nil)
@@ -282,20 +304,16 @@ extension ContentView {
             }
             .modifier(RouteStopDropTargetHighlight(isTargeted: routeStopDropTargetID == "route-origin"))
 
-            routeWaypointRows(darkStyle: true)
-            routeWaypointConnector(darkStyle: true)
+            routeWaypointRows(darkStyle: false)
+            routeWaypointConnector(darkStyle: false)
 
             HStack(spacing: 10) {
-                Text("B")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 31, height: 31)
-                    .background(Color.red.opacity(0.9), in: Circle())
+                RoutePlanningEndpointMarker(symbolName: "flag.fill")
 
                 Button(action: presentSearch) {
                     Text(navigationStore.state.destination?.name ?? "Dokąd?")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.naviTextPrimary)
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, minHeight: 47, alignment: .leading)
                         .contentShape(Rectangle())
@@ -341,7 +359,7 @@ extension ContentView {
             VStack(spacing: 5) {
                 Text("Trasa")
                     .font(.system(size: 18, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color.naviTextPrimary)
 
                 if navigationStore.state.transportMode == .car {
                     routePlanningAvoidTollsChip
@@ -363,9 +381,9 @@ extension ContentView {
     private func routePlanningHeaderIcon(_ symbol: String, accessibilityLabel: String) -> some View {
         Image(systemName: symbol)
             .font(.system(size: 18, weight: .semibold))
-            .foregroundStyle(Color.white.opacity(0.92))
+            .foregroundStyle(Color.naviTextSecondary.opacity(0.92))
             .frame(width: 44, height: 44)
-            .background(Color.white.opacity(0.09), in: Circle())
+            .background(Color.primary.opacity(0.055), in: Circle())
             .contentShape(Circle())
             .accessibilityLabel(accessibilityLabel)
     }
@@ -379,10 +397,10 @@ extension ContentView {
         } label: {
             Text("Unikaj opłat")
                 .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white)
+                .foregroundStyle(isEnabled ? Color.white : Color.naviTextInactive)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 5)
-                .background(isEnabled ? Color.accentColor : Color.white.opacity(0.12), in: Capsule())
+                .background(isEnabled ? Color.accentColor : Color.naviTextInactive.opacity(0.14), in: Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Unikaj dróg płatnych")
@@ -397,24 +415,24 @@ extension ContentView {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(navigationStore.state.destination?.name ?? "Podgląd trasy")
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.naviTextPrimary)
                         .lineLimit(1)
                     if navigationStore.state.status == .error {
                         Text(navigationStore.state.errorMessage ?? "Nie udało się wyznaczyć trasy.")
                             .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(Color.white.opacity(0.78))
+                            .foregroundStyle(Color.naviTextSecondary.opacity(0.78))
                             .lineLimit(2)
                     } else {
                         Text("Start: \(routeOriginPoint?.name ?? "Twoja lokalizacja")")
                             .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(Color.white.opacity(0.66))
+                            .foregroundStyle(Color.naviTextSecondary.opacity(0.66))
                             .lineLimit(1)
                     }
                 }
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.up")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.white.opacity(0.55))
+                    .foregroundStyle(Color.naviTextSecondary.opacity(0.55))
             }
             .contentShape(Rectangle())
             .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
@@ -439,20 +457,18 @@ extension ContentView {
     private var routePlanningEndpoints: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Image(systemName: routeOriginPoint?.isCurrentLocation == true ? "location.north.fill" : "a.circle.fill")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 31, height: 31)
-                    .background(Color.accentColor, in: Circle())
+                RoutePlanningEndpointMarker(
+                    symbolName: routeOriginPoint?.isCurrentLocation == true ? "location.north.fill" : "a.circle.fill",
+                    isCurrentLocation: routeOriginPoint?.isCurrentLocation == true)
                 Button { appRouter.present(.originPicker) } label: {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(routeOriginPoint?.name ?? "Twoja lokalizacja")
                             .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Color.naviTextPrimary)
                             .lineLimit(1)
                         Text("Punkt startowy")
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(Color.white.opacity(0.56))
+                            .foregroundStyle(Color.naviTextSecondary.opacity(0.56))
                     }
                     .frame(maxWidth: .infinity, minHeight: 47, alignment: .leading)
                     .contentShape(Rectangle())
@@ -463,7 +479,7 @@ extension ContentView {
                 Button(action: swapRouteEndpoints) {
                     Image(systemName: "arrow.up.arrow.down")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(0.62))
+                        .foregroundStyle(Color.naviTextSecondary.opacity(0.62))
                         .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.plain)
@@ -478,24 +494,20 @@ extension ContentView {
             }
             .modifier(RouteStopDropTargetHighlight(isTargeted: routeStopDropTargetID == "route-origin"))
 
-            routeWaypointRows(darkStyle: true)
-            routeWaypointConnector(darkStyle: true)
+            routeWaypointRows(darkStyle: false)
+            routeWaypointConnector(darkStyle: false)
 
             HStack(spacing: 10) {
-                Text("B")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 31, height: 31)
-                    .background(Color.red.opacity(0.9), in: Circle())
+                RoutePlanningEndpointMarker(symbolName: "flag.fill")
                 Button(action: presentSearch) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(navigationStore.state.destination?.name ?? "Dokąd?")
                             .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Color.naviTextPrimary)
                             .lineLimit(1)
                         Text(navigationStore.state.destination?.address ?? "Cel podróży")
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(Color.white.opacity(0.56))
+                            .foregroundStyle(Color.naviTextSecondary.opacity(0.56))
                             .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity, minHeight: 47, alignment: .leading)
@@ -506,9 +518,9 @@ extension ContentView {
                     Button(action: toggleDestinationFavorite) {
                         Image(systemName: isDestinationFavorite ? "heart.fill" : "heart")
                             .font(.system(size: 17, weight: .medium))
-                            .foregroundStyle(isDestinationFavorite ? Color.red : Color.white.opacity(0.8))
+                            .foregroundStyle(isDestinationFavorite ? Color.accentColor : Color.naviTextSecondary)
                         .frame(width: 44, height: 44)
-                        .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(isDestinationFavorite ? "Usuń cel z ulubionych" : "Zapisz cel w ulubionych")
@@ -538,12 +550,12 @@ extension ContentView {
                 } label: {
                     Image(systemName: mode.symbol)
                         .font(.system(size: 19, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(selected ? 1 : 0.78))
+                        .foregroundStyle(Color.naviTextSecondary.opacity(selected ? 1 : 0.78))
                         .frame(maxWidth: .infinity, minHeight: 48)
                         .background {
                             if selected {
                                 RoundedRectangle(cornerRadius: 27, style: .continuous)
-                                    .fill(Color.white.opacity(0.19))
+                                    .fill(Color.accentColor.opacity(0.13))
                             }
                         }
                         .contentShape(RoundedRectangle(cornerRadius: 27, style: .continuous))
@@ -574,23 +586,21 @@ extension ContentView {
         guard !segments.isEmpty else { return nil }
         let colors = Set(segments.map(\.colorHex))
         let prefix = "Ruch na początku trasy: "
-        if colors.contains(RouteColorPalette.closure) {
-            return (prefix + "zamknięcie", "exclamationmark.triangle.fill", .red)
-        }
-        if colors.contains(RouteColorPalette.trafficStationary) {
-            return (prefix + "zatrzymany", "exclamationmark.triangle.fill", .red)
+        if segments.contains(where: \.isRoadClosure) {
+            return (prefix + "zamknięcie", "nosign", Color(naviHex: NaviAstraColorPalette.closure))
         }
         if colors.contains(RouteColorPalette.trafficHeavy) {
-            return (prefix + "wolny", "car.side.fill", .orange)
+            return (prefix + "duże spowolnienie", "exclamationmark.triangle.fill",
+                    Color(naviHex: NaviAstraColorPalette.danger))
         }
         if colors.contains(RouteColorPalette.trafficSlow) {
-            return (prefix + "spowolnienia", "car.side.fill", .orange)
+            return (prefix + "spowolnienia", "car.side.fill", Color(naviHex: NaviAstraColorPalette.trafficSlow))
         }
         if colors.contains(RouteColorPalette.trafficModerate) {
-            return (prefix + "umiarkowany", "car.side.fill", .yellow)
+            return (prefix + "umiarkowany", "car.side.fill", Color(naviHex: NaviAstraColorPalette.trafficModerate))
         }
         guard colors.contains(RouteColorPalette.trafficFree) else { return nil }
-        return (prefix + "płynny", "leaf.fill", .green)
+        return (prefix + "płynny", "leaf.fill", Color(naviHex: NaviAstraColorPalette.success))
     }
 
     @ViewBuilder
@@ -620,20 +630,20 @@ extension ContentView {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(time(route.expectedTravelTime))
                         .font(.system(size: 21, weight: .bold, design: .rounded).monospacedDigit())
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.naviTextPrimary)
                         .lineLimit(1)
                     Text("U celu \(routePlanningArrivalTime(route)) · \(distance(route.distance))")
                         .font(.system(size: 14, weight: .medium, design: .rounded).monospacedDigit())
-                        .foregroundStyle(Color.white.opacity(0.68))
+                        .foregroundStyle(Color.naviTextSecondary.opacity(0.68))
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                     if let journey = route.journey {
-                        routePlanningJourneyOverview(journey, darkStyle: true, compact: true)
+                        routePlanningJourneyOverview(journey, darkStyle: false, compact: true)
                     }
                     if isFastest {
                         Text("Najszybsza")
                             .font(.system(size: 13, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.green)
+                            .foregroundStyle(Color(naviHex: NaviAstraColorPalette.success))
                     }
                 }
                 .frame(maxWidth: .infinity, minHeight: 84, alignment: .leading)
@@ -649,10 +659,10 @@ extension ContentView {
         }
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: 108, alignment: .leading)
-        .modifier(NavigationGlassSurface(radius: 21, interactive: true))
+        .modifier(NavigationStableSurface(radius: 21))
         .overlay {
             RoundedRectangle(cornerRadius: 21, style: .continuous)
-                .strokeBorder(isSelected ? Color.accentColor : Color.white.opacity(0.08),
+                .strokeBorder(isSelected ? Color.accentColor : Color.primary.opacity(0.1),
                               lineWidth: isSelected ? 2 : 1)
         }
         .animation(.easeInOut(duration: 0.2), value: isSelected)
@@ -674,7 +684,7 @@ extension ContentView {
                 VStack(alignment: .leading, spacing: 9) {
                     Text("Przebieg trasy")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.naviTextPrimary)
                     ForEach(Array(route.maneuvers.prefix(12))) { maneuver in
                         HStack(alignment: .top, spacing: 9) {
                             Image(systemName: maneuver.iconName)
@@ -684,11 +694,11 @@ extension ContentView {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(maneuver.displayInstruction)
                                     .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(Color.white.opacity(0.88))
+                                    .foregroundStyle(Color.naviTextSecondary.opacity(0.88))
                                 if let street = maneuver.streetLine {
                                     Text(street)
                                         .font(.system(size: 10, weight: .medium))
-                                        .foregroundStyle(Color.white.opacity(0.55))
+                                        .foregroundStyle(Color.naviTextSecondary.opacity(0.55))
                                 }
                             }
                             Spacer(minLength: 0)
@@ -703,7 +713,7 @@ extension ContentView {
                 VStack(alignment: .leading, spacing: 7) {
                     Text("Opcje jazdy")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.naviTextPrimary)
                     routePreferenceToggle("Unikaj autostrad", keyPath: \.avoidHighways)
                     routePreferenceToggle("Unikaj dróg płatnych", keyPath: \.avoidTolls)
                     routePreferenceToggle("Unikaj promów", keyPath: \.avoidFerries)
@@ -716,24 +726,24 @@ extension ContentView {
                 VStack(alignment: .leading, spacing: 7) {
                     Text("Ładowanie po drodze")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.naviTextPrimary)
                     Text("Szacowany czas postojów: \(Int((route.chargingDuration / 60).rounded())) min")
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Color.white.opacity(0.62))
+                        .foregroundStyle(Color.naviTextSecondary.opacity(0.62))
                     ForEach(route.chargingStops) { stop in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(stop.destination.name)
                                 .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(Color.naviTextPrimary)
                             Text("\(stop.connectorTypes.joined(separator: ", ")) · do \(Int(stop.maximumPowerKW.rounded())) kW · postój \(Int((stop.estimatedChargingTime / 60).rounded())) min")
                                 .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(Color.white.opacity(0.62))
+                                .foregroundStyle(Color.naviTextSecondary.opacity(0.62))
                             Text(stop.availabilityKnown ? "Status: działająca według OpenStreetMap" : "Dostępność ładowarki nieznana")
                                 .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(Color.white.opacity(0.52))
+                                .foregroundStyle(Color.naviTextSecondary.opacity(0.52))
                             Text(stop.publicAccess == true ? "Dostęp publiczny według OpenStreetMap" : "Dostęp publiczny niepotwierdzony")
                                 .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(Color.white.opacity(0.52))
+                                .foregroundStyle(Color.naviTextSecondary.opacity(0.52))
                         }
                         .padding(.top, 3)
                     }
@@ -741,7 +751,7 @@ extension ContentView {
             }
 
             if let journey = route.journey {
-                routePlanningJourneyDetails(journey, darkStyle: true)
+                routePlanningJourneyDetails(journey, darkStyle: false)
             }
 
             if navigationStore.state.transportMode == .car {
@@ -762,14 +772,18 @@ extension ContentView {
                                       darkStyle: Bool,
                                       compact: Bool = false) -> some View {
         let rides = journey.legs.filter { $0.mode != "WALK" }
-        let primary = darkStyle ? Color.white : Color.primary
-        let secondary = darkStyle ? Color.white.opacity(0.64) : Color.primary.opacity(0.62)
+        let primary = Color.naviTextPrimary
+        let secondary = Color.naviTextSecondary
+        let walkingColor = Color(naviHex: colorScheme == .dark
+            ? NaviAstraColorPalette.walkingRouteNight : NaviAstraColorPalette.walkingRouteDay)
         let realtime = routePlanningRealtimeSummary(for: journey)
         return VStack(alignment: .leading, spacing: compact ? 3 : 5) {
             HStack(spacing: 5) {
                 Image(systemName: rides.first.map { routePlanningTransitSymbol(for: $0) } ?? "figure.walk")
                     .font(.system(size: compact ? 9 : 11, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(rides.first.map {
+                        mapTransitColor($0.lineColorHex ?? NaviAstraColorPalette.transitFallback)
+                    } ?? walkingColor)
                 Text(rides.isEmpty ? "Dojście pieszo" : rides.map { $0.line ?? $0.mode }.joined(separator: " → "))
                     .font(.system(size: compact ? 10 : 11, weight: .semibold, design: .rounded))
                     .foregroundStyle(primary)
@@ -809,8 +823,8 @@ extension ContentView {
     }
 
     func routePlanningJourneyDetails(_ journey: Journey, darkStyle: Bool) -> some View {
-        let primary = darkStyle ? Color.white : Color.primary
-        let secondary = darkStyle ? Color.white.opacity(0.64) : Color.primary.opacity(0.62)
+        let primary = Color.naviTextPrimary
+        let secondary = Color.naviTextSecondary
         return VStack(alignment: .leading, spacing: 9) {
             Text("Połączenie")
                 .font(.system(size: 14, weight: .semibold))
@@ -826,7 +840,7 @@ extension ContentView {
                 ForEach(Array(journey.alerts.enumerated()), id: \.offset) { _, alert in
                     Label(alert, systemImage: "exclamationmark.triangle.fill")
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Color(naviHex: NaviAstraColorPalette.warning))
                 }
             } else if !journey.alertsFeedAvailable {
                 Text("Komunikaty na trasie niedostępne")
@@ -866,14 +880,16 @@ extension ContentView {
                                         in journey: Journey,
                                         darkStyle: Bool) -> some View {
         let isWalking = leg.mode == "WALK"
-        let primary = darkStyle ? Color.white : Color.primary
-        let secondary = darkStyle ? Color.white.opacity(0.62) : Color.primary.opacity(0.62)
+        let primary = Color.naviTextPrimary
+        let secondary = Color.naviTextSecondary
+        let walkingColor = Color(naviHex: colorScheme == .dark
+            ? NaviAstraColorPalette.walkingRouteNight : NaviAstraColorPalette.walkingRouteDay)
         HStack(alignment: .top, spacing: 9) {
             Image(systemName: isWalking ? "figure.walk" : routePlanningTransitSymbol(for: leg))
                 .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(isWalking ? Color.accentColor : .white)
+                .foregroundStyle(isWalking ? walkingColor : .white)
                 .frame(width: 26, height: 26)
-                .background(isWalking ? Color.accentColor.opacity(0.15) : mapTransitColor(leg.lineColorHex ?? 0x2867B2),
+                .background(isWalking ? walkingColor.opacity(0.15) : mapTransitColor(leg.lineColorHex ?? NaviAstraColorPalette.transitFallback),
                             in: Circle())
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 4) {
@@ -883,7 +899,7 @@ extension ContentView {
                             .foregroundStyle(.white)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
-                            .background(mapTransitColor(leg.lineColorHex ?? 0x2867B2), in: Capsule())
+                            .background(mapTransitColor(leg.lineColorHex ?? NaviAstraColorPalette.transitFallback), in: Capsule())
                     } else {
                         Text(isWalking ? (leg.isTransfer ? "Przesiadka pieszo" : "Dojście pieszo") : "Transport publiczny")
                             .font(.system(size: 10, weight: .semibold))
@@ -948,10 +964,10 @@ extension ContentView {
 
     private func routePlanningRealtimeSummary(for journey: Journey) -> (title: String, symbol: String, color: Color) {
         switch journey.realtimeFreshness {
-        case .live: ("Na żywo", "dot.radiowaves.left.and.right", .green)
-        case .degraded: ("Realtime opóźnione", "clock.badge.exclamationmark", .orange)
-        case .stale: ("Realtime nieświeże", "clock", .secondary)
-        case .unavailable: ("Tylko rozkład", "clock", .secondary)
+        case .live: ("Na żywo", "dot.radiowaves.left.and.right", Color(naviHex: NaviAstraColorPalette.success))
+        case .degraded: ("Realtime opóźnione", "clock.badge.exclamationmark", Color(naviHex: NaviAstraColorPalette.warning))
+        case .stale: ("Realtime nieświeże", "clock", Color.naviTextSecondary)
+        case .unavailable: ("Tylko rozkład", "clock", Color(naviHex: NaviAstraColorPalette.info))
         }
     }
 
@@ -970,7 +986,7 @@ extension ContentView {
         if navigationStore.state.status == .error {
             Text(navigationStore.state.errorMessage ?? "Nie udało się wyznaczyć trasy.")
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Color.white.opacity(0.75))
+                .foregroundStyle(Color.naviTextSecondary.opacity(0.75))
                 .padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .modifier(NavigationGlassSurface(radius: 19))
@@ -999,7 +1015,7 @@ extension ContentView {
                     ProgressView()
                     Text(navigationStore.state.transportMode == .transit ? "Szukam połączeń…" : "Wyznaczanie trasy…")
                         .font(.subheadline.weight(.medium))
-                        .foregroundStyle(Color.white.opacity(0.78))
+                        .foregroundStyle(Color.naviTextSecondary.opacity(0.78))
                     Spacer(minLength: 0)
                 }
                 .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
@@ -1012,7 +1028,7 @@ extension ContentView {
         .padding(.horizontal, 14)
         .padding(.top, compact ? 0 : 8)
         .padding(.bottom, compact ? 8 : max(12, min(22, bottomInset * 0.55)))
-        .background(Color.black.opacity(0.08))
+        .background(.regularMaterial)
     }
 
     private func routePlanningSecondaryActions(compact: Bool) -> some View {
@@ -1026,7 +1042,7 @@ extension ContentView {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(Color.white.opacity(0.7))
+            .foregroundStyle(Color.naviTextSecondary.opacity(0.7))
             .accessibilityLabel("Anuluj trasę")
 
             if let url = routePlanningShareURL {
@@ -1037,7 +1053,7 @@ extension ContentView {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(Color.white.opacity(0.7))
+                .foregroundStyle(Color.naviTextSecondary.opacity(0.7))
                 .accessibilityLabel("Udostępnij trasę")
             } else {
                 Button {} label: {
@@ -1047,7 +1063,7 @@ extension ContentView {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(Color.white.opacity(0.42))
+                .foregroundStyle(Color.naviTextSecondary.opacity(0.42))
                 .disabled(true)
                 .accessibilityLabel("Udostępnianie trasy niedostępne")
             }
@@ -1064,7 +1080,7 @@ extension ContentView {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(time(route.expectedTravelTime))
                         .font(.system(size: medium ? 30 : (compact ? 23 : 34), weight: .bold, design: .rounded).monospacedDigit())
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.naviTextPrimary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                     Spacer(minLength: 0)
@@ -1072,13 +1088,13 @@ extension ContentView {
                         Text("\(selectedIndex + 1) / \(routes.count)")
                             .font((medium ? Font.headline : (compact ? Font.caption : Font.subheadline))
                                 .weight(.semibold).monospacedDigit())
-                            .foregroundStyle(Color.white.opacity(0.62))
+                            .foregroundStyle(Color.naviTextSecondary.opacity(0.62))
                     }
                 }
 
                 Text("U celu \(routePlanningArrivalTime(route)) · \(distance(route.distance))")
                     .font(.system(size: medium ? 14 : (compact ? 11 : 14), weight: .medium, design: .rounded).monospacedDigit())
-                    .foregroundStyle(Color.white.opacity(0.7))
+                    .foregroundStyle(Color.naviTextSecondary.opacity(0.7))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
 
@@ -1094,14 +1110,14 @@ extension ContentView {
                         HStack(spacing: 4) {
                             ForEach(routes.indices, id: \.self) { index in
                                 Capsule()
-                                    .fill(index == selectedIndex ? Color.accentColor : Color.white.opacity(0.28))
+                                    .fill(index == selectedIndex ? Color.accentColor : Color.primary.opacity(0.2))
                                     .frame(width: index == selectedIndex ? 13 : 5, height: 5)
                             }
                         }
                         .accessibilityHidden(true)
                         Text("Przesuń, aby zmienić trasę")
                             .font(.system(size: compact && !medium ? 10 : 12, weight: .medium))
-                            .foregroundStyle(Color.white.opacity(0.55))
+                            .foregroundStyle(Color.naviTextSecondary.opacity(0.55))
                             .lineLimit(1)
                     }
                 }
@@ -1112,7 +1128,7 @@ extension ContentView {
         }
         .padding(medium ? 12 : (compact ? 9 : 16))
         .frame(maxWidth: .infinity, minHeight: medium ? 112 : (compact ? 70 : 208), alignment: .leading)
-        .modifier(NavigationGlassSurface(radius: 20, interactive: true))
+        .modifier(NavigationStableSurface(radius: 20))
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { value in
             guard routes.count > 1, abs(value.translation.width) > abs(value.translation.height) * 1.25,

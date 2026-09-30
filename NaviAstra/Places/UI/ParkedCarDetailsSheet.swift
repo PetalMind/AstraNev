@@ -113,13 +113,13 @@ struct ParkedCarDetailsSheet: View {
                         .font(.system(size: 22, weight: .semibold))
                         .foregroundStyle(.white)
                         .frame(width: 52, height: 52)
-                        .background(Color.orange.gradient, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+                        .background(Color.accentColor.gradient, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
                     VStack(alignment: .leading, spacing: 4) {
                         Text(distanceMeters.map(distanceLabel) ?? "Miejsce zapisane")
                             .font(.headline)
                         Text("Zaparkowano \(displayedCar.parkedAt.formatted(.relative(presentation: .named)))")
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.naviTextSecondary)
                     }
                     Spacer(minLength: 0)
                 }
@@ -133,7 +133,7 @@ struct ParkedCarDetailsSheet: View {
                     } else {
                         Label("Adres nie jest dostępny", systemImage: "mappin.and.ellipse")
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.naviTextSecondary)
                     }
                     if let parkingDetails = displayedCar.parkingDetails {
                         Label(parkingDetails, systemImage: "parkingsign.circle")

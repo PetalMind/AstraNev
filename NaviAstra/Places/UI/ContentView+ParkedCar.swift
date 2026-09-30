@@ -18,9 +18,9 @@ extension ContentView {
                 HStack(spacing: 11) {
                     Image(systemName: "car.side.fill")
                         .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(Color.orange)
+                        .foregroundStyle(Color(naviHex: NaviAstraColorPalette.warning))
                         .frame(width: 38, height: 38)
-                        .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .background(Color(naviHex: NaviAstraColorPalette.warning).opacity(0.15), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Zaparkowałeś tutaj?")
                             .font(.system(size: 13, weight: .semibold, design: .rounded))
@@ -95,15 +95,15 @@ extension ContentView {
                 HStack(spacing: 11) {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 23, weight: .semibold))
-                        .foregroundStyle(Color.green)
+                        .foregroundStyle(Color(naviHex: NaviAstraColorPalette.success))
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Samochód zapisany")
                             .font(.system(size: 14, weight: .bold, design: .rounded))
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(Color.naviTextPrimary)
                         Text(parkedCarToast.gpsAccuracy.map { "Dokładność GPS ±\(Int($0.rounded())) m" }
                              ?? "Punkt wybrany na mapie")
                             .font(.system(size: 11, weight: .medium, design: .rounded))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.naviTextSecondary)
                     }
                     Spacer(minLength: 4)
                     Button("Dodaj szczegóły") {
@@ -113,7 +113,7 @@ extension ContentView {
                     .buttonStyle(.plain)
                     Button("Cofnij") { undoParkedCarSave() }
                         .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Color.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                         .buttonStyle(.plain)
                 }
                 .padding(.horizontal, 15)

@@ -7,9 +7,9 @@ enum ARLaunchReadiness: Equatable {
 
     var color: Color {
         switch self {
-        case .checking: .orange
-        case .ready: .green
-        case .unavailable: .gray
+        case .checking: Color(naviHex: NaviAstraColorPalette.warning)
+        case .ready: Color(naviHex: NaviAstraColorPalette.success)
+        case .unavailable: Color.naviTextInactive
         }
     }
 
@@ -68,28 +68,19 @@ struct ARNavigationView: View {
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            if cameraGranted && geoAvailable, let location {
-                ARGeoScene(coordinates: arrowCoordinates,
-                           localized: $geoLocalized,
-                           failure: {
-                    message = $0
-                    geoAvailable = false
-                })
-                    .ignoresSafeArea()
-                if !geoLocalized {
-                    VStack(spacing: 12) {
-                        ProgressView().tint(.white)
-                        Text("Ustalanie położenia AR…")
-                            .font(.headline)
-                        Text("Stań w miejscu i skieruj telefon na otoczenie.")
-                            .font(.subheadline)
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding(20)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
-                    .foregroundStyle(.white)
+            if cameraGranted {
+                if geoAvailable, location != nil {
+                    ARGeoScene(coordinates: arrowCoordinates,
+                               localized: $geoLocalized,
+                               failure: {
+                        message = $0
+                        geoAvailable = false
+                    })
+                        .ignoresSafeArea()
+                } else {
+                    ARCameraScene().ignoresSafeArea()
                 }
-                VStack {
+                VStack(spacing: 12) {
                     HStack {
                         Button(action: onClose) {
                             Label("Mapa", systemImage: "map.fill")
@@ -99,7 +90,14 @@ struct ARNavigationView: View {
                         }
                         Spacer()
                     }
-                    Spacer()
+                    if let message {
+                        availabilityMessageCard(message)
+                    }
+                    Spacer(minLength: 0)
+                    if geoAvailable && !geoLocalized {
+                        localizationStatusCard
+                    }
+                    Spacer(minLength: 0)
                     maneuverCard
                 }
                 .padding(.horizontal, 16)
@@ -111,6 +109,36 @@ struct ARNavigationView: View {
         }
         .preferredColorScheme(.dark)
         .task { await prepareAR() }
+    }
+
+    private var localizationStatusCard: some View {
+        VStack(spacing: 12) {
+            ProgressView().tint(.white)
+            Text("Ustalanie położenia AR…")
+                .font(.headline)
+            Text("Stań w miejscu i skieruj telefon na otoczenie.")
+                .font(.subheadline)
+                .multilineTextAlignment(.center)
+        }
+        .padding(20)
+        .modifier(NavigationStableSurface(radius: 20))
+        .foregroundStyle(.white)
+    }
+
+    private func availabilityMessageCard(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "info.circle.fill")
+                .font(.title3)
+                .foregroundStyle(Color(naviHex: NaviAstraColorPalette.warning))
+            Text(text)
+                .font(.subheadline.weight(.medium))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(maxWidth: 380, alignment: .leading)
+        .modifier(NavigationStableSurface(radius: 20))
+        .foregroundStyle(.white)
     }
 
     private var maneuverCard: some View {
@@ -127,26 +155,23 @@ struct ARNavigationView: View {
                                       ? progress?.remainingDistance ?? 0
                                       : progress?.distanceToNextManeuver ?? 0))
                         .font(.subheadline.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                 }
-            }
-            if let message {
-                Text(message).font(.caption).foregroundStyle(.orange)
             }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
-        .foregroundStyle(.primary)
+        .modifier(NavigationStableSurface(radius: 20))
+        .foregroundStyle(Color.naviTextPrimary)
     }
 
     private var unavailableView: some View {
         VStack(spacing: 16) {
-            Image(systemName: "viewfinder").font(.system(size: 42)).foregroundStyle(.orange)
-            Text(message ?? "Nawigacja AR jest niedostępna")
-                .font(.title3.weight(.semibold)).multilineTextAlignment(.center)
+            Image(systemName: "viewfinder").font(.system(size: 42))
+                .foregroundStyle(Color(naviHex: NaviAstraColorPalette.warning))
+            availabilityMessageCard(message ?? "Nawigacja AR jest niedostępna")
             Text("Możesz kontynuować prowadzenie na mapie.")
-                .font(.subheadline).foregroundStyle(.secondary)
+                .font(.subheadline).foregroundStyle(Color.naviTextSecondary)
             Button("Wróć do mapy", action: onClose)
                 .buttonStyle(.borderedProminent)
         }
@@ -156,10 +181,6 @@ struct ARNavigationView: View {
 
     @MainActor
     private func prepareAR() async {
-        guard ARGeoTrackingConfiguration.isSupported else {
-            message = "To urządzenie nie obsługuje pozycjonowania AR."
-            return
-        }
         let authorization = AVCaptureDevice.authorizationStatus(for: .video)
         let granted: Bool
         if authorization == .authorized {
@@ -173,20 +194,27 @@ struct ARNavigationView: View {
             message = "Zezwól aplikacji na dostęp do kamery w Ustawieniach."
             return
         }
+        guard !Task.isCancelled else { return }
+        cameraGranted = true
+        geoAvailable = false
+        guard ARGeoTrackingConfiguration.isSupported else {
+            message = "To urządzenie nie obsługuje AR Geo Tracking. Podgląd z kamery pozostaje aktywny."
+            return
+        }
         guard let location else {
-            message = "Oczekiwanie na dokładną pozycję GPS."
+            message = "Oczekiwanie na pozycję GPS. Podgląd z kamery pozostaje aktywny."
             return
         }
         guard location.accuracy >= 0, location.accuracy <= 25,
               Date().timeIntervalSince(location.timestamp) <= 15 else {
-            message = "Pozycja GPS jest zbyt niedokładna dla strzałek AR. Wróć do mapy i spróbuj ponownie."
+            message = "Pozycja GPS jest zbyt niedokładna dla strzałek AR. Podgląd z kamery pozostaje aktywny."
             return
         }
         guard arrowCoordinates.count >= 1 else {
-            message = "Nie ma pewnego odcinka trasy przed Tobą, który można oznaczyć w AR."
+            message = "Nie ma pewnego odcinka trasy do oznaczenia w AR. Podgląd z kamery pozostaje aktywny."
             return
         }
-        cameraGranted = true
+        message = "Sprawdzam dostępność pozycjonowania AR…"
         let available = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             ARGeoTrackingConfiguration.checkAvailability(at: location.coordinate.cl) { available, error in
                 continuation.resume(returning: available && error == nil)
@@ -194,15 +222,30 @@ struct ARNavigationView: View {
         }
         guard !Task.isCancelled else { return }
         geoAvailable = available
-        if !available {
-            cameraGranted = false
-            message = "Pozycjonowanie AR nie jest dostępne w tej okolicy."
-        }
+        message = available
+            ? nil
+            : "Pozycjonowanie AR nie jest dostępne w tej okolicy. Podgląd z kamery pozostaje aktywny."
     }
 
     private func distanceText(_ meters: Double) -> String {
         if meters >= 1000 { return String(format: "Za %.1f km", meters / 1000) }
         return "Za \(Int(meters.rounded())) m"
+    }
+}
+
+private struct ARCameraScene: UIViewRepresentable {
+    func makeUIView(context: Context) -> ARView {
+        let view = ARView(frame: .zero)
+        guard ARWorldTrackingConfiguration.isSupported else { return view }
+        view.session.run(ARWorldTrackingConfiguration())
+        return view
+    }
+
+    func updateUIView(_ view: ARView, context: Context) {}
+
+    static func dismantleUIView(_ view: ARView, coordinator: ()) {
+        view.session.pause()
+        view.scene.anchors.removeAll()
     }
 }
 
@@ -253,7 +296,7 @@ private struct ARGeoScene: UIViewRepresentable {
             for (index, point) in coordinates.enumerated() {
                 let anchor = ARGeoAnchor(coordinate: point.coordinate.cl)
                 let root = AnchorEntity(anchor: anchor)
-                let arrow = Self.arrowEntity(color: index == 0 ? .systemBlue : .white)
+                let arrow = Self.arrowEntity(color: index == 0 ? UIColor(naviHex: NaviAstraColorPalette.navigationActiveNight) : .white)
                 arrow.orientation = simd_quatf(angle: Float(point.bearing * .pi / 180), axis: [0, 1, 0])
                 root.addChild(arrow)
                 view.scene.addAnchor(root)

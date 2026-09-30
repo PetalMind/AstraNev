@@ -80,8 +80,8 @@ extension PlacePOIMapPalette {
     @MainActor static func accentColor(dark: Bool) -> UIColor {
         let traits = UITraitCollection(userInterfaceStyle: dark ? .dark : .light)
         return UIColor(named: "AccentColor", in: nil, compatibleWith: traits)
-            ?? UIColor(red: CGFloat(8) / 255, green: CGFloat(124) / 255,
-                       blue: CGFloat(243) / 255, alpha: 1)
+            ?? UIColor(naviHex: dark
+                ? NaviAstraColorPalette.brandPrimaryNight : NaviAstraColorPalette.brandPrimaryDay)
     }
 }
 
@@ -122,8 +122,8 @@ import AppKit
 extension PlacePOIMapPalette {
     static func accentColor(dark: Bool) -> NSColor {
         let appearance = NSAppearance(named: dark ? .darkAqua : .aqua) ?? NSAppearance.currentDrawing()
-        let fallback = NSColor(srgbRed: CGFloat(8) / 255, green: CGFloat(124) / 255,
-                               blue: CGFloat(243) / 255, alpha: 1)
+        let fallback = NSColor(naviHex: dark
+            ? NaviAstraColorPalette.brandPrimaryNight : NaviAstraColorPalette.brandPrimaryDay)
         guard let namedColor = NSColor(named: NSColor.Name("AccentColor")) else { return fallback }
         var resolvedColor: NSColor?
         appearance.performAsCurrentDrawingAppearance {

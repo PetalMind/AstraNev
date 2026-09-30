@@ -22,7 +22,7 @@ struct PlaceDetailsHeroSummary: View {
                 if let travelSummary {
                     Label(travelSummary, systemImage: "location")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                 }
             }
         }
@@ -65,7 +65,7 @@ struct PlaceDetailsActionBar: View {
             Button(action: onToggleSavedState) {
                 Image(systemName: isSaved ? "heart.fill" : "heart")
                     .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(isSaved ? Color.red : Color.secondary)
+                    .foregroundStyle(isSaved ? Color.accentColor : Color.naviTextSecondary)
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
                     .scaleEffect(favoritePulseScale)

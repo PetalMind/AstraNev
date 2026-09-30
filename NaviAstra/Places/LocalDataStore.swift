@@ -111,6 +111,7 @@ struct TripRecord: Identifiable, Codable {
     var rerouteCount: Int
     var arrived: Bool
     var originalExpectedTravelTime: TimeInterval? = nil
+    var drivingScore: DrivingScore? = nil
     var duration: TimeInterval { endedAt.timeIntervalSince(startedAt) }
     var averageSpeedKph: Double { movingSeconds > 0 ? distanceMeters / movingSeconds * 3.6 : 0 }
     var stoppedSeconds: TimeInterval { max(0, duration - movingSeconds) }
@@ -121,12 +122,13 @@ struct TripRecord: Identifiable, Codable {
 
     enum CodingKeys: String, CodingKey {
         case id, destination, waypoints, startedAt, endedAt, distanceMeters, movingSeconds
-        case rerouteCount, arrived, originalExpectedTravelTime
+        case rerouteCount, arrived, originalExpectedTravelTime, drivingScore
     }
 
     init(id: UUID = UUID(), destination: Destination, waypoints: [Destination] = [], startedAt: Date,
          endedAt: Date, distanceMeters: Double, movingSeconds: TimeInterval, rerouteCount: Int,
-         arrived: Bool, originalExpectedTravelTime: TimeInterval? = nil) {
+         arrived: Bool, originalExpectedTravelTime: TimeInterval? = nil,
+         drivingScore: DrivingScore? = nil) {
         self.id = id
         self.destination = destination
         self.waypoints = waypoints
@@ -137,6 +139,7 @@ struct TripRecord: Identifiable, Codable {
         self.rerouteCount = rerouteCount
         self.arrived = arrived
         self.originalExpectedTravelTime = originalExpectedTravelTime
+        self.drivingScore = drivingScore
     }
 
     init(from decoder: Decoder) throws {
@@ -151,6 +154,7 @@ struct TripRecord: Identifiable, Codable {
         rerouteCount = try values.decode(Int.self, forKey: .rerouteCount)
         arrived = try values.decode(Bool.self, forKey: .arrived)
         originalExpectedTravelTime = try values.decodeIfPresent(TimeInterval.self, forKey: .originalExpectedTravelTime)
+        drivingScore = try values.decodeIfPresent(DrivingScore.self, forKey: .drivingScore)
     }
 }
 

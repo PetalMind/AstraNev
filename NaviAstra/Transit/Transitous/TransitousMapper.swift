@@ -183,7 +183,7 @@ enum TransitousMapper {
             nextStops: Array(stops.dropFirst(stopIndex + 1)),
             vehicle: nil,
             activeAlert: leg.alerts.first,
-            colorHex: leg.lineColorHex ?? 0x2867B2,
+            colorHex: leg.lineColorHex ?? NaviAstraColorPalette.transitFallback,
             coordinates: leg.geometry)
     }
 

@@ -11,12 +11,14 @@ nonisolated enum RouteLineKind: Equatable {
     case incidentCasing, incident(color: UInt32)
     case journeyCasing(walking: Bool, cycling: Bool)
     case journeyLeg(color: UInt32, walking: Bool, cycling: Bool)
+    case journeyPattern
 }
 
 struct IncidentLineRenderItem: Equatable {
     let id: String
     let coordinates: [Coordinate]
     let colorHex: UInt32
+    let isRoadClosure: Bool
 }
 
 struct StyledLine {
@@ -107,8 +109,7 @@ final class RouteLayerRenderer {
             }
             if animateReroute, let previousActive {
                 let dark = parent.colorScheme == .dark
-                let fadedBlue = LineStyle(hex: dark ? RouteColorPalette.activeDark : RouteColorPalette.activeLight,
-                                          opacity: 0.3, width: 11)
+                let fadedBlue = LineStyle(hex: activeRouteColor(dark: dark), opacity: 0.3, width: 11)
                 addLine(previousActive.coordinates, kind: .departed, transitionFrom: fadedBlue, to: map)
             }
             if let route = parent.state.route {
@@ -159,7 +160,7 @@ final class RouteLayerRenderer {
         marker.centerOffset = CGVector(dx: 0, dy: -3)
         let dark = parent.colorScheme == .dark
         let background = item.data.isSelected
-            ? (dark ? RouteColorPalette.activeDark : RouteColorPalette.activeLight)
+            ? activeRouteColor(dark: dark)
             : (dark ? RouteColorPalette.alternativeDark : RouteColorPalette.alternativeLight)
         marker.backgroundColor = color(hex: background, opacity: item.data.isSelected ? 1 : 0.96)
         marker.layer.cornerRadius = 15
@@ -282,16 +283,21 @@ final class RouteLayerRenderer {
     func updateIncidentLines(on map: MLNMapView, incidents: [TrafficIncident]) {
         let renderItems = incidents.filter { $0.geometry.count > 1 }.map {
             IncidentLineRenderItem(id: $0.id, coordinates: $0.geometry,
-                                   colorHex: TrafficMapPresentation($0).colorHex)
+                                   colorHex: TrafficMapPresentation($0).colorHex,
+                                   isRoadClosure: $0.category == .roadClosed)
         }.sorted { $0.id < $1.id }
         guard renderItems != incidentLineRenderItems else { return }
         map.removeAnnotations(incidentLinesByID.values.flatMap { $0.map(\.polyline) })
         incidentLinesByID.removeAll()
         incidentLineRenderItems = renderItems
         for item in renderItems {
-            let casing = makeIncidentLine(item.coordinates, kind: .incidentCasing, on: map)
-            let line = makeIncidentLine(item.coordinates, kind: .incident(color: item.colorHex), on: map)
-            incidentLinesByID[item.id] = [casing, line]
+            let paths = item.isRoadClosure
+                ? RouteMapGeometry.dashedSegments(item.coordinates, dashLength: 58, gapLength: 34)
+                : [item.coordinates]
+            incidentLinesByID[item.id] = paths.flatMap { path in
+                [makeIncidentLine(path, kind: .incidentCasing, on: map),
+                 makeIncidentLine(path, kind: .incident(color: item.colorHex), on: map)]
+            }
         }
     }
 
@@ -482,7 +488,7 @@ final class RouteLayerRenderer {
         let highlightStyle = lineStyle(for: .activeHighlight)
         let completedCasingStyle = lineStyle(for: .traveledCasing)
         let completedStyle = lineStyle(for: .traveled)
-        let key = "\(casingStyle.hex)-\(casingStyle.opacity)-\(casingStyle.width)-\(activeStyle.hex)-\(activeStyle.opacity)-\(activeStyle.width)-\(highlightStyle.hex)-\(highlightStyle.opacity)-\(highlightStyle.width)-\(completedCasingStyle.opacity)-\(completedCasingStyle.width)-\(completedStyle.opacity)-\(completedStyle.width)"
+        let key = "\(parent.state.transportMode)-\(casingStyle.hex)-\(casingStyle.opacity)-\(casingStyle.width)-\(activeStyle.hex)-\(activeStyle.opacity)-\(activeStyle.width)-\(highlightStyle.hex)-\(highlightStyle.opacity)-\(highlightStyle.width)-\(completedCasingStyle.opacity)-\(completedCasingStyle.width)-\(completedStyle.opacity)-\(completedStyle.width)"
         guard key != activeRouteStyleKey else { return }
         activeRouteStyleKey = key
         casing.lineColor = NSExpression(forConstantValue: color(hex: casingStyle.hex, opacity: 1))
@@ -491,15 +497,22 @@ final class RouteLayerRenderer {
         line.lineColor = NSExpression(forConstantValue: color(hex: activeStyle.hex, opacity: 1))
         line.lineOpacity = NSExpression(forConstantValue: activeStyle.opacity)
         line.lineWidth = NSExpression(forConstantValue: activeStyle.width)
+        let walkingPattern: [NSNumber]? = parent.state.transportMode == .walking
+            ? [NSNumber(value: 1.4), NSNumber(value: 1.2)] : nil
+        line.lineDashPattern = walkingPattern.map { NSExpression(forConstantValue: $0) }
         highlight.lineColor = NSExpression(forConstantValue: color(hex: highlightStyle.hex, opacity: 1))
         highlight.lineOpacity = NSExpression(forConstantValue: highlightStyle.opacity)
         highlight.lineWidth = NSExpression(forConstantValue: highlightStyle.width)
+        let cyclingPattern: [NSNumber]? = parent.state.transportMode == .bicycle
+            ? [NSNumber(value: 1.4), NSNumber(value: 2.2)] : nil
+        highlight.lineDashPattern = cyclingPattern.map { NSExpression(forConstantValue: $0) }
         completedCasing.lineColor = NSExpression(forConstantValue: color(hex: completedCasingStyle.hex, opacity: 1))
         completedCasing.lineOpacity = NSExpression(forConstantValue: completedCasingStyle.opacity)
         completedCasing.lineWidth = NSExpression(forConstantValue: completedCasingStyle.width)
         completedLine.lineColor = NSExpression(forConstantValue: color(hex: completedStyle.hex, opacity: 1))
         completedLine.lineOpacity = NSExpression(forConstantValue: completedStyle.opacity)
         completedLine.lineWidth = NSExpression(forConstantValue: completedStyle.width)
+        completedLine.lineDashPattern = walkingPattern.map { NSExpression(forConstantValue: $0) }
     }
 
     private func addJourneyLegs(_ legs: [JourneyLeg], routeID: UUID, transitionStyle: LineStyle?,
@@ -526,8 +539,14 @@ final class RouteLayerRenderer {
             let mode = leg.mode.lowercased()
             let walking = isWalkingLeg(mode)
             let cycling = mode.contains("bicycle") || mode.contains("bike")
-            let color = walking ? RouteColorPalette.walking : cycling ? RouteColorPalette.cycling : RouteColorPalette.activeLight
-            let paths = walking ? RouteMapGeometry.dashedSegments(split.remaining) : [split.remaining]
+            let color = walking
+                ? (parent.colorScheme == .dark ? RouteColorPalette.walkingDark : RouteColorPalette.walkingLight)
+                : (cycling
+                    ? (parent.colorScheme == .dark ? RouteColorPalette.cyclingDark : RouteColorPalette.cyclingLight)
+                    : (leg.lineColorHex ?? NaviAstraColorPalette.transitFallback))
+            let paths = walking
+                ? RouteMapGeometry.dashedSegments(split.remaining, dashLength: 4, gapLength: 6)
+                : [split.remaining]
             for path in paths where path.count > 1 {
                 let kind = RouteLineKind.journeyLeg(color: color, walking: walking, cycling: cycling)
                 let casingKind = RouteLineKind.journeyCasing(walking: walking, cycling: cycling)
@@ -536,6 +555,11 @@ final class RouteLayerRenderer {
                 addLine(path, kind: casingKind, routeID: routeID,
                         transitionFrom: transitionStyle == nil ? nil : invisibleCasing, to: map)
                 addLine(path, kind: kind, routeID: routeID, transitionFrom: transitionStyle, to: map)
+                if cycling {
+                    for pattern in RouteMapGeometry.dashedSegments(path, dashLength: 24, gapLength: 44) {
+                        addLine(pattern, kind: .journeyPattern, routeID: routeID, to: map)
+                    }
+                }
                 didDrawLeg = true
             }
             legStartDistance += legLength
@@ -607,7 +631,7 @@ final class RouteLayerRenderer {
             let previousJourneyLines = routeLines.filter {
                 guard $0.routeID == route.id else { return false }
                 switch $0.kind {
-                case .journeyCasing, .journeyLeg, .traveledCasing, .traveled: return true
+                case .journeyCasing, .journeyLeg, .journeyPattern, .traveledCasing, .traveled: return true
                 default: return false
                 }
             }
@@ -615,7 +639,7 @@ final class RouteLayerRenderer {
             routeLines.removeAll { line in
                 guard line.routeID == route.id else { return false }
                 switch line.kind {
-                case .journeyCasing, .journeyLeg, .traveledCasing, .traveled: return true
+                case .journeyCasing, .journeyLeg, .journeyPattern, .traveledCasing, .traveled: return true
                 default: return false
                 }
             }
@@ -638,7 +662,7 @@ final class RouteLayerRenderer {
         let segments = parent.settings.overlays.traffic && parent.state.transportMode == .car && isNavigating
             ? (parent.state.traffic?.routeFlowSegments ?? []).filter { $0.routeID == routeID }
             : []
-        let segmentKeys = segments.map { "\($0.id):\($0.colorHex)" }
+        let segmentKeys = segments.map { "\($0.id):\($0.colorHex):\($0.isRoadClosure)" }
         guard segmentKeys != shownRouteTrafficSegmentKeys else { return }
         let previousLines = routeLines.filter { line in
             if case .routeTraffic = line.kind { return true }
@@ -652,8 +676,13 @@ final class RouteLayerRenderer {
         shownRouteTrafficSegmentKeys = segmentKeys
         guard let routeID else { return }
         for segment in segments {
-            addLine(segment.coordinates, kind: .routeTraffic(color: segment.colorHex),
-                    routeID: routeID, to: map)
+            let isSevereJam = segment.colorHex == RouteColorPalette.trafficHeavy
+            let paths = segment.isRoadClosure || isSevereJam
+                ? RouteMapGeometry.dashedSegments(segment.coordinates, dashLength: 42, gapLength: 28)
+                : [segment.coordinates]
+            for path in paths {
+                addLine(path, kind: .routeTraffic(color: segment.colorHex), routeID: routeID, to: map)
+            }
         }
     }
 
@@ -668,7 +697,7 @@ final class RouteLayerRenderer {
         let dark = parent.colorScheme == .dark
         switch kind {
         case .activeCasing:
-            return LineStyle(hex: dark ? RouteColorPalette.casingDark : RouteColorPalette.casingLight,
+            return LineStyle(hex: activeRouteCasingColor(dark: dark),
                              opacity: 0.82, width: activeRouteWidth(navigating: navigating) + 4)
         case .active:
             return LineStyle(hex: activeRouteColor(dark: dark),
@@ -683,16 +712,22 @@ final class RouteLayerRenderer {
                              opacity: 0.82, width: max(4, activeRouteWidth(navigating: navigating) - 4))
         case .journeyCasing(let walking, let cycling):
             let width = journeyLegWidth(walking: walking, cycling: cycling, navigating: navigating)
-            return LineStyle(hex: dark ? RouteColorPalette.casingDark : RouteColorPalette.casingLight,
+            let casing = !dark && (walking || cycling) ? NaviAstraColorPalette.surfaceDay
+                : (dark ? RouteColorPalette.casingDark : RouteColorPalette.casingLight)
+            return LineStyle(hex: casing,
                              opacity: walking ? 0.76 : 0.82, width: width + (walking ? 3 : 4))
         case .journeyLeg(let color, let walking, let cycling):
             return LineStyle(hex: color, opacity: 1,
                              width: journeyLegWidth(walking: walking, cycling: cycling, navigating: navigating))
+        case .journeyPattern:
+            return LineStyle(hex: 0xFFFFFF, opacity: parent.colorScheme == .dark ? 0.68 : 0.82, width: 1.5)
         case .alternative:
             return LineStyle(hex: dark ? RouteColorPalette.alternativeDark : RouteColorPalette.alternativeLight,
-                             opacity: navigating ? 0 : 0.52, width: 5)
+                             opacity: navigating ? 0 : 0.46, width: 4)
         case .accuracy:
-            return LineStyle(hex: 0x26A69A, opacity: 0.14, width: 6)
+            return LineStyle(hex: dark ? NaviAstraColorPalette.userLocationNight
+                                       : NaviAstraColorPalette.userLocationDay,
+                             opacity: 0.15, width: 6)
         case .incidentCasing:
             return LineStyle(hex: 0xFFFFFF, opacity: 0.9, width: navigating ? 10 : 8)
         case .incident(let color):
@@ -706,10 +741,10 @@ final class RouteLayerRenderer {
                              opacity: parent.state.status == .rerouting ? 0.16 : 0.4,
                              width: max(1, activeRouteWidth(navigating: navigating) * 0.75))
         case .traffic:
-            return LineStyle(hex: parent.state.traffic?.flow?.overlayColorHex ?? RouteColorPalette.trafficFree,
-                             opacity: 1, width: 4.5)
+            let color = parent.state.traffic?.flow?.overlayColorHex ?? RouteColorPalette.trafficFree
+            return LineStyle(hex: color, opacity: 1, width: trafficLineWidth(for: color))
         case .routeTraffic(let color):
-            return LineStyle(hex: color, opacity: 0.98, width: activeRouteWidth(navigating: navigating))
+            return LineStyle(hex: color, opacity: 0.98, width: trafficLineWidth(for: color))
         case .departed:
             return LineStyle(hex: dark ? RouteColorPalette.alternativeDark : RouteColorPalette.alternativeLight,
                              opacity: 0, width: 6)
@@ -717,13 +752,34 @@ final class RouteLayerRenderer {
     }
 
     private func activeRouteColor(dark: Bool) -> UInt32 {
-        if parent.state.status == .routePreview {
-            return dark ? RouteColorPalette.activeDark : RouteColorPalette.activeLight
-        }
         return switch parent.state.transportMode {
-        case .car, .transit, .parkRide: dark ? RouteColorPalette.activeDark : RouteColorPalette.activeLight
-        case .walking: RouteColorPalette.walking
-        case .bicycle: RouteColorPalette.cycling
+        case .car, .transit, .parkRide:
+            dark ? RouteColorPalette.activeDark : RouteColorPalette.activeLight
+        case .walking:
+            dark ? RouteColorPalette.walkingDark : RouteColorPalette.walkingLight
+        case .bicycle:
+            dark ? RouteColorPalette.cyclingDark : RouteColorPalette.cyclingLight
+        }
+    }
+
+    private func activeRouteCasingColor(dark: Bool) -> UInt32 {
+        if !dark {
+            switch parent.state.transportMode {
+            case .walking, .bicycle: return NaviAstraColorPalette.surfaceDay
+            case .car, .transit, .parkRide: break
+            }
+        }
+        return dark ? RouteColorPalette.casingDark : RouteColorPalette.casingLight
+    }
+
+    private func trafficLineWidth(for color: UInt32) -> CGFloat {
+        switch color {
+        case RouteColorPalette.trafficFree: 3
+        case RouteColorPalette.trafficModerate: 4
+        case RouteColorPalette.trafficSlow: 5.5
+        case RouteColorPalette.trafficHeavy: 6.5
+        case RouteColorPalette.closure: 7
+        default: 4
         }
     }
 

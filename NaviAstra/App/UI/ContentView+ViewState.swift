@@ -4,6 +4,70 @@ import AVFoundation
 import UIKit
 #endif
 
+private struct TransitStopDeduplicator {
+    private struct Cell: Hashable {
+        let stationName: String
+        let latitude: Int
+        let longitude: Int
+    }
+
+    private struct Entry {
+        let stop: TransitStop
+        let modes: Set<TransitStopMode>
+    }
+
+    private let cellSizeMeters = 60.0
+    private let longitudeMetersPerDegree: Double
+    private var seenIDs = Set<String>()
+    private var cells: [Cell: [Entry]] = [:]
+    private(set) var stops: [TransitStop] = []
+
+    init(stops: [TransitStop]) {
+        let latitudes = stops.lazy.map(\.coordinate.latitude).filter { (-90...90).contains($0) }
+        let validLatitudes = Array(latitudes)
+        let referenceLatitude = validLatitudes.isEmpty
+            ? 0
+            : validLatitudes.reduce(0, +) / Double(validLatitudes.count)
+        longitudeMetersPerDegree = max(1, 111_320 * cos(referenceLatitude * .pi / 180))
+    }
+
+    mutating func appendIfUnique(_ stop: TransitStop) {
+        guard seenIDs.insert(stop.id).inserted else { return }
+
+        let stationName = stop.mapStationNameKey
+        let latitude = stop.coordinate.latitude
+        let longitude = stop.coordinate.longitude
+        guard !stationName.isEmpty,
+              (-90...90).contains(latitude), (-180...180).contains(longitude) else {
+            stops.append(stop)
+            return
+        }
+
+        let cell = Cell(stationName: stationName,
+                        latitude: Int(floor(latitude * 111_320 / cellSizeMeters)),
+                        longitude: Int(floor(longitude * longitudeMetersPerDegree / cellSizeMeters)))
+        let modes = Set(stop.mapModes)
+
+        for latitudeOffset in -1...1 {
+            for longitudeOffset in -1...1 {
+                let neighbor = Cell(stationName: stationName,
+                                    latitude: cell.latitude + latitudeOffset,
+                                    longitude: cell.longitude + longitudeOffset)
+                for existing in cells[neighbor, default: []] {
+                    let sameModes = existing.modes.isEmpty || modes.isEmpty
+                        || !existing.modes.isDisjoint(with: modes)
+                    if sameModes, existing.stop.coordinate.distance(to: stop.coordinate) <= cellSizeMeters {
+                        return
+                    }
+                }
+            }
+        }
+
+        cells[cell, default: []].append(Entry(stop: stop, modes: modes))
+        stops.append(stop)
+    }
+}
+
 extension ContentView {
     var mapCapabilities: MapProviderCapabilities { ActiveMapProvider.capabilities }
 
@@ -43,6 +107,9 @@ extension ContentView {
             openOriginSearchAfterPickerDismiss = false
             selectingRouteOriginInSearch = true
             appRouter.present(.search)
+        case .favorites where openSearchAfterFavoritesDismiss:
+            openSearchAfterFavoritesDismiss = false
+            appRouter.present(.search)
         default:
             break
         }
@@ -67,19 +134,10 @@ extension ContentView {
     }
 
     func transitStopsForMap(_ regionalStops: [TransitStop]) -> [TransitStop] {
-        var result: [TransitStop] = []
-        for stop in transitStore.mapStops + regionalStops {
-            let isDuplicate = result.contains { existing in
-                if existing.id == stop.id { return true }
-                let sameNamedStop = existing.mapStationNameKey == stop.mapStationNameKey
-                    && !existing.mapStationNameKey.isEmpty
-                let sameModes = existing.mapModes.isEmpty || stop.mapModes.isEmpty
-                    || !Set(existing.mapModes).isDisjoint(with: stop.mapModes)
-                return sameNamedStop && sameModes && existing.coordinate.distance(to: stop.coordinate) <= 60
-            }
-            if !isDuplicate { result.append(stop) }
-        }
-        return result
+        let stops = transitStore.mapStops + regionalStops
+        var deduplicator = TransitStopDeduplicator(stops: stops)
+        for stop in stops { deduplicator.appendIfUnique(stop) }
+        return deduplicator.stops
     }
 
     var activeNavigationTransitLeg: JourneyLeg? {
@@ -403,9 +461,7 @@ extension ContentView {
 
     var isDestinationFavorite: Bool {
         guard let destination = navigationStore.state.destination else { return false }
-        return placeStore.places.contains {
-            $0.kind == .favorite && $0.destination.coordinate == destination.coordinate
-        }
+        return isFavoriteDestination(destination)
     }
 
     var routeOriginPoint: RoutePoint? {

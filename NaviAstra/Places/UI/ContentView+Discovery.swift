@@ -30,7 +30,7 @@ extension ContentView {
                 } else {
                     Text("Zapisz Dom, Pracę lub ulubiony adres, aby mieć je zawsze pod ręką.")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                 }
 
                 Divider()
@@ -78,7 +78,7 @@ extension ContentView {
                 } else {
                     Text("Ostatnio wybrane miejsca pojawią się tutaj.")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                 }
             }
         }
@@ -94,11 +94,11 @@ extension ContentView {
                 Button { openTransitStop(stop) } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "tram.fill").foregroundStyle(Color.accentColor)
-                        Text("Transport w pobliżu").font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                        Text("Transport w pobliżu").font(.subheadline.weight(.semibold)).foregroundStyle(Color.naviTextPrimary)
                         Spacer()
                         if let location = navigationStore.state.location?.coordinate {
                             Text(distance(location.distance(to: stop.coordinate)))
-                                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                .font(.caption.monospacedDigit()).foregroundStyle(Color.naviTextSecondary)
                         }
                         Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
                     }
@@ -106,7 +106,7 @@ extension ContentView {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                Text(stop.name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(stop.name).font(.caption).foregroundStyle(Color.naviTextSecondary).lineLimit(1)
                 ForEach(navigationStore.state.nearbyTransitDepartures.prefix(3)) { departure in
                     Button { openTransitDeparture(departure) } label: {
                         TimelineView(.periodic(from: .now, by: 20)) { context in
@@ -141,8 +141,8 @@ extension ContentView {
         guard let seconds else { return .primary }
         guard seconds > 0 else { return .secondary }
         let minutes = seconds / 60
-        if minutes > 5 { return .red }
-        if minutes >= 3 { return .orange }
+        if minutes > 5 { return Color(naviHex: NaviAstraColorPalette.danger) }
+        if minutes >= 3 { return Color(naviHex: NaviAstraColorPalette.warning) }
         return .primary
     }
 
@@ -166,13 +166,13 @@ extension ContentView {
                                     VStack(alignment: .leading, spacing: 1) {
                                         Text(shortcut.title)
                                             .font(.subheadline.weight(.semibold))
-                                            .foregroundStyle(.primary)
+                                            .foregroundStyle(Color.naviTextPrimary)
                                             .lineLimit(1)
                                         if let estimatedMinutes = shortcut.estimatedMinutes {
                                             let routeDistance = shortcut.estimatedDistanceMeters.map(distance)
                                             Text(routeDistance.map { "\(estimatedMinutes) min · \($0)" } ?? "\(estimatedMinutes) min")
                                                 .font(.caption.weight(.medium).monospacedDigit())
-                                                .foregroundStyle(.secondary)
+                                                .foregroundStyle(Color.naviTextSecondary)
                                         }
                                     }
                                 }
@@ -208,7 +208,7 @@ extension ContentView {
                     } label: {
                         Image(systemName: "arrow.right")
                             .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.naviTextSecondary)
                             .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
                     }
@@ -238,20 +238,22 @@ extension ContentView {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(shortcut.destination.name)
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(Color.naviTextPrimary)
                         .lineLimit(1)
                     Text(shortcut.destination.address ?? "Ostatnio wybrane miejsce")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                         .lineLimit(1)
                 }
 
                 Spacer(minLength: 4)
 
-                Text(shortcut.usedAt, style: .relative)
-                    .font(.caption2.weight(.medium).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                TimelineView(.periodic(from: .now, by: 30)) { context in
+                    Text(recentPlaceTime(shortcut.usedAt, relativeTo: context.date))
+                        .font(.caption2.weight(.medium).monospacedDigit())
+                        .foregroundStyle(Color.naviTextSecondary)
+                        .lineLimit(1)
+                }
 
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.semibold))
@@ -267,6 +269,15 @@ extension ContentView {
         .accessibilityHint(shortcut.destination.address ?? "Ostatnio wybrane miejsce")
     }
 
+    private func recentPlaceTime(_ date: Date, relativeTo now: Date) -> String {
+        let elapsed = now.timeIntervalSince(date)
+        let totalMinutes = Int(abs(elapsed) / 60)
+        guard totalMinutes > 0 else { return "teraz" }
+
+        let value = totalMinutes < 60 ? "\(totalMinutes) min" : "\(totalMinutes / 60) godz."
+        return elapsed >= 0 ? "\(value) temu" : "za \(value)"
+    }
+
     func voiceSliderRow(title: String, value: Binding<Double>,
                                 range: ClosedRange<Double>, valueDescription: String) -> some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -274,7 +285,7 @@ extension ContentView {
                 Text(title)
                 Spacer()
                 Text(valueDescription)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
                     .monospacedDigit()
             }
             Slider(value: value, in: range)
@@ -334,7 +345,7 @@ extension ContentView {
                         circleSurface {
                             Image(systemName: navigationStore.state.voiceEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
                                 .font(.system(size: 17, weight: .semibold))
-                                .foregroundStyle(navigationStore.state.voiceEnabled ? Color.accentColor : Color.secondary)
+                                .foregroundStyle(navigationStore.state.voiceEnabled ? Color.accentColor : Color.naviTextSecondary)
                         }
                     }
                     .buttonStyle(.plain)
@@ -357,7 +368,7 @@ extension ContentView {
                         Image(systemName: isNavigating ? "location.north.fill"
                               : navigationStore.state.cameraState == .routeOverview ? "location.fill" : "scope")
                             .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(Color.naviTextPrimary)
                     }
                 }
                 .buttonStyle(.plain)

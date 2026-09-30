@@ -44,10 +44,14 @@ final class TransitStopMapAnnotationView: MKAnnotationView {
             ? iconHeight / 2 : 8
         capsule.layer?.borderWidth = presentation.isActive || presentation.isAlighting ? 3
             : presentation.isSelected || presentation.isOnRoute ? 2.5 : 1.5
-        let accent: NSColor = presentation.isAlighting ? .systemPurple
-            : presentation.isActive ? .systemOrange
-            : presentation.isSelected ? .systemBlue
-            : presentation.isOnRoute ? .systemTeal
+        let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let brand = PlacePOIMapPalette.accentColor(dark: isDark)
+        let route = NSColor(naviHex: isDark
+            ? NaviAstraColorPalette.navigationActiveNight : NaviAstraColorPalette.navigationActiveDay)
+        let accent: NSColor = presentation.isAlighting ? brand
+            : presentation.isActive ? route
+            : presentation.isSelected ? brand
+            : presentation.isOnRoute ? route
             : transitMarkerColor(for: presentation.modes.first)
         capsule.layer?.borderColor = accent.cgColor
         addSubview(capsule)
@@ -76,7 +80,7 @@ final class TransitStopMapAnnotationView: MKAnnotationView {
             badge.font = .systemFont(ofSize: 8, weight: .bold)
             badge.textColor = .white
             badge.wantsLayer = true
-            badge.layer?.backgroundColor = NSColor.systemPurple.cgColor
+            badge.layer?.backgroundColor = brand.cgColor
             badge.layer?.cornerRadius = 6
             addSubview(badge)
         }
@@ -97,7 +101,7 @@ final class TransitStopMapAnnotationView: MKAnnotationView {
     }
 
     private func transitMarkerColor(for mode: TransitStopMode?) -> NSColor {
-        guard let mode else { return .systemBlue }
+        guard let mode else { return NSColor(naviHex: NaviAstraColorPalette.transitFallback) }
         return NSColor(calibratedRed: CGFloat((mode.accentHex >> 16) & 0xff) / 255,
                        green: CGFloat((mode.accentHex >> 8) & 0xff) / 255,
                        blue: CGFloat(mode.accentHex & 0xff) / 255, alpha: 1)
@@ -171,8 +175,9 @@ final class TrafficMapAnnotationView: MKAnnotationView {
         layer?.backgroundColor = color.cgColor
         layer?.cornerRadius = size / 2
         layer?.borderWidth = presentation.isCritical ? 2.5 : 1.5
-        layer?.borderColor = (presentation.isCritical ? NSColor.systemRed : NSColor.white).cgColor
-        layer?.shadowColor = (presentation.isCritical ? NSColor.systemRed : color).cgColor
+        let danger = NSColor(naviHex: NaviAstraColorPalette.danger)
+        layer?.borderColor = (presentation.isCritical ? danger : NSColor.white).cgColor
+        layer?.shadowColor = (presentation.isCritical ? danger : color).cgColor
         layer?.shadowOpacity = presentation.isCritical ? 0.48 : 0.24
         layer?.shadowRadius = presentation.isCritical ? 5 : 3
 

@@ -24,6 +24,7 @@ extension NavigationSession {
     func prepareNavigationCamera(for route: NavigationRoute) {
         mapCameraController.prepareNavigationCamera(for: route) { [weak self] routeID, projection, timestamp in
             self?.previousRouteMatch = (routeID, projection, timestamp)
+            self?.updateCameraIntent(using: projection)
         }
     }
 

@@ -219,12 +219,12 @@ struct DestinationSearchSheet: View {
             if let message = speechInput.errorMessage {
                 Label(message, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
             }
             if let savedPlaceNotice {
                 Label(savedPlaceNotice, systemImage: "checkmark.circle.fill")
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(.green)
+                    .foregroundStyle(Color(naviHex: NaviAstraColorPalette.success))
                     .transition(.opacity)
             }
             if !selectingRouteOrigin && searchScope == .places && trimmedQuery.isEmpty {
@@ -418,7 +418,8 @@ struct DestinationSearchSheet: View {
                             .controlSize(.small)
                     } else {
                         Image(systemName: speechInput.isListening ? "stop.fill" : "mic.fill")
-                            .foregroundStyle(speechInput.isListening ? .red : .secondary)
+                            .foregroundStyle(speechInput.isListening
+                                ? Color(naviHex: NaviAstraColorPalette.danger) : Color.naviTextSecondary)
                             .symbolEffect(.pulse, isActive: speechInput.isListening)
                     }
                 }
@@ -454,7 +455,7 @@ struct DestinationSearchSheet: View {
                 Text("SZYBKIE MIEJSCA")
                     .font(.caption.weight(.semibold))
                     .tracking(0.7)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
                 Spacer()
                 addPlaceMenu
             }
@@ -512,19 +513,14 @@ struct DestinationSearchSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(place.displayName)
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(Color.naviTextPrimary)
                         .lineLimit(1)
-                    if let estimate = quickEstimates[place.id.uuidString] {
-                        Text("\(estimate.minutes) min · \(formattedRouteDistance(estimate.distanceMeters))")
-                            .font(.caption.weight(.medium).monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    } else {
-                        Text(place.destination.address ?? place.kind.title)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
+                    Text(quickEstimates[place.id.uuidString].map {
+                        "\($0.minutes) min · \(formattedRouteDistance($0.distanceMeters))"
+                    } ?? "— min · — km")
+                        .font(.caption.weight(.medium).monospacedDigit())
+                        .foregroundStyle(Color.naviTextSecondary)
+                        .lineLimit(1)
                 }
             }
             .padding(.horizontal, 12)
@@ -592,7 +588,9 @@ struct DestinationSearchSheet: View {
             let saved = await onSaveCurrentLocation(kind)
             if saved {
                 withAnimation(.easeInOut(duration: 0.18)) {
-                    savedPlaceNotice = "Zapisano \(kind.title.lowercased()) z bieżącej lokalizacji."
+                    savedPlaceNotice = kind == .favorite
+                        ? "Zapisano ulubione miejsce i przypięto je do szybkich skrótów."
+                        : "Zapisano \(kind.title.lowercased()) z bieżącej lokalizacji."
                 }
             } else {
                 saveAlertMessage = "Bieżąca lokalizacja jest niedostępna. Spróbuj ponownie, gdy mapa ustali Twoją pozycję."
@@ -627,15 +625,15 @@ struct DestinationSearchSheet: View {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(result.destination.name)
                                     .font(.subheadline.weight(.medium))
-                                    .foregroundStyle(.primary)
+                                    .foregroundStyle(Color.naviTextPrimary)
                                 Text(result.subtitle)
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(Color.naviTextSecondary)
                                     .lineLimit(2)
                                 if let summary = result.travelSummary {
                                     Text(summary)
                                         .font(.caption.weight(.medium))
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(Color.naviTextSecondary)
                                         .lineLimit(1)
                                 }
                             }
@@ -664,13 +662,13 @@ struct DestinationSearchSheet: View {
                     .buttonStyle(.plain)
                     Text("NaviAstra użyje zapisanych nazw i adresów, aby znaleźć cel nawigacji.")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                 } else {
                     Text(contactsAccessStatus == .restricted
                          ? "Dostęp do Kontaktów jest ograniczony przez system."
                          : "Dostęp do Kontaktów jest wyłączony. Możesz go zmienić w Ustawieniach systemowych.")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                 }
             }
         }
@@ -755,7 +753,7 @@ struct DestinationSearchSheet: View {
             VStack(spacing: 10) {
                 Image(systemName: "mappin.slash")
                     .font(.system(size: 28))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
                 Text(searchError.localizedDescription)
                     .font(.headline)
                     .multilineTextAlignment(.center)
@@ -765,7 +763,7 @@ struct DestinationSearchSheet: View {
                 } else {
                     Text("Możesz też zmienić obszar wyszukiwania.")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                         .multilineTextAlignment(.center)
                 }
             }
@@ -776,13 +774,13 @@ struct DestinationSearchSheet: View {
             VStack(spacing: 8) {
                 Image(systemName: "mappin.slash")
                     .font(.system(size: 28))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
                 Text("Nie znaleziono wyników dla „\(trimmedQuery)”")
                     .font(.headline)
                     .multilineTextAlignment(.center)
                 Text("Zmień nazwę miejsca albo wybierz inny obszar.")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
                     .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity)
@@ -823,7 +821,7 @@ struct DestinationSearchSheet: View {
                     ProgressView("Szukam przystanków i lokalnych linii…").font(.caption).padding(.vertical, 5)
                 }
                 if !transitResults.lines.isEmpty {
-                    Text("Linie").font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.top, 3)
+                    Text("Linie").font(.caption.weight(.semibold)).foregroundStyle(Color.naviTextSecondary).padding(.top, 3)
                     ForEach(transitResults.lines) { line in
                         Button {
                             isSearchFocused = false
@@ -836,9 +834,9 @@ struct DestinationSearchSheet: View {
                                     .background(mapTransitColor(line.colorHex), in: RoundedRectangle(cornerRadius: 8))
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(line.mode == "RAIL" ? "Pociąg" : line.mode == "TRAM" ? "Tramwaj" : "Autobus")
-                                        .font(.subheadline.weight(.medium)).foregroundStyle(.primary)
+                                        .font(.subheadline.weight(.medium)).foregroundStyle(Color.naviTextPrimary)
                                     if !line.directions.isEmpty {
-                                        Text(line.directions).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                        Text(line.directions).font(.caption).foregroundStyle(Color.naviTextSecondary).lineLimit(1)
                                     }
                                 }
                                 Spacer()
@@ -850,7 +848,7 @@ struct DestinationSearchSheet: View {
                     }
                 }
                 if !transitResults.stops.isEmpty {
-                    Text("Stacje i przystanki").font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.top, 3)
+                    Text("Stacje i przystanki").font(.caption.weight(.semibold)).foregroundStyle(Color.naviTextSecondary).padding(.top, 3)
                     ForEach(transitResults.stops) { stop in
                         Button {
                             isSearchFocused = false
@@ -863,10 +861,10 @@ struct DestinationSearchSheet: View {
                                     .frame(width: 34, height: 34)
                                     .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(stop.name).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
+                                    Text(stop.name).font(.subheadline.weight(.medium)).foregroundStyle(Color.naviTextPrimary)
                                     if !stop.lines.isEmpty {
                                         Text(stop.lines.prefix(6).joined(separator: " · "))
-                                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                            .font(.caption).foregroundStyle(Color.naviTextSecondary).lineLimit(1)
                                     }
                                 }
                                 Spacer()
@@ -931,10 +929,10 @@ struct DestinationSearchSheet: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(destination.name)
                         .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(Color.naviTextPrimary)
                     Text(subtitle)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                 }
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right")
@@ -964,7 +962,9 @@ struct DestinationSearchSheet: View {
         }
         withAnimation(.easeInOut(duration: 0.18)) {
             savingKind = nil
-            savedPlaceNotice = "Dodano do \(kind.title)."
+            savedPlaceNotice = kind == .favorite
+                ? "Dodano do Ulubionych i przypięto do szybkich skrótów."
+                : "Dodano do \(kind.title)."
         }
         query = ""
         results = []
@@ -984,7 +984,7 @@ struct DestinationSearchSheet: View {
         Text(title.uppercased())
             .font(.caption.weight(.semibold))
             .tracking(0.7)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.naviTextSecondary)
             .padding(.top, 3)
     }
 

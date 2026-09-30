@@ -38,6 +38,7 @@ struct MapSettings {
     var cameraMode: MapDimension
     var overlays: MapOverlays
     var poiCategories: Set<MapPOICategory> = Set(MapPOICategory.allCases)
+    var safetyPOICategories: Set<MapSafetyPOICategory> = Set(MapSafetyPOICategory.allCases)
     var context: MapDisplayContext = .browse
 }
 
@@ -103,7 +104,7 @@ enum MapPOICategory: Int, CaseIterable, Identifiable {
         switch self {
         case .fuel: ["fuel"]
         case .parking: ["parking", "park_ride", "park_and_ride"]
-        case .charging: ["charging_station"]
+        case .charging: ["charging_station", "ev_charger", "ev_charging"]
         case .food: ["food", "restaurant", "cafe", "fast_food", "bar", "pub", "bakery"]
         case .shopping: ["shop", "grocery", "supermarket", "mall", "clothes", "convenience"]
         case .health: ["hospital", "pharmacy", "doctor", "doctors", "clinic"]

@@ -22,14 +22,15 @@ final class NaviAstraMapStyle {
         configured = false
     }
 
-    func apply(to style: MLNStyle, settings: MapSettings, dark: Bool, zoom: Double) {
+    func apply(to style: MLNStyle, settings: MapSettings, dark: Bool,
+               activelyNavigating: Bool, zoom: Double) {
         if !configured {
             configure(style)
             configured = true
         }
         let density = Self.densityLevel(for: zoom)
         let categories = settings.visiblePOICategories.sorted { $0.rawValue < $1.rawValue }
-        let key = "\(dark)-\(settings.context)-\(categories.map(\.rawValue))-\(settings.overlays.buildings3D)-\(settings.cameraMode)-\(settings.overlays.transit)"
+        let key = "\(dark)-\(activelyNavigating)-\(settings.context)-\(categories.map(\.rawValue))-\(settings.overlays.buildings3D)-\(settings.cameraMode)-\(settings.overlays.transit)"
         guard key != lastKey else {
             updatePOIDensity(to: style, zoom: zoom)
             return
@@ -44,17 +45,22 @@ final class NaviAstraMapStyle {
         light.anchor = NSExpression(forConstantValue: "map")
         light.position = NSExpression(forConstantValue: NSValue(mlnSphericalPosition: lightPosition))
         light.intensity = NSExpression(forConstantValue: dark ? 0.34 : 0.56)
-        light.color = NSExpression(forConstantValue: color(dark ? 0xC8D8E8 : 0xFFF9EF))
+        light.color = NSExpression(forConstantValue: color(dark ? NaviAstraColorPalette.mapLabelNight : 0xF2F5F8))
         light.positionTransition = MLNTransition(duration: transitionDuration, delay: 0)
         light.intensityTransition = MLNTransition(duration: transitionDuration, delay: 0)
         light.colorTransition = MLNTransition(duration: transitionDuration, delay: 0)
         style.light = light
-        let background = color(dark ? 0x111D29 : 0xF2F4F1)
-        let text = color(dark ? 0xD5E3EC : 0x344D5B)
-        let muted = color(dark ? 0x8B9FAA : 0x788B93)
-        let water = color(dark ? 0x16384A : 0xB9DFEC)
-        let majorRoad = color(dark ? 0x799AA8 : 0xFFFFFF)
-        let minorRoad = color(dark ? 0x354B59 : 0xFFFFFF)
+        let background = color(dark ? NaviAstraColorPalette.mapBackgroundNight : NaviAstraColorPalette.mapBackgroundDay)
+        let text = color(dark ? NaviAstraColorPalette.mapLabelNight : NaviAstraColorPalette.mapLabelDay)
+        let muted = color(dark ? NaviAstraColorPalette.routeAlternativeNight : NaviAstraColorPalette.routeAlternativeDay)
+        let water = color(dark ? NaviAstraColorPalette.mapWaterNight : NaviAstraColorPalette.mapWaterDay)
+        let majorRoad = color(dark
+            ? (activelyNavigating ? NaviAstraColorPalette.mapMainRoadNightNavigation
+                                  : NaviAstraColorPalette.mapMainRoadNightExploration)
+            : 0xFFFFFF)
+        let minorRoad = color(dark ? NaviAstraColorPalette.mapLocalRoadNight : 0xFFFFFF)
+        let roadOutline = color(dark ? NaviAstraColorPalette.mapBackgroundNight
+                                     : NaviAstraColorPalette.mapMainRoadOutlineDay)
 
         for layer in style.layers {
             let id = layer.identifier
@@ -90,26 +96,28 @@ final class NaviAstraMapStyle {
                     ])
                     continue
                 case "waterway": fill = water
-                case "park": fill = color(dark ? 0x203F37 : 0xCCE3C9)
+                case "park": fill = color(dark ? NaviAstraColorPalette.mapParkNight : NaviAstraColorPalette.mapParkDay)
                 case "landcover":
                     layer.fillColor = landcoverColorExpression(dark: dark)
                     continue
-                case "landuse": fill = color(dark ? 0x23313B : 0xE8ECE5)
-                case "building": fill = color(dark ? 0x303E48 : 0xDAD5CD)
+                case "landuse": fill = color(dark ? NaviAstraColorPalette.mapBuildingNight
+                                                  : NaviAstraColorPalette.mapBuildingDay)
+                case "building": fill = color(dark ? NaviAstraColorPalette.mapBuildingNight
+                                                   : NaviAstraColorPalette.mapBuildingDay)
                 case "aeroway": fill = color(dark ? 0x2B3C48 : 0xDCE4E8)
                 default: continue
                 }
                 layer.fillColor = NSExpression(forConstantValue: fill)
                 if source == "building" {
-                    let neutralColor = dark ? "#303E48" : "#DAD5CD"
+                    let neutralColor = dark ? "#1A2531" : "#E2E7EA"
                     layer.fillColor = buildingColorExpression(neutralColor: neutralColor)
                     layer.fillOpacity = NSExpression(forConstantValue: navigating ? 0.42 : 0.75)
-                    layer.fillOutlineColor = NSExpression(forConstantValue: color(dark ? 0x4A606B : 0xC2CFD4))
+                    layer.fillOutlineColor = NSExpression(forConstantValue: roadOutline)
                 }
             }
             if let layer = layer as? MLNFillExtrusionStyleLayer {
                 layer.isVisible = settings.overlays.buildings3D && settings.cameraMode == .threeD
-                layer.fillExtrusionColor = buildingColorExpression(neutralColor: dark ? "#43515B" : "#D7D1C8")
+                layer.fillExtrusionColor = buildingColorExpression(neutralColor: dark ? "#1A2531" : "#E2E7EA")
                 layer.fillExtrusionOpacity = NSExpression(mglJSONObject: [
                     "interpolate", ["linear"], ["zoom"],
                     15, navigating ? 0.08 : 0.12,
@@ -127,14 +135,20 @@ final class NaviAstraMapStyle {
                     let main = id.contains("motorway") || id.contains("trunk") || id.contains("primary")
                     let path = id.contains("path") || id.contains("pedestrian")
                     let pathFocus = settings.context == .walking || settings.context == .cycling
-                    let roadColor: UIColor = rail ? color(dark ? 0x78949F : 0x91A8B3) :
-                        (casing ? color(dark ? 0x1B2A36 : 0xCBD7DB) :
-                            (path && pathFocus ? color(dark ? 0x74CBB5 : 0x459983) : (main ? majorRoad : minorRoad)))
+                    let roadColor: UIColor = rail ? color(dark ? NaviAstraColorPalette.routeAlternativeNight
+                                                               : NaviAstraColorPalette.routeAlternativeDay) :
+                        (casing ? roadOutline :
+                            (path && settings.context == .cycling
+                                ? color(dark ? NaviAstraColorPalette.cyclingRouteNight
+                                             : NaviAstraColorPalette.cyclingRouteDay)
+                                : (main ? majorRoad : minorRoad)))
                     layer.lineColor = NSExpression(forConstantValue: roadColor)
                     layer.lineOpacity = NSExpression(forConstantValue: navigating && !main && !pathFocus ? 0.48 : 1.0)
                     if rail {
                         layer.lineOpacity = NSExpression(forConstantValue: settings.overlays.transit || settings.context == .transit ? 1.0 : 0.35)
-                        layer.lineColor = NSExpression(forConstantValue: settings.overlays.transit ? color(dark ? 0xBBA8ED : 0x8071B0) : roadColor)
+                        layer.lineColor = NSExpression(forConstantValue: settings.overlays.transit
+                            ? color(dark ? RouteColorPalette.alternativeDark : RouteColorPalette.alternativeLight)
+                            : roadColor)
                     }
                 } else if source == "waterway" {
                     layer.lineColor = NSExpression(forConstantValue: water)
@@ -147,14 +161,16 @@ final class NaviAstraMapStyle {
                     layer.lineColor = NSExpression(forConstantValue: muted)
                     layer.lineOpacity = NSExpression(forConstantValue: navigating ? 0.2 : 0.5)
                 } else if source == "aeroway" {
-                    layer.lineColor = NSExpression(forConstantValue: color(dark ? 0x5D707A : 0xC0CDD5))
+                    layer.lineColor = NSExpression(forConstantValue: color(dark ? NaviAstraColorPalette.mapMainRoadNightExploration
+                                                                              : NaviAstraColorPalette.mapMainRoadOutlineDay))
                 } else if source == "park" {
-                    layer.lineColor = NSExpression(forConstantValue: color(dark ? 0x355647 : 0xADCDB1))
+                    layer.lineColor = NSExpression(forConstantValue: color(dark ? NaviAstraColorPalette.mapParkNight
+                                                                              : NaviAstraColorPalette.mapParkDay))
                 }
             }
             if let layer = layer as? MLNSymbolStyleLayer {
                 let source = layer.sourceLayerIdentifier ?? ""
-                layer.textColor = NSExpression(forConstantValue: source == "water_name" ? color(dark ? 0x83B3C9 : 0x4E8399) : text)
+                layer.textColor = NSExpression(forConstantValue: text)
                 layer.textHaloColor = NSExpression(forConstantValue: background)
                 layer.textHaloWidth = NSExpression(forConstantValue: 1.2)
                 if source == "poi" {
@@ -327,13 +343,14 @@ final class NaviAstraMapStyle {
     }
 
     private func landcoverColorExpression(dark: Bool) -> NSExpression {
-        let forest = hexColor(dark ? 0x1D3931 : 0xBAD7BF)
-        let scrub = hexColor(dark ? 0x263D34 : 0xCADCC6)
-        let grass = hexColor(dark ? 0x294235 : 0xDDEBD3)
-        let meadow = hexColor(dark ? 0x2B4035 : 0xE5EED7)
-        let cultivated = hexColor(dark ? 0x303E34 : 0xD9E7CD)
-        let garden = hexColor(dark ? 0x29483A : 0xD9ECD5)
-        let wetland = hexColor(dark ? 0x263F40 : 0xD1E3D8)
+        let vegetation = hexColor(dark ? NaviAstraColorPalette.mapParkNight : NaviAstraColorPalette.mapParkDay)
+        let forest = vegetation
+        let scrub = vegetation
+        let grass = vegetation
+        let meadow = vegetation
+        let cultivated = vegetation
+        let garden = vegetation
+        let wetland = vegetation
         let sand = hexColor(dark ? 0x3D3B30 : 0xEDE4C7)
         let rock = hexColor(dark ? 0x3D4142 : 0xDFDDD3)
         let ice = hexColor(dark ? 0x30434B : 0xE6F0F1)
@@ -360,15 +377,16 @@ final class NaviAstraMapStyle {
     }
 
     private func waterColorExpression(dark: Bool) -> NSExpression {
+        let water = hexColor(dark ? NaviAstraColorPalette.mapWaterNight : NaviAstraColorPalette.mapWaterDay)
         let expression: [Any] = [
             "match", ["get", "class"],
-            "ocean", hexColor(dark ? 0x16384A : 0xB5DDEB),
-            "lake", hexColor(dark ? 0x194052 : 0xB9E0ED),
-            "river", hexColor(dark ? 0x1B465A : 0xADD9EA),
-            "pond", hexColor(dark ? 0x1E4858 : 0xB1DCEB),
-            "dock", hexColor(dark ? 0x1D4354 : 0xA9D7E8),
-            "swimming_pool", hexColor(dark ? 0x23566A : 0x83CDE5),
-            hexColor(dark ? 0x194052 : 0xB9E0ED)
+            "ocean", water,
+            "lake", water,
+            "river", water,
+            "pond", water,
+            "dock", water,
+            "swimming_pool", water,
+            water
         ]
         return NSExpression(mglJSONObject: expression)
     }

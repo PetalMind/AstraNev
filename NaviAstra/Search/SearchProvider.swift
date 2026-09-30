@@ -71,6 +71,7 @@ struct SearchResult: Identifiable {
     var timeZoneIdentifier: String? = nil
     var photonImportance: Double? = nil
     var straightDistance: Double? = nil
+    var selectionDistanceFromTap: Double? = nil
     var travelTime: Double? = nil
     var travelDistance: Double? = nil
     var detour: Double? = nil
@@ -310,7 +311,8 @@ struct MapKitSearchProvider: SearchProvider {
             ]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first { !$0.isEmpty }
-            let name = isPOI ? item.name ?? addressNames : addressNames ?? item.name
+            let itemName = item.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = itemName.flatMap { $0.isEmpty ? nil : $0 } ?? addressNames
             guard let name else { return nil }
 
             let addressText = [address?.fullAddress, address?.shortAddress, name]
@@ -324,8 +326,9 @@ struct MapKitSearchProvider: SearchProvider {
                                         longitude: location.coordinate.longitude)
             guard (-90...90).contains(coordinate.latitude), (-180...180).contains(coordinate.longitude) else { return nil }
             let category = item.pointOfInterestCategory?.rawValue
+            let fullAddress = address?.fullAddress
             return SearchResult(destination: Destination(name: name, coordinate: coordinate,
-                                                         address: isPOI ? address?.fullAddress : nil), street: nil,
+                                                         address: fullAddress == name ? nil : fullAddress), street: nil,
                                 houseNumber: requestedNumber, city: addressRepresentations?.cityName,
                                 countryCode: addressRepresentations?.region?.identifier.lowercased(),
                                 isPOI: isPOI, providerID: item.identifier?.rawValue,

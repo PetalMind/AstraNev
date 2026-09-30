@@ -62,6 +62,10 @@ struct PlaceDetails: Codable, Identifiable {
     var parking: String?
     var osmParking: ParkingInformation?
     var driveThrough: String?
+    var internetAccess: String?
+    var takeaway: String?
+    var delivery: String?
+    var outdoorSeating: String?
     var source: PlaceDetailsSource
     var fetchedAt: Date
     var cacheGroupFetchedAt: [String: Date]? = nil
@@ -109,6 +113,7 @@ struct PlaceDetails: Codable, Identifiable {
                             parking: nil,
                             osmParking: isParkingCategory(result.category) ? .unknown : nil,
                             driveThrough: nil,
+                            internetAccess: nil, takeaway: nil, delivery: nil, outdoorSeating: nil,
                             source: result.placeProvider == .mapKit ? .mapKit : result.placeProvider == .openFreeMap ? .openFreeMap : .openStreetMap,
                             fetchedAt: Date())
     }
@@ -130,6 +135,7 @@ struct PlaceDetails: Codable, Identifiable {
                      parking: nil,
                      osmParking: isParkingCategory(identity.category) ? .unknown : nil,
                      driveThrough: nil,
+                     internetAccess: nil, takeaway: nil, delivery: nil, outdoorSeating: nil,
                      source: identity.provider == .mapKit ? .mapKit : identity.provider == .openFreeMap ? .openFreeMap : .openStreetMap,
                      fetchedAt: Date())
     }
@@ -157,6 +163,10 @@ struct PlaceDetails: Codable, Identifiable {
                      parking: newer.parking ?? parking,
                      osmParking: newer.osmParking ?? osmParking,
                      driveThrough: newer.driveThrough ?? driveThrough,
+                     internetAccess: newer.internetAccess ?? internetAccess,
+                     takeaway: newer.takeaway ?? takeaway,
+                     delivery: newer.delivery ?? delivery,
+                     outdoorSeating: newer.outdoorSeating ?? outdoorSeating,
                      source: newer.source,
                      fetchedAt: newer.fetchedAt,
                      cacheGroupFetchedAt: newer.cacheGroupFetchedAt ?? cacheGroupFetchedAt)
@@ -182,7 +192,8 @@ struct PlaceDetails: Codable, Identifiable {
         var groups = ["identity": details.fetchedAt]
         if details.phone != nil || details.website != nil { groups["contact"] = details.fetchedAt }
         if details.openingHours != nil { groups["hours"] = details.fetchedAt }
-        if details.wheelchair != nil || details.parking != nil || details.osmParking != nil || details.driveThrough != nil {
+        if details.wheelchair != nil || details.parking != nil || details.osmParking != nil || details.driveThrough != nil ||
+            details.internetAccess != nil || details.takeaway != nil || details.delivery != nil || details.outdoorSeating != nil {
             groups["access"] = details.fetchedAt
         }
         return groups
@@ -291,11 +302,12 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
                               let coordinate = candidate.coordinate else { return nil }
                         let distance = coordinate.distance(to: identity.coordinate)
                         if identity.provider == .openFreeMap, let externalID = identity.externalID {
+                            let categoryMatch = identity.category.map { Self.matchesCategory($0, tags: tags) } ?? false
                             guard let tileID = Int64(externalID), tileID != Int64.min,
                                   (candidate.id == tileID || candidate.id == abs(tileID)),
-                                  Self.matchesExactName(Self.normalized(identity.name), tags: tags),
+                                  Self.matchesExactName(Self.normalized(identity.name), tags: tags) || categoryMatch,
                                   distance <= 100 else { return nil }
-                            let categoryScore = identity.category.map { Self.matchesCategory($0, tags: tags) ? 180.0 : 0 } ?? 0
+                            let categoryScore = categoryMatch ? 180.0 : 0
                             return (candidate, 1_500 + categoryScore - distance)
                         }
 
@@ -372,6 +384,9 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         let normalizedCategory = normalized(expected)
         if normalizedCategory.hasPrefix(mapKitPrefix) {
             aliases.append(String(normalizedCategory.dropFirst(mapKitPrefix.count)))
+        }
+        if aliases.contains(where: { ["chargingstation", "evcharger", "evcharging"].contains($0) }) {
+            aliases.append(contentsOf: ["chargingstation", "evcharger", "evcharging"])
         }
         aliases = aliases.filter { !$0.isEmpty }
         guard !aliases.isEmpty else { return false }
@@ -466,6 +481,10 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         let wheelchair = tags["wheelchair"]
         let parking = tags["parking"]
         let driveThrough = tags["drive_through"]
+        let internetAccess = tags["internet_access"]
+        let takeaway = tags["takeaway"]
+        let delivery = tags["delivery"]
+        let outdoorSeating = tags["outdoor_seating"]
         let osmParking = ParkingInformation.fromOSMTags(tags)
         let now = Date()
         // Record negative lookups too, so missing fields are retried after their TTL.
@@ -493,6 +512,10 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
                             parking: parking,
                             osmParking: osmParking,
                             driveThrough: driveThrough,
+                            internetAccess: internetAccess,
+                            takeaway: takeaway,
+                            delivery: delivery,
+                            outdoorSeating: outdoorSeating,
                             source: .openStreetMap,
                             fetchedAt: now,
                             cacheGroupFetchedAt: cacheGroupFetchedAt)

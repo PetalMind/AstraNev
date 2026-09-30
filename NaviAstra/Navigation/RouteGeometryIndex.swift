@@ -171,6 +171,62 @@ nonisolated struct RouteProgressGeometry: Sendable {
         return cumulativeDistances[end] - cumulativeDistances[start]
     }
 
+    func coordinate(at distance: Double) -> Coordinate? {
+        guard let first = coordinates.first else { return nil }
+        guard coordinates.count > 1, length > 0 else { return first }
+        let targetDistance = min(length, max(0, distance.isFinite ? distance : 0))
+        var lower = 1
+        var upper = cumulativeDistances.count - 1
+        while lower < upper {
+            let middle = (lower + upper) / 2
+            if cumulativeDistances[middle] < targetDistance {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
+        }
+        let endIndex = lower
+        let startDistance = cumulativeDistances[endIndex - 1]
+        let segmentLength = cumulativeDistances[endIndex] - startDistance
+        guard segmentLength > 0 else { return coordinates[endIndex] }
+        let fraction = (targetDistance - startDistance) / segmentLength
+        let start = coordinates[endIndex - 1]
+        let end = coordinates[endIndex]
+        return Coordinate(latitude: start.latitude + (end.latitude - start.latitude) * fraction,
+                          longitude: start.longitude + (end.longitude - start.longitude) * fraction)
+    }
+
+    func bearing(at distance: Double, lookAhead: Double) -> Double? {
+        guard length > 0, lookAhead > 5 else { return nil }
+        let routeDistance = distance.isFinite ? distance : 0
+        let startDistance = min(length, max(0, routeDistance + 5))
+        let endDistance = min(length, max(0, routeDistance + lookAhead))
+        guard let start = coordinate(at: startDistance),
+              let end = coordinate(at: endDistance),
+              start.distance(to: end) >= 2 else { return nil }
+        let latitude1 = start.latitude * .pi / 180
+        let latitude2 = end.latitude * .pi / 180
+        let longitudeDelta = (end.longitude - start.longitude) * .pi / 180
+        let y = sin(longitudeDelta) * cos(latitude2)
+        let x = cos(latitude1) * sin(latitude2) -
+            sin(latitude1) * cos(latitude2) * cos(longitudeDelta)
+        return (atan2(y, x) * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
+    }
+
+    func maneuverAngle(atCoordinateIndex index: Int) -> Double? {
+        guard coordinates.indices.contains(index), length > 0 else { return nil }
+        let turnDistance = cumulativeDistances[index]
+        guard let incomingStart = coordinate(at: max(0, turnDistance - 18)),
+              let turn = coordinate(at: turnDistance),
+              let outgoingEnd = coordinate(at: min(length, turnDistance + 18)),
+              let incoming = Self.bearing(from: incomingStart, to: turn),
+              let outgoing = Self.bearing(from: turn, to: outgoingEnd) else { return nil }
+        var delta = (outgoing - incoming).truncatingRemainder(dividingBy: 360)
+        if delta > 180 { delta -= 360 }
+        if delta < -180 { delta += 360 }
+        return delta
+    }
+
     func project(_ location: Coordinate,
                  within searchRadius: Double = Self.indexedProjectionRadius) -> RouteProjection? {
         guard coordinates.count > 1,
@@ -286,6 +342,17 @@ nonisolated struct RouteProgressGeometry: Sendable {
             distanceFromRoute: hypot(px - fraction * dx, py - fraction * dy),
             alongRoute: cumulativeDistances[index] + fraction * segmentLengths[index],
             segment: index)
+    }
+
+    private static func bearing(from start: Coordinate, to end: Coordinate) -> Double? {
+        let latitude1 = start.latitude * .pi / 180
+        let latitude2 = end.latitude * .pi / 180
+        let longitudeDelta = (end.longitude - start.longitude) * .pi / 180
+        let y = sin(longitudeDelta) * cos(latitude2)
+        let x = cos(latitude1) * sin(latitude2) -
+            sin(latitude1) * cos(latitude2) * cos(longitudeDelta)
+        guard hypot(x, y) > 0 else { return nil }
+        return (atan2(y, x) * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
     }
 
     private static func cell(for coordinate: Coordinate) -> Cell? {

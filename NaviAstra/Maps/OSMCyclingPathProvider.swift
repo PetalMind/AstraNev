@@ -153,7 +153,7 @@ nonisolated private enum OSMCyclingEndpoint {
     }
 }
 
-private actor OSMCyclingRequestGate {
+actor OSMCyclingRequestGate {
     static let shared = OSMCyclingRequestGate()
     private var lastRequestStartedAt: Date?
     private var requestInFlight = false

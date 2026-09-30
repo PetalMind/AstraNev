@@ -36,6 +36,7 @@ extension ContentView {
                 navigationStore.select(route)
             },
             onCyclingPathsStatus: { mapStore.cyclingPathsStatus = $0 },
+            onRoadPOIStatus: { mapStore.roadPOIStatus = $0 },
             onTransitViewportChange: { transitStore.updateMapStops(in: $0) },
             onMapPan: {
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
@@ -166,6 +167,7 @@ extension ContentView {
             journeyGuidanceExpanded = false
             currentStepExpandedOverride = nil
             routePlanningDetailsExpanded = false
+            showsFullTransitItinerary = false
         }
         .onChange(of: navigationStore.state.progress?.nextManeuver?.id) { _, _ in
             journeyGuidanceExpanded = false
@@ -175,7 +177,9 @@ extension ContentView {
             if !expanded { journeyGuidanceExpanded = false }
         }
         .onChange(of: isNavigating) { _, navigating in
-            if !navigating {
+            if navigating, navigationStore.state.transportMode == .transit {
+                navigationPanelDetent = .expanded
+            } else if !navigating {
                 journeyGuidanceExpanded = false
                 currentStepExpandedOverride = nil
             }
@@ -217,8 +221,11 @@ extension ContentView {
         } else {
 #if os(iOS)
             if isNavigating {
-                let availablePanelHeight = min(geometry.size.height * 0.88,
-                                               max(220, geometry.size.height - mapHeaderInset - 28))
+                let standardPanelHeight = min(geometry.size.height * 0.88,
+                                              max(220, geometry.size.height - mapHeaderInset - 28))
+                let availablePanelHeight = navigationStore.state.transportMode == .transit
+                    ? min(standardPanelHeight, max(220, geometry.size.height * 0.68))
+                    : standardPanelHeight
                 journeyNavigationPanel(
                     maxHeight: availablePanelHeight)
             } else {
@@ -356,7 +363,8 @@ extension ContentView {
     private var transitJourneyRefreshKey: String {
         let routeID = navigationStore.state.route?.id.uuidString ?? "no-route"
         let transportMode = navigationStore.state.transportMode.rawValue
-        return routeID + "-" + transportMode
+        let activity = scenePhase == .active ? "foreground" : "background"
+        return routeID + "-" + transportMode + "-" + activity
     }
 
     private var selectedMapPlacesSheetBinding: Binding<Bool> {
@@ -460,6 +468,7 @@ extension ContentView {
                 if reduceMotion { transaction.animation = nil }
             }
             .task(id: transitJourneyRefreshKey) {
+                guard scenePhase == .active else { return }
                 await refreshTransitJourneyDetails()
             }
             .preferredColorScheme(rootPreferredColorScheme)
@@ -563,6 +572,11 @@ extension ContentView {
 
     var body: some View {
         rootContentWithStateObservers
+            .foregroundStyle(Color.naviTextPrimary)
+            .overlay(alignment: .top) {
+                FavoriteFeedbackOverlay(feedback: $favoriteFeedback)
+                    .padding(.top, 104)
+            }
             .modifier(rootConfirmationDialogs)
     }
 

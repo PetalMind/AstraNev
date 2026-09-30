@@ -6,48 +6,104 @@ struct PlaceDetailsAttributesSection: View {
     @Binding var showHours: Bool
 
     var body: some View {
-        if let category = details.category {
-            Label(categoryTitle(category), systemImage: "tag")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
+        VStack(alignment: .leading, spacing: 14) {
+            if details.category != nil || hasBrand || details.address?.isEmpty == false {
+                detailGroup("Miejsce") {
+                    if let category = details.category {
+                        Label(categoryTitle(category), systemImage: "tag")
+                            .font(.caption)
+                            .foregroundStyle(Color.naviTextSecondary)
+                    }
+                    if let brand = details.brand ?? details.operatorName, brand != details.name {
+                        Label(brand, systemImage: "building.2")
+                            .font(.caption)
+                    }
+                    if let address = details.address, !address.isEmpty {
+                        Label(address, systemImage: "mappin.and.ellipse")
+                            .font(.subheadline)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
 
-        if let brand = details.brand ?? details.operatorName, brand != details.name {
-            Label(brand, systemImage: "building.2")
-                .font(.caption)
-        }
+            if let rawHours = details.openingHours, !rawHours.isEmpty,
+               details.osmParking?.openingHours == nil {
+                detailGroup("Godziny") {
+                    PlaceDetailsOpeningHoursSection(
+                        rawHours: rawHours,
+                        coordinate: details.coordinate,
+                        countryCode: details.countryCode,
+                        timeZoneIdentifier: details.timeZoneIdentifier,
+                        isExpanded: $showHours)
+                }
+            }
 
-        if let address = details.address, !address.isEmpty {
-            Label(address, systemImage: "mappin.and.ellipse")
-                .font(.subheadline)
-                .textSelection(.enabled)
-        }
+            if details.phoneURL != nil || details.websiteURL != nil {
+                detailGroup("Kontakt") {
+                    PlaceDetailsContactLinksSection(details: details)
+                }
+            }
 
-        if let rawHours = details.openingHours, !rawHours.isEmpty, details.osmParking?.openingHours == nil {
-            PlaceDetailsOpeningHoursSection(
-                rawHours: rawHours,
-                coordinate: details.coordinate,
-                countryCode: details.countryCode,
-                timeZoneIdentifier: details.timeZoneIdentifier,
-                isExpanded: $showHours)
-        }
+            if hasAmenities {
+                detailGroup("Udogodnienia") {
+                    if let wheelchair = details.wheelchair {
+                        Label(wheelchairTitle(wheelchair), systemImage: "figure.roll")
+                            .font(.subheadline)
+                    }
+                    if details.internetAccess?.lowercased() == "wlan" || details.internetAccess?.lowercased() == "yes" {
+                        Label("Wi-Fi", systemImage: "wifi").font(.subheadline)
+                    }
+                    if details.takeaway?.lowercased() == "yes" {
+                        Label("Na wynos", systemImage: "takeoutbag.and.cup.and.straw").font(.subheadline)
+                    }
+                    if details.delivery?.lowercased() == "yes" {
+                        Label("Dostawa", systemImage: "bicycle").font(.subheadline)
+                    }
+                    if details.outdoorSeating?.lowercased() == "yes" {
+                        Label("Miejsca na zewnątrz", systemImage: "sun.max").font(.subheadline)
+                    }
+                }
+            }
 
-        PlaceDetailsContactLinksSection(details: details)
+            if details.parking != nil || details.osmParking != nil || details.driveThrough != nil {
+                detailGroup("Parking i dojazd") {
+                    if let parking = details.parking, details.osmParking == nil {
+                        Label("Parking: \(parking)", systemImage: "parkingsign.circle").font(.subheadline)
+                    }
+                    if let parking = details.osmParking {
+                        PlaceParkingInformationSection(parking: parking, details: details, showHours: $showHours)
+                    }
+                    if let driveThrough = details.driveThrough {
+                        Label(driveThrough.lowercased() == "yes" ? "Drive-through" : "Drive-through: \(driveThrough)",
+                              systemImage: "car.side")
+                            .font(.subheadline)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
 
-        if let wheelchair = details.wheelchair {
-            Label(wheelchairTitle(wheelchair), systemImage: "figure.roll")
-                .font(.subheadline)
-        }
-        if let parking = details.parking, details.osmParking == nil {
-            Label("Parking: \(parking)", systemImage: "parkingsign.circle").font(.subheadline)
-        }
-        if let parking = details.osmParking {
-            PlaceParkingInformationSection(parking: parking, details: details, showHours: $showHours)
-        }
-        if let driveThrough = details.driveThrough {
-            Label(driveThrough.lowercased() == "yes" ? "Drive-through" : "Drive-through: \(driveThrough)",
-                  systemImage: "car.side")
-                .font(.subheadline)
+    private var hasBrand: Bool {
+        guard let brand = details.brand ?? details.operatorName else { return false }
+        return brand != details.name
+    }
+
+    private var hasAmenities: Bool {
+        details.wheelchair != nil ||
+            details.internetAccess?.lowercased() == "wlan" || details.internetAccess?.lowercased() == "yes" ||
+            details.takeaway?.lowercased() == "yes" || details.delivery?.lowercased() == "yes" ||
+            details.outdoorSeating?.lowercased() == "yes"
+    }
+
+    @ViewBuilder
+    private func detailGroup<Content: View>(_ title: String,
+                                            @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.naviTextSecondary)
+            content()
         }
     }
 
@@ -90,7 +146,7 @@ struct PlaceDetailsCompactAttributesSection: View {
             if let parking = details.parking, details.osmParking == nil {
                 Label("Parking: \(parking)", systemImage: "parkingsign.circle")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
             }
             if let parking = details.osmParking {
                 HStack(spacing: 8) {
@@ -103,7 +159,7 @@ struct PlaceDetailsCompactAttributesSection: View {
                     }
                 }
                 .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.naviTextSecondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -129,15 +185,16 @@ private struct PlaceDetailsOpeningHoursSection: View {
             if let status = presentation?.statusText {
                 Label(status, systemImage: status.hasPrefix("Otwarte") ? "clock.fill" : "clock")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(status.hasPrefix("Otwarte") ? Color.green : Color.secondary)
+                    .foregroundStyle(status.hasPrefix("Otwarte")
+                        ? Color(naviHex: NaviAstraColorPalette.success) : Color.secondary)
             } else if let failure = presentation?.failure {
                 Label(failure.errorDescription ?? "Godziny niedostępne", systemImage: "exclamationmark.clock")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
             } else if presentation?.isAvailable == true {
                 Label("Godziny niepewne", systemImage: "questionmark.circle")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
             }
             DisclosureGroup("Godziny otwarcia", isExpanded: $isExpanded) {
                 if let rows = presentation?.weeklyRows {
@@ -148,24 +205,24 @@ private struct PlaceDetailsOpeningHoursSection: View {
                             Spacer(minLength: 0)
                         }
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                     }
                 } else if let failure = presentation?.failure {
                     Text(failure.errorDescription ?? "Godziny niedostępne")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                     Text(rawHours)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                         .textSelection(.enabled)
                 } else {
                     Text(rawHours)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                         .textSelection(.enabled)
                 }
                 Text("Godziny mogą się różnić w święta.")
-                    .font(.caption2).foregroundStyle(.secondary)
+                    .font(.caption2).foregroundStyle(Color.naviTextSecondary)
             }
             .font(.subheadline)
         }
@@ -264,6 +321,14 @@ private struct PlaceParkingInformationSection: View {
             if let parkingType = parking.parkingType {
                 parkingRow("Rodzaj", parkingType.replacingOccurrences(of: "_", with: " "))
             }
+            if let capacity = parking.disabledCapacity {
+                parkingRow("Miejsca dostępne", "\(capacity) dla osób z niepełnosprawnością")
+            }
+            if parking.covered?.lowercased() == "yes" { parkingRow("Zadaszenie", "Zadaszony") }
+            if parking.supervised?.lowercased() == "yes" { parkingRow("Nadzór", "Monitorowany lub strzeżony") }
+            if let surface = parking.surface {
+                parkingRow("Nawierzchnia", surface.replacingOccurrences(of: "_", with: " ").capitalized)
+            }
             if let openingHours = parking.openingHours, !openingHours.isEmpty {
                 PlaceParkingOpeningHoursDisclosure(
                     rawHours: openingHours,
@@ -294,13 +359,13 @@ private struct PlaceParkingInformationSection: View {
             if parking.tariff.status == .unknown {
                 Text("Brak informacji o opłacie w OSM nie oznacza, że parking jest bezpłatny.")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
             }
             Text(parking.dataSources.isEmpty
                  ? "Źródło taryfy: brak danych"
                  : "Źródło: " + parking.dataSources.map(\.title).joined(separator: ", "))
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.naviTextSecondary)
         }
         .padding(11)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -309,7 +374,7 @@ private struct PlaceParkingInformationSection: View {
 
     private func parkingRow(_ title: String, _ value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 7) {
-            Text(title).foregroundStyle(.secondary)
+            Text(title).foregroundStyle(Color.naviTextSecondary)
             Text(value).textSelection(.enabled)
             Spacer(minLength: 0)
         }
@@ -380,18 +445,18 @@ private struct PlaceParkingOpeningHoursDisclosure: View {
                         Spacer(minLength: 0)
                     }
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
                 }
             } else if let failure = presentation?.failure {
                 Text(failure.errorDescription ?? "Godziny niedostępne")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(rawHours).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    .foregroundStyle(Color.naviTextSecondary)
+                Text(rawHours).font(.caption).foregroundStyle(Color.naviTextSecondary).textSelection(.enabled)
             } else {
-                Text(rawHours).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                Text(rawHours).font(.caption).foregroundStyle(Color.naviTextSecondary).textSelection(.enabled)
             }
             Text("Godziny mogą się różnić w święta.")
-                .font(.caption2).foregroundStyle(.secondary)
+                .font(.caption2).foregroundStyle(Color.naviTextSecondary)
         }
         .font(.caption)
         .task(id: evaluationKey) {

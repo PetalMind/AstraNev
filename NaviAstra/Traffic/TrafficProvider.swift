@@ -129,10 +129,12 @@ extension TrafficIncidentCategory {
 
     var mapColorHex: UInt32 {
         switch self {
-        case .accident, .jam, .laneClosed, .roadClosed: 0xE53935
-        case .roadWorks, .dangerousConditions, .detour, .cluster: 0xF57C00
-        case .brokenDownVehicle, .unknown: 0xF9A825
-        case .fog, .rain, .ice, .wind, .flooding: 0x29B6F6
+        case .roadClosed: NaviAstraColorPalette.closure
+        case .jam: NaviAstraColorPalette.trafficSlow
+        case .accident, .laneClosed: NaviAstraColorPalette.danger
+        case .roadWorks, .dangerousConditions, .detour, .cluster,
+             .brokenDownVehicle, .unknown, .fog, .rain, .ice, .wind, .flooding:
+            NaviAstraColorPalette.warning
         }
     }
 
@@ -191,10 +193,12 @@ struct TrafficMapPresentation {
         isDirectionUncertain = false
         if incident.category == .unknown {
             switch incident.severity {
-            case .major: colorHex = 0xE53935
-            case .moderate, .indefinite: colorHex = 0xF57C00
+            case .major: colorHex = NaviAstraColorPalette.danger
+            case .moderate, .indefinite: colorHex = NaviAstraColorPalette.warning
             case .minor, .unknown: colorHex = incident.category.mapColorHex
             }
+        } else if incident.category == .jam && incident.severity == .major {
+            colorHex = NaviAstraColorPalette.danger
         } else {
             colorHex = incident.category.mapColorHex
         }
@@ -218,13 +222,25 @@ struct TrafficMapPresentation {
         isCritical = priority >= 3
     }
 
+    init(_ poi: MapRoadPOI) {
+        symbolName = poi.category.symbolName
+        markerText = nil
+        roadSign = nil
+        isDirectionUncertain = false
+        colorHex = poi.category.colorHex
+        priority = 1
+        clusterPriority = 10 + Self.colorPriority(colorHex)
+        markerSize = 28
+        isCritical = false
+    }
+
     private static func colorPriority(_ colorHex: UInt32) -> Int {
         switch colorHex {
-        case 0xE53935: 6
-        case 0xF57C00: 5
-        case 0xF9A825: 4
-        case 0x1976D2: 3
-        case 0x29B6F6: 2
+        case NaviAstraColorPalette.closure: 7
+        case NaviAstraColorPalette.danger: 6
+        case NaviAstraColorPalette.warning: 5
+        case NaviAstraColorPalette.trafficModerate: 5
+        case NaviAstraColorPalette.trafficSlow: 4
         default: 1
         }
     }
@@ -234,12 +250,19 @@ extension RoadAlertType {
     var mapColorHex: UInt32 {
         switch self {
         case .speedCamera, .averageSpeedStart, .averageSpeedEnd, .redLightCamera,
-             .speedLimitChange, .variableSpeedLimit: 0x1976D2
+             .speedLimitChange, .variableSpeedLimit, .giveWaySign,
+             .trafficZoneSign, .trafficSign, .railwayCrossing, .schoolZone, .dangerousCurve,
+             .roadworks:
+            NaviAstraColorPalette.warning
         case .speedLimitSign, .stopSign, .noEntrySign, .noOvertakingSign,
-             .weightLimitSign, .heightLimitSign, .accident, .roadClosed, .congestion: 0xE53935
-        case .roadworks: 0xF57C00
-        case .giveWaySign, .trafficZoneSign, .trafficSign,
-             .railwayCrossing, .schoolZone, .dangerousCurve: 0xF9A825
+             .weightLimitSign, .heightLimitSign:
+            NaviAstraColorPalette.roadSignRed
+        case .roadClosed:
+            NaviAstraColorPalette.closure
+        case .congestion:
+            NaviAstraColorPalette.trafficSlow
+        case .accident:
+            NaviAstraColorPalette.danger
         }
     }
 

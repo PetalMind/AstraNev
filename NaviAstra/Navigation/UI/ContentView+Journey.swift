@@ -78,7 +78,7 @@ extension ContentView {
                     .padding(.vertical, 4)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .modifier(NavigationGlassSurface(radius: 26))
-                } else if navigationStore.state.transportMode == .transit || parkRideIsUsingTransitLeg {
+                } else if parkRideIsUsingTransitLeg {
                     transitNavigationHeader
                 }
             }
@@ -153,7 +153,7 @@ extension ContentView {
                     .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 Image(systemName: "arrowtriangle.down.fill")
                     .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
                     .frame(width: 18, height: 18)
             }
             .padding(7)
@@ -168,48 +168,87 @@ extension ContentView {
                               maximumHeight: maxHeight,
                               accessibilityLabel: "Panel prowadzenia",
                               isDragging: $isMapBottomSheetDragging,
-                              mediumHeightFraction: 0.30) { detent, _ in
+                              mediumHeightFraction: 0.30,
+                              onClose: navigationStore.state.transportMode == .transit
+                                ? { navigationStore.stop() } : nil,
+                              closeAccessibilityLabel: "Zakończ nawigację") { detent, _ in
             VStack(spacing: 0) {
-                journeyNavigationSummaryRow(detent: detent)
-                    .padding(.horizontal, 18)
-                    .padding(.top, detent == .peek ? 0 : 4)
+                if navigationStore.state.transportMode == .transit {
+                    if let transitLeg = activeTransitLeg {
+                        if detent == .expanded {
+                            transitNavigationStepPanel(transitLeg)
+                                .padding(.horizontal, 20)
+                                .padding(.top, 8)
 
-                if detent == .expanded {
-                    if navigationStore.state.transportMode == .transit, let transitLeg = activeTransitLeg {
-                        Group {
-                            if transitLeg.mode == "WALK" {
-                                transitWalkNavigationCard(transitLeg)
-                            } else {
-                                transitNavigationCard(transitLeg)
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    showsFullTransitItinerary.toggle()
+                                }
+                            } label: {
+                                Label(showsFullTransitItinerary
+                                      ? "Ukryj pełny przebieg" : "Pokaż pełny przebieg",
+                                      systemImage: showsFullTransitItinerary ? "chevron.up" : "chevron.down")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(Color.accentColor)
+                                    .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+                                    .contentShape(Rectangle())
                             }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 20)
+                            .padding(.top, 4)
+
+                            if showsFullTransitItinerary {
+                                transitJourneyTimeline
+                                    .padding(.horizontal, 18)
+                                    .padding(.top, 4)
+                            }
+
+                            journeyNavigationQuickActions
+                                .padding(.horizontal, 18)
+                                .padding(.top, 8)
+
+                            journeyNavigationPrimaryActions
+                                .padding(.horizontal, 18)
+                                .padding(.top, 8)
+                        } else {
+                            transitCompactNavigationSummary(transitLeg)
+                                .padding(.horizontal, 18)
+                                .padding(.top, detent == .peek ? 0 : 4)
                         }
-                        .padding(.horizontal, 18)
-                        .padding(.top, 14)
                     } else {
+                        ContentUnavailableView(
+                            "Brak aktywnego etapu",
+                            systemImage: "tram.fill",
+                            description: Text("Nie ma teraz szczegółów kolejnego odcinka podróży."))
+                            .padding(.horizontal, 18)
+                    }
+                } else {
+                    journeyNavigationSummaryRow(detent: detent)
+                        .padding(.horizontal, 18)
+                        .padding(.top, detent == .peek ? 0 : 4)
+
+                    if detent == .expanded {
                         journeyDestinationRow
                             .padding(.horizontal, 18)
                             .padding(.top, 14)
                     }
 
-                    if navigationStore.state.transportMode == .transit {
-                        transitJourneyTimeline
-                            .padding(.horizontal, 18)
-                            .padding(.top, 14)
-                    } else if navigationStore.state.transportMode == .parkRide {
+                    if detent == .expanded, navigationStore.state.transportMode == .parkRide {
                         parkRideJourneyTimeline
                             .padding(.horizontal, 18)
                             .padding(.top, 14)
                     }
 
-                    journeyNavigationQuickActions
-                        .padding(.horizontal, 18)
-                        .padding(.top, 14)
-
+                    if detent == .expanded {
+                        journeyNavigationQuickActions
+                            .padding(.horizontal, 18)
+                            .padding(.top, 14)
+                    }
                 }
             }
             .padding(.bottom, detent == .peek ? 2 : 10)
         } footer: { detent, _ in
-            if detent == .expanded {
+            if detent == .expanded, navigationStore.state.transportMode != .transit {
                 VStack(spacing: 0) {
                     journeyNavigationPrimaryActions
                         .padding(.horizontal, 18)
@@ -225,8 +264,8 @@ extension ContentView {
                         Label("Zakończ nawigację", systemImage: "stop.fill")
                             .font(.subheadline.weight(.semibold))
                             .frame(maxWidth: .infinity, minHeight: 48)
-                            .foregroundStyle(.red)
-                            .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                            .foregroundStyle(Color(naviHex: NaviAstraColorPalette.danger))
+                            .background(Color(naviHex: NaviAstraColorPalette.danger).opacity(0.12), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
                     }
                     .buttonStyle(.plain)
                     .padding(.horizontal, 18)
@@ -235,6 +274,209 @@ extension ContentView {
                 }
             }
         }
+    }
+
+    private func transitCompactNavigationSummary(_ leg: JourneyLeg) -> some View {
+        TimelineView(.periodic(from: .now, by: 20)) { context in
+            let remainingStops = transitProgress(for: leg)?.stopsUntilAlighting
+                ?? upcomingTransitStops(for: leg, at: context.date,
+                                        tracking: transitProgress(for: leg)).count
+            let arrival = activeTransitArrival(for: leg)
+            let remainingTime = max(0, arrival.timeIntervalSince(context.date))
+
+            HStack(spacing: 12) {
+                transitNavigationLineBadge(for: leg)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(transitNavigationInstruction(for: leg))
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(leg.mode.uppercased() == "WALK"
+                         ? "Pieszo · około \(compactRouteTime(remainingTime))"
+                         : "\(transitStopCountText(remainingStops)) · \(compactRouteTime(remainingTime))")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Color.white.opacity(0.62))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private func transitNavigationStepPanel(_ leg: JourneyLeg) -> some View {
+        TimelineView(.periodic(from: .now, by: 20)) { context in
+            let tracking = transitProgress(for: leg)
+            let orderedStops = leg.transitStops.sorted { $0.sequence < $1.sequence }
+            let boardingStop = orderedStops.first
+            let alightingStop = orderedStops.last
+            let liveDetails = liveTransitDetails(for: leg)
+            let liveAlightingStop = alightingStop.flatMap { stop in
+                liveDetails?.pastStops.first(where: { $0.stopID == stop.stopID })
+                    ?? liveDetails?.nextStops.first(where: { $0.stopID == stop.stopID })
+            }
+            let displayedArrival = liveAlightingStop?.arrival ?? alightingStop?.arrival ?? leg.arrival
+            let originTime = boardingStop.flatMap { stop in
+                liveTransitStop(stop.stopID, for: leg)?.departure
+            } ?? boardingStop?.departure ?? leg.departure
+            let upcomingStops = upcomingTransitStops(for: leg, at: context.date, tracking: tracking)
+            let remainingStops = tracking?.stopsUntilAlighting ?? upcomingStops.count
+            let timeRemaining = max(0, displayedArrival.timeIntervalSince(context.date))
+            let originName = boardingStop?.name ?? leg.from
+            let destinationName = alightingStop?.name ?? leg.to
+            let instruction = transitNavigationInstruction(for: leg)
+            let precedingStop = orderedStops.dropLast().last?.name
+
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .top, spacing: 14) {
+                    transitNavigationLineBadge(for: leg)
+                        .padding(.top, 3)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(instruction)
+                            .font(.system(size: 25, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if leg.mode.uppercased() == "WALK" {
+                            Text("Około \(compactRouteTime(timeRemaining))")
+                                .font(.system(size: 17, weight: .medium))
+                                .foregroundStyle(Color.white.opacity(0.58))
+                        } else if let precedingStop {
+                            Text("Po \(precedingStop)")
+                                .font(.system(size: 17, weight: .medium))
+                                .foregroundStyle(Color.white.opacity(0.58))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                transitNavigationStopTimeline(
+                    origin: originName,
+                    originTime: originTime,
+                    destination: destinationName,
+                    destinationTime: displayedArrival,
+                    rideDescription: leg.mode.uppercased() == "WALK"
+                        ? "Idź · \(compactRouteTime(timeRemaining))"
+                        : (orderedStops.isEmpty
+                           ? "Do \(destinationName) · \(compactRouteTime(timeRemaining))"
+                           : "Jedź \(transitStopCountText(remainingStops)), \(compactRouteTime(timeRemaining))"))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.bottom, 8)
+        }
+    }
+
+    private func transitNavigationStopTimeline(origin: String,
+                                               originTime: Date,
+                                               destination: String,
+                                               destinationTime: Date,
+                                               rideDescription: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(spacing: 0) {
+                Circle()
+                    .fill(Color.white.opacity(0.72))
+                    .frame(width: 13, height: 13)
+                    .overlay(Circle().stroke(Color.black.opacity(0.3), lineWidth: 1))
+                Spacer(minLength: 0)
+                ForEach(0..<5, id: \.self) { _ in
+                    Circle()
+                        .fill(Color.white.opacity(0.55))
+                        .frame(width: 5, height: 5)
+                    Spacer(minLength: 0)
+                }
+                Circle()
+                    .fill(Color.white.opacity(0.72))
+                    .frame(width: 13, height: 13)
+                    .overlay(Circle().stroke(Color.black.opacity(0.3), lineWidth: 1))
+            }
+            .frame(width: 16, height: 148)
+            .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .top, spacing: 8) {
+                    Text(origin)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.92))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 2)
+                    Text(originTime.formatted(date: .omitted, time: .shortened))
+                        .font(.system(size: 15, weight: .medium, design: .rounded).monospacedDigit())
+                        .foregroundStyle(Color.white.opacity(0.55))
+                }
+                .frame(minHeight: 38, alignment: .top)
+
+                Spacer(minLength: 10)
+
+                Text(rideDescription)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Color(naviHex: NaviAstraColorPalette.navigationActiveNight))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+
+                Spacer(minLength: 10)
+
+                HStack(alignment: .top, spacing: 8) {
+                    Text(destination)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 2)
+                    Text(destinationTime.formatted(date: .omitted, time: .shortened))
+                        .font(.system(size: 15, weight: .medium, design: .rounded).monospacedDigit())
+                        .foregroundStyle(Color.white.opacity(0.55))
+                }
+                .frame(minHeight: 42, alignment: .top)
+            }
+            .frame(height: 148)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private func transitNavigationLineBadge(for leg: JourneyLeg) -> some View {
+        Group {
+            if let line = leg.line, !line.isEmpty {
+                Text(line)
+                    .font(.system(size: 17, weight: .bold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(Color.black.opacity(0.68))
+            } else {
+                Image(systemName: transitLegSymbol(for: leg))
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Color.black.opacity(0.62))
+            }
+        }
+        .frame(minWidth: 46, minHeight: 42)
+        .padding(.horizontal, 3)
+        .background(Color.white.opacity(0.9), in: Capsule())
+        .overlay(Capsule().stroke(Color.black.opacity(0.12), lineWidth: 1))
+        .accessibilityLabel(leg.line.map { "Linia \($0)" } ?? leg.mode)
+    }
+
+    private func transitNavigationInstruction(for leg: JourneyLeg) -> String {
+        if leg.mode.uppercased() == "WALK" { return "Idź do \(leg.to)" }
+        return "Wysiądź z \(transitVehicleNoun(for: leg.mode)) na przystanku \(leg.to)"
+    }
+
+    private func transitVehicleNoun(for mode: String) -> String {
+        switch mode.uppercased() {
+        case "TRAM": "tramwaju"
+        case "SUBWAY", "METRO": "metra"
+        case "RAIL", "REGIONAL_RAIL", "REGIONAL_FAST_RAIL", "SUBURBAN", "SUBURBAN_RAIL",
+             "LONG_DISTANCE", "NIGHT_RAIL", "HIGHSPEED_RAIL": "pociągu"
+        case "FERRY": "promu"
+        default: "autobusu"
+        }
+    }
+
+    private func activeTransitArrival(for leg: JourneyLeg) -> Date {
+        guard let finalStop = leg.transitStops.max(by: { $0.sequence < $1.sequence }) else {
+            return leg.arrival
+        }
+        return liveTransitStop(finalStop.stopID, for: leg)?.arrival ?? finalStop.arrival
     }
 
     private func journeyNavigationSummaryRow(detent: NavigationBottomSheetDetent) -> some View {
@@ -688,7 +930,7 @@ extension ContentView {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Image(systemName: navigationPanelExpanded ? "chevron.down" : "chevron.up")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                         .padding(.leading, 4)
                 }
                 .contentShape(Rectangle())
@@ -723,7 +965,7 @@ extension ContentView {
                         if let following = currentLeg.following {
                             Text("Po dotarciu: \(following.name)")
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.naviTextSecondary)
                                 .lineLimit(1)
                         }
                     }
@@ -752,8 +994,8 @@ extension ContentView {
                     Label("Zakończ nawigację", systemImage: "stop.circle.fill")
                         .font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity, minHeight: 48)
-                        .foregroundStyle(.red)
-                        .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
+                        .foregroundStyle(Color(naviHex: NaviAstraColorPalette.danger))
+                        .background(Color(naviHex: NaviAstraColorPalette.danger).opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
                 }
                 .buttonStyle(.plain)
             }
@@ -765,7 +1007,7 @@ extension ContentView {
     func journeyActionLabel(_ title: String, symbol: String) -> some View {
         Label(title, systemImage: symbol)
             .font(.subheadline.weight(.medium))
-            .foregroundStyle(.primary)
+            .foregroundStyle(Color.naviTextPrimary)
             .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
             .padding(.horizontal, 12)
             .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 14))
@@ -874,10 +1116,10 @@ extension ContentView {
 
     func transitFreshnessIndicator(for journey: Journey) -> some View {
         let presentation = switch journey.realtimeFreshness {
-        case .live: ("dot.radiowaves.left.and.right", Color.green)
-        case .degraded: ("clock.badge.exclamationmark", Color.orange)
-        case .stale: ("clock", Color.secondary)
-        case .unavailable: ("minus.circle", Color.secondary)
+        case .live: ("dot.radiowaves.left.and.right", Color(naviHex: NaviAstraColorPalette.success))
+        case .degraded: ("clock.badge.exclamationmark", Color(naviHex: NaviAstraColorPalette.warning))
+        case .stale: ("clock", Color.naviTextInactive)
+        case .unavailable: ("minus.circle", Color(naviHex: NaviAstraColorPalette.info))
         }
         return Label(transitRealtimeStatus(for: journey), systemImage: presentation.0)
             .font(.caption2.weight(.medium))
@@ -950,19 +1192,19 @@ extension ContentView {
                         .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 11))
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Idź do \(leg.to)").font(.subheadline.weight(.semibold)).lineLimit(1)
-                        Text("Pieszo · około \(remaining) min").font(.caption).foregroundStyle(.secondary)
+                        Text("Pieszo · około \(remaining) min").font(.caption).foregroundStyle(Color.naviTextSecondary)
                     }
                     Spacer(minLength: 0)
                     if let nextRide {
                         Text(nextRide.departure.formatted(date: .omitted, time: .shortened))
-                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            .font(.caption.monospacedDigit()).foregroundStyle(Color.naviTextSecondary)
                     }
                 }
                 if let nextRide {
                     HStack(spacing: 7) {
                         Text(nextRide.line ?? "MPK").font(.caption.weight(.bold).monospacedDigit())
                             .foregroundStyle(.white).padding(.horizontal, 7).padding(.vertical, 4)
-                            .background(mapTransitColor(nextRide.lineColorHex ?? 0x2867B2), in: RoundedRectangle(cornerRadius: 7))
+                            .background(mapTransitColor(nextRide.lineColorHex ?? NaviAstraColorPalette.transitFallback), in: RoundedRectangle(cornerRadius: 7))
                         Text("Następnie · \(nextRide.to)").font(.caption).lineLimit(1)
                     }
                 }
@@ -997,13 +1239,13 @@ extension ContentView {
                     Text(leg.line ?? "MPK")
                         .font(.headline.weight(.bold).monospacedDigit())
                         .foregroundStyle(.white).frame(minWidth: 42, minHeight: 34)
-                        .background(mapTransitColor(leg.lineColorHex ?? 0x2867B2), in: RoundedRectangle(cornerRadius: 10))
+                        .background(mapTransitColor(leg.lineColorHex ?? NaviAstraColorPalette.transitFallback), in: RoundedRectangle(cornerRadius: 10))
                     VStack(alignment: .leading, spacing: 2) {
                         Text(leg.to).font(.subheadline.weight(.semibold)).lineLimit(1)
                         Text(minutesUntilDeparture > 0
                              ? "Odjazd za \(transitETA(leg.departure, now: context.date))"
                              : "W podróży · do \(leg.to)")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(Color.naviTextSecondary)
                     }
                     Spacer(minLength: 0)
                     Text(compactRouteTime(max(0, displayedArrival.timeIntervalSince(context.date))))
@@ -1018,7 +1260,7 @@ extension ContentView {
                         Text(minutesUntilDeparture > 0
                              ? leg.departure.formatted(date: .omitted, time: .shortened)
                              : transitETA(nextStop.arrival, now: context.date))
-                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            .font(.caption.monospacedDigit()).foregroundStyle(Color.naviTextSecondary)
                     }
                 }
                 GeometryReader { geometry in
@@ -1052,7 +1294,7 @@ extension ContentView {
                             Image(systemName: isStopListExpanded ? "chevron.up" : "chevron.down")
                                 .font(.caption2.weight(.semibold))
                         }
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -1067,14 +1309,14 @@ extension ContentView {
                     }
                 } else {
                     Text("Jeszcze \(transitStopCountText(stopsRemaining)) do \(leg.to)")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(Color.naviTextSecondary)
                 }
                 if let delay = displayedDelay, abs(delay) >= 30 {
                     Text("Rozkład \(leg.departure.formatted(date: .omitted, time: .shortened)) · \(delayLabel(TimeInterval(delay)))")
                         .font(.caption).foregroundStyle(transitDelayColor(delay))
                 } else if liveDetails?.nextStops.first?.hasRealtime == true {
                     Label("Aktualizacja na żywo", systemImage: "dot.radiowaves.left.and.right")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(Color.naviTextSecondary)
                 }
             }
             .padding(12)
@@ -1122,14 +1364,14 @@ extension ContentView {
                 if let headway = journey.frequencyEstimateHeadwaySeconds {
                     Label("Odjazdy orientacyjne co \(max(1, Int((Double(headway) / 60).rounded()))) min",
                           systemImage: "clock.badge.questionmark")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(Color.naviTextSecondary)
                 }
             }
 
             if stops.isEmpty {
                 Text("Brak kolejnych przystanków w danych trasy")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
                     .padding(.vertical, 4)
             } else {
                 ForEach(Array(stops.enumerated()), id: \.element.id) { index, stop in
@@ -1154,7 +1396,7 @@ extension ContentView {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(stop.name)
                                 .font(.caption.weight(isNextStop ? .semibold : .medium))
-                                .foregroundStyle(isNextStop ? .primary : .secondary)
+                                .foregroundStyle(isNextStop ? Color.naviTextPrimary : Color.naviTextSecondary)
                                 .lineLimit(1)
                             HStack(spacing: 5) {
                                 if isNextStop {
@@ -1174,7 +1416,7 @@ extension ContentView {
                                 }
                             }
                             .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.naviTextSecondary)
                             .lineLimit(1)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1215,18 +1457,18 @@ extension ContentView {
                                             .font(.caption.weight(.bold).monospacedDigit())
                                             .foregroundStyle(.white)
                                             .padding(.horizontal, 7).padding(.vertical, 4)
-                                            .background(mapTransitColor(leg.lineColorHex ?? 0x2867B2),
+                                            .background(mapTransitColor(leg.lineColorHex ?? NaviAstraColorPalette.transitFallback),
                                                         in: RoundedRectangle(cornerRadius: 7))
                                         Text(leg.direction ?? leg.to)
                                             .font(.subheadline.weight(.semibold))
                                             .lineLimit(1)
                                     }
                                     if let operatorName = leg.operatorName, !operatorName.isEmpty {
-                                        Text(operatorName).font(.caption2).foregroundStyle(.secondary)
+                                        Text(operatorName).font(.caption2).foregroundStyle(Color.naviTextSecondary)
                                     }
                                 }
                                 Text("\(transitLegTimeDescription(leg)) · \(leg.from) → \(leg.to)")
-                                    .font(.caption).foregroundStyle(.secondary)
+                                    .font(.caption).foregroundStyle(Color.naviTextSecondary)
                                 if leg.mode != "WALK", !leg.transitStops.isEmpty {
                                     Button {
                                         withAnimation(.easeInOut(duration: 0.2)) {
@@ -1262,7 +1504,7 @@ extension ContentView {
                                         .foregroundStyle(transitDelayColor(delay))
                                 } else if hasLiveTransitUpdate(for: leg) {
                                     Label("Na żywo", systemImage: "dot.radiowaves.left.and.right")
-                                        .font(.caption2).foregroundStyle(.secondary)
+                                        .font(.caption2).foregroundStyle(Color.naviTextSecondary)
                                 }
                             }
                             Spacer(minLength: 0)
@@ -1274,7 +1516,7 @@ extension ContentView {
                     }
                     ForEach(Array(journey.alerts.enumerated()), id: \.offset) { _, alert in
                         Label(alert, systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption).foregroundStyle(.orange)
+                            .font(.caption).foregroundStyle(Color(naviHex: NaviAstraColorPalette.warning))
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
@@ -1324,7 +1566,7 @@ extension ContentView {
                     if let headway = journey.frequencyEstimateHeadwaySeconds {
                         Label("Odjazdy orientacyjne co \(max(1, Int((Double(headway) / 60).rounded()))) min",
                               systemImage: "clock.badge.questionmark")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(Color.naviTextSecondary)
                     }
                     HStack(alignment: .top, spacing: 8) {
                         metric(value: time(journey.arrival.timeIntervalSince(journey.departure)), caption: "całość")
@@ -1349,14 +1591,14 @@ extension ContentView {
                                         .font(.subheadline.weight(.semibold))
                                     Text("\(leg.departure.formatted(date: .omitted, time: .shortened))–\(leg.arrival.formatted(date: .omitted, time: .shortened)) · \(time(max(0, leg.arrival.timeIntervalSince(leg.departure))))")
                                         .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(Color.naviTextSecondary)
                                     Text(leg.from)
                                         .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(Color.naviTextSecondary)
                                     if !leg.transitStops.isEmpty {
                                         Text("\(max(1, leg.transitStops.count - 1)) przystanków")
                                             .font(.caption2)
-                                            .foregroundStyle(.secondary)
+                                            .foregroundStyle(Color.naviTextSecondary)
                                     }
                                     if let delay = displayedTransitDelay(for: leg), abs(delay) >= 30 {
                                         Text(delayLabel(TimeInterval(delay)))
@@ -1365,7 +1607,7 @@ extension ContentView {
                                     } else if hasLiveTransitUpdate(for: leg) {
                                         Label("Na żywo", systemImage: "dot.radiowaves.left.and.right")
                                             .font(.caption2)
-                                            .foregroundStyle(.secondary)
+                                            .foregroundStyle(Color.naviTextSecondary)
                                     }
                                 }
                                 Spacer(minLength: 0)
@@ -1384,7 +1626,7 @@ extension ContentView {
                                             .font(.caption.weight(.semibold))
                                         Text("Koniec odcinka autem · przesiadka na komunikację")
                                             .font(.caption2)
-                                            .foregroundStyle(.secondary)
+                                            .foregroundStyle(Color.naviTextSecondary)
                                     }
                                     Spacer(minLength: 0)
                                 }
@@ -1406,7 +1648,7 @@ extension ContentView {
                     ForEach(Array(journey.alerts.enumerated()), id: \.offset) { _, alert in
                         Label(alert, systemImage: "exclamationmark.triangle.fill")
                             .font(.caption)
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(Color(naviHex: NaviAstraColorPalette.warning))
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
@@ -1451,14 +1693,14 @@ extension ContentView {
                     .font(.system(size: 17, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(width: 38, height: 38)
-                    .background(Color.green, in: Circle())
+                    .background(Color(naviHex: NaviAstraColorPalette.success), in: Circle())
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(arrivalTitle)
                         .font(.headline)
                     Text(navigationStore.state.destination?.name ?? "Podróż zakończona")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                         .lineLimit(1)
                 }
                 Spacer()
@@ -1484,6 +1726,8 @@ extension ContentView {
                     }
                 }
             }
+
+            arrivalDrivingScoreSummary
 
             arrivalParkedCarPrompt
 
@@ -1555,6 +1799,10 @@ extension ContentView {
             .padding(.horizontal, 16)
             .padding(.top, 10)
 
+            arrivalDrivingScoreSummary
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
+
             arrivalParkedCarPrompt
                 .padding(.horizontal, 16)
                 .padding(.top, 9)
@@ -1562,7 +1810,7 @@ extension ContentView {
             HStack(spacing: 7) {
                 Button {
                     if !isDestinationFavorite, let destination = navigationStore.state.destination {
-                        placeStore.add(destination, kind: .favorite)
+                        addFavoriteWithFeedback(destination, failureToast: false)
                     }
                 } label: {
                     arrivalActionLabel(symbol: isDestinationFavorite ? "checkmark" : "star",
@@ -1587,6 +1835,147 @@ extension ContentView {
         }
         .frame(maxWidth: .infinity, alignment: .top)
         .modifier(NavigationGlassPanelSurface(shape: shape))
+    }
+
+    @ViewBuilder
+    private var arrivalDrivingScoreSummary: some View {
+        if let score = navigationStore.state.lastTrip?.drivingScore {
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(alignment: .center, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Driving Score")
+                            .font(.headline)
+                        Text(score.headline)
+                            .font(.caption)
+                            .foregroundStyle(Color.naviTextSecondary)
+                    }
+                    Spacer(minLength: 4)
+                    HStack(alignment: .firstTextBaseline, spacing: 2) {
+                        Text("\(score.score)")
+                            .font(.system(size: 28, weight: .bold, design: .rounded).monospacedDigit())
+                        Text("/100")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Color.naviTextSecondary)
+                    }
+                    .foregroundStyle(Color.accentColor)
+                }
+
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())],
+                          alignment: .leading, spacing: 7) {
+                    drivingScoreMetric("Płynność", value: score.smoothnessScore)
+                    drivingScoreMetric("Prędkość", value: score.speedScore)
+                    drivingScoreMetric("Zakręty", value: score.cornersScore)
+                    drivingScoreMetric("Stabilność", value: score.stabilityScore)
+                }
+
+                Text(drivingScoreEventSummary(score))
+                    .font(.caption2)
+                    .foregroundStyle(Color.naviTextSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(drivingScoreTip(score))
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if score.speedScore == nil {
+                    Text("Za mało danych o limitach prędkości: znane przez \(Int((score.speedLimitCoverage * 100).rounded()))% czasu jazdy.")
+                        .font(.caption2)
+                        .foregroundStyle(Color.naviTextSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if score.speedLimitCoverage < 0.9 {
+                    Text("Limit był dostępny przez \(Int((score.speedLimitCoverage * 100).rounded()))% czasu jazdy.")
+                        .font(.caption2)
+                        .foregroundStyle(Color.naviTextSecondary)
+                }
+
+                Text("Wynik obliczono na podstawie \(score.scoredCategoryCount) z 4 kategorii.")
+                    .font(.caption2)
+                    .foregroundStyle(Color.naviTextSecondary)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .modifier(NavigationGlassSurface(radius: 17))
+        } else if navigationStore.state.transportMode == .car,
+                  navigationStore.state.lastTrip?.arrived == true {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Driving Score")
+                    .font(.headline)
+                Text("Nie można wiarygodnie obliczyć wyniku tej trasy. Trasa mogła być za krótka lub zabrakło danych do oceny kategorii.")
+                    .font(.caption)
+                    .foregroundStyle(Color.naviTextSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .modifier(NavigationGlassSurface(radius: 17))
+        }
+    }
+
+    private func drivingScoreMetric(_ title: String, value: Int?) -> some View {
+        HStack(spacing: 5) {
+            Text(title)
+                .foregroundStyle(Color.naviTextSecondary)
+            Spacer(minLength: 2)
+            Text(value.map { String($0) } ?? "Brak danych")
+                .fontWeight(.semibold)
+                .monospacedDigit()
+        }
+        .font(.caption)
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+    }
+
+    private func drivingScoreEventSummary(_ score: DrivingScore) -> String {
+        let smoothnessEvents = score.smoothnessScore == nil
+            ? "mocne przyspieszenia i hamowania: brak danych"
+            : drivingEventPhrase(score.harshAccelerationCount, one: "mocne przyspieszenie",
+                                 few: "mocne przyspieszenia", many: "mocnych przyspieszeń") + ", " +
+                drivingEventPhrase(score.harshBrakingCount, one: "mocne hamowanie",
+                                   few: "mocne hamowania", many: "mocnych hamowań")
+        let cornerEvents = score.cornersScore == nil
+            ? "mocne zakręty: brak danych"
+            : drivingEventPhrase(score.aggressiveCornerCount, one: "mocny zakręt",
+                                 few: "mocne zakręty", many: "mocnych zakrętów")
+        let speeding: String
+        if score.speedScore != nil || score.speedingEventCount > 0 {
+            let count = drivingEventPhrase(score.speedingEventCount, one: "przekroczenie limitu",
+                                           few: "przekroczenia limitu", many: "przekroczeń limitu")
+            let observedOn = score.speedScore == nil ? " na znanych odcinkach" : ""
+            let duration = score.speedingDuration > 0
+                ? " · łączny czas \(timeAllowingZero(score.speedingDuration))" : ""
+            speeding = count + observedOn + duration
+        } else {
+            speeding = "przekroczenia limitu: brak danych"
+        }
+        return [smoothnessEvents, cornerEvents, speeding].joined(separator: " · ")
+    }
+
+    private func drivingScoreTip(_ score: DrivingScore) -> String {
+        let weightedLosses: [(Double, String)] = [
+            (score.smoothnessScore.map { Double(100 - $0) * 0.35 } ?? -1,
+             "Najwięcej punktów ubyło przez mocne hamowania i przyspieszenia."),
+            (score.speedScore.map { Double(100 - $0) * 0.30 } ?? -1,
+             score.speedingDuration > 0
+                ? "Najwięcej punktów ubyło za jazdę powyżej limitu przez \(timeAllowingZero(score.speedingDuration))."
+                : "Najniższy wynik dotyczy prędkości; limit był dostępny tylko na części trasy."),
+            (score.cornersScore.map { Double(100 - $0) * 0.20 } ?? -1,
+             "Najwięcej punktów ubyło za mocne zmiany kierunku przy wyższej prędkości."),
+            (score.stabilityScore.map { Double(100 - $0) * 0.15 } ?? -1,
+             "Najwięcej punktów ubyło za częste zmiany tempa przy wyższej prędkości.")
+        ]
+        guard let lowest = weightedLosses.max(by: { $0.0 < $1.0 }), lowest.0 > 0 else {
+            return "Nie wykryto zdarzeń obniżających wynik w dostępnych pomiarach."
+        }
+        return lowest.1
+    }
+
+    private func drivingEventPhrase(_ count: Int, one: String, few: String, many: String) -> String {
+        let lastTwo = count % 100
+        if count == 1 { return "1 \(one)" }
+        if (2...4).contains(count % 10), !(12...14).contains(lastTwo) {
+            return "\(count) \(few)"
+        }
+        return "\(count) \(many)"
     }
 
     var arrivalShareAction: some View {
@@ -1640,7 +2029,7 @@ extension ContentView {
         .frame(maxWidth: .infinity, minHeight: 55)
         .background {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(primary ? Color(red: 0.05, green: 0.49, blue: 0.97) : Color.white.opacity(0.025))
+                .fill(primary ? Color.accentColor : Color.white.opacity(0.025))
         }
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)

@@ -119,13 +119,7 @@ nonisolated enum TransitStopMode: String, CaseIterable, Hashable, Sendable {
     }
 
     var accentHex: UInt32 {
-        switch self {
-        case .rail: 0x263B70
-        case .metro: 0x673AB7
-        case .tram: 0xD83B43
-        case .bus: 0x2878D0
-        case .ferry: 0x178A82
-        }
+        NaviAstraColorPalette.transitFallback
     }
 }
 

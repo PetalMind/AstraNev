@@ -67,6 +67,10 @@ struct RouteProgressTracker {
         roadGeometry(for: route).project(coordinate, within: searchRadius)
     }
 
+    mutating func cameraGeometry(for route: NavigationRoute) -> RouteProgressGeometry {
+        roadGeometry(for: route)
+    }
+
     mutating func transitProgress(
         route: NavigationRoute,
         at coordinate: Coordinate,

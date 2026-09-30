@@ -35,6 +35,7 @@ extension ContentView {
             settingsAppearanceSection
             settingsCameraSection
             settingsMapDetailsSection
+            settingsSafetyPOISection
             settingsPOISection
             settingsGuidanceSection
             settingsVoiceSection
@@ -72,7 +73,7 @@ extension ContentView {
             .disabled(!mapCapabilities.supportsApplicationDarkMode)
             if !mapCapabilities.supportsMapDarkStyle {
                 Text("Styl mapy nie obsługuje wariantu nocnego. Wybór zmienia tylko wygląd aplikacji.")
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .font(.footnote).foregroundStyle(Color.naviTextSecondary)
             }
         }
     }
@@ -129,7 +130,46 @@ extension ContentView {
             }
             .disabled(!mapStore.mapPOIVisible)
             Text("Podczas prowadzenia mapa wybiera z zaznaczonych kategorii miejsca przydatne dla danego sposobu podróży. Przy celu wyróżnia parkingi i przystanki.")
-                .font(.footnote).foregroundStyle(.secondary)
+                .font(.footnote).foregroundStyle(Color.naviTextSecondary)
+        }
+    }
+
+    private var settingsSafetyPOISection: some View {
+        Section("Fotoradary, kamery i sygnalizacja") {
+            ForEach(MapSafetyPOICategory.allCases) { category in
+                Toggle(category.title, isOn: Binding(
+                    get: { mapStore.mapSafetyPOICategories & category.mask != 0 },
+                    set: { enabled in
+                        if enabled { mapStore.mapSafetyPOICategories |= category.mask }
+                        else { mapStore.mapSafetyPOICategories &= ~category.mask }
+                    }))
+            }
+            Text("Punkty pochodzą z OpenStreetMap. Przy oddalonym widoku kamery monitoringu i sygnalizatory pojawiają się dopiero po zbliżeniu mapy.")
+                .font(.footnote).foregroundStyle(Color.naviTextSecondary)
+            roadPOIStatusLabel
+        }
+    }
+
+    @ViewBuilder
+    private var roadPOIStatusLabel: some View {
+        switch mapStore.roadPOIStatus {
+        case .disabled:
+            EmptyView()
+        case .zoomIn:
+            Label("Zbliż mapę, aby pobrać te punkty", systemImage: "plus.magnifyingglass")
+                .font(.footnote).foregroundStyle(Color.naviTextSecondary)
+        case .loading:
+            Label("Pobieranie punktów z OpenStreetMap…", systemImage: "arrow.triangle.2.circlepath")
+                .font(.footnote).foregroundStyle(Color.naviTextSecondary)
+        case .loaded(count: 0):
+            Label("Brak oznaczonych punktów w tym widoku", systemImage: "info.circle")
+                .font(.footnote).foregroundStyle(Color.naviTextSecondary)
+        case .loaded(let count):
+            Label("OpenStreetMap · \(count) punktów", systemImage: "mappin.and.ellipse")
+                .font(.footnote).foregroundStyle(Color.naviTextSecondary)
+        case .unavailable:
+            Label("Dane OpenStreetMap są niedostępne", systemImage: "exclamationmark.triangle")
+                .font(.footnote).foregroundStyle(Color(naviHex: NaviAstraColorPalette.warning))
         }
     }
 
@@ -148,7 +188,7 @@ extension ContentView {
                 }
             }
             Text(navigationStore.state.voicePreferences.verbosity.detail)
-                .font(.footnote).foregroundStyle(.secondary)
+                .font(.footnote).foregroundStyle(Color.naviTextSecondary)
             Picker("Głos polski", selection: voiceIdentifierBinding) {
                 Text("Automatyczny").tag("")
                 ForEach(availablePolishVoices, id: \.identifier) { voice in
@@ -157,7 +197,7 @@ extension ContentView {
             }
             if availablePolishVoices.isEmpty {
                 Text("System nie udostępnia listy głosów polskich; aplikacja poprosi o głos systemowy.")
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .font(.footnote).foregroundStyle(Color.naviTextSecondary)
             }
             voiceSliderRow(
                 title: "Tempo mowy",
@@ -181,7 +221,7 @@ extension ContentView {
             Toggle("Unikaj promów", isOn: $routePlanningStore.draftPreferences.avoidFerries)
             Toggle("Unikaj dróg gruntowych", isOn: $routePlanningStore.draftPreferences.avoidUnpaved)
             Text("Serwer może poprowadzić tym typem drogi, jeśli nie ma rozsądnej alternatywy.")
-                .font(.footnote).foregroundStyle(.secondary)
+                .font(.footnote).foregroundStyle(Color.naviTextSecondary)
 
             Toggle("Uwzględnij zasięg EV", isOn: $routePlanningStore.draftPreferences.evPlanningEnabled)
             if routePlanningStore.draftPreferences.evPlanningEnabled {
@@ -197,7 +237,7 @@ extension ContentView {
                 evConnectorToggle("type2", title: "Type 2")
                 evConnectorToggle("chademo", title: "CHAdeMO")
                 Text("Dostępny zasięg: \(Int(routePlanningStore.draftPreferences.availableEVRangeKilometers.rounded())) km. Zaznaczone złącza filtrują stacje; pusty wybór dopuszcza wszystkie znane typy. Czas szacujemy z zużycia auta i mocy w OpenStreetMap, bez sprawdzania zajętości na żywo.")
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .font(.footnote).foregroundStyle(Color.naviTextSecondary)
             }
             Button("Zastosuj preferencje trasy") {
                 Task { await routePlanningStore.applyPreferences(to: navigationStore) }
@@ -214,7 +254,7 @@ extension ContentView {
             }
             Text("Ten środek transportu będzie wybierany przy rozpoczęciu nowej trasy. Możesz go zmienić w podglądzie trasy.")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.naviTextSecondary)
         }
     }
 
@@ -314,7 +354,7 @@ extension ContentView {
                             evConnectorToggle("type2", title: "Type 2")
                             evConnectorToggle("chademo", title: "CHAdeMO")
                             Text("Złącza, moc i status stacji pochodzą z OpenStreetMap. Brak wpisu o dostępności oznacza stan nieznany; aplikacja nie pobiera zajętości ładowarek.")
-                                .font(.footnote).foregroundStyle(.secondary)
+                                .font(.footnote).foregroundStyle(Color.naviTextSecondary)
                         }
                     }
                 }
@@ -322,7 +362,7 @@ extension ContentView {
                 Section {
                     Text("Zmiany zostaną użyte przy kolejnym przeliczeniu odcinka samochodowego.")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                     Button("Zastosuj ustawienia trasy") {
                         Task {
                             await routePlanningStore.applyPreferences(to: navigationStore)
@@ -355,7 +395,7 @@ extension ContentView {
     private func unavailableReason(_ title: String, reason: String) -> some View {
         Text("\(title): \(reason)")
             .font(.footnote)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.naviTextSecondary)
     }
 
     private func unavailableToggle(_ title: String, reason: String) -> some View {
@@ -364,7 +404,7 @@ extension ContentView {
                 .disabled(true)
             Text(reason)
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.naviTextSecondary)
         }
     }
 
@@ -388,13 +428,13 @@ extension ContentView {
             switch navigationStore.state.trafficStatus {
             case .notConfigured:
                 Label("Wpisz klucz TomTom w ustawieniach.", systemImage: "key")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
             case .updating:
                 Label("Pobieranie danych o ruchu…", systemImage: "arrow.triangle.2.circlepath")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
             case .unavailable(let reason):
                 Label("Ruch niedostępny: \(reason)", systemImage: "wifi.slash")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
             case .available:
                 if let flow = navigationStore.state.traffic?.flow {
                     Label(
@@ -405,7 +445,7 @@ extension ContentView {
                     )
                 } else {
                     Text("Brak pomiaru przepływu przy pozycji.")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                 }
 
                 if let incidents = navigationStore.state.traffic?.incidents {
@@ -420,13 +460,13 @@ extension ContentView {
 
                 if let partialError = navigationStore.state.traffic?.partialError {
                     Text(partialError)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                 }
 
                 if let updatedAt = navigationStore.state.traffic?.updatedAt {
                     Text("Aktualizacja: \(updatedAt.formatted(date: .omitted, time: .shortened))")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                 }
             }
         }

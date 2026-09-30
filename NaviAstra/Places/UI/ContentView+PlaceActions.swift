@@ -55,9 +55,7 @@ extension ContentView {
     }
 
     var quickETADestinationFingerprint: String {
-        savedPlaceShortcuts.prefix(6).compactMap { shortcut in
-            placeStore.places.first(where: { $0.id.uuidString == shortcut.id })
-        }.map { place in
+        placeStore.places.map { place in
             let coordinate = place.destination.coordinate
             return "\(place.id.uuidString):\(coordinate.latitude),\(coordinate.longitude)"
         }.joined(separator: "|")
@@ -65,8 +63,8 @@ extension ContentView {
 
     func refreshQuickDestinationETAs() async {
         guard !quickETAInFlight, let origin = navigationStore.state.location?.coordinate else { return }
-        let priorityDestinations = Array(savedPlaceShortcuts.prefix(6))
-        guard !priorityDestinations.isEmpty else {
+        let destinations = placeStore.places
+        guard !destinations.isEmpty else {
             quickETAEstimates = [:]
             quickETADestinationKey = quickETADestinationFingerprint
             return
@@ -80,16 +78,44 @@ extension ContentView {
         quickETAInFlight = true
         quickETAOrigin = origin
         quickETADestinationKey = destinationKey
-        quickETAUpdatedAt = Date()
-        quickETAEstimates = [:]
-        defer { quickETAInFlight = false }
-
-        var estimates: [String: PlaceRouteEstimate] = [:]
-        for shortcut in priorityDestinations.prefix(2) {
-            guard let estimate = await navigationStore.estimatedCarRouteEstimate(to: shortcut.destination) else { continue }
-            estimates[shortcut.id] = estimate
+        var estimates = quickETAEstimates.filter { key, _ in
+            destinations.contains(where: { $0.id.uuidString == key })
         }
         quickETAEstimates = estimates
+        defer {
+            quickETAUpdatedAt = Date()
+            quickETAInFlight = false
+            let destinationsChanged = quickETADestinationFingerprint != destinationKey
+            let originMoved = navigationStore.state.location.map {
+                $0.coordinate.distance(to: origin) >= 750
+            } ?? false
+            if destinationsChanged || originMoved {
+                Task { await refreshQuickDestinationETAs() }
+            }
+        }
+
+        for place in destinations {
+            guard !Task.isCancelled else { break }
+            guard placeStore.places.contains(where: {
+                $0.id == place.id && $0.destination.coordinate == place.destination.coordinate
+            }) else { continue }
+            if let estimate = await navigationStore.estimatedCarRouteEstimate(
+                to: place.navigationDestination, from: origin) {
+                estimates[place.id.uuidString] = estimate
+                quickETAEstimates = estimates
+            }
+        }
+        quickETAEstimates = estimates
+    }
+
+    func quickETAKilometers(_ meters: Double?) -> String {
+        guard let meters, meters.isFinite, meters >= 0 else { return "— km" }
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "pl_PL")
+        formatter.minimumFractionDigits = 1
+        formatter.maximumFractionDigits = 1
+        let kilometers = formatter.string(from: NSNumber(value: meters / 1_000)) ?? "—"
+        return "\(kilometers) km"
     }
 
     var recentDestinations: [Destination] {
@@ -106,13 +132,13 @@ extension ContentView {
         VStack(alignment: .leading, spacing: 2) {
             Text(value)
                 .font(.system(size: 21, weight: .bold, design: .rounded).monospacedDigit())
-                .foregroundStyle(.primary)
+                .foregroundStyle(Color.naviTextPrimary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
             Text(caption)
                 .font(.caption2.weight(.semibold))
                 .tracking(0.6)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.naviTextSecondary)
                 .lineLimit(1)
         }
         .fixedSize(horizontal: false, vertical: true)
@@ -130,12 +156,14 @@ extension ContentView {
         let aboveLimit = speedWarningsEnabled && (current.map { value in limit.map { value > $0 + 5 } ?? false } ?? false)
         let routeDistance = navigationStore.state.progress?.traveledDistance ?? 0
         let nextRoadAlert = nextNavigationRoadSafetyAlert
+        let nextRoadAlertDistance = nextRoadAlert.map {
+            max(0, ($0.distanceAlongRoute ?? routeDistance) - routeDistance)
+        } ?? 0
         let speedDescription = current.map { "Prędkość \($0) kilometrów na godzinę" } ?? "Prędkość niedostępna"
         let accessibilityDescription = [
             limit.map { "Limit \($0) kilometrów na godzinę" },
             speedDescription,
-            navigationStore.state.speedLimitSource.map { "Źródło limitu: \($0.shortTitle)" },
-            nextRoadAlert.map { "\($0.title), za \($0.distanceText(from: routeDistance))" }
+            navigationStore.state.speedLimitSource.map { "Źródło limitu: \($0.shortTitle)" }
         ].compactMap { $0 }.joined(separator: ", ")
 
         VStack(alignment: .leading, spacing: 7) {
@@ -147,13 +175,13 @@ extension ContentView {
                             .foregroundStyle(.black)
                             .frame(width: 54, height: 54)
                             .background(Color.white, in: Circle())
-                            .overlay(Circle().strokeBorder(Color.red, lineWidth: 4))
+                            .overlay(Circle().strokeBorder(Color(naviHex: NaviAstraColorPalette.roadSignRed), lineWidth: 4))
                             .shadow(color: .black.opacity(0.12), radius: 9, y: 4)
                             .accessibilityHidden(true)
                         if let source = navigationStore.state.speedLimitSource {
                             Text(source.shortTitle)
                                 .font(.system(size: 8, weight: .semibold))
-                                .foregroundStyle(.primary.opacity(0.82))
+                                .foregroundStyle(Color.naviTextPrimary.opacity(0.82))
                                 .lineLimit(1)
                         }
                     }
@@ -163,7 +191,7 @@ extension ContentView {
                 VStack(spacing: 0) {
                     Text(current.map(String.init) ?? "—")
                         .font(.system(size: 29, weight: .bold, design: .rounded).monospacedDigit())
-                        .foregroundStyle(aboveLimit ? Color.red : Color.black)
+                        .foregroundStyle(aboveLimit ? Color(naviHex: NaviAstraColorPalette.danger) : Color.black)
                         .contentTransition(.numericText())
                     Text("km/h")
                         .font(.system(size: 11, weight: .semibold))
@@ -172,36 +200,30 @@ extension ContentView {
                 .frame(width: 76, height: 62)
                 .background(Color.white, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 17, style: .continuous)
-                    .strokeBorder(aboveLimit ? Color.red.opacity(0.8) : Color.black.opacity(0.08), lineWidth: aboveLimit ? 2 : 1))
+                    .strokeBorder(aboveLimit ? Color(naviHex: NaviAstraColorPalette.danger).opacity(0.8) : Color.black.opacity(0.08), lineWidth: aboveLimit ? 2 : 1))
                 .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
                 .accessibilityHidden(true)
             }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityDescription)
 
             if let alert = nextRoadAlert {
-                HStack(spacing: 9) {
-                    roadAlertSymbol(alert)
-                        .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(alert.title)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                        Text(alert.distanceText(from: routeDistance))
-                            .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .modifier(NavigationGlassSurface(radius: 15))
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(alert.title), \(alert.distanceText(from: routeDistance))")
+                NavigationAlertDisclosure(
+                    title: alert.title,
+                    distanceText: distance(nextRoadAlertDistance),
+                    distance: nextRoadAlertDistance,
+                    details: [
+                        alert.type.isEnforcement ? "Kontrola drogowa" :
+                            (alert.type.isTrafficSign ? "Znak drogowy na trasie" : "Zmiana limitu prędkości")
+                    ],
+                    tint: Color(naviHex: NaviAstraColorPalette.warning),
+                    cornerRadius: 15,
+                    symbol: roadAlertSymbol(alert))
+                    .id("\(navigationStore.state.route?.id.uuidString ?? "no-route")-\(alert.id)")
             } else if let message = navigationStore.state.speedLimitMessage {
                 Label(message, systemImage: "exclamationmark.triangle")
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
             }
@@ -212,13 +234,11 @@ extension ContentView {
                       : (fresh ? "Odczyt prędkości niedostępny" : "Brak świeżego odczytu GPS"),
                       systemImage: "location.slash")
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
                     .lineLimit(1)
             }
         }
         .frame(maxWidth: 230, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(accessibilityDescription)
     }
 
     var nextNavigationRoadSafetyAlert: RoadSafetyAlert? {
@@ -232,14 +252,6 @@ extension ContentView {
             .min { ($0.distanceAlongRoute ?? .infinity) < ($1.distanceAlongRoute ?? .infinity) }
     }
 
-    var hasUpcomingRoadSafetyWarning: Bool {
-        let routeDistance = navigationStore.state.progress?.traveledDistance ?? 0
-        return navigationStore.state.roadSafetyAlerts.contains { alert in
-            guard let distance = alert.distanceAlongRoute else { return false }
-            return distance >= routeDistance && distance <= routeDistance + 2_000
-        }
-    }
-
     @ViewBuilder
     private func roadAlertSymbol(_ alert: RoadSafetyAlert) -> some View {
         switch alert.type {
@@ -248,23 +260,23 @@ extension ContentView {
                 .font(.system(size: 9, weight: .black, design: .rounded))
                 .foregroundStyle(.white)
                 .frame(width: 38, height: 38)
-                .background(.red, in: RoadStopSignShape())
+                .background(Color(naviHex: NaviAstraColorPalette.roadSignRed), in: RoadStopSignShape())
                 .overlay(RoadStopSignShape().stroke(.white, lineWidth: 1.5).padding(3))
         case .speedLimitSign:
             Text(alert.signCode?.hasSuffix("B-34") == true
                  ? "END" : (alert.speedLimitKph.map(String.init) ?? "?"))
                 .font(.system(size: alert.speedLimitKph == nil ? 9 : 13, weight: .bold, design: .rounded))
-                .foregroundStyle(.red)
+                .foregroundStyle(Color(naviHex: NaviAstraColorPalette.roadSignRed))
                 .frame(width: 38, height: 38)
                 .background(.white, in: Circle())
-                .overlay(Circle().strokeBorder(.red, lineWidth: 3))
+                .overlay(Circle().strokeBorder(Color(naviHex: NaviAstraColorPalette.roadSignRed), lineWidth: 3))
         default:
             Image(systemName: alert.type.symbolName)
                 .font(.system(size: 15, weight: .bold))
-                .foregroundStyle(alert.type.isEnforcement ? Color.white : Color.orange)
+                .foregroundStyle(.white)
                 .frame(width: 36, height: 36)
                 .background(
-                    alert.type.isEnforcement ? Color.accentColor : Color.orange.opacity(0.12),
+                    Color(naviHex: NaviAstraColorPalette.warning),
                     in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         }
     }
@@ -272,7 +284,7 @@ extension ContentView {
     func errorNotice(_ message: String) -> some View {
         HStack(spacing: 9) {
             Image(systemName: "exclamationmark.circle.fill")
-                .foregroundStyle(.orange)
+                .foregroundStyle(Color(naviHex: NaviAstraColorPalette.warning))
             Text(message)
                 .font(.footnote.weight(.medium))
                 .lineLimit(2)
@@ -281,7 +293,7 @@ extension ContentView {
         .padding(.horizontal, 13)
         .padding(.vertical, 10)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).strokeBorder(Color.orange.opacity(0.15)))
+        .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).strokeBorder(Color(naviHex: NaviAstraColorPalette.warning).opacity(0.15)))
     }
 
     func circleSurface<Content: View>(@ViewBuilder content: () -> Content) -> some View {
@@ -294,7 +306,7 @@ extension ContentView {
         Text(title.uppercased())
             .font(.caption.weight(.semibold))
             .tracking(0.7)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.naviTextSecondary)
             .padding(.top, 3)
     }
 
@@ -353,6 +365,7 @@ extension ContentView {
         let mode = navigationStore.state.transportMode
         let canRequestETA = origin != nil && mode != .transit && mode != .parkRide
         var selected = result
+        selected.requiresRouteEstimate = true
         selected.travelEstimateStatus = canRequestETA ? .calculating : .unavailable
 
         if navigationActive {
@@ -456,7 +469,12 @@ extension ContentView {
     func saveCurrentPlace(as kind: PlaceKind) {
         guard let destination = navigationStore.state.destination else { return }
         let name = favoriteName.trimmingCharacters(in: .whitespacesAndNewlines)
-        placeStore.add(destination, kind: kind, customName: name.isEmpty ? nil : name)
+        if kind == .favorite {
+            addFavoriteWithFeedback(destination, customName: name.isEmpty ? nil : name,
+                                    failureToast: false)
+        } else {
+            placeStore.add(destination, kind: kind, customName: name.isEmpty ? nil : name)
+        }
         favoriteName = ""
         isSavingPlace = false
     }
@@ -467,8 +485,49 @@ extension ContentView {
             showFavoriteRemovalConfirmation = true
             return
         }
-        guard placeStore.add(destination, kind: .favorite) else { return }
-        animateFavoritePulse()
+        addFavoriteWithFeedback(destination, pulse: true, failureToast: false)
+    }
+
+    @discardableResult
+    func addFavoriteWithFeedback(_ destination: Destination, customName: String? = nil,
+                                 pulse: Bool = false, failureToast: Bool = true) -> Bool {
+        let alreadySaved = isFavoriteDestination(destination)
+        guard placeStore.add(destination, kind: .favorite, customName: customName) else {
+            if failureToast { showFavoriteFeedback("Nie udało się zapisać miejsca") }
+            return false
+        }
+        guard !alreadySaved else {
+            showFavoriteFeedback("To miejsce jest już w Ulubionych")
+            return true
+        }
+
+        if pulse { animateFavoritePulse() }
+        favoriteFeedback = FavoriteFeedback(
+            message: "Dodano do Ulubionych",
+            detail: "Przypięto do szybkich skrótów",
+            undoAction: { self.undoFavoriteAddition(for: destination) })
+        return true
+    }
+
+    func isFavoriteDestination(_ destination: Destination) -> Bool {
+        placeStore.places.contains {
+            $0.kind == .favorite && $0.destination.coordinate == destination.coordinate
+        }
+    }
+
+    func showFavoriteFeedback(_ message: String) {
+        let isError = message.localizedCaseInsensitiveContains("nie udało")
+        favoriteFeedback = FavoriteFeedback(
+            message: message,
+            symbol: isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+    }
+
+    private func undoFavoriteAddition(for destination: Destination) {
+        guard removeFavorite(for: destination) else {
+            showFavoriteFeedback("Nie udało się cofnąć zapisu")
+            return
+        }
+        showFavoriteFeedback("Cofnięto dodanie")
     }
 
     func animateFavoritePulse() {

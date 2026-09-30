@@ -256,7 +256,7 @@ struct NearbyPlacesSheet: View {
                         .font(.subheadline.weight(.medium))
                         .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
                         .padding(.horizontal, 12)
-                        .foregroundStyle(category == value ? Color.accentColor : Color.primary)
+                        .foregroundStyle(category == value ? Color.accentColor : Color.naviTextPrimary)
                         .background(category == value ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.08),
                                     in: Capsule())
                 }
@@ -373,13 +373,13 @@ struct NearbyPlacesSheet: View {
         VStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 25, weight: .medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.naviTextSecondary)
             Text("Nie udało się wyszukać miejsc")
                 .font(.headline)
                 .multilineTextAlignment(.center)
             Text(message)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.naviTextSecondary)
                 .multilineTextAlignment(.center)
             Button("Spróbuj ponownie") { retryID = UUID() }
                 .buttonStyle(.borderedProminent)
@@ -482,7 +482,7 @@ struct NearbyPlacesSheet: View {
                 if hasApplicableFilters { nearbyFilterControls }
                 Text(searchDescription)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
                 nearbyStatusContent
             }
             .padding(.horizontal, 16)

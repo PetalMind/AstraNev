@@ -246,9 +246,5 @@ nonisolated struct GTFSDatabase: Codable, Sendable {
 }
 
 nonisolated enum TransitLinePalette {
-    static func color(for value: String) -> UInt32 {
-        let colors: [UInt32] = [0xD8343C, 0x2867B2, 0x189477, 0x8A58A8, 0xE18927, 0x357A9F]
-        let hash = value.utf8.reduce(UInt32(2_166_136_261)) { ($0 ^ UInt32($1)) &* 16_777_619 }
-        return colors[Int(hash % UInt32(colors.count))]
-    }
+    static func color(for _: String) -> UInt32 { NaviAstraColorPalette.transitFallback }
 }

@@ -59,22 +59,27 @@ extension ContentView {
     }
 
     func mapPlaceSelectionRow(_ result: SearchResult) -> some View {
-        let category = result.category ?? "Miejsce"
-        let categoryTitle = category.replacingOccurrences(of: "_", with: " ").capitalized
         return Button {
             presentMapPlace(result)
         } label: {
             VStack(alignment: .leading, spacing: 4) {
                 Text(result.destination.name)
                     .font(.body.weight(.semibold))
-                Text(categoryTitle)
+                Text(mapPlaceSelectionSubtitle(result))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
+                    .lineLimit(2)
+                if let distance = mapPlaceSelectionDistance(result) {
+                    Text(distance)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.tertiary)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Pokaż miejsce \(result.destination.name), \(mapPlaceSelectionSubtitle(result))")
     }
 
     var selectedMapPlacesPeek: some View {
@@ -89,17 +94,22 @@ extension ContentView {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(results.count == 1 ? (result?.destination.name ?? "Miejsce") : "Miejsca w pobliżu · \(results.count)")
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(Color.naviTextPrimary)
                         .lineLimit(1)
-                    if let result {
+                    if results.count == 1, let result {
                         Text(selectedMapPlaceCompactSummary(result))
                             .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.naviTextSecondary)
+                            .lineLimit(1)
+                    } else if !results.isEmpty {
+                        Text("Wybierz jedno z \(results.count) miejsc")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Color.naviTextSecondary)
                             .lineLimit(1)
                     } else {
                         Text("Wybierz szczegóły jednego z miejsc")
                             .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.naviTextSecondary)
                             .lineLimit(1)
                     }
                 }
@@ -125,16 +135,29 @@ extension ContentView {
             ?? "Wybrane miejsce"
     }
 
+    private func mapPlaceSelectionSubtitle(_ result: SearchResult) -> String {
+        let category = (result.category ?? "Miejsce")
+            .replacingOccurrences(of: "_", with: " ").capitalized
+        guard let address = result.destination.address?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !address.isEmpty else { return category }
+        return "\(category) · \(address)"
+    }
+
+    private func mapPlaceSelectionDistance(_ result: SearchResult) -> String? {
+        guard let value = result.selectionDistanceFromTap else { return nil }
+        return "\(distance(value)) od wskazanego punktu"
+    }
+
     var selectedMapPlacesChoices: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Wybierz miejsce")
                     .font(.headline.weight(.semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(Color.naviTextPrimary)
                 Spacer()
                 Text("\(placeStore.selectedMapPlaces.count)")
                     .font(.caption.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
             }
 
             ForEach(placeStore.selectedMapPlaces) { result in
@@ -152,14 +175,18 @@ extension ContentView {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(result.destination.name)
                                 .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(Color.naviTextPrimary)
                                 .lineLimit(1)
-                            Text(result.destination.address
-                                 ?? result.category?.replacingOccurrences(of: "_", with: " ").capitalized
-                                 ?? "Miejsce")
+                            Text(mapPlaceSelectionSubtitle(result))
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
+                                .foregroundStyle(Color.naviTextSecondary)
+                                .lineLimit(2)
+                            if let distance = mapPlaceSelectionDistance(result) {
+                                Text(distance)
+                                    .font(.caption2.weight(.medium))
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                            }
                         }
                         Spacer(minLength: 4)
                         Image(systemName: "chevron.right")
@@ -172,7 +199,7 @@ extension ContentView {
                     .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Pokaż miejsce \(result.destination.name)")
+                .accessibilityLabel("Pokaż miejsce \(result.destination.name), \(mapPlaceSelectionSubtitle(result))")
             }
         }
     }
@@ -302,8 +329,8 @@ extension ContentView {
         let warning: (String, String, Color)? = switch navigationStore.state.gpsQuality {
         case .good, .excellent: nil
         case .predicted where fixAge < 15: nil
-        case .predicted, .weak: ("Sygnał GPS słaby", "location.circle", .orange)
-        case .noSignal: ("Słaby sygnał GPS · prowadzenie może być niedokładne", "location.slash", .red)
+        case .predicted, .weak: ("Sygnał GPS słaby", "location.circle", Color(naviHex: NaviAstraColorPalette.warning))
+        case .noSignal: ("Słaby sygnał GPS · prowadzenie może być niedokładne", "location.slash", Color(naviHex: NaviAstraColorPalette.danger))
         }
         if let warning {
             Label(warning.0, systemImage: warning.1)
@@ -368,24 +395,24 @@ extension ContentView {
         case .zoomIn:
             Label("Zbliż mapę, aby pobrać dane", systemImage: "plus.magnifyingglass")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.naviTextSecondary)
         case .loading:
             Label("Pobieranie ścieżek z OSM…", systemImage: "arrow.triangle.2.circlepath")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.naviTextSecondary)
         case .loaded(count: 0, truncated: _):
             Label("Brak oznaczonych ścieżek w tym widoku", systemImage: "info.circle")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.naviTextSecondary)
         case .loaded(let count, let truncated):
             Label(truncated ? "OpenStreetMap · ponad \(count) odc." : "OpenStreetMap · \(count) odc.",
                   systemImage: "bicycle")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.naviTextSecondary)
         case .unavailable:
             Label("Dane OpenStreetMap są niedostępne", systemImage: "exclamationmark.triangle")
                 .font(.caption)
-                .foregroundStyle(.orange)
+                .foregroundStyle(Color(naviHex: NaviAstraColorPalette.warning))
         }
     }
 
@@ -396,7 +423,7 @@ extension ContentView {
             circleSurface {
                 Image(systemName: "square.3.layers.3d")
                     .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(Color.naviTextPrimary)
             }
         }
         .accessibilityLabel("Wygląd i warstwy mapy")
@@ -426,7 +453,7 @@ extension ContentView {
             } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(Color.naviTextPrimary)
                     .frame(width: 44, height: 44)
                     .background(Color.primary.opacity(0.05), in: Circle())
             }
@@ -453,7 +480,7 @@ extension ContentView {
 
                 Text("Szukaj miejsca lub połączenia")
                     .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(Color.naviTextPrimary)
                     .lineLimit(1)
 
                 Spacer(minLength: 4)
@@ -477,17 +504,21 @@ extension ContentView {
                         Image(systemName: routeOriginPoint?.isCurrentLocation == true
                               ? "location.fill" : "a.circle.fill")
                             .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(routeOriginPoint?.isCurrentLocation == true ? .blue : .accentColor)
+                            .foregroundStyle(routeOriginPoint?.isCurrentLocation == true
+                                ? Color(naviHex: colorScheme == .dark
+                                    ? NaviAstraColorPalette.userLocationNight
+                                    : NaviAstraColorPalette.userLocationDay)
+                                : Color.naviTextPrimary)
                             .frame(width: 34, height: 34)
                             .background(Color.primary.opacity(0.055), in: Circle())
                         VStack(alignment: .leading, spacing: 2) {
                             Text(routeOriginPoint?.name ?? "Twoja lokalizacja")
                                 .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(Color.naviTextPrimary)
                                 .lineLimit(1)
                             Text("Punkt startowy")
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.naviTextSecondary)
                         }
                         Spacer(minLength: 0)
                         Image(systemName: "chevron.right")
@@ -534,11 +565,11 @@ extension ContentView {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(navigationStore.state.destination?.name ?? "Dokąd?")
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(Color.naviTextPrimary)
                             .lineLimit(1)
                         Text(navigationStore.state.destination?.address ?? "Cel podróży")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.naviTextSecondary)
                             .lineLimit(1)
                     }
                     Spacer(minLength: 0)
@@ -595,11 +626,11 @@ extension ContentView {
             VStack(alignment: .leading, spacing: 2) {
                 Text(waypoint.name)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(darkStyle ? Color.white.opacity(0.94) : Color.primary)
+                    .foregroundStyle(darkStyle ? Color.white.opacity(0.94) : Color.naviTextPrimary)
                     .lineLimit(1)
                 Text(waypoint.address.map { "Przystanek \(index + 1) · \($0)" } ?? "Przystanek \(index + 1)")
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(darkStyle ? Color.white.opacity(0.56) : Color.secondary)
+                    .foregroundStyle(darkStyle ? Color.white.opacity(0.56) : Color.naviTextSecondary)
                     .lineLimit(1)
             }
 
@@ -614,7 +645,7 @@ extension ContentView {
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(darkStyle ? Color.white.opacity(0.72) : Color.secondary)
+                    .foregroundStyle(darkStyle ? Color.white.opacity(0.72) : Color.naviTextSecondary)
                     .frame(width: 44, height: 44)
                     .background(darkStyle ? Color.white.opacity(0.06) : Color.primary.opacity(0.04),
                                 in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -679,7 +710,8 @@ extension ContentView {
                     } label: {
                         Label("Moja lokalizacja", systemImage: "location.fill")
                     }
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(Color(naviHex: colorScheme == .dark
+                        ? NaviAstraColorPalette.userLocationNight : NaviAstraColorPalette.userLocationDay))
                 }
 
                 Section("Dodaj punkt startowy") {
@@ -778,7 +810,7 @@ extension ContentView {
                         if pickedRouteOriginCoordinate != nil {
                             Text("Punkt pod pinezką na środku mapy")
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.naviTextSecondary)
                         }
                         Button(action: confirmRouteOriginMapSelection) {
                             Label("Ustaw jako punkt startu", systemImage: "a.circle.fill")
@@ -842,7 +874,7 @@ extension ContentView {
                         if savedPlaceMapCoordinate != nil {
                             Text("Punkt pod pinezką na środku mapy")
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.naviTextSecondary)
                         }
                         Button(action: confirmSavedPlaceMapSelection) {
                             Label("Zapisz \(kind.title.lowercased())", systemImage: kind.defaultIcon.symbol)
@@ -897,7 +929,10 @@ extension ContentView {
     func confirmSavedPlaceMapSelection() {
         guard let kind = savedPlaceMapSelectionKind, let coordinate = savedPlaceMapCoordinate else { return }
         let destination = Destination(name: kind.title, coordinate: coordinate, address: savedPlaceMapAddress)
-        placeStore.add(destination, kind: kind)
+        let saved = kind == .favorite
+            ? addFavoriteWithFeedback(destination, failureToast: false)
+            : placeStore.add(destination, kind: kind)
+        guard saved else { return }
         savedPlaceMapGeocodingTask?.cancel()
         savedPlaceMapSelectionKind = nil
     }
@@ -905,7 +940,10 @@ extension ContentView {
     func saveMapSelectedPlace(_ destination: Destination, as kind: PlaceKind) {
         let saved = Destination(name: kind.title, coordinate: destination.coordinate,
                                 address: destination.address, poi: destination.poi)
-        placeStore.add(saved, kind: kind)
+        let didSave = kind == .favorite
+            ? addFavoriteWithFeedback(saved, failureToast: false)
+            : placeStore.add(saved, kind: kind)
+        guard didSave else { return }
         savedPlaceMapGeocodingTask?.cancel()
         savedPlaceMapSelectionKind = nil
     }

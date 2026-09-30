@@ -5,6 +5,7 @@ import UIKit
 #endif
 
 struct ContentView: View {
+    @Environment(\.colorScheme) var colorScheme
     @Environment(\.accessibilityReduceMotion) var reduceMotion
     @Environment(\.scenePhase) var scenePhase
     @Namespace var transportSelectionNamespace
@@ -35,6 +36,8 @@ struct ContentView: View {
     @State var editingSavedPlace: SavedPlace?
     @State var placePendingRemoval: SavedPlace?
     @State var showPlaceRemovalConfirmation = false
+    @State var favoriteFeedback: FavoriteFeedback?
+    @State var openSearchAfterFavoritesDismiss = false
     @State var addingWaypoint = false
     @State var favoriteName = ""
     @State var isSavingPlace = false
@@ -71,6 +74,7 @@ struct ContentView: View {
     @State var routePlanningDetailsExpanded = false
     @State var expandedTransitStopsLegID: UUID?
     @State var expandedTransitTimelineLegID: UUID?
+    @State var showsFullTransitItinerary = false
     @State var quickETAEstimates: [String: PlaceRouteEstimate] = [:]
     @State var quickETAOrigin: Coordinate?
     @State var quickETADestinationKey = ""

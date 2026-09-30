@@ -33,13 +33,13 @@ extension ContentView {
                          ?? (navigationStore.state.transportMode == .parkRide
                              ? "Jedź do parkingu P+R" : "Kontynuuj do celu"))
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(Color.naviTextPrimary)
                         .lineLimit(2)
 
                     if let streetLine = maneuver?.streetLine {
                         Text(streetLine)
                             .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.naviTextSecondary)
                             .lineLimit(1)
                     }
                 }
@@ -49,7 +49,7 @@ extension ContentView {
                     if guidanceDistance.isFinite, guidanceDistance <= 25 {
                         Text(distance(guidanceDistance))
                             .font(.system(size: 15, weight: .medium, design: .rounded).monospacedDigit())
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.naviTextSecondary)
                     }
                     laneGuidance
                 }
@@ -79,56 +79,48 @@ extension ContentView {
     var navigationTrafficIncidentBanner: some View {
         if isNavigating, navigationStore.state.transportMode == .car,
            let incident = nextRouteTrafficIncident {
-            HStack(spacing: 9) {
-                Image(systemName: incident.isRoadClosure ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
+            let routeDistance = navigationStore.state.progress?.traveledDistance ?? 0
+            let remainingDistance = max(0, (incident.distanceAlongRoute ?? routeDistance) - routeDistance)
+            let incidentDetails = trafficIncidentDetails(incident)
+            NavigationAlertDisclosure(
+                title: incident.category.mapLabel,
+                distanceText: distance(remainingDistance),
+                distance: remainingDistance,
+                details: incidentDetails,
+                tint: Color(naviHex: incident.isRoadClosure
+                    ? NaviAstraColorPalette.danger : NaviAstraColorPalette.warning),
+                cornerRadius: 17,
+                symbol: Image(systemName: incident.isRoadClosure
+                              ? "nosign" : "exclamationmark.triangle.fill")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(incident.isRoadClosure ? Color.red : Color.orange)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("\(incident.category.mapLabel) · za \(distance(max(0, (incident.distanceAlongRoute ?? 0) - (navigationStore.state.progress?.traveledDistance ?? 0))))")
-                        .font(.caption.weight(.semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                    if let delay = incident.delaySeconds, delay > 0 {
-                        Text("+\(max(1, Int((Double(delay) / 60).rounded()))) min")
-                            .font(.caption2.weight(.medium))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(.primary)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .frame(maxWidth: 230, alignment: .leading)
-            .modifier(NavigationGlassSurface(radius: 17))
-            .accessibilityElement(children: .combine)
+                    .foregroundStyle(Color(naviHex: incident.isRoadClosure
+                        ? NaviAstraColorPalette.danger : NaviAstraColorPalette.warning)))
+                .id("\(navigationStore.state.route?.id.uuidString ?? "no-route")-\(incident.id)")
         }
+    }
+
+    private func trafficIncidentDetails(_ incident: TrafficIncident) -> [String] {
+        var details = [incident.severity.mapLabel]
+        if let delay = incident.delaySeconds, delay > 0 {
+            details.append("Opóźnienie około \(max(1, Int((Double(delay) / 60).rounded()))) min")
+        }
+        if incident.description != incident.category.mapLabel {
+            details.append(incident.description)
+        }
+        return details
     }
 
     @ViewBuilder
     var navigationRoadDataFooter: some View {
-        if case .available = navigationStore.state.roadSafetyStatus {
-            VStack(alignment: .leading, spacing: 4) {
-                if !hasUpcomingRoadSafetyWarning {
-                    Label("Brak ostrzeżeń do 2 km", systemImage: "checkmark.circle")
-                        .font(.system(size: 13, weight: .medium))
-                        .lineLimit(1)
-                }
-                Text("© OpenStreetMap contributors")
-                    .font(.system(size: 11, weight: .medium))
-            }
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: 230, alignment: .leading)
-        } else if case .loading = navigationStore.state.roadSafetyStatus {
+        if case .loading = navigationStore.state.roadSafetyStatus {
             Label("Pobieranie ostrzeżeń…", systemImage: "arrow.triangle.2.circlepath")
                 .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.naviTextSecondary)
                 .lineLimit(1)
         } else if case .unavailable = navigationStore.state.roadSafetyStatus {
             Label("Ostrzeżenia drogowe niedostępne", systemImage: "wifi.slash")
                 .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.naviTextSecondary)
                 .lineLimit(1)
         }
     }
@@ -204,7 +196,7 @@ extension ContentView {
                     .font(.headline.weight(.bold).monospacedDigit())
                     .foregroundStyle(.white)
                     .frame(minWidth: 44, minHeight: 42)
-                    .background(mapTransitColor(leg.lineColorHex ?? 0x2867B2), in: RoundedRectangle(cornerRadius: 13))
+                    .background(mapTransitColor(leg.lineColorHex ?? NaviAstraColorPalette.transitFallback), in: RoundedRectangle(cornerRadius: 13))
             } else {
                 Image(systemName: "figure.walk")
                     .font(.system(size: 20, weight: .semibold))
@@ -215,7 +207,7 @@ extension ContentView {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title).font(.subheadline.weight(.semibold)).lineLimit(1)
                 Text(subtitle)
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .font(.caption).foregroundStyle(Color.naviTextSecondary).lineLimit(1)
             }
             Spacer(minLength: 0)
             VStack(alignment: .trailing, spacing: 2) {
@@ -223,7 +215,7 @@ extension ContentView {
                     .font(.system(size: 20, weight: .bold, design: .rounded).monospacedDigit())
                     .contentTransition(.numericText())
                 Text(isWalking ? "do przystanku" : waitingForDeparture ? "do odjazdu" : "do przystanku")
-                    .font(.caption2).foregroundStyle(.secondary)
+                    .font(.caption2).foregroundStyle(Color.naviTextSecondary)
             }
         }
         .padding(.horizontal, 14)
@@ -240,7 +232,7 @@ extension ContentView {
                 ForEach(lanes) { lane in
                     Image(systemName: laneSymbol(lane.indications))
                         .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(lane.valid ? Color.accentColor : Color.secondary.opacity(0.55))
+                        .foregroundStyle(lane.valid ? Color.accentColor : Color.naviTextSecondary.opacity(0.55))
                         .frame(width: 20, height: 30)
                         .background(lane.valid ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04),
                                     in: RoundedRectangle(cornerRadius: 6))
@@ -361,7 +353,7 @@ extension ContentView {
                     .font(.caption.weight(.semibold))
             }
             .buttonStyle(.borderedProminent)
-            .tint(.red)
+            .tint(Color(naviHex: NaviAstraColorPalette.danger))
             .accessibilityLabel("Anuluj trasę")
 
             routeEndpointFields
@@ -370,7 +362,7 @@ extension ContentView {
                 Button(action: toggleDestinationFavorite) {
                     Image(systemName: isDestinationFavorite ? "heart.fill" : "heart")
                         .font(.system(size: 17, weight: .medium))
-                        .foregroundStyle(isDestinationFavorite ? Color.red : Color.secondary)
+                        .foregroundStyle(isDestinationFavorite ? Color.accentColor : Color.naviTextSecondary)
                         .frame(width: 36, height: 36)
                         .contentShape(Circle())
                         .scaleEffect(favoritePulseScale)
@@ -385,12 +377,12 @@ extension ContentView {
                         Label("Start trasy: \(distance(origin.coordinate.distance(to: location.coordinate))) od Ciebie",
                               systemImage: "location.north.line")
                             .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.naviTextSecondary)
                     } else {
                         Label("Start trasy ustawiono poza bieżącą lokalizacją",
                               systemImage: "location.north.line")
                             .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.naviTextSecondary)
                     }
                     Button {
                         Task { await navigationStore.setRouteOrigin(nil) }
@@ -419,7 +411,7 @@ extension ContentView {
                         Text("PODRÓŻ")
                             .font(.caption2.weight(.semibold))
                             .tracking(1)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.naviTextSecondary)
                     }
                     Spacer(minLength: 8)
                     VStack(alignment: .trailing, spacing: 1) {
@@ -429,7 +421,7 @@ extension ContentView {
                         Text("TRASA")
                             .font(.caption2.weight(.semibold))
                             .tracking(1)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.naviTextSecondary)
                     }
                 }
 
@@ -450,7 +442,7 @@ extension ContentView {
                             Text(firstRide.line ?? "MPK")
                                 .font(.caption.weight(.bold).monospacedDigit())
                                 .foregroundStyle(.white).padding(.horizontal, 8).padding(.vertical, 5)
-                                .background(mapTransitColor(firstRide.lineColorHex ?? 0x2867B2), in: RoundedRectangle(cornerRadius: 7))
+                                .background(mapTransitColor(firstRide.lineColorHex ?? NaviAstraColorPalette.transitFallback), in: RoundedRectangle(cornerRadius: 7))
                             Text(transitLegs.map { $0.line ?? "MPK" }.joined(separator: " → "))
                                 .font(.caption.weight(.medium)).lineLimit(1)
                             Spacer(minLength: 0)
@@ -460,14 +452,14 @@ extension ContentView {
                                         .font(.caption.weight(.semibold))
                                         .foregroundStyle(transitDelayColor(delay))
                                     Text(transitTimeSourceLabel(for: firstRide, in: journey))
-                                        .font(.caption2).foregroundStyle(.secondary)
+                                        .font(.caption2).foregroundStyle(Color.naviTextSecondary)
                                 }
                             } else if firstRide.realTime || hasLiveTransitUpdate(for: firstRide) {
                                 Text(transitTimeSourceLabel(for: firstRide, in: journey))
-                                    .font(.caption2).foregroundStyle(.secondary)
+                                    .font(.caption2).foregroundStyle(Color.naviTextSecondary)
                             } else {
                                 Text("wg rozkładu")
-                                    .font(.caption2).foregroundStyle(.secondary)
+                                    .font(.caption2).foregroundStyle(Color.naviTextSecondary)
                             }
                         }
                         HStack(spacing: 5) {
@@ -475,13 +467,13 @@ extension ContentView {
                             Text("·")
                             Text("Przyjazd \(journey.arrival.formatted(date: .omitted, time: .shortened))")
                         }
-                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                        .font(.caption2.monospacedDigit()).foregroundStyle(Color.naviTextSecondary)
                         Text("Pojazdami \(transitMetricTime(rideDuration)) · pieszo \(transitMetricTime(journey.walkingDuration)) · czekanie \(transitMetricTime(journey.waitingDuration)) · przesiadki: \(journey.transferCount)")
-                            .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                            .font(.caption2).foregroundStyle(Color.naviTextSecondary).lineLimit(2)
                         if let headway = journey.frequencyEstimateHeadwaySeconds {
                             Label("Odjazdy orientacyjne co \(max(1, Int((Double(headway) / 60).rounded()))) min",
                                   systemImage: "clock.badge.questionmark")
-                                .font(.caption2).foregroundStyle(.secondary)
+                                .font(.caption2).foregroundStyle(Color.naviTextSecondary)
                         }
                         Button {
                             Task { await navigationStore.loadLaterTransitConnections(after: firstRide.departure) }
@@ -507,18 +499,18 @@ extension ContentView {
                         $0.mode == "WALK" && $0.walkingTimeIsApproximate
                     }) {
                         Label("Czasy dojść są szacunkowe.", systemImage: "info.circle")
-                            .font(.caption2).foregroundStyle(.secondary)
+                            .font(.caption2).foregroundStyle(Color.naviTextSecondary)
                     } else if journey.legs.contains(where: {
                         $0.mode == "WALK" && !$0.hasResolvedWalkingGeometry
                     }) {
                         Label("Przebieg dojść jest pokazany orientacyjnie.", systemImage: "info.circle")
-                            .font(.caption2).foregroundStyle(.secondary)
+                            .font(.caption2).foregroundStyle(Color.naviTextSecondary)
                     }
                 }
 
                 if navigationStore.state.didSearchLaterTransitRoutes && navigationStore.state.laterTransitRoutes.isEmpty {
                     Text("Nie znaleziono późniejszych połączeń w dostępnym rozkładzie.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(Color.naviTextSecondary)
                 } else if !navigationStore.state.laterTransitRoutes.isEmpty {
                     laterTransitConnections
                 }
@@ -533,16 +525,16 @@ extension ContentView {
                                     Text("Ładowanie po drodze")
                                         .font(.subheadline.weight(.semibold))
                                     Text("Szacowany czas postojów: \(Int((route.chargingDuration / 60).rounded())) min")
-                                        .font(.caption).foregroundStyle(.secondary)
+                                        .font(.caption).foregroundStyle(Color.naviTextSecondary)
                                     ForEach(route.chargingStops) { stop in
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text(stop.destination.name).font(.caption.weight(.medium))
                                             Text("\(stop.connectorTypes.joined(separator: ", ")) · do \(Int(stop.maximumPowerKW.rounded())) kW · postój \(Int((stop.estimatedChargingTime / 60).rounded())) min")
-                                                .font(.caption2).foregroundStyle(.secondary)
+                                                .font(.caption2).foregroundStyle(Color.naviTextSecondary)
                                             Text(stop.availabilityKnown ? "Status: działająca według OpenStreetMap" : "Dostępność ładowarki nieznana")
-                                                .font(.caption2).foregroundStyle(.secondary)
+                                                .font(.caption2).foregroundStyle(Color.naviTextSecondary)
                                             Text(stop.publicAccess == true ? "Dostęp publiczny według OpenStreetMap" : "Dostęp publiczny niepotwierdzony")
-                                                .font(.caption2).foregroundStyle(.secondary)
+                                                .font(.caption2).foregroundStyle(Color.naviTextSecondary)
                                         }
                                     }
                                 }
@@ -621,7 +613,7 @@ extension ContentView {
                          ? "Szukam połączeń…"
                          : "Wyznaczanie trasy…")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                     Spacer()
                 }
                 .padding(.vertical, 8)
@@ -629,7 +621,7 @@ extension ContentView {
                 HStack {
                     Text(navigationStore.state.errorMessage ?? "Nie udało się wyznaczyć trasy.")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                     Spacer()
                     Button("Spróbuj ponownie") { Task { await navigationStore.planRoute() } }
                 }
@@ -698,7 +690,7 @@ extension ContentView {
                             }
                         }
                     }
-                    .foregroundStyle(navigationStore.state.transportMode == mode ? Color.accentColor : Color.secondary)
+                    .foregroundStyle(navigationStore.state.transportMode == mode ? Color.accentColor : Color.naviTextSecondary)
                     .frame(maxWidth: navigationStore.state.transportMode == mode ? 132 : .infinity)
                     .layoutPriority(navigationStore.state.transportMode == mode ? 1 : 0)
                     .frame(minHeight: 48)
@@ -732,7 +724,7 @@ extension ContentView {
             Text("CZAS PODRÓŻY")
                 .font(.caption2.weight(.semibold))
                 .tracking(1)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.naviTextSecondary)
 
             Button {
                 isJourneyTimePickerPresented = true
@@ -747,10 +739,10 @@ extension ContentView {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(journeyTimeModeLabel)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(Color.naviTextPrimary)
                         Text(journeyTimeSummary)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.naviTextSecondary)
                             .lineLimit(1)
                             .minimumScaleFactor(0.85)
                     }
@@ -843,12 +835,12 @@ extension ContentView {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("\(firstRide.departure.formatted(date: .omitted, time: .shortened))  ·  \(time(route.expectedTravelTime))")
                                     .font(.subheadline.weight(.semibold).monospacedDigit())
-                                    .foregroundStyle(.primary)
+                                    .foregroundStyle(Color.naviTextPrimary)
                                 Text(journey.legs.filter { $0.mode != "WALK" }
                                     .map { $0.line ?? "MPK" }.joined(separator: " → "))
-                                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                    .font(.caption).foregroundStyle(Color.naviTextSecondary).lineLimit(1)
                                 Text("Przyjazd \(journey.arrival.formatted(date: .omitted, time: .shortened))")
-                                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                                    .font(.caption2.monospacedDigit()).foregroundStyle(Color.naviTextSecondary)
                             }
                             Spacer(minLength: 4)
                             if firstRide.realTime {
@@ -857,11 +849,11 @@ extension ContentView {
                                         .font(.caption2.weight(.semibold))
                                         .foregroundStyle(firstRide.delaySeconds.map { transitDelayColor($0) } ?? Color.accentColor)
                                     Text(transitTimeSourceLabel(for: firstRide, in: journey))
-                                        .font(.caption2).foregroundStyle(.secondary)
+                                        .font(.caption2).foregroundStyle(Color.naviTextSecondary)
                                 }
                             } else {
                                 Text("wg rozkładu")
-                                    .font(.caption2).foregroundStyle(.secondary)
+                                    .font(.caption2).foregroundStyle(Color.naviTextSecondary)
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -894,7 +886,7 @@ extension ContentView {
                     .font(.subheadline.weight(.semibold))
                 Text("\(navigationStore.state.waypoints.count)")
                     .font(.caption.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
                 Spacer()
                 if navigationStore.state.waypoints.count >= 2 {
                     Button("Optymalizuj", systemImage: "arrow.triangle.swap") {
@@ -915,11 +907,11 @@ extension ContentView {
                   (navigationStore.state.location == nil ? "Pozycja niedostępna" : "Moja lokalizacja"),
                   systemImage: navigationStore.state.routeOrigin?.isCurrentLocation == false ? "a.circle.fill" : "location.fill")
                 .font(.subheadline)
-                .foregroundStyle(navigationStore.state.location == nil ? Color.secondary : Color.primary)
+                .foregroundStyle(navigationStore.state.location == nil ? Color.naviTextSecondary : Color.naviTextPrimary)
             Label(navigationStore.state.destination?.name ?? "Cel podróży",
                   systemImage: "mappin.and.ellipse")
                 .font(.subheadline)
-                .foregroundStyle(.primary)
+                .foregroundStyle(Color.naviTextPrimary)
         }
     }
 
@@ -946,18 +938,18 @@ extension ContentView {
             VStack(alignment: .leading, spacing: 3) {
                 Text(routeOptionTime(route))
                     .font(.system(size: 15, weight: .semibold, design: .rounded).monospacedDigit())
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.naviTextSecondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
                 if !isSelected {
                     Text(routeOptionDifference(route, from: selectedRoute))
                         .font(.system(size: 9, weight: .medium, design: .rounded).monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                         .lineLimit(1)
                 }
                 Text(routeTransitSummary(route) ?? distance(route.distance))
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
                     .lineLimit(2)
                     .minimumScaleFactor(0.82)
             }
@@ -1015,6 +1007,118 @@ extension ContentView {
     }
 }
 
+struct NavigationAlertDisclosure<Symbol: View>: View {
+    let title: String
+    let distanceText: String
+    let distance: Double
+    let details: [String]
+    let tint: Color
+    let cornerRadius: CGFloat
+    let symbol: Symbol
+
+    @State private var userExpandedOverride: Bool?
+    @State private var highestReachedStage = 0
+
+    private var rawProximityStage: Int {
+        if distance <= 100 { 3 }
+        else if distance <= 500 { 2 }
+        else if distance <= 1_000 { 1 }
+        else { 0 }
+    }
+
+    private var proximityStage: Int {
+        max(highestReachedStage, rawProximityStage)
+    }
+
+    private var isExpanded: Bool {
+        userExpandedOverride ?? (proximityStage > 0)
+    }
+
+    private var stageTint: Color {
+        if proximityStage >= 3 { Color(naviHex: NaviAstraColorPalette.danger) }
+        else if proximityStage >= 2 { Color(naviHex: NaviAstraColorPalette.warning) }
+        else { tint }
+    }
+
+    private var proximityMessage: String? {
+        switch proximityStage {
+        case 1: "Ostrzeżenie w zasięgu 1 km"
+        case 2: "Przygotuj się — mniej niż 500 m"
+        case 3: "Uwaga — mniej niż 100 m"
+        default: nil
+        }
+    }
+
+    var body: some View {
+        Button {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                userExpandedOverride = !isExpanded
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 9) {
+                    symbol
+                        .frame(minWidth: 18)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(title)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.naviTextPrimary)
+                            .lineLimit(1)
+                        Text(distanceText)
+                            .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
+                            .foregroundStyle(Color.naviTextSecondary)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.naviTextSecondary)
+                }
+
+                if isExpanded {
+                    VStack(alignment: .leading, spacing: 4) {
+                        if let proximityMessage {
+                            Text(proximityMessage)
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(stageTint)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if proximityStage >= 2 || userExpandedOverride == true {
+                            ForEach(Array(details.enumerated()), id: \.offset) { item in
+                                Text(item.element)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(Color.naviTextSecondary)
+                                    .lineLimit(2)
+                            }
+                        }
+                    }
+                    .padding(.leading, 27)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+            .foregroundStyle(Color.naviTextPrimary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, isExpanded ? 9 : 7)
+            .frame(maxWidth: 230, alignment: .leading)
+            .modifier(NavigationGlassSurface(radius: cornerRadius, interactive: true))
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(title), \(distanceText)")
+        .accessibilityValue(isExpanded ? "Rozwinięte" : "Zwinięte")
+        .accessibilityHint(isExpanded ? "Stuknij, aby zwinąć ostrzeżenie" : "Stuknij, aby rozwinąć ostrzeżenie")
+        .onAppear { highestReachedStage = max(highestReachedStage, rawProximityStage) }
+        .onChange(of: rawProximityStage) { _, stage in
+            guard stage > highestReachedStage else { return }
+            highestReachedStage = stage
+            userExpandedOverride = nil
+        }
+        .animation(.spring(response: 0.28, dampingFraction: 0.86), value: proximityStage)
+    }
+}
+
 private struct JourneyTimePickerSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selectedMode: JourneyTimeMode
@@ -1055,7 +1159,7 @@ private struct JourneyTimePickerSheet: View {
                         .font(.title3.weight(.semibold))
                     Text("Wybierz teraz, odjazd lub przyjazd")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                 }
                 Spacer(minLength: 0)
                 Button("Zamknij", systemImage: "xmark") { dismiss() }
@@ -1086,7 +1190,7 @@ private struct JourneyTimePickerSheet: View {
                         .font(.headline)
                     Text("Pokażemy najbliższe dostępne odjazdy.")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                         .multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity, minHeight: 212)
@@ -1095,7 +1199,7 @@ private struct JourneyTimePickerSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Wybierz datę i godzinę \(selectedMode == .departAt ? "odjazdu" : "przyjazdu")")
                         .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.naviTextSecondary)
                     journeyDateTimePicker
                         .frame(maxWidth: .infinity, minHeight: 210)
                         .clipped()

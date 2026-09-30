@@ -93,12 +93,12 @@ extension ContentView {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(destination.name)
                         .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(Color.naviTextPrimary)
                         .lineLimit(1)
                     if let subtitle {
                         Text(subtitle)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.naviTextSecondary)
                     }
                 }
 

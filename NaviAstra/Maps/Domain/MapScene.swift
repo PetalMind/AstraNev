@@ -21,6 +21,7 @@ struct MapSceneCommands {
     let onParkedCarSelect: () -> Void
     let onRouteSelect: (UUID) -> Void
     let onCyclingPathsStatus: (OSMCyclingPathsStatus) -> Void
+    let onRoadPOIStatus: (MapRoadPOIStatus) -> Void
     let onTransitViewportChange: (TransitMapViewport) -> Void
     let onMapPan: () -> Void
     let onLongPress: (Coordinate) -> Void

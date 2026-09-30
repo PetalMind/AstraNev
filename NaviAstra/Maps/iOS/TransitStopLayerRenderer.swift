@@ -199,10 +199,13 @@ final class TransitStopLayerRenderer {
             ? iconHeight / 2 : 8
         capsule.layer.borderWidth = presentation.isActive || presentation.isAlighting ? 3
             : presentation.isSelected || presentation.isOnRoute ? 2.5 : 1.5
-        let accent = presentation.isAlighting ? UIColor.systemPurple
-            : presentation.isActive ? UIColor.systemOrange
-            : presentation.isSelected ? UIColor.systemBlue
-            : presentation.isOnRoute ? UIColor.systemTeal
+        let brand = UIColor(named: "AccentColor")
+            ?? UIColor(naviHex: NaviAstraColorPalette.brandPrimaryDay)
+        let route = UIColor(naviHex: NaviAstraColorPalette.navigationActiveDay)
+        let accent = presentation.isAlighting ? brand
+            : presentation.isActive ? route
+            : presentation.isSelected ? brand
+            : presentation.isOnRoute ? route
             : markerColor(for: presentation.modes.first)
         capsule.layer.borderColor = accent.cgColor
         capsule.layer.shadowColor = UIColor.black.cgColor
@@ -242,7 +245,8 @@ final class TransitStopLayerRenderer {
             badge.font = .systemFont(ofSize: 8, weight: .bold)
             badge.textAlignment = .center
             badge.textColor = .white
-            badge.backgroundColor = .systemPurple
+            badge.backgroundColor = UIColor(named: "AccentColor")
+                ?? UIColor(naviHex: NaviAstraColorPalette.brandPrimaryDay)
             badge.layer.cornerRadius = 6
             badge.clipsToBounds = true
             marker.addSubview(badge)
@@ -265,7 +269,7 @@ final class TransitStopLayerRenderer {
     }
 
     private func markerColor(for mode: TransitStopMode?) -> UIColor {
-        guard let mode else { return .systemBlue }
+        guard let mode else { return UIColor(naviHex: NaviAstraColorPalette.transitFallback) }
         return UIColor(red: CGFloat((mode.accentHex >> 16) & 0xff) / 255,
                        green: CGFloat((mode.accentHex >> 8) & 0xff) / 255,
                        blue: CGFloat(mode.accentHex & 0xff) / 255, alpha: 1)

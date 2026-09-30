@@ -58,6 +58,11 @@ final class NavigationStore {
         await session.estimatedCarRouteEstimate(to: destination)
     }
 
+    func estimatedCarRouteEstimate(to destination: Destination,
+                                   from origin: Coordinate) async -> PlaceRouteEstimate? {
+        await session.estimatedCarRouteEstimate(to: destination, from: origin)
+    }
+
     func estimatedSearchRoute(from origin: Coordinate, to destination: Destination,
                               mode: TransportMode) async throws -> SearchRouteEstimate? {
         try await session.estimatedSearchRoute(from: origin, to: destination, mode: mode)

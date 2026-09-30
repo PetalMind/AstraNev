@@ -227,21 +227,23 @@ enum GPSQuality: Equatable {
 }
 
 nonisolated enum RouteColorPalette {
-    static let activeLight: UInt32 = 0x248BFF
-    static let activeDark: UInt32 = 0x2E95FF
-    static let casingLight: UInt32 = 0x0B3158
-    static let casingDark: UInt32 = 0x071C31
-    static let alternativeLight: UInt32 = 0x8C99A8
-    static let alternativeDark: UInt32 = 0x687483
+    static let activeLight: UInt32 = NaviAstraColorPalette.navigationActiveDay
+    static let activeDark: UInt32 = NaviAstraColorPalette.navigationActiveNight
+    static let casingLight: UInt32 = NaviAstraColorPalette.routeCasingDay
+    static let casingDark: UInt32 = NaviAstraColorPalette.routeCasingNight
+    static let alternativeLight: UInt32 = NaviAstraColorPalette.routeAlternativeDay
+    static let alternativeDark: UInt32 = NaviAstraColorPalette.routeAlternativeNight
+    static let walkingLight: UInt32 = NaviAstraColorPalette.walkingRouteDay
+    static let walkingDark: UInt32 = NaviAstraColorPalette.walkingRouteNight
+    static let cyclingLight: UInt32 = NaviAstraColorPalette.cyclingRouteDay
+    static let cyclingDark: UInt32 = NaviAstraColorPalette.cyclingRouteNight
     static let traveled: UInt32 = 0x485563
-    static let walking: UInt32 = 0x718EFF
-    static let cycling: UInt32 = 0x21B89A
-    static let trafficFree: UInt32 = 0x27C46B
-    static let trafficModerate: UInt32 = 0xF4C542
-    static let trafficSlow: UInt32 = 0xFF8A34
-    static let trafficHeavy: UInt32 = 0xF04444
-    static let trafficStationary: UInt32 = 0xA92939
-    static let closure: UInt32 = 0xE63946
+    static let trafficFree: UInt32 = NaviAstraColorPalette.success
+    static let trafficModerate: UInt32 = NaviAstraColorPalette.trafficModerate
+    static let trafficSlow: UInt32 = NaviAstraColorPalette.trafficSlow
+    static let trafficHeavy: UInt32 = NaviAstraColorPalette.danger
+    static let trafficStationary: UInt32 = NaviAstraColorPalette.danger
+    static let closure: UInt32 = NaviAstraColorPalette.closure
 }
 
 enum NavigationStatus: Equatable { case idle, destinationPreview, routeCalculating, routePreview, navigating, rerouting, arrived, error }

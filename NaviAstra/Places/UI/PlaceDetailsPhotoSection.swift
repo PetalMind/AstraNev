@@ -79,7 +79,7 @@ struct PlaceDetailsPhotoSection: View {
             if lookAroundImage != nil && (photo == nil || placePhotoLoadFailed) {
                 Label("Widok z Apple Look Around", systemImage: "viewfinder")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
             } else if let photo, !placePhotoLoadFailed {
                 PlaceDetailsPhotoCredit(
                     photo: photo,
@@ -87,7 +87,7 @@ struct PlaceDetailsPhotoSection: View {
             } else if lookAroundImage != nil {
                 Label("Widok z Apple Look Around", systemImage: "viewfinder")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
             }
         }
         .accessibilityElement(children: .contain)
@@ -158,7 +158,7 @@ struct PlaceDetailsPhotoSection: View {
             }
             Text(isLoadingPlacePhoto ? "Wyszukiwanie zdjęcia miejsca…" : "Zdjęcie niedostępne")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.naviTextSecondary)
             if !isLoadingDetails && !isLoadingPlacePhoto {
                 Button("Spróbuj ponownie", systemImage: "arrow.clockwise", action: onRetry)
                     .font(.caption.weight(.semibold))
@@ -201,12 +201,12 @@ private struct PlaceDetailsPhotoCredit: View {
         HStack(alignment: .top, spacing: 5) {
             Link(sourceTitle, destination: photo.sourcePageURL)
             Text("· \(photo.attribution)")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.naviTextSecondary)
             if let licenseURL = photo.licenseURL {
                 Link(photo.licenseName ?? "Licencja", destination: licenseURL)
             } else if let licenseName = photo.licenseName {
                 Text("· \(licenseName)")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.naviTextSecondary)
             }
         }
         .font(.caption2)

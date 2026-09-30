@@ -7,6 +7,10 @@ final class NavigationSession {
     lazy var mapCameraController = MapCameraController(
         state: state,
         routeMatchProvider: { [weak self] in self?.previousRouteMatch },
+        routeGeometryProvider: { [weak self] route in
+            guard let self else { return RouteProgressGeometry(route) }
+            return self.routeProgressTracker.cameraGeometry(for: route)
+        },
         refreshTransitVehicles: { [weak self] in self?.refreshTransitVehicles(near: $0) })
     let rerouteController = RerouteController()
     let locationManager = LocationManager()
@@ -51,6 +55,7 @@ final class NavigationSession {
     private var roadDataGeneration = 0
     var lastTrafficFetch = Date.distantPast
     private var lastSpeedLimitFetch = Date.distantPast
+    private var speedLimitObservationLocation: Coordinate?
     var lastTransitVehiclesFetch = Date.distantPast
     private var lastTransitProgressRefresh = Date.distantPast
     var lastTransitPlanRefresh = Date.distantPast
@@ -386,7 +391,8 @@ final class NavigationSession {
         if let destination = state.destination, let route = state.route {
             tripSession = TripSession(destination: destination, waypoints: state.waypoints,
                                       originalExpectedTravelTime: route.expectedTravelTime,
-                                      startedAt: Date(), lastLocation: state.location)
+                                      startedAt: Date(), lastLocation: state.location,
+                                      tracksDriving: state.transportMode == .car)
         }
         invalidateSpeedLimit()
     }
@@ -452,10 +458,11 @@ final class NavigationSession {
     private func receive(_ raw: CLLocation) {
         guard filter.accept(raw, mode: state.transportMode) else { return }
         let coordinate = Coordinate(latitude: raw.coordinate.latitude, longitude: raw.coordinate.longitude)
-        state.location = NavigationLocation(coordinate: coordinate, speed: raw.speed, course: raw.course,
-                                            accuracy: raw.horizontalAccuracy, timestamp: raw.timestamp,
-                                            speedAccuracy: raw.speedAccuracy,
-                                            courseAccuracy: raw.courseAccuracy)
+        let navigationLocation = NavigationLocation(coordinate: coordinate, speed: raw.speed, course: raw.course,
+                                                    accuracy: raw.horizontalAccuracy, timestamp: raw.timestamp,
+                                                    speedAccuracy: raw.speedAccuracy,
+                                                    courseAccuracy: raw.courseAccuracy)
+        state.location = navigationLocation
         if state.routeOrigin == nil || state.routeOrigin?.isCurrentLocation == true {
             state.routeOrigin = RoutePoint(
                 Destination(name: "Twoja lokalizacja", coordinate: coordinate),
@@ -465,7 +472,9 @@ final class NavigationSession {
         lastAcceptedFix = raw.timestamp
         state.weakGPS = false
         state.gpsQuality = raw.horizontalAccuracy <= 10 ? .excellent : (raw.horizontalAccuracy <= 35 ? .good : .weak)
-        tripSession?.record(state.location!)
+        tripSession?.record(navigationLocation,
+                            speedLimitKph: state.transportMode == .car
+                                ? drivingSpeedLimit(at: navigationLocation) : nil)
         updateProgress()
         if state.transportMode == .walking,
            (state.status == .navigating || state.status == .rerouting) {
@@ -509,6 +518,7 @@ final class NavigationSession {
         state.speedLimitKph = nil
         state.speedLimitSource = nil
         state.speedLimitMessage = nil
+        speedLimitObservationLocation = nil
     }
     func refreshSpeedLimit(for location: NavigationLocation, force: Bool = false) {
         if let snapshot = roadDataSnapshot {
@@ -516,17 +526,20 @@ final class NavigationSession {
                 state.speedLimitKph = result.speedKph
                 state.speedLimitSource = result.source
                 state.speedLimitMessage = nil
+                speedLimitObservationLocation = location.coordinate
                 return
             }
             if snapshot.shouldSuppressRoutingFallback(at: location) {
                 state.speedLimitKph = nil
                 state.speedLimitSource = nil
                 state.speedLimitMessage = "Nie można ustalić aktywnego limitu z danych warunkowych."
+                speedLimitObservationLocation = nil
                 return
             }
             state.speedLimitKph = nil
             state.speedLimitSource = nil
             state.speedLimitMessage = "Limit OSM nie pasuje do bieżącej drogi; sprawdzam dane trasy."
+            speedLimitObservationLocation = nil
         }
         guard !speedLimitRequestInFlight,
               force || Date().timeIntervalSince(lastSpeedLimitFetch) >= 10 else { return }
@@ -547,13 +560,26 @@ final class NavigationSession {
                 state.speedLimitKph = value
                 state.speedLimitSource = value == nil ? nil : .routingProvider
                 state.speedLimitMessage = value == nil ? "Brak limitu w danych drogi." : nil
+                speedLimitObservationLocation = value == nil ? nil : location.coordinate
             } catch {
                 guard generation == speedLimitGeneration else { return }
                 state.speedLimitKph = nil
                 state.speedLimitSource = nil
                 state.speedLimitMessage = "Limit niedostępny: \(error.localizedDescription)"
+                speedLimitObservationLocation = nil
             }
         }
+    }
+
+    private func drivingSpeedLimit(at location: NavigationLocation) -> Int? {
+        if let snapshot = roadDataSnapshot {
+            if let result = snapshot.speedLimit(at: location) { return result.speedKph }
+            if snapshot.shouldSuppressRoutingFallback(at: location) { return nil }
+        }
+        guard let speedLimit = state.speedLimitKph,
+              let observationLocation = speedLimitObservationLocation,
+              observationLocation.distance(to: location.coordinate) <= 75 else { return nil }
+        return speedLimit
     }
 
     func loadRoadData(for route: NavigationRoute) {
@@ -616,7 +642,8 @@ final class NavigationSession {
                                 startedAt: session.startedAt,
                                 endedAt: Date(), distanceMeters: session.distanceMeters,
                                 movingSeconds: session.movingSeconds, rerouteCount: session.rerouteCount, arrived: arrived,
-                                originalExpectedTravelTime: session.originalExpectedTravelTime)
+                                originalExpectedTravelTime: session.originalExpectedTravelTime,
+                                drivingScore: arrived ? session.drivingScore : nil)
         state.lastTrip = record
         onTripFinished?(record)
     }
@@ -634,21 +661,50 @@ struct TripSession {
     var waypoints: [Destination]
     let originalExpectedTravelTime: TimeInterval
     let startedAt: Date
+    let tracksDriving: Bool
     var lastLocation: NavigationLocation?
     var distanceMeters = 0.0
     var movingSeconds: TimeInterval = 0
     var rerouteCount = 0
+    var drivingAnalyzer: DrivingBehaviorAnalyzer?
 
-    mutating func record(_ location: NavigationLocation) {
+    init(destination: Destination, waypoints: [Destination],
+         originalExpectedTravelTime: TimeInterval, startedAt: Date,
+         lastLocation: NavigationLocation?, tracksDriving: Bool) {
+        self.destination = destination
+        self.waypoints = waypoints
+        self.originalExpectedTravelTime = originalExpectedTravelTime
+        self.startedAt = startedAt
+        self.lastLocation = lastLocation
+        self.tracksDriving = tracksDriving
+        drivingAnalyzer = tracksDriving ? DrivingBehaviorAnalyzer() : nil
+    }
+
+    mutating func record(_ location: NavigationLocation, speedLimitKph: Int?) {
         defer { lastLocation = location }
-        guard let previous = lastLocation else { return }
-        let seconds = location.timestamp.timeIntervalSince(previous.timestamp)
-        guard seconds > 0, seconds <= 30 else { return }
-        let distance = previous.coordinate.distance(to: location.coordinate)
-        guard distance <= max(30, seconds * 60) else { return }
-        if location.speed >= 0.5 {
-            movingSeconds += seconds
-            distanceMeters += distance
+
+        if let previous = lastLocation {
+            let seconds = location.timestamp.timeIntervalSince(previous.timestamp)
+            if seconds > 0, seconds <= 30 {
+                let distance = previous.coordinate.distance(to: location.coordinate)
+                if distance <= max(30, seconds * 60), location.speed >= 0.5 {
+                    movingSeconds += seconds
+                    distanceMeters += distance
+                }
+            }
         }
+
+        drivingAnalyzer?.process(DrivingSample(timestamp: location.timestamp,
+                                               speedMetersPerSecond: location.speed,
+                                               speedLimitKph: speedLimitKph,
+                                               headingDegrees: location.course,
+                                               horizontalAccuracy: location.accuracy,
+                                               speedAccuracy: location.speedAccuracy,
+                                               courseAccuracy: location.courseAccuracy))
+    }
+
+    var drivingScore: DrivingScore? {
+        guard tracksDriving else { return nil }
+        return drivingAnalyzer?.score(distanceMeters: distanceMeters, movingSeconds: movingSeconds)
     }
 }

@@ -5,9 +5,16 @@ extension ContentView {
         NavigationStack {
             List {
                 if placeStore.places.isEmpty {
-                    ContentUnavailableView("Brak zapisanych miejsc",
-                                           systemImage: "heart",
-                                           description: Text("Dodaj Dom, Pracę albo ulubiony adres z wyszukiwarki."))
+                    VStack(spacing: 14) {
+                        ContentUnavailableView("Brak zapisanych miejsc",
+                                               systemImage: "heart",
+                                               description: Text("Dodaj Dom, Pracę albo ulubiony adres z wyszukiwarki."))
+                        Button("Wyszukaj miejsce", systemImage: "magnifyingglass",
+                               action: beginFavoriteSearch)
+                            .buttonStyle(.borderedProminent)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 230)
+                    .listRowSeparator(.hidden)
                 }
 
                 let quickPlaces = [PlaceKind.home, .work].compactMap { kind in
@@ -42,10 +49,14 @@ extension ContentView {
             .listStyle(.plain)
             .navigationTitle("Ulubione miejsca")
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Zamknij") { appRouter.dismiss(.favorites) }
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Dodaj", systemImage: "plus", action: beginFavoriteSearch)
+                }
             }
+            .task { await refreshQuickDestinationETAs() }
             .sheet(item: $editingSavedPlace) { place in
                 SavedPlaceEditorSheet(place: place) { name, icon, isPinned in
                     placeStore.updatePlace(place.id, customName: name, icon: icon, isPinned: isPinned)
@@ -67,6 +78,15 @@ extension ContentView {
         }
     }
 
+    func beginFavoriteSearch() {
+        guard appRouter.sheet == .favorites else {
+            appRouter.present(.search)
+            return
+        }
+        openSearchAfterFavoritesDismiss = true
+        appRouter.dismiss(.favorites)
+    }
+
     private func favoritePlaceRow(_ place: SavedPlace) -> some View {
         HStack(spacing: 12) {
             Button {
@@ -79,24 +99,22 @@ extension ContentView {
                         .frame(width: 36, height: 36)
                         .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 11))
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(place.displayName).foregroundStyle(.primary)
+                        Text(place.displayName).foregroundStyle(Color.naviTextPrimary)
                         Text(place.sourceContactIdentifier != nil
                              ? "Z Kontaktów · \(place.destination.address ?? place.kind.title)"
                              : (place.destination.address ?? place.kind.title))
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.naviTextSecondary)
                             .lineLimit(1)
                     }
                     Spacer(minLength: 8)
-                    if let estimate = quickETAEstimates[place.id.uuidString] {
-                        VStack(alignment: .trailing, spacing: 2) {
-                            Text("\(estimate.minutes) min")
-                            Text(distance(estimate.distanceMeters))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        .font(.caption.weight(.semibold).monospacedDigit())
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(quickETAEstimates[place.id.uuidString].map { "\($0.minutes) min" } ?? "— min")
+                        Text(quickETAKilometers(quickETAEstimates[place.id.uuidString]?.distanceMeters))
+                            .font(.caption2)
+                            .foregroundStyle(Color.naviTextSecondary)
                     }
+                    .font(.caption.weight(.semibold).monospacedDigit())
                 }
                 .contentShape(Rectangle())
             }
@@ -146,23 +164,26 @@ extension ContentView {
                 if !placeStore.searches.isEmpty {
                     Section("Ostatnie wyszukiwania") {
                         ForEach(placeStore.searches) { item in
+                            let isSaved = isFavoriteDestination(item.destination)
                             HStack(spacing: 10) {
                                 Button {
                                     appRouter.dismiss(.history)
                                     Task { await navigationStore.previewNewTrip(item.destination) }
                                 } label: {
                                     VStack(alignment: .leading, spacing: 3) {
-                                        Text(item.destination.name).foregroundStyle(.primary)
+                                        Text(item.destination.name).foregroundStyle(Color.naviTextPrimary)
                                         Text(item.searchedAt.formatted(date: .abbreviated, time: .shortened))
-                                            .font(.caption).foregroundStyle(.secondary)
+                                            .font(.caption).foregroundStyle(Color.naviTextSecondary)
                                     }
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 }
                                 .buttonStyle(.plain)
-                                Button("Zapisz do ulubionych", systemImage: "heart") {
-                                    placeStore.add(item.destination)
+                                Button(isSaved ? "Zapisano w Ulubionych" : "Zapisz do ulubionych",
+                                       systemImage: isSaved ? "checkmark" : "heart") {
+                                    if !isSaved { addFavoriteWithFeedback(item.destination) }
                                 }
                                 .labelStyle(.iconOnly)
+                                .disabled(isSaved)
                                 Button("Usuń wyszukiwanie", systemImage: "trash", role: .destructive) {
                                     placeStore.removeSearch(item.id)
                                 }
@@ -175,25 +196,32 @@ extension ContentView {
                 if !placeStore.trips.isEmpty {
                     Section("Przebyte trasy") {
                         ForEach(placeStore.trips) { trip in
+                            let isSaved = isFavoriteDestination(trip.destination)
                             HStack(spacing: 10) {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(trip.destination.name).font(.headline)
                                     Text(trip.startedAt.formatted(date: .abbreviated, time: .shortened))
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(Color.naviTextSecondary)
                                     Text("\(distance(trip.distanceMeters)) · \(time(trip.duration)) · średnio \(Int(trip.averageSpeedKph.rounded())) km/h")
                                         .font(.caption)
+                                    if let score = trip.drivingScore {
+                                        Text("Driving Score \(score.score)/100 · \(score.headline)")
+                                            .font(.caption.weight(.semibold))
+                                    }
                                     Text("\(trip.arrived ? "Dojechano" : "Przerwano") · postoje \(timeAllowingZero(trip.stoppedSeconds)) · przeliczenia \(trip.rerouteCount)")
-                                        .font(.caption).foregroundStyle(.secondary)
+                                        .font(.caption).foregroundStyle(Color.naviTextSecondary)
                                 }
                                 Spacer(minLength: 4)
                                 Button("Wyznacz tę trasę ponownie", systemImage: "arrow.triangle.turn.up.right.diamond") {
                                     replayTrip(trip)
                                 }
                                 .labelStyle(.iconOnly)
-                                Button("Zapisz cel do ulubionych", systemImage: "heart") {
-                                    placeStore.add(trip.destination)
+                                Button(isSaved ? "Zapisano w Ulubionych" : "Zapisz cel do ulubionych",
+                                       systemImage: isSaved ? "checkmark" : "heart") {
+                                    if !isSaved { addFavoriteWithFeedback(trip.destination) }
                                 }
                                 .labelStyle(.iconOnly)
+                                .disabled(isSaved)
                                 Button("Usuń podróż", systemImage: "trash", role: .destructive) {
                                     placeStore.removeTrip(trip.id)
                                 }
@@ -211,6 +239,10 @@ extension ContentView {
                     Button("Zamknij") { appRouter.dismiss(.history) }
                 }
             }
+        }
+        .overlay(alignment: .top) {
+            FavoriteFeedbackOverlay(feedback: $favoriteFeedback)
+                .padding(.top, 48)
         }
     }
 

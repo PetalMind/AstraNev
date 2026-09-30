@@ -199,7 +199,7 @@ struct TransitousTransitDataProvider: TransitDataProviding {
                 estimatedDeparture: departure,
                 delaySeconds: delay,
                 hasRealtime: isRealtime,
-                colorHex: TransitousMapper.colorValue(stopTime.routeColor) ?? 0x2867B2,
+                colorHex: TransitousMapper.colorValue(stopTime.routeColor) ?? NaviAstraColorPalette.transitFallback,
                 stopSequence: index,
                 serviceDate: Self.serviceDate(for: departure, timeZoneID: stopTime.place.tz),
                 isFrequencyEstimate: false)

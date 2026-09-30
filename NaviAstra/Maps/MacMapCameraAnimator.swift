@@ -6,7 +6,9 @@ import MapKit
 enum MacMapCameraAnimator {
     static func apply(_ intent: CameraIntent, state: NavigationCameraState, to map: MKMapView) {
         let animated = intent.animationDuration.map { $0 > 0 } ?? true
-        if !intent.bounds.isEmpty, state == .destinationPreview || state == .routeOverview || state == .arrived {
+        if !intent.bounds.isEmpty,
+           state == .destinationPreview || state == .routeOverview || state == .arrived ||
+            state.usesNavigationPerspective {
             let camera = map.camera
             camera.pitch = CGFloat(intent.pitch)
             camera.heading = intent.bearing

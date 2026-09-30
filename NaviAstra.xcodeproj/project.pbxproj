@@ -298,7 +298,7 @@
 				CODE_SIGN_ENTITLEMENTS = NaviAstraMac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 9WUX6TU729;
+				DEVELOPMENT_TEAM = 6V7PKF27ZR;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -328,7 +328,7 @@
 				CODE_SIGN_ENTITLEMENTS = NaviAstraMac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 9WUX6TU729;
+				DEVELOPMENT_TEAM = 6V7PKF27ZR;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -473,7 +473,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 9WUX6TU729;
+				DEVELOPMENT_TEAM = 6V7PKF27ZR;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -482,6 +482,7 @@
 				INFOPLIST_FILE = "Config/NaviAstra-iOS-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = NaviAstra;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Kamera wyświetla strzałki na żywo podczas pieszej nawigacji AR.";
 				INFOPLIST_KEY_NSContactsUsageDescription = "Kontakty pomagają wyszukiwać zapisane adresy jako cele nawigacji.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Dostęp Zawsze pozwala śledzić aktywną podróż komunikacją i głosowo ostrzec przed przystankiem, także przy zablokowanym ekranie.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Pozycja jest potrzebna do wyznaczania trasy i prowadzenia nawigacji.";
@@ -503,7 +504,7 @@
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = STDMSolution.NaviAstra;
+				PRODUCT_BUNDLE_IDENTIFIER = Blackmaks.NaviAstra;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
@@ -526,7 +527,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 9WUX6TU729;
+				DEVELOPMENT_TEAM = 6V7PKF27ZR;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -535,6 +536,7 @@
 				INFOPLIST_FILE = "Config/NaviAstra-iOS-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = NaviAstra;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Kamera wyświetla strzałki na żywo podczas pieszej nawigacji AR.";
 				INFOPLIST_KEY_NSContactsUsageDescription = "Kontakty pomagają wyszukiwać zapisane adresy jako cele nawigacji.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Dostęp Zawsze pozwala śledzić aktywną podróż komunikacją i głosowo ostrzec przed przystankiem, także przy zablokowanym ekranie.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Pozycja jest potrzebna do wyznaczania trasy i prowadzenia nawigacji.";
@@ -556,7 +558,7 @@
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = STDMSolution.NaviAstra;
+				PRODUCT_BUNDLE_IDENTIFIER = Blackmaks.NaviAstra;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
