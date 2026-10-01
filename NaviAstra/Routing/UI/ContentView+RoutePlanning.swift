@@ -92,7 +92,7 @@ extension ContentView {
     }
 
     @ViewBuilder
-    func routeStopDragHandle(identifier: String, label: String, darkStyle: Bool = true) -> some View {
+    func routeStopDragHandle(identifier: String, label: String, darkStyle: Bool = false) -> some View {
         if navigationStore.state.status == .routePreview {
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 15, weight: .bold))
@@ -718,6 +718,8 @@ extension ContentView {
                     routePreferenceToggle("Unikaj dróg płatnych", keyPath: \.avoidTolls)
                     routePreferenceToggle("Unikaj promów", keyPath: \.avoidFerries)
                     routePreferenceToggle("Unikaj dróg gruntowych", keyPath: \.avoidUnpaved)
+                    Text("Unikanie autostrad, opłat i promów jest preferencją. Trasa może je zawierać, gdy są potrzebne do dojazdu.")
+                        .font(.caption).foregroundStyle(Color.naviTextSecondary)
                 }
                 .tint(Color.accentColor)
             }
@@ -730,6 +732,8 @@ extension ContentView {
                     Text("Szacowany czas postojów: \(Int((route.chargingDuration / 60).rounded())) min")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(Color.naviTextSecondary.opacity(0.62))
+                    Text("Czas ładowania jest szacunkiem z rezerwą na spadek mocy i podłączenie. Pogoda, zużycie energii i kolejki mogą wydłużyć podróż.")
+                        .font(.caption).foregroundStyle(Color.naviTextSecondary)
                     ForEach(route.chargingStops) { stop in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(stop.destination.name)

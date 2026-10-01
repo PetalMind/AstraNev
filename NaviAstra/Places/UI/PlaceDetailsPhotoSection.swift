@@ -24,57 +24,60 @@ struct PlaceDetailsPhotoSection: View {
 
     private var placePhotoHero: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ZStack(alignment: .bottomTrailing) {
-                Group {
-                    if let lookAroundImage, photo == nil || placePhotoLoadFailed {
-                        lookAroundImage
-                            .resizable()
-                            .scaledToFill()
-                    } else if let photo, let imagePhase {
-                        switch imagePhase {
-                            case .success(let image):
-                                image.resizable().scaledToFill()
-                            case .empty:
-                                photoLoadingPlaceholder
-                            case .failure:
-                                if placePhotoLoadFailed {
-                                    photoPlaceholder
-                                } else {
-                                    photoLoadingPlaceholder.task(id: photo.imageURL) {
-                                        guard !Task.isCancelled else { return }
-                                        await onPlacePhotoLoadFailure()
+            GeometryReader { geometry in
+                ZStack(alignment: .bottomTrailing) {
+                    Group {
+                        if let lookAroundImage, photo == nil || placePhotoLoadFailed {
+                            lookAroundImage
+                                .resizable()
+                                .scaledToFill()
+                        } else if let photo, let imagePhase {
+                            switch imagePhase {
+                                case .success(let image):
+                                    image.resizable().scaledToFill()
+                                case .empty:
+                                    photoLoadingPlaceholder
+                                case .failure:
+                                    if placePhotoLoadFailed {
+                                        photoPlaceholder
+                                    } else {
+                                        photoLoadingPlaceholder.task(id: photo.imageURL) {
+                                            guard !Task.isCancelled else { return }
+                                            await onPlacePhotoLoadFailure()
+                                        }
                                     }
-                                }
-                            @unknown default:
-                                photoPlaceholder
+                                @unknown default:
+                                    photoPlaceholder
+                            }
+                        } else if let lookAroundImage {
+                            lookAroundImage
+                                .resizable()
+                                .scaledToFill()
+                        } else {
+                            photoPlaceholder
                         }
-                    } else if let lookAroundImage {
-                        lookAroundImage
-                            .resizable()
-                            .scaledToFill()
-                    } else {
-                        photoPlaceholder
                     }
-                }
-                .frame(maxWidth: .infinity)
-                .frame(height: photoHeight)
-                .clipped()
+                    .frame(width: geometry.size.width, height: photoHeight)
+                    .clipped()
 
 #if os(iOS)
-                if lookAroundImage != nil {
-                    Button(action: onOpenLookAround) {
-                        Label("Rozejrzyj się", systemImage: "viewfinder")
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 7)
-                            .background(.regularMaterial, in: Capsule())
+                    if lookAroundImage != nil {
+                        Button(action: onOpenLookAround) {
+                            Label("Rozejrzyj się", systemImage: "viewfinder")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 7)
+                                .background(.regularMaterial, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(10)
                     }
-                    .buttonStyle(.plain)
-                    .padding(10)
-                }
 #endif
+                }
+                .frame(width: geometry.size.width, height: photoHeight)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
             }
-            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .frame(height: photoHeight)
 
             if lookAroundImage != nil && (photo == nil || placePhotoLoadFailed) {
                 Label("Widok z Apple Look Around", systemImage: "viewfinder")

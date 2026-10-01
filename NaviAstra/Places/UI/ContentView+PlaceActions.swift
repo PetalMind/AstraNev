@@ -62,6 +62,7 @@ extension ContentView {
     }
 
     func refreshQuickDestinationETAs() async {
+        guard scenePhase == .active else { return }
         guard !quickETAInFlight, let origin = navigationStore.state.location?.coordinate else { return }
         let destinations = placeStore.places
         guard !destinations.isEmpty else {
@@ -154,7 +155,7 @@ extension ContentView {
         }
         let limit = navigationStore.state.speedLimitKph
         let aboveLimit = speedWarningsEnabled && (current.map { value in limit.map { value > $0 + 5 } ?? false } ?? false)
-        let routeDistance = navigationStore.state.progress?.traveledDistance ?? 0
+        let routeDistance = navigationStore.state.roadAlertRouteDistance
         let nextRoadAlert = nextNavigationRoadSafetyAlert
         let nextRoadAlertDistance = nextRoadAlert.map {
             max(0, ($0.distanceAlongRoute ?? routeDistance) - routeDistance)
@@ -242,7 +243,7 @@ extension ContentView {
     }
 
     var nextNavigationRoadSafetyAlert: RoadSafetyAlert? {
-        let routeDistance = navigationStore.state.progress?.traveledDistance ?? 0
+        let routeDistance = navigationStore.state.roadAlertRouteDistance
         return navigationStore.state.roadSafetyAlerts
             .filter { alert in
                 guard alert.type.isTrafficSign || alert.type.isEnforcement || alert.type == .speedLimitChange,

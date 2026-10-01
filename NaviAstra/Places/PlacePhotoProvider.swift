@@ -47,43 +47,37 @@ enum PlacePhotoResolver {
         return usefulCategories.contains(where: { value.contains($0) })
     }
 
-    static func resolve(for details: PlaceDetails, identity: PlaceIdentity,
-                        forceRefresh: Bool = false) async -> PlacePhoto? {
-        guard isEligible(category: details.category) || isEligible(category: identity.category) else { return nil }
-        let key = [identity.cacheKey, "place-photo", details.imageURL ?? "", details.imageAttribution ?? "",
+    /// Only media attached to the identified place is used; nearby buildings and brand logos
+    /// are never presented as photographs of this location.
+    static func gallery(for details: PlaceDetails, identity: PlaceIdentity,
+                        forceRefresh: Bool = false) async -> [PlacePhoto] {
+        let key = [identity.cacheKey, "gallery-v2", details.imageURL ?? "", details.imageAttribution ?? "",
                    details.imageLicense ?? "", details.wikimediaCommons ?? "", details.wikidataID ?? ""]
             .joined(separator: "|")
         if !forceRefresh {
             let cached = await PlacePhotoCache.shared.lookup(key)
-            if cached.found { return cached.photo }
+            if cached.found { return cached.photos }
         }
-
+        var photos: [PlacePhoto] = []
+        var fileNames: [String] = []
         if let fileName = wikimediaFileName(details.imageURL) {
-            if let photo = await commonsPhoto(fileName: fileName, role: .place) {
-                await PlacePhotoCache.shared.store(photo, for: key)
-                return photo
-            }
+            fileNames.append(fileName)
         } else if let photo = taggedImage(from: details) {
-            await PlacePhotoCache.shared.store(photo, for: key)
-            return photo
+            photos.append(photo)
         }
-
-        if let commonsName = wikimediaFileName(details.wikimediaCommons) {
-            if let photo = await commonsPhoto(fileName: commonsName, role: .place) {
-                await PlacePhotoCache.shared.store(photo, for: key)
-                return photo
-            }
+        if let fileName = wikimediaFileName(details.wikimediaCommons), !fileNames.contains(fileName) {
+            fileNames.append(fileName)
         }
-
         for fileName in await wikimediaFileNames(for: details.wikidataID, propertyID: "P18") {
-            if let photo = await commonsPhoto(fileName: fileName, role: .place) {
-                await PlacePhotoCache.shared.store(photo, for: key)
-                return photo
-            }
+            if !fileNames.contains(fileName) { fileNames.append(fileName) }
         }
-
-        await PlacePhotoCache.shared.store(nil, for: key)
-        return nil
+        guard !Task.isCancelled else { return photos }
+        for photo in await commonsPhotos(fileNames: Array(fileNames.prefix(5)), role: .place) {
+            if !photos.contains(where: { $0.imageURL == photo.imageURL }) { photos.append(photo) }
+        }
+        guard !Task.isCancelled else { return photos }
+        await PlacePhotoCache.shared.store(photos, for: key)
+        return photos
     }
 
     static func resolveBrandLogo(for details: PlaceDetails, identity: PlaceIdentity,
@@ -131,12 +125,21 @@ enum PlacePhotoResolver {
         guard var value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
             return nil
         }
-        if let url = URL(string: value), url.host?.lowercased() == "commons.wikimedia.org" {
-            let path = url.path.removingPercentEncoding ?? url.path
-            if let fileMarker = path.range(of: "/wiki/File:", options: .caseInsensitive) {
-                value = String(path[fileMarker.upperBound...])
-            } else if let fileMarker = path.range(of: "/wiki/Special:FilePath/", options: .caseInsensitive) {
-                value = String(path[fileMarker.upperBound...])
+        if let url = URL(string: value), let host = url.host?.lowercased() {
+            if host == "upload.wikimedia.org", url.path.contains("/wikipedia/commons/") {
+                let segments = url.pathComponents
+                // Thumbnail paths end with a scaled filename; the preceding component is the original.
+                value = url.path.contains("/thumb/") && segments.count > 2
+                    ? segments[segments.count - 2] : url.lastPathComponent
+            } else if host == "commons.wikimedia.org" {
+                let path = url.path.removingPercentEncoding ?? url.path
+                if let fileMarker = path.range(of: "/wiki/File:", options: .caseInsensitive) {
+                    value = String(path[fileMarker.upperBound...])
+                } else if let fileMarker = path.range(of: "/wiki/Special:FilePath/", options: .caseInsensitive) {
+                    value = String(path[fileMarker.upperBound...])
+                } else {
+                    return nil
+                }
             } else {
                 return nil
             }
@@ -154,6 +157,7 @@ enum PlacePhotoResolver {
     private static func wikimediaFileNames(for rawWikidataIDs: String?, propertyID: String) async -> [String] {
         var fileNames: [String] = []
         for wikidataID in wikidataIdentifiers(from: rawWikidataIDs).prefix(3) {
+            guard !Task.isCancelled else { return fileNames }
             guard var components = URLComponents(string: "https://www.wikidata.org/w/api.php") else { continue }
             components.queryItems = [
                 URLQueryItem(name: "action", value: "wbgetentities"),
@@ -190,10 +194,15 @@ enum PlacePhotoResolver {
     }
 
     private static func commonsPhoto(fileName: String, role: PlacePhotoRole) async -> PlacePhoto? {
-        guard var components = URLComponents(string: "https://commons.wikimedia.org/w/api.php") else { return nil }
+        await commonsPhotos(fileNames: [fileName], role: role).first
+    }
+
+    private static func commonsPhotos(fileNames: [String], role: PlacePhotoRole) async -> [PlacePhoto] {
+        guard !fileNames.isEmpty, !Task.isCancelled,
+              var components = URLComponents(string: "https://commons.wikimedia.org/w/api.php") else { return [] }
         components.queryItems = [
             URLQueryItem(name: "action", value: "query"),
-            URLQueryItem(name: "titles", value: "File:\(fileName)"),
+            URLQueryItem(name: "titles", value: fileNames.map { "File:\($0)" }.joined(separator: "|")),
             URLQueryItem(name: "prop", value: "imageinfo"),
             URLQueryItem(name: "iiprop", value: "url|extmetadata"),
             URLQueryItem(name: "iiurlwidth", value: "800"),
@@ -202,11 +211,28 @@ enum PlacePhotoResolver {
         ]
         guard let url = components.url,
               let data = await fetch(url, accept: "application/json"),
-              let reply = try? JSONDecoder().decode(CommonsImageReply.self, from: data),
-              let imageInfo = reply.query.pages.first?.imageInfo?.first,
-              let imageURL = imageInfo.thumbURL ?? imageInfo.url,
-              let pageURL = imageInfo.descriptionURL else { return nil }
+              let reply = try? JSONDecoder().decode(CommonsImageReply.self, from: data) else { return [] }
+        // The API sorts pages by title. Restore the caller's order so the tagged image stays first.
+        return fileNames.compactMap { fileName in
+            let title = canonicalFileTitle("File:" + fileName)
+            guard let imageInfo = reply.query.pages.first(where: {
+                $0.title.map(canonicalFileTitle) == title
+            })?.imageInfo?.first else { return nil }
+            return photo(from: imageInfo, role: role)
+        }
+    }
 
+    nonisolated private static func canonicalFileTitle(_ title: String) -> String {
+        let name = title.replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard name.hasPrefix("File:"), let first = name.dropFirst(5).first else { return name }
+        return "File:" + String(first).uppercased() + name.dropFirst(6)
+    }
+
+    private static func photo(from imageInfo: CommonsImageInfo, role: PlacePhotoRole) -> PlacePhoto? {
+        guard let imageURL = imageInfo.thumbURL ?? imageInfo.url,
+              let pageURL = imageInfo.descriptionURL else { return nil }
         let metadata = imageInfo.extMetadata ?? [:]
         let license = metadata["LicenseShortName"]?.value.map {
             plainText($0).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -231,7 +257,7 @@ enum PlacePhotoResolver {
                           licenseURL: licenseURL)
     }
 
-    private static func secureURL(_ value: String) -> URL? {
+    nonisolated private static func secureURL(_ value: String) -> URL? {
         guard let components = URLComponents(string: value),
               components.scheme?.lowercased() == "https",
               components.host != nil else { return nil }
@@ -262,7 +288,7 @@ enum PlacePhotoResolver {
         return data
     }
 
-    private static func plainText(_ html: String) -> String {
+    nonisolated private static func plainText(_ html: String) -> String {
         let decoded = html
             .replacingOccurrences(of: "&nbsp;", with: " ")
             .replacingOccurrences(of: "&amp;", with: "&")
@@ -309,27 +335,31 @@ private actor PlacePhotoCache {
     private let maximumEntries = 256
 
     private struct Entry {
-        let photo: PlacePhoto?
+        let photos: [PlacePhoto]
         let expiresAt: Date
         var lastAccessedAt: Date
     }
 
     private var values: [String: Entry] = [:]
 
-    func lookup(_ key: String) -> (found: Bool, photo: PlacePhoto?) {
+    func lookup(_ key: String) -> (found: Bool, photo: PlacePhoto?, photos: [PlacePhoto]) {
         guard var entry = values[key], entry.expiresAt > Date() else {
             values.removeValue(forKey: key)
-            return (false, nil)
+            return (false, nil, [])
         }
         entry.lastAccessedAt = Date()
         values[key] = entry
-        return (true, entry.photo)
+        return (true, entry.photos.first, entry.photos)
     }
 
     func store(_ photo: PlacePhoto?, for key: String) {
+        store(photo.map { [$0] } ?? [], for: key)
+    }
+
+    func store(_ photos: [PlacePhoto], for key: String) {
         let now = Date()
-        let lifetime: TimeInterval = photo == nil ? 5 * 60 : 7 * 24 * 60 * 60
-        values[key] = Entry(photo: photo, expiresAt: now.addingTimeInterval(lifetime), lastAccessedAt: now)
+        let lifetime: TimeInterval = photos.isEmpty ? 5 * 60 : 7 * 24 * 60 * 60
+        values[key] = Entry(photos: photos, expiresAt: now.addingTimeInterval(lifetime), lastAccessedAt: now)
 
         let expiredKeys = values.compactMap { $0.value.expiresAt <= now ? $0.key : nil }
         for expiredKey in expiredKeys { values.removeValue(forKey: expiredKey) }
@@ -370,6 +400,14 @@ private struct WikidataMainSnak: Decodable {
 
 private struct WikidataDataValue: Decodable {
     let value: String?
+
+    private enum CodingKeys: String, CodingKey { case value }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // Other claims contain objects, numbers and dates. They must not invalidate P18/P154.
+        value = try? container.decode(String.self, forKey: .value)
+    }
 }
 
 private struct CommonsImageReply: Decodable {
@@ -381,9 +419,11 @@ private struct CommonsQuery: Decodable {
 }
 
 private struct CommonsPage: Decodable {
+    let title: String?
     let imageInfo: [CommonsImageInfo]?
 
     enum CodingKeys: String, CodingKey {
+        case title
         case imageInfo = "imageinfo"
     }
 }

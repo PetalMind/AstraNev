@@ -112,6 +112,7 @@ struct MapLibreView: NSViewRepresentable {
         private var cyclingPathTask: Task<Void, Never>?
         private var cyclingPathStatus: OSMCyclingPathsStatus = .disabled
         private var mapRoadPOIs: [MapRoadPOI] = []
+        private var mapRoadPOIRetryAfter: Date?
         private var mapRoadPOIQueryID: String?
         private var mapRoadPOITask: Task<Void, Never>?
         private var mapRoadPOIStatus: MapRoadPOIStatus = .disabled
@@ -127,6 +128,7 @@ struct MapLibreView: NSViewRepresentable {
         private var shownParkedCarID: UUID?
         private var searchPins: [MKPointAnnotation] = []
         private var searchIDs: [UUID] = []
+        private var shownPlaceResults: [SearchResult] = []
         private var incidentPins: [MKPointAnnotation] = []
         private var shownIncidentIDs: [String] = []
         private var shownIncidents: [TrafficIncident] = []
@@ -182,10 +184,10 @@ struct MapLibreView: NSViewRepresentable {
             if let index = searchPins.firstIndex(where: {
                 let screen = map.convert($0.coordinate, toPointTo: map)
                 return hypot(screen.x - point.x, screen.y - point.y) < 24
-            }), parent.state.searchResults.indices.contains(index) {
+            }), shownPlaceResults.indices.contains(index) {
                 placeSearch?.cancel()
                 placeRequestID = UUID()
-                parent.onPlaceSelect([parent.state.searchResults[index]])
+                parent.onPlaceSelect([shownPlaceResults[index]])
                 return
             }
             let transitPins = transitStopRenderer.annotations + Array(transitVehiclePins.values)
@@ -258,7 +260,8 @@ struct MapLibreView: NSViewRepresentable {
             routeRenderer.updateContext(parent)
             updateCyclingPaths(on: map)
             updateMapRoadPOIs(on: map)
-            let results = showsOnlyRouteEndpoints ? [] : Array(parent.state.searchResults.prefix(8))
+            let results = parent.scene.placeMarkers
+            shownPlaceResults = results
             if searchIDs != results.map(\.id) {
                 map.removeAnnotations(searchPins)
                 searchIDs = results.map(\.id)
@@ -391,13 +394,14 @@ struct MapLibreView: NSViewRepresentable {
             }
             routeRenderer.updateIncidentOverlays(on: map, incidents: incidents)
             let showsRoadAlerts = !showsOnlyRouteEndpoints || isNavigating
+            let roadAlertDistance = parent.state.roadAlertRouteDistance
             let roadAlerts = (showsRoadAlerts ? parent.state.roadSafetyAlerts : [])
                 .filter { alert in
                     if let category = alert.type.mapSafetyPOICategory,
                        !parent.settings.safetyPOICategories.contains(category) { return false }
                     guard let distance = alert.distanceAlongRoute else { return false }
                     guard isNavigating else { return true }
-                    return distance >= routeDistance - 60 && distance <= routeDistance + 20_000
+                    return distance >= roadAlertDistance - 60 && distance <= roadAlertDistance + 20_000
                         && alert.type.isImportantDuringNavigation
                 }
                 .sorted { ($0.distanceAlongRoute ?? .infinity) < ($1.distanceAlongRoute ?? .infinity) }
@@ -417,7 +421,7 @@ struct MapLibreView: NSViewRepresentable {
             for (alert, pin) in zip(roadAlerts, roadAlertPins) {
                 pin.coordinate = alert.coordinate.cl
                 pin.title = alert.title
-                pin.subtitle = roadAlertSubtitle(alert, routeDistance: routeDistance)
+                pin.subtitle = roadAlertSubtitle(alert, routeDistance: roadAlertDistance)
             }
             updateMapRoadPOIAnnotations(on: map)
             scheduleTransitAnnotationUpdate(on: map)
@@ -541,13 +545,11 @@ struct MapLibreView: NSViewRepresentable {
                 lastStatus != .routePreview
             let routePreviewPaddingChanged = lastViewportPadding != parent.viewportPadding || lastMapSize != map.bounds.size
             var effectiveIntent = intent
-            effectiveIntent.padding = parent.viewportPadding
+            effectiveIntent = effectiveIntent.fittingViewport(
+                parent.viewportPadding, width: Double(map.bounds.width), height: Double(map.bounds.height))
             if parent.isBottomSheetDragging && routePreviewPaddingChanged {
                 effectiveIntent.animationDuration = 0
             }
-            // Keep a usable map viewport even when the drawer is fully expanded.
-            effectiveIntent.padding.bottom = min(effectiveIntent.padding.bottom,
-                max(0, Double(map.bounds.height) - effectiveIntent.padding.top - 100))
             if cameraState == .routeOverview, !enteringOverview, !newOverview, !cameraCommandChanged,
                !routePreviewPaddingChanged, !cameraModeChanged,
                let route = parent.state.route {
@@ -574,6 +576,7 @@ struct MapLibreView: NSViewRepresentable {
             lastViewportPadding = parent.viewportPadding
             lastMapSize = map.bounds.size
             lastIntent = intent
+            lastCameraState = cameraState
             lastCameraMode = cameraMode
             lastCameraCommandID = parent.state.cameraCommandID
             lastRoutePreviewExpanded = parent.routePreviewExpanded
@@ -600,9 +603,9 @@ struct MapLibreView: NSViewRepresentable {
             guard lastPOIMarkerDark != dark else { return }
             lastPOIMarkerDark = dark
             for (index, pin) in searchPins.enumerated()
-                where parent.state.searchResults.indices.contains(index) {
-                guard parent.state.searchResults[index].isPOI,
-                      let kind = PlacePOIMapMarkerKind(category: parent.state.searchResults[index].category),
+                where shownPlaceResults.indices.contains(index) {
+                guard shownPlaceResults[index].isPOI,
+                      let kind = PlacePOIMapMarkerKind(category: shownPlaceResults[index].category),
                       let marker = map.view(for: pin) else { continue }
                 stylePOIMarker(marker, annotation: pin, kind: kind, dark: dark)
             }
@@ -614,15 +617,16 @@ struct MapLibreView: NSViewRepresentable {
             let size: CGFloat = 36
             marker.frame = NSRect(x: 0, y: 0, width: size, height: size)
             marker.wantsLayer = true
-            let background = PlacePOIMapPalette.backgroundHex(dark: dark)
+            let background = kind.colorHex(dark: dark)
             marker.layer?.backgroundColor = NSColor(
                 calibratedRed: CGFloat((background >> 16) & 0xff) / 255,
                 green: CGFloat((background >> 8) & 0xff) / 255,
                 blue: CGFloat(background & 0xff) / 255, alpha: 1).cgColor
-            marker.layer?.cornerRadius = 11
+            marker.layer?.cornerRadius = 18
             marker.layer?.borderWidth = 1.8
-            let color = PlacePOIMapPalette.accentColor(dark: dark)
-            marker.layer?.borderColor = color.cgColor
+            let color = dark ? NSColor(naviHex: 0x17212B) : NSColor.white
+            let rim = NSColor(naviHex: PlacePOIMapPalette.backgroundHex(dark: dark))
+            marker.layer?.borderColor = rim.cgColor
             marker.layer?.shadowColor = NSColor.black.cgColor
             marker.layer?.shadowOpacity = 0.18
             marker.layer?.shadowRadius = 3
@@ -635,7 +639,11 @@ struct MapLibreView: NSViewRepresentable {
             image.imageScaling = .scaleProportionallyUpOrDown
             marker.addSubview(image)
             marker.canShowCallout = true
-            marker.displayPriority = .defaultHigh
+            let isSelectedPlace = searchPins.firstIndex(where: { $0 === annotation }).map {
+                shownPlaceResults.indices.contains($0)
+                    && shownPlaceResults[$0].id == parent.scene.selectedPlace?.id
+            } ?? false
+            marker.displayPriority = isSelectedPlace ? .required : .defaultHigh
             marker.setAccessibilityLabel("\(kind.accessibilityName): \(annotation.title ?? "")")
             marker.setAccessibilityRole(.button)
         }
@@ -675,9 +683,9 @@ struct MapLibreView: NSViewRepresentable {
                 return
             }
             if let index = searchPins.firstIndex(where: { $0 === annotation }),
-               parent.state.searchResults.indices.contains(index) {
+               shownPlaceResults.indices.contains(index) {
                 mapView.deselectAnnotation(annotation, animated: false)
-                parent.onPlaceSelect([parent.state.searchResults[index]])
+                parent.onPlaceSelect([shownPlaceResults[index]])
                 return
             }
         }
@@ -773,9 +781,9 @@ struct MapLibreView: NSViewRepresentable {
             }
 
             if let index = searchPins.firstIndex(where: { $0 === annotation }) {
-                if parent.state.searchResults.indices.contains(index),
-                   parent.state.searchResults[index].isPOI,
-                   let kind = PlacePOIMapMarkerKind(category: parent.state.searchResults[index].category) {
+                if shownPlaceResults.indices.contains(index),
+                   shownPlaceResults[index].isPOI,
+                   let kind = PlacePOIMapMarkerKind(category: shownPlaceResults[index].category) {
                     let marker = MKAnnotationView(annotation: annotation,
                                                   reuseIdentifier: "poi-\(kind.rawValue)")
                     stylePOIMarker(marker, annotation: annotation, kind: kind, dark: usesDarkMapAppearance)
@@ -784,6 +792,10 @@ struct MapLibreView: NSViewRepresentable {
                 let marker = MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: nil)
                 marker.glyphText = String(index + 1)
                 marker.markerTintColor = PlacePOIMapPalette.accentColor(dark: usesDarkMapAppearance)
+                if shownPlaceResults.indices.contains(index),
+                   shownPlaceResults[index].id == parent.scene.selectedPlace?.id {
+                    marker.displayPriority = .required
+                }
                 return marker
             }
 
@@ -927,7 +939,7 @@ struct MapLibreView: NSViewRepresentable {
             NSImage(size: NSSize(width: 28, height: 28), flipped: false) { rect in
                 guard let context = NSGraphicsContext.current?.cgContext else { return false }
                 let circle = rect.insetBy(dx: 1.25, dy: 1.25)
-                context.setFillColor(NSColor(naviHex: parent.colorScheme == .dark
+                context.setFillColor(NSColor(naviHex: self.parent.colorScheme == .dark
                     ? NaviAstraColorPalette.userLocationNight : NaviAstraColorPalette.userLocationDay).cgColor)
                 context.setShadow(offset: .zero, blur: 4,
                                   color: NSColor(naviHex: NaviAstraColorPalette.navigationSurface).withAlphaComponent(0.8).cgColor)
@@ -1053,29 +1065,53 @@ struct MapLibreView: NSViewRepresentable {
                 updateMapRoadPOIAnnotations(on: map)
                 return
             }
-            guard mapRoadPOIQueryID != query.id else { return }
+            guard mapRoadPOIQueryID != query.id ||
+                    (mapRoadPOIStatus.needsRetry && (mapRoadPOIRetryAfter ?? .distantFuture) <= .now)
+            else { return }
 
+            let queryChanged = mapRoadPOIQueryID != query.id
             mapRoadPOIQueryID = query.id
             stopMapRoadPOIUpdates()
-            mapRoadPOIs = []
+            if queryChanged {
+                // Keep visible, eligible points while the replacement request is loading.
+                mapRoadPOIs = mapRoadPOIs.filter { query.contains($0) }
+            }
             setMapRoadPOIStatus(.loading)
             updateMapRoadPOIAnnotations(on: map)
             mapRoadPOITask = Task { [weak self, weak map] in
                 do {
                     try await Task.sleep(nanoseconds: 350_000_000)
-                    let points = try await MapRoadPOIProvider.shared.points(in: query)
+                    let result = try await MapRoadPOIProvider.shared.points(in: query)
                     guard !Task.isCancelled, let self, let map,
                           self.mapRoadPOIQueryID == query.id,
                           self.parent.settings.safetyPOICategories.isSuperset(of: query.categories) else { return }
-                    self.mapRoadPOIs = points
-                    self.setMapRoadPOIStatus(.loaded(count: points.count))
+                    self.mapRoadPOIRetryAfter = nil
+                    self.mapRoadPOIs = result.points
+                    self.setMapRoadPOIStatus(result.unavailableSources.isEmpty
+                        ? .loaded(count: result.points.count)
+                        : .partial(count: result.points.count,
+                                   message: "Niedostępne źródło: " + result.unavailableSources.joined(separator: ", ")))
                     self.updateMapRoadPOIAnnotations(on: map)
+                    if !result.unavailableSources.isEmpty {
+                        self.mapRoadPOIRetryAfter = Date().addingTimeInterval(60)
+                        do { try await Task.sleep(nanoseconds: 60_000_000_000) }
+                        catch { return }
+                        guard !Task.isCancelled, self.mapRoadPOIQueryID == query.id else { return }
+                        self.mapRoadPOITask = nil
+                        self.updateMapRoadPOIs(on: map)
+                    }
                 } catch {
                     guard !Task.isCancelled, let self, let map,
                           self.mapRoadPOIQueryID == query.id else { return }
-                    self.mapRoadPOIs = []
+                    // A failed refresh must not remove previously downloaded points.
+                    self.mapRoadPOIRetryAfter = Date().addingTimeInterval(30)
                     self.setMapRoadPOIStatus(.unavailable)
                     self.updateMapRoadPOIAnnotations(on: map)
+                    do { try await Task.sleep(nanoseconds: 30_000_000_000) }
+                    catch { return }
+                    guard !Task.isCancelled, self.mapRoadPOIQueryID == query.id else { return }
+                    self.mapRoadPOITask = nil
+                    self.updateMapRoadPOIs(on: map)
                 }
             }
         }
@@ -1087,7 +1123,7 @@ struct MapLibreView: NSViewRepresentable {
         }
 
         private func updateMapRoadPOIAnnotations(on map: MKMapView) {
-            let routeAlertIDs = Set(shownRoadAlerts.map(\.id))
+            let routeAlertIDs = Set(shownRoadAlerts.map { $0.mapPOIID ?? $0.id })
             let points = mapRoadPOIs.filter { !routeAlertIDs.contains($0.id) }
             let ids = points.map(\.id)
             if ids != shownMapRoadPOIIDs {

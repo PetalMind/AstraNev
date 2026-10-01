@@ -15,6 +15,9 @@ struct PlaceOpeningHours {
     }
 
     func presentation(at date: Date = Date(), calendar: Calendar = .current) async -> OpeningHoursPresentation {
+        if coordinate != nil, timeZoneIdentifier.flatMap(TimeZone.init(identifier:)) == nil {
+            return .unavailable(.timeZoneUnavailable)
+        }
         let localCalendar = targetCalendar(from: calendar)
         guard let parserDate = Self.parserDate(for: date, targetCalendar: localCalendar) else {
             return .unavailable(.invalidDate)
@@ -59,7 +62,8 @@ struct PlaceOpeningHours {
         return OpeningHoursPresentation(
             isAvailable: true,
             isOpen: result.unknown ? nil : result.open,
-            statusText: Self.statusText(for: result, calendar: localCalendar),
+            statusText: rawValue.trimmingCharacters(in: .whitespacesAndNewlines) == "24/7"
+                ? "Otwarte całą dobę" : Self.statusText(for: result, at: date, calendar: localCalendar),
             weeklyRows: Self.weeklyRows(from: result),
             failure: nil)
     }
@@ -102,13 +106,23 @@ struct PlaceOpeningHours {
         }
     }
 
-    private static func statusText(for result: OpeningHoursEvaluation, calendar: Calendar) -> String? {
+    private static func statusText(for result: OpeningHoursEvaluation, at date: Date,
+                                   calendar: Calendar) -> String? {
         guard !result.unknown else { return nil }
-        guard result.open else { return "Zamknięte teraz" }
-        guard let nextChange = result.nextChange,
-              !result.nextUnknown,
-              result.nextOpen == false else { return "Otwarte teraz" }
-        return "Otwarte · zamyka o \(clockTimeString(nextChange, calendar: calendar))"
+        let status = result.open ? "Otwarte teraz" : "Zamknięte teraz"
+        guard let change = result.nextChange, !result.nextUnknown,
+              result.nextOpen == !result.open else { return status }
+        let changeText: String
+        if calendar.isDate(change, inSameDayAs: date) {
+            changeText = "o " + clockTimeString(change, calendar: calendar)
+        } else {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "pl_PL")
+            formatter.timeZone = calendar.timeZone
+            formatter.dateFormat = "EEE, HH:mm"
+            changeText = formatter.string(from: change)
+        }
+        return (result.open ? "Otwarte · zamyka " : "Zamknięte · otwiera ") + changeText
     }
 
     private static func intervalTimeString(_ date: Date, calendar: Calendar,

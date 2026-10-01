@@ -128,7 +128,7 @@ enum RoadAlertSource: String, Codable, Equatable, Sendable {
 
 struct RoadSafetyAlert: Identifiable, Codable, Equatable, Sendable {
     let id: String
-    let type: RoadAlertType
+    var type: RoadAlertType
     let coordinate: Coordinate
     let source: RoadAlertSource
     var speedLimitKph: Int?
@@ -137,8 +137,13 @@ struct RoadSafetyAlert: Identifiable, Codable, Equatable, Sendable {
     var hasDirectionalSignTag: Bool? = nil
     var distanceAlongRoute: Double?
     var distanceFromRoute: Double?
+    var enforcementApproach: Coordinate? = nil
+    var enforcementExit: Coordinate? = nil
+    var mapPOIID: String? = nil
+    var sectionOtherEnd: Coordinate? = nil
 
     var title: String {
+        if sectionOtherEnd != nil, distanceAlongRoute == nil { return "Odcinkowy pomiar prędkości" }
         if type == .speedLimitSign, signCode?.hasSuffix("B-34") == true {
             return "Koniec ograniczenia prędkości"
         }
@@ -178,7 +183,8 @@ struct RoadSafetyAlert: Identifiable, Codable, Equatable, Sendable {
 
     func mapSubtitle(from routeDistance: Double) -> String {
         let sign = signCode.map { "\($0) · " } ?? ""
-        return "\(distanceText(from: routeDistance)) · \(sign)© OpenStreetMap contributors"
+        let attribution = source == .canard ? CANARDRoadDataProvider.attribution : "© OpenStreetMap contributors"
+        return "\(distanceText(from: routeDistance)) · \(sign)\(attribution)"
     }
 }
 
@@ -186,6 +192,7 @@ enum RoadSafetyStatus: Equatable {
     case idle
     case loading
     case available
+    case partial(String)
     case unavailable(String)
 }
 
@@ -199,6 +206,7 @@ nonisolated struct RoadDataSnapshot: Codable, Sendable {
     let speedSegments: [OSMRoadSpeedSegment]
     let alerts: [RoadSafetyAlert]
     let fetchedAt: Date
+    var unavailableSources: [String]? = nil
 
     func speedLimit(at location: NavigationLocation, date: Date = .now,
                     timeZone: TimeZone = .autoupdatingCurrent) -> SpeedLimitResult? {
@@ -263,8 +271,24 @@ nonisolated struct RoadDataSnapshot: Codable, Sendable {
         var unique: [String: RoadSafetyAlert] = [:]
         for alert in alerts {
             guard let projection = MapMatcher.project(alert.coordinate, onto: route),
-                  projection.distanceFromRoute <= (alert.type.isTrafficSign ? 45 : 90) else { continue }
+                  projection.distanceFromRoute <= (alert.type.isTrafficSign ? 45 : 60) else { continue }
+            if let approach = alert.enforcementApproach, let exit = alert.enforcementExit {
+                guard let from = MapMatcher.project(approach, onto: route),
+                      let to = MapMatcher.project(exit, onto: route),
+                      to.alongRoute > from.alongRoute + 3 else { continue }
+                if alert.type == .averageSpeedStart || alert.type == .averageSpeedEnd {
+                    // A trip may begin inside a measured section; retain its upcoming end.
+                    guard min(from.distanceFromRoute, to.distanceFromRoute) <= 45 else { continue }
+                } else {
+                    guard from.distanceFromRoute <= 45, to.distanceFromRoute <= 45 else { continue }
+                }
+            }
             var matched = alert
+            if let otherEnd = alert.sectionOtherEnd,
+               let other = MapMatcher.project(otherEnd, onto: route) {
+                guard abs(other.alongRoute - projection.alongRoute) > 3 else { continue }
+                matched.type = projection.alongRoute < other.alongRoute ? .averageSpeedStart : .averageSpeedEnd
+            }
             matched.distanceAlongRoute = projection.alongRoute
             matched.distanceFromRoute = projection.distanceFromRoute
             unique[matched.id] = matched
@@ -324,9 +348,7 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
     private let endpoint: URL
 
     init(endpoint: URL? = nil) {
-        self.endpoint = endpoint
-            ?? URL(string: UserDefaults.standard.string(forKey: "overpassServer")
-                    ?? "https://overpass-api.de/api/interpreter")!
+        self.endpoint = endpoint ?? MapRoadPOIEndpoint.url
     }
 
     func load(for route: [Coordinate]) async throws -> RoadDataSnapshot {
@@ -334,38 +356,53 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
         let cacheKey = Self.cacheKey(route)
         if let cached = await RoadDataLocalCache.shared.snapshot(for: cacheKey) { return cached }
         let query = Self.query(route: route)
-        var components = URLComponents()
-        components.queryItems = [URLQueryItem(name: "data", value: query)]
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 30
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.setValue("NaviAstra/1.0 (OpenStreetMap road-safety data)", forHTTPHeaderField: "User-Agent")
-        request.httpBody = components.percentEncodedQuery?.data(using: .utf8)
-
-        let data: Data
-        do {
-            let (responseData, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse else { throw RoadDataError.invalidResponse }
-            guard (200...299).contains(http.statusCode) else { throw RoadDataError.server(http.statusCode) }
-            data = responseData
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch let error as RoadDataError {
-            throw error
-        } catch {
-            throw RoadDataError.unavailable
+        let endpoints = [endpoint] + MapRoadPOIEndpoint.urls.filter { $0 != endpoint }
+        var response: OverpassResponse?
+        var lastError: Error = RoadDataError.unavailable
+        for endpoint in endpoints {
+            do {
+                response = try await Self.download(query: query, endpoint: endpoint)
+                break
+            } catch {
+                try Task.checkCancellation()
+                lastError = error
+            }
         }
-
-        let decoded: OverpassResponse
-        do { decoded = try JSONDecoder().decode(OverpassResponse.self, from: data) }
-        catch { throw RoadDataError.invalidResponse }
-        guard decoded.remark == nil else { throw RoadDataError.unavailable }
+        guard let decoded = response else { throw lastError }
         try Task.checkCancellation()
         let snapshot = RoadDataSnapshot(speedSegments: Self.speedSegments(from: decoded.elements),
                                         alerts: Self.alerts(from: decoded.elements), fetchedAt: .now)
         await RoadDataLocalCache.shared.store(snapshot, for: cacheKey)
         return snapshot
+    }
+
+    private static func download(query: String, endpoint: URL) async throws -> OverpassResponse {
+        var components = URLComponents()
+        components.queryItems = [URLQueryItem(name: "data", value: query)]
+        var request = URLRequest(url: endpoint, timeoutInterval: 30)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("NaviAstra/1.0 (OpenStreetMap road-safety data)", forHTTPHeaderField: "User-Agent")
+        request.httpBody = components.percentEncodedQuery?.data(using: .utf8)
+        guard await OSMCyclingRequestGate.shared.waitUntilAllowed() else { throw CancellationError() }
+        do {
+            try Task.checkCancellation()
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { throw RoadDataError.invalidResponse }
+            guard (200...299).contains(http.statusCode) else { throw RoadDataError.server(http.statusCode) }
+            let decoded: OverpassResponse
+            do { decoded = try JSONDecoder().decode(OverpassResponse.self, from: data) }
+            catch { throw RoadDataError.invalidResponse }
+            guard decoded.remark == nil else { throw RoadDataError.unavailable }
+            try Task.checkCancellation()
+            await OSMCyclingRequestGate.shared.requestDidFinish()
+            return decoded
+        } catch {
+            await OSMCyclingRequestGate.shared.requestDidFinish()
+            try Task.checkCancellation()
+            throw error
+        }
     }
 
     private static func cacheKey(_ route: [Coordinate]) -> String {
@@ -378,12 +415,12 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
                 }
             }
         }
-        return "road-signs-v2-" + String(format: "%016llx", hash)
+        return "road-safety-v3-" + String(format: "%016llx", hash)
     }
 
     private static func query(route: [Coordinate]) -> String {
         let centers = sampled(route, maxStep: 800).map {
-            String(format: "%.5f,%.5f", $0.latitude, $0.longitude)
+            String(format: "%.5f,%.5f", locale: Locale(identifier: "en_US_POSIX"), arguments: [$0.latitude, $0.longitude])
         }.joined(separator: ",")
         let roads = "way(around:120,\(centers))[highway~\"^(motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified|residential|living_street|service|track|road)$\"]"
         return """
@@ -399,6 +436,8 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
           \(roads)[\"maxspeed:type\"~\"^PL:\"];
           \(roads)[\"zone:traffic\"~\"^PL:\"];
           node(around:120,\(centers))[highway=\"speed_camera\"];
+          node(around:120,\(centers))[enforcement=\"traffic_signals\"];
+          node(around:120,\(centers))[\"camera:type\"=\"red_light\"];
           node(around:120,\(centers))[traffic_sign];
           node(around:120,\(centers))[\"traffic_sign:forward\"];
           node(around:120,\(centers))[\"traffic_sign:backward\"];
@@ -453,13 +492,22 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
 
     private static func alerts(from elements: [OverpassElement]) -> [RoadSafetyAlert] {
         var unique: [String: RoadSafetyAlert] = [:]
+        let relations = elements.filter {
+            $0.type == "relation" && $0.tags?["type"] == "enforcement" &&
+                ["maxspeed", "average_speed", "traffic_signals"].contains($0.tags?["enforcement"] ?? "")
+        }
+        let relatedDeviceIDs = Set(relations.flatMap { element in
+            (element.members ?? []).filter { $0.role == "device" && $0.coordinate != nil }
+                .compactMap(\.osmID)
+        })
         for element in elements {
             guard element.type == "node", let latitude = element.lat, let longitude = element.lon,
+                  latitude.isFinite, longitude.isFinite,
+                  (-90...90).contains(latitude), (-180...180).contains(longitude),
                   let tags = element.tags else { continue }
             let coordinate = Coordinate(latitude: latitude, longitude: longitude)
-            if tags["highway"] == "speed_camera" {
-                let type: RoadAlertType = tags["enforcement"] == "traffic_signals"
-                    || tags["camera:type"] == "red_light" ? .redLightCamera : .speedCamera
+            if let type = OSMSafetyTags.enforcementType(tags),
+               !relatedDeviceIDs.contains("osm-node-\(element.id)") {
                 let alert = RoadSafetyAlert(id: "osm-node-\(element.id)", type: type,
                                             coordinate: coordinate, source: .openStreetMap,
                                             speedLimitKph: SpeedLimitParser.parse(tags["maxspeed"]))
@@ -495,31 +543,35 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
                 if let from {
                     let alert = RoadSafetyAlert(id: "osm-relation-\(element.id)-start", type: .averageSpeedStart,
                                                 coordinate: from, source: .openStreetMap,
-                                                speedLimitKph: SpeedLimitParser.parse(element.tags?["maxspeed"]))
+                                                speedLimitKph: SpeedLimitParser.parse(element.tags?["maxspeed"]),
+                                                enforcementApproach: from, enforcementExit: to)
                     unique[alert.id] = alert
                 }
                 if let to {
                     let alert = RoadSafetyAlert(id: "osm-relation-\(element.id)-end", type: .averageSpeedEnd,
                                                 coordinate: to, source: .openStreetMap,
-                                                speedLimitKph: SpeedLimitParser.parse(element.tags?["maxspeed"]))
+                                                speedLimitKph: SpeedLimitParser.parse(element.tags?["maxspeed"]),
+                                                enforcementApproach: from, enforcementExit: to)
                     unique[alert.id] = alert
                 }
-            } else if enforcement == "traffic_signals" {
-                let coordinates = members.filter { $0.role == "device" }.compactMap(\.coordinate)
-                for (index, coordinate) in coordinates.enumerated() {
-                    let alert = RoadSafetyAlert(id: "osm-relation-\(element.id)-redlight-\(index)",
-                                                type: .redLightCamera, coordinate: coordinate,
-                                                source: .openStreetMap)
-                    unique[alert.id] = alert
-                }
-            } else if enforcement == "maxspeed" {
-                let coordinates = members.filter { $0.role == "device" }.compactMap(\.coordinate)
-                for (index, coordinate) in coordinates.enumerated() {
-                    let alert = RoadSafetyAlert(id: "osm-relation-\(element.id)-camera-\(index)",
-                                                type: .speedCamera, coordinate: coordinate,
-                                                source: .openStreetMap,
-                                                speedLimitKph: SpeedLimitParser.parse(element.tags?["maxspeed"]))
-                    unique[alert.id] = alert
+            } else if enforcement == "traffic_signals" || enforcement == "maxspeed" {
+                let devices = members.filter { $0.role == "device" }
+                let approaches = members.filter { $0.role == "from" }.compactMap(\.coordinate)
+                let exit = members.first(where: { $0.role == "to" })?.coordinate
+                for (index, device) in devices.enumerated() {
+                    guard let coordinate = device.coordinate else { continue }
+                    // Keep relation IDs per approach: one physical device can control multiple directions.
+                    let origins: [Coordinate?] = approaches.isEmpty ? [nil] : approaches.map { Optional($0) }
+                    for (approachIndex, approach) in origins.enumerated() {
+                        let alert = RoadSafetyAlert(
+                            id: "osm-relation-\(element.id)-camera-\(index)-approach-\(approachIndex)",
+                            type: enforcement == "traffic_signals" ? .redLightCamera : .speedCamera,
+                            coordinate: coordinate, source: .openStreetMap,
+                            speedLimitKph: SpeedLimitParser.parse(element.tags?["maxspeed"]),
+                            enforcementApproach: approach, enforcementExit: exit ?? coordinate,
+                            mapPOIID: device.osmID ?? "osm-relation-\(element.id)-camera-\(index)")
+                        unique[alert.id] = alert
+                    }
                 }
             }
         }
@@ -555,7 +607,7 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
         let displayCode = codes.joined(separator: ", ")
         let speed = SpeedLimitParser.parse(tags["maxspeed"] ?? tags["traffic_sign:maxspeed"])
         let knownTypes: [(Set<String>, RoadAlertType)] = [
-            (["D-51"], .speedCamera),
+            (["D-51"], .trafficSign),
             (["D-51A"], .averageSpeedStart),
             (["D-51B"], .averageSpeedEnd),
             (["B-20"], .stopSign),
@@ -675,6 +727,12 @@ private struct OverpassPoint: Decodable {
 }
 
 private struct OverpassMember: Decodable {
+    let type: String?
+    let ref: Int64?
+    var osmID: String? {
+        guard let type, let ref else { return nil }
+        return "osm-\(type)-\(ref)"
+    }
     let role: String
     let lat: Double?
     let lon: Double?

@@ -117,6 +117,11 @@ extension ContentView {
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(Color.naviTextSecondary)
                 .lineLimit(1)
+        } else if case .partial(let message) = navigationStore.state.roadSafetyStatus {
+            Label(message, systemImage: "exclamationmark.triangle")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(Color.naviTextSecondary)
+                .lineLimit(1)
         } else if case .unavailable = navigationStore.state.roadSafetyStatus {
             Label("Ostrzeżenia drogowe niedostępne", systemImage: "wifi.slash")
                 .font(.system(size: 10, weight: .medium))
@@ -438,38 +443,68 @@ extension ContentView {
                         let rideDuration = transitLegs.reduce(0.0) {
                             $0 + $1.arrival.timeIntervalSince($1.departure)
                         }
-                        HStack(spacing: 8) {
-                            Text(firstRide.line ?? "MPK")
-                                .font(.caption.weight(.bold).monospacedDigit())
-                                .foregroundStyle(.white).padding(.horizontal, 8).padding(.vertical, 5)
-                                .background(mapTransitColor(firstRide.lineColorHex ?? NaviAstraColorPalette.transitFallback), in: RoundedRectangle(cornerRadius: 7))
-                            Text(transitLegs.map { $0.line ?? "MPK" }.joined(separator: " → "))
-                                .font(.caption.weight(.medium)).lineLimit(1)
-                            Spacer(minLength: 0)
-                            if let delay = displayedTransitDelay(for: firstRide), abs(delay) >= 30 {
-                                HStack(spacing: 4) {
-                                    Text(delayLabel(TimeInterval(delay)))
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(transitDelayColor(delay))
-                                    Text(transitTimeSourceLabel(for: firstRide, in: journey))
-                                        .font(.caption2).foregroundStyle(Color.naviTextSecondary)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(Array(journey.legs.enumerated()), id: \.element.id) { index, leg in
+                                    if index > 0 {
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption2.weight(.semibold))
+                                            .foregroundStyle(Color.naviTextSecondary)
+                                    }
+                                    HStack(spacing: 5) {
+                                        Image(systemName: transitLegSymbol(for: leg))
+                                        if leg.mode.uppercased() == "WALK" {
+                                            Text(transitMetricTime(leg.plannedWalkingDuration))
+                                        } else {
+                                            Text(leg.line ?? "Komunikacja")
+                                        }
+                                    }
+                                    .font(.subheadline.weight(.semibold))
+                                    .padding(.horizontal, 10).padding(.vertical, 8)
+                                    .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+                                    .overlay(alignment: .bottom) {
+                                        if leg.mode.uppercased() != "WALK" {
+                                            Capsule().fill(mapTransitColor(leg.lineColorHex ?? NaviAstraColorPalette.transitFallback))
+                                                .frame(height: 3).padding(.horizontal, 8)
+                                        }
+                                    }
                                 }
-                            } else if firstRide.realTime || hasLiveTransitUpdate(for: firstRide) {
-                                Text(transitTimeSourceLabel(for: firstRide, in: journey))
-                                    .font(.caption2).foregroundStyle(Color.naviTextSecondary)
-                            } else {
-                                Text("wg rozkładu")
-                                    .font(.caption2).foregroundStyle(Color.naviTextSecondary)
                             }
                         }
-                        HStack(spacing: 5) {
-                            Text("Wsiadasz \(firstRide.departure.formatted(date: .omitted, time: .shortened))")
-                            Text("·")
-                            Text("Przyjazd \(journey.arrival.formatted(date: .omitted, time: .shortened))")
+                        .accessibilityLabel("Etapy połączenia")
+
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Wsiądź na \(firstRide.from)")
+                                .font(.subheadline.weight(.semibold))
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text("Kierunek: \(firstRide.direction ?? firstRide.to)")
+                                .font(.caption).foregroundStyle(Color.naviTextSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text(transitTimeSourceLabel(for: firstRide, in: journey))
+                                .font(.caption).foregroundStyle(Color.naviTextSecondary)
+                            if let delay = displayedTransitDelay(for: firstRide), abs(delay) >= 30 {
+                                Label(delayLabel(TimeInterval(delay)), systemImage: "clock.badge.exclamationmark")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(transitDelayColor(delay))
+                            }
                         }
-                        .font(.caption2.monospacedDigit()).foregroundStyle(Color.naviTextSecondary)
-                        Text("Pojazdami \(transitMetricTime(rideDuration)) · pieszo \(transitMetricTime(journey.walkingDuration)) · czekanie \(transitMetricTime(journey.waitingDuration)) · przesiadki: \(journey.transferCount)")
-                            .font(.caption2).foregroundStyle(Color.naviTextSecondary).lineLimit(2)
+
+                        Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 12) {
+                            GridRow {
+                                transitPreviewMetric("Odjazd", value: firstRide.departure.formatted(date: .omitted, time: .shortened), symbol: "clock")
+                                transitPreviewMetric("Przyjazd", value: journey.arrival.formatted(date: .omitted, time: .shortened), symbol: "flag.checkered")
+                            }
+                            GridRow {
+                                transitPreviewMetric("Pieszo", value: transitMetricTime(journey.walkingDuration), symbol: "figure.walk")
+                                transitPreviewMetric("Przesiadki", value: journey.transferCount == 0 ? "Bez przesiadek" : "\(journey.transferCount)", symbol: "arrow.triangle.swap")
+                            }
+                            GridRow {
+                                transitPreviewMetric("W pojazdach", value: transitMetricTime(rideDuration), symbol: "bus.fill")
+                                transitPreviewMetric("Oczekiwanie", value: transitMetricTime(journey.waitingDuration), symbol: "hourglass")
+                            }
+                        }
+                        .padding(14)
+                        .background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 16))
                         if let headway = journey.frequencyEstimateHeadwaySeconds {
                             Label("Odjazdy orientacyjne co \(max(1, Int((Double(headway) / 60).rounded()))) min",
                                   systemImage: "clock.badge.questionmark")
@@ -819,6 +854,18 @@ extension ContentView {
             time: .shortened,
             locale: Locale(identifier: "pl_PL"))
         return navigationStore.state.journeyTargetTime.formatted(polishDateTimeFormat)
+    }
+
+    private func transitPreviewMetric(_ title: String, value: String, symbol: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label(title, systemImage: symbol)
+                .font(.caption).foregroundStyle(Color.naviTextSecondary)
+            Text(value)
+                .font(.subheadline.weight(.semibold).monospacedDigit())
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 
     var laterTransitConnections: some View {

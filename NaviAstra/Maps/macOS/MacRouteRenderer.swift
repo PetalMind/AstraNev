@@ -383,7 +383,7 @@ final class MacRouteRenderer {
 
     private var allStyledOverlays: [StyledOverlay] {
         routeOverlays + incidentOverlays.values.flatMap { $0 }
-            + [traveledOverlay, trafficOverlay, accuracyHaloOverlay].compactMap { $0 }
+            + trafficOverlays + [traveledOverlay, accuracyHaloOverlay].compactMap { $0 }
     }
 
     private func addOverlay(_ coordinates: [Coordinate], kind: MacRouteLineKind, routeID: UUID? = nil,

@@ -18,6 +18,8 @@ nonisolated struct RouteTrafficSegment: Equatable, Sendable, Identifiable {
     let coordinates: [Coordinate]
     let colorHex: UInt32
     let isRoadClosure: Bool
+    var currentSpeedKph: Double? = nil
+    var freeFlowSpeedKph: Double? = nil
 }
 
 /// Selects a useful traffic horizon and queries small boxes along the active route corridor.
@@ -64,6 +66,7 @@ struct RouteTrafficMonitor {
         let orderedQueries = queries.sorted { $0.distanceAlongRoute < $1.distanceAlongRoute }
         let orderedSamples = samples.sorted { $0.distanceAlongRoute < $1.distanceAlongRoute }
         return orderedSamples.compactMap { sample in
+            guard sample.flow.confidence.map({ $0 >= 0.5 }) ?? true else { return nil }
             guard let index = orderedQueries.firstIndex(where: {
                 abs($0.distanceAlongRoute - sample.distanceAlongRoute) < 1
             }) else { return nil }
@@ -92,7 +95,9 @@ struct RouteTrafficMonitor {
                 endDistance: clippedEnd,
                 coordinates: coordinates,
                 colorHex: sample.flow.overlayColorHex,
-                isRoadClosure: sample.flow.roadClosure)
+                isRoadClosure: sample.flow.roadClosure,
+                currentSpeedKph: Double(sample.flow.currentSpeedKph),
+                freeFlowSpeedKph: Double(sample.flow.freeFlowSpeedKph))
         }
     }
 

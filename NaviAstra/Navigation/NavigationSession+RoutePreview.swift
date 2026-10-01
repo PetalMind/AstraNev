@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 
 extension NavigationSession {
@@ -8,6 +9,15 @@ extension NavigationSession {
 
     func preview(_ destination: Destination) async {
         requestGeneration += 1
+        let token = TransitPlanningCancellationToken()
+        roadPlanningCancellationToken = token
+        await RoadRoutingContext.$cancellationToken.withValue(token) {
+            await performPreview(destination)
+        }
+        if roadPlanningCancellationToken === token { roadPlanningCancellationToken = nil }
+    }
+
+    private func performPreview(_ destination: Destination) async {
         let generation = requestGeneration
         let mode = state.transportMode
         let transitCancellationToken = mode == .transit || mode == .parkRide
@@ -127,7 +137,12 @@ extension NavigationSession {
 
     func resolvedRouteOriginCoordinate(for mode: TransportMode) async -> Coordinate? {
         guard let origin = state.routeOrigin, !origin.isCurrentLocation else {
-            return state.location?.coordinate
+            if let location = state.location, abs(location.timestamp.timeIntervalSinceNow) <= 15 {
+                return location.coordinate
+            }
+            guard let fix = await locationManager.freshLocation(),
+                  !Task.isCancelled, RoadRoutingContext.cancellationToken?.isCancelled != true else { return nil }
+            return Coordinate(latitude: fix.coordinate.latitude, longitude: fix.coordinate.longitude)
         }
         guard origin.poi != nil else { return origin.coordinate }
         let destination = origin.destination

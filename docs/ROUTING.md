@@ -4,7 +4,7 @@ Ten dokument opisuje bieżącą implementację routingu. Głównym koordynatorem
 
 ## W skrócie
 
-- Początek trasy to ostatnia zaakceptowana pozycja GPS. Cel pochodzi z wyszukiwania, mapy albo wybranego miejsca.
+- Początek trasy to ręcznie wybrany punkt albo ostatnia zaakceptowana pozycja GPS. Cel pochodzi z wyszukiwania, mapy albo wybranego miejsca.
 - Wybrany tryb transportu decyduje o silniku: Valhalla dla samochodu, marszu i roweru; Transitous dla komunikacji publicznej i jej odcinka w P+R.
 - Dla tras drogowych warianty zwraca serwer Valhalla. Podczas nawigacji TomTom może zmienić wybór na szybszy z już zwróconych wariantów; serwer Valhalla nadal dostarcza geometrię i podstawowe czasy.
 - Transitous wyznacza połączenia w regionach objętych jego feedami. Pokrycie zależy od dostępnych danych, a rzeczywiste pozycje pojazdów są obecnie dostępne wyłącznie z feedu MPK Łódź.
@@ -12,8 +12,8 @@ Ten dokument opisuje bieżącą implementację routingu. Głównym koordynatorem
 
 ## Przebieg obliczenia
 
-1. `NavigationSession.planRoute()` wymaga wybranego celu i pozycji GPS. Gdy nie ma zaakceptowanej pozycji, nie zaczyna obliczeń.
-2. `preview()` bierze bieżące współrzędne GPS jako początek, ustawia status obliczania i wywołuje `calculateRoutes()`.
+1. `NavigationSession.planRoute()` wymaga wybranego celu i dostępnego początku trasy. Gdy nie ma zaakceptowanej pozycji, nie zaczyna obliczeń.
+2. `preview()` rozwiązuje ręcznie wybrany początek lub bierze bieżące współrzędne GPS, ustawia status obliczania i wywołuje `calculateRoutes()`.
 3. `calculateRoutes()` przekazuje żądanie do dostawcy zależnie od trybu podróży.
 4. Po otrzymaniu niepustej listy tras pierwszy element staje się początkowo wybraną trasą, a cała lista pozostaje dostępna jako warianty. Podczas jazdy traffic może zmienić wybór wśród tych wariantów.
 5. Zmiana celu, przystanku pośredniego albo trybu wywołuje kolejne obliczenie. Identyfikator żądania zapobiega nadpisaniu nowszego podglądu spóźnioną odpowiedzią.
@@ -26,7 +26,7 @@ Pozycje GPS przechodzą przez `LocationFilter`. Akceptowane są pomiary z dokła
 
 - współrzędne początku, celu oraz przystanków pośrednich w podanej kolejności;
 - profil kosztowania: `auto`, `pedestrian` albo `bicycle`;
-- jednostki kilometrów, język instrukcji `pl-PL` oraz prośbę o dwie alternatywy.
+- jednostki kilometrów, język instrukcji `pl-PL`, żądanie wskazówek pasów ruchu oraz prośbę o dwie alternatywy przy dwóch punktach. Valhalla nie obsługuje alternatyw wielopunktowych.
 
 Odpowiedź może więc zawierać trasę podstawową i do dwóch alternatyw. Dostawca dekoduje geometrię polyline6, instrukcje manewrów, dystans i czas z podsumowania Valhalli. W podglądzie `NavigationSession` domyślnie wybiera `routes.first`, zachowując kolejność serwera; użytkownik może wybrać inny zwrócony wariant. W trakcie jazdy TomTom może zmienić wybrany wariant po porównaniu opóźnień i zamknięć na tych trasach.
 
@@ -51,11 +51,11 @@ Dla profilu samochodowego ustawienia są przesyłane jako opcje kosztowania Valh
 | Unikaj promów | `use_ferry = 0` |
 | Unikaj dróg gruntowych | `exclude_unpaved = true` |
 
-Te ustawienia aplikacja przekazuje wyłącznie dla samochodu. Faktyczny wariant nadal zależy od grafu dróg i interpretacji opcji przez używany serwer. Współrzędne omijanych punktów są przekazywane przy automatycznym omijaniu wykrytego zamknięcia.
+Te ustawienia aplikacja przekazuje wyłącznie dla samochodu. Unikanie autostrad, opłat i promów jest preferencją, bez gwarancji całkowitego wykluczenia; interfejs wyjaśnia to ograniczenie. Faktyczny wariant nadal zależy od grafu dróg i interpretacji opcji przez używany serwer. Współrzędne omijanych punktów są przekazywane przy automatycznym omijaniu wykrytego zamknięcia.
 
 ### Przystanki pośrednie
 
-Można dodać do ośmiu przystanków. Zwykłe wyznaczanie trasy zachowuje ich bieżącą kolejność. Dla samochodu, marszu i roweru dostępna jest osobna optymalizacja kolejności przez endpoint Valhalli `/optimized_route`. Aplikacja sprawdza długość zwróconej listy i zakres indeksów, po czym zmienia kolejność punktów i ponownie liczy trasę.
+Można dodać do ośmiu przystanków. Zwykłe wyznaczanie trasy zachowuje ich bieżącą kolejność. Dla samochodu, marszu i roweru dostępna jest osobna optymalizacja kolejności przez endpoint Valhalli `/optimized_route`. Aplikacja sprawdza długość zwróconej listy, zakres indeksów, generację zapytania oraz niezmienność celu, punktów i preferencji, po czym zmienia kolejność punktów i ponownie liczy trasę. Zmiana planu anuluje poprzednie zapytania drogowe; resolver POI zapisuje cele dojazdu tylko dla aktualnego zapytania. Przy wiarygodnym GPS i kursie aktualny kierunek pojazdu trafia do Valhalli.
 
 ## Komunikacja publiczna
 
@@ -68,11 +68,11 @@ Lokalne indeksy GTFS pozostają źródłem uzupełniającego wyszukiwania i loka
 Tryb P+R łączy trasę samochodem do parkingu i dalszą podróż komunikacją publiczną:
 
 1. Valhalla liczy bazową trasę samochodową do celu. OpenStreetMap/Overpass wyszukuje parkingi w korytarzu ostatnich 40 km trasy oraz w promieniu 15 km od celu. Kandydaci muszą mieć tag `amenity=parking` i `park_ride=yes`.
-2. Dla maksymalnie dwunastu kandydatów Valhalla liczy trasę samochodową. Używany jest pierwszy wariant samochodowy.
-3. Transitous szuka połączenia z parkingu do celu, z czasem odjazdu ustawionym na przewidywany przyjazd samochodem.
+2. Dla czterech parkingów blisko celu i do czterech dodatkowych rozmieszczonych wzdłuż korytarza Valhalla liczy trasę samochodową. Używany jest pierwszy wariant samochodowy.
+3. Transitous szuka połączenia z parkingu do celu, z czasem odjazdu ustawionym na przewidywany przyjazd samochodem plus pięć minut na zaparkowanie. Bufor i oczekiwanie na rozpoczęcie połączenia wchodzą do czasu oraz rankingu.
 4. Wyniki są sortowane według łącznego kosztu jazdy, chodzenia, oczekiwania i przesiadek; zwracane są maksymalnie trzy warianty.
 
-Wynik zawiera odcinek samochodowy oraz odcinki piesze i komunikacyjne z Transitous. Dostępność parkingu, wolnych miejsc ani czas parkowania nie są sprawdzane. W trybie P+R automatyczne przeliczanie po zejściu z geometrii trasy jest wyłączone.
+Wynik zawiera odcinek samochodowy oraz odcinki piesze i komunikacyjne z Transitous. Dostępność parkingu i wolnych miejsc nie są sprawdzane. Czas parkowania jest stałym szacunkiem. W trybie P+R automatyczne przeliczanie po zejściu z geometrii trasy jest wyłączone.
 
 ## Szczegóły parkingu
 
@@ -82,15 +82,11 @@ Brak tagu `fee` jest prezentowany jako brak danych, nie jako parking bezpłatny.
 
 ## Planowanie ładowania EV
 
-Planowanie EV jest rozszerzeniem samochodowego routingu Valhalli i działa tylko wtedy, gdy wybrany serwer obsługuje zaawansowany interfejs routingu. Ustawienia pojazdu obejmują zasięg pełnej baterii, bieżący poziom, zużycie kWh/100 km, maksymalną moc przyjmowaną przez auto i obsługiwane złącza.
+Planner sprawdza maksymalnie trzy trasy bazowe. Każdy wariant mieszczący się w dostępnym zasięgu jest oceniany oddzielnie. Dla dłuższych tras szuka stacji w korytarzu trzech kilometrów i wykonuje ograniczone wyszukiwanie kilku sekwencji postojów w grafie stacji. Wyszukiwanie i końcowa kontrola używają wspólnego marginesu 20 procent zasięgu.
 
-1. Z ustawionego zasięgu przy pełnej baterii i poziomu baterii liczony jest aktualny zasięg. Brak dodatniego zasięgu zgłasza błąd.
-2. Najpierw liczona jest bazowa trasa z ręcznie dodanymi przystankami. Jeśli jej dystans nie przekracza 80% aktualnego zasięgu, ładowarki nie są dodawane.
-3. W przeciwnym razie aplikacja szuka w OpenStreetMap ładowarek (`amenity=charging_station`) w korytarzu do 1,2 km od geometrii trasy. Kandydat musi mieć opisane złącze i moc, nie może być oznaczony jako niedziałający ani prywatny. Zaznaczone złącza pojazdu są filtrem; pusty wybór dopuszcza wszystkie opisane typy.
-4. Wybiera kolejną ładowarkę w zasięgu bieżącego odcinka. Trasa zachowuje rezerwę 20%; na postoju oblicza energię potrzebną do następnej ładowarki lub celu. Uwzględnia ograniczenie mocy auta i deklarowaną moc stacji, więc nie zakłada pełnego ładowania przy każdym postoju.
-5. Wybrane ładowarki i ręczne przystanki są porządkowane wzdłuż trasy, a Valhalla liczy trasę końcową. Plan jest ponownie sprawdzany na geometrii tej trasy. Szacowany czas ładowania jest dodawany do ETA. Limit to dziesięć ładowarek.
+Do trzech zestawów stacji dla każdej trasy trafia do rzeczywistego trasowania; po wyznaczeniu dojazdu planner ponownie sprawdza każdy odcinek energetyczny. Niewykonalny zestaw nie przerywa sprawdzania pozostałych. Ranking porównuje czas jazdy wraz z postojami. To wyszukiwanie ograniczone, bez gwarancji globalnego optimum.
 
-Plan bazuje na zasięgu i zużyciu podanym przez użytkownika oraz metadanych OSM. Nie ma danych o bieżącej zajętości stacji. Jeśli status operacyjny lub dostęp publiczny nie są opisane, UI pokazuje tę lukę. Szacunek nie modeluje krzywej ładowania, maksymalnej mocy konkretnego auta poza limitem użytkownika, zużycia zależnego od prędkości, przewyższeń ani pogody. Brak stacji z wymaganymi metadanymi kończy planowanie błędem zamiast zakładać dostępność.
+Szacunek ładowania uwzględnia ograniczenie mocy samochodu, ogólny spadek mocy przy wyższym SOC i pięć minut obsługi postoju. Współczynniki 0,85 / 0,65 / 0,35 dla zakresów SOC do 60 / 80 / 100 procent są konserwatywną heurystyką, nie krzywą konkretnego samochodu. Zużycie energii nadal pochodzi z konfiguracji użytkownika. Brak danych o pogodzie, rzeczywistym SOC, kolejce i aktualnej dostępności nie jest zastępowany wymyśloną telemetrią.
 
 ## Postęp, ruch i ponowne wyznaczanie
 
@@ -103,6 +99,14 @@ Podczas nawigacji `MapMatcher` ocenia kandydackie odcinki geometrii według odle
 - Odświeżanie danych pobliskich odbywa się co 120 s poza nawigacją i co 60 s podczas jazdy. Dla zdarzeń do 10 km skraca się do 30 s, a dla zamknięcia do 3 km do 20 s. Po przeliczeniu trasy pobieranie korytarza rusza ponownie od razu.
 - Aplikacja nie zapisuje feedu TomTom do kafli live traffic Valhalli. Wybór ruchowy działa na wariantach zwróconych przez skonfigurowany serwer; pełna optymalizacja drogi wymaga serwera Valhalla z aktualnymi kaflami ruchu.
 - Automatyczny mechanizm „poza trasą” nie działa dla P+R. Połączenia MPK korzystają z osobnego śledzenia etapu podróży i danych realtime.
+
+## ETA i ruch
+
+`NavigationRoute.travelSegments` przechowuje czasy manewrów na odpowiadających im zakresach geometrii. `RoadRouteETA` jest wspólnym modelem dla postępu i wyboru alternatywy. Dla brakujących czasów odcinków stosuje proporcjonalne oszacowanie z czasu całej trasy.
+
+Świeże prędkości ruchu zastępują czas na zmierzonych zakresach, jeśli oznaczają wolniejszy przejazd. Zdarzenia na tych zakresach nie dodają drugi raz opóźnienia. Zamknięcie oznacza niewykonalność wariantu; podczas przeliczania interfejs zachowuje skończony szacunek bazowy. Dane starsze niż limity świeżości są pomijane.
+
+Alternatywy są sprawdzane w osobnych korytarzach, w podobnym horyzoncie czasowym. Porównanie odbywa się najwyżej co trzy minuty, bez równoległych porównań. Nie przełącza trasy przy błędach pobierania, małym pokryciu próbkami lub braku dopasowanych danych. Kierunek i odległość od wariantu muszą umożliwiać jego kontynuację. Próg zmiany pozostaje równy większej wartości z dwóch minut i 15 procent pozostałego ETA.
 
 ## Limity prędkości i ostrzeżenia drogowe
 
@@ -131,3 +135,6 @@ Wyników nie należy interpretować jako gwarancji najkrótszej drogi, dostępno
 - `NaviAstra/Places/NearbyPlaceProvider.swift` — wyszukiwanie parkingów, P+R i ładowarek oraz odczyt ich metadanych OpenStreetMap.
 - `NaviAstra/Navigation/UI/ContentView+RoutePreview.swift` i `ContentView+Journey.swift` — ustawienia EV, postoje i podsumowanie aktywnej podróży.
 - `NaviAstra/Traffic/TrafficProvider.swift` — pobieranie danych TomTom o ruchu i zdarzeniach.
+## Weryfikacja
+
+`NaviAstraTests/RoutingCriticalTests.swift` obejmuje nierównomierne czasy odcinków, zmierzony ruch bez podwójnego naliczania, świeżość danych, kierunek kontynuacji, osiągalność ładowarek, alternatywne zestawy postojów, spadek mocy ładowania i odrzucenie spóźnionej optymalizacji po zmianie celu. Testy dotyczą krytycznej logiki nawigacji.

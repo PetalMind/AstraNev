@@ -42,10 +42,15 @@ struct PlaceDetailsView: View {
     @State private var showHours = false
     @State private var loadedAt: Date?
     @State private var placePhoto: PlacePhoto?
+    @State private var loadedPhotoImage: Image?
+    @State private var loadedPhotoURL: URL?
+    @State private var placePhotos: [PlacePhoto] = []
     @State private var placePhotoLoadFailed = false
     @State private var lookAroundPreview: PlaceLookAroundPreview?
     @State private var isLoadingPlacePhoto = false
     @State private var showLookAround = false
+    @State private var failedPhotoURLs: Set<URL> = []
+    @State private var hasAppleDetails = false
     private let provider = OpenStreetMapPlaceDetailsProvider()
 
     init(result: SearchResult, isSaved: Bool, onSave: @escaping () -> Bool,
@@ -77,11 +82,12 @@ struct PlaceDetailsView: View {
     }
 
     private var placeDetailsContent: some View {
-        VStack(alignment: .leading, spacing: presentation == .compact ? 12 : 11) {
+        VStack(alignment: .leading, spacing: presentation == .compact ? 12 : 16) {
             PlaceDetailsHeroSummary(
                 title: details?.name ?? result.destination.name,
                 symbol: photoSymbol(for: details?.category ?? result.category ?? ""),
                 showsPOIIcon: result.isPOI && !showsPlacePhoto,
+                categoryTitle: (details?.category ?? result.category).map(PlaceCategoryPresentation.title),
                 travelSummary: travelSummary)
 
             if presentation != .compact && showsPlacePhoto {
@@ -89,10 +95,20 @@ struct PlaceDetailsView: View {
             }
 
             if presentation == .medium {
-                compactDetailsSummary()
+                compactDetailsSummary(includeCategory: false)
             }
 
             placeDetailsActionBar
+
+            if presentation != .compact, result.isPOI,
+               PaliwoMapaFuelPriceProvider.isFuelStation(category: details?.category ?? result.category) {
+                PlaceFuelPricesSection(identity: fuelPriceIdentity)
+            }
+
+            if presentation != .compact, let details,
+               details.phoneURL != nil || details.websiteURL != nil {
+                PlaceDetailsQuickContact(details: details)
+            }
 
             if favoriteFeedback != nil {
                 FavoriteFeedbackOverlay(feedback: $favoriteFeedback)
@@ -103,7 +119,7 @@ struct PlaceDetailsView: View {
             }
 
             if presentation == .compact {
-                compactDetailsSummary()
+                compactDetailsSummary(includeCategory: false)
             } else if presentation == .full {
                 Divider()
                 if !supplementalDetails.isEmpty || details?.hasAdditionalInformation == true {
@@ -116,7 +132,7 @@ struct PlaceDetailsView: View {
                         .font(.subheadline)
                 }
                 if let details {
-                    PlaceDetailsAttributesSection(details: details, showHours: $showHours)
+                    PlaceDetailsAttributesSection(details: details, isLoading: isLoading, showHours: $showHours)
                 }
 
                 if isLoading {
@@ -139,7 +155,8 @@ struct PlaceDetailsView: View {
 
                 if let loadedAt {
                     let sourceTitle = details?.source.title ?? "OpenStreetMap"
-                    Text("\(sourceTitle) · pobrano \(loadedAt.formatted(date: .abbreviated, time: .shortened))")
+                    let sources = hasAppleDetails && details?.source != .mapKit ? "Apple Maps + " + sourceTitle : sourceTitle
+                    Text("\(sources) · pobrano \(loadedAt.formatted(date: .abbreviated, time: .shortened))")
                         .font(.caption2).foregroundStyle(Color.naviTextSecondary)
                 } else if let details {
                     Text(details.source.title).font(.caption2).foregroundStyle(Color.naviTextSecondary)
@@ -165,11 +182,19 @@ struct PlaceDetailsView: View {
             onToggleSavedState: toggleSavedState)
     }
 
+    private var fuelPriceIdentity: PlaceIdentity {
+        var identity = result.placeIdentity
+        identity.brand = details?.brand ?? identity.brand
+        identity.operatorName = details?.operatorName ?? identity.operatorName
+        identity.countryCode = details?.countryCode ?? identity.countryCode
+        return identity
+    }
+
     @ViewBuilder
     private func compactDetailsSummary(includeCategory: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             if includeCategory, let category = details?.category ?? result.category {
-                Label(category.replacingOccurrences(of: "_", with: " ").capitalized,
+                Label(PlaceCategoryPresentation.title(category),
                       systemImage: "tag")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(Color.naviTextSecondary)
@@ -232,8 +257,58 @@ struct PlaceDetailsView: View {
         .lookAroundViewer(isPresented: $showLookAround,
                           initialScene: lookAroundPreview?.scene)
 #endif
+        .background {
+            // Keep image loading alive without reserving space in the place card.
+            if !isNavigating, let photo = placePhoto {
+                AsyncImage(url: photo.imageURL) { phase in
+                    Color.clear
+                        .frame(width: 0, height: 0)
+                        .task(id: photo.imageURL.absoluteString + imagePhaseKey(phase)) {
+                            guard !Task.isCancelled else { return }
+                            switch phase {
+                            case .success(let image):
+                                loadedPhotoImage = image
+                                loadedPhotoURL = photo.imageURL
+                            case .failure:
+                                loadedPhotoImage = nil
+                                loadedPhotoURL = nil
+                                if photo.role == .brandLogo {
+                                    placePhoto = nil
+                                } else {
+                                    await handlePlacePhotoFailure()
+                                }
+                            default:
+                                break
+                            }
+                        }
+                }
+                .id(detailsRefreshKey + photo.imageURL.absoluteString)
+                .frame(width: 0, height: 0)
+                .clipped()
+            }
+        }
         .task(id: detailsRefreshKey) {
             await loadPlaceDetails()
+        }
+        .task(id: photoRefreshKey) {
+            placePhoto = nil
+            loadedPhotoImage = nil
+            loadedPhotoURL = nil
+            placePhotos = []
+            failedPhotoURLs = []
+            placePhotoLoadFailed = false
+            lookAroundPreview = nil
+            isLoadingPlacePhoto = false
+            guard result.isPOI, !isNavigating, let current = details else { return }
+            await loadPlacePhoto(for: current, forceRefresh: retry > 0)
+        }
+        .task(id: timeZoneRefreshKey) {
+            guard result.isPOI, details?.timeZoneIdentifier == nil else { return }
+            let key = result.placeIdentity.cacheKey
+            let identifier = await PlaceTimeZoneResolver.identifier(for: result.destination.coordinate)
+            guard !Task.isCancelled, key == result.placeIdentity.cacheKey,
+                  let identifier else { return }
+            details?.timeZoneIdentifier = identifier
         }
         .onChange(of: isFavoriteFromParent) { _, newValue in
             isSaved = newValue
@@ -243,48 +318,47 @@ struct PlaceDetailsView: View {
     @MainActor
     private func loadPlaceDetails() async {
         details = PlaceDetails.partial(for: result)
-        placePhoto = nil
-        placePhotoLoadFailed = false
-        lookAroundPreview = nil
-        isLoadingPlacePhoto = false
         loadedAt = nil
+        hasAppleDetails = false
         loadError = nil
         guard result.isPOI else { return }
         isLoading = true
-        defer { isLoading = false }
+        async let appleDetails = try? MapKitPlaceDetailsProvider().details(for: result.placeIdentity)
+        defer { if !Task.isCancelled { isLoading = false } }
         if let cached = await provider.cachedDetails(for: result.placeIdentity) {
             guard !Task.isCancelled else { return }
             details = details?.merging(cached) ?? cached
             loadedAt = cached.fetchedAt
         }
         do {
-            if let loaded = try await provider.details(for: result.placeIdentity, forceRefresh: retry > 0) {
+            async let refreshedDetails = provider.details(for: result.placeIdentity, forceRefresh: retry > 0)
+            let native = await appleDetails
+            guard !Task.isCancelled else { return }
+            if let native {
+                details = details.map { native.merging($0) } ?? native
+                hasAppleDetails = true
+            }
+            if let loaded = try await refreshedDetails {
                 guard !Task.isCancelled else { return }
-                details = details?.merging(loaded) ?? loaded
+                // A fresh response replaces stale fields; removed hours/contact data must disappear.
+                let timeZone = details?.timeZoneIdentifier
+                if let native {
+                    details = native.merging(loaded)
+                } else if result.placeProvider == .mapKit {
+                    details = PlaceDetails.partial(for: result)?.merging(loaded) ?? loaded
+                } else {
+                    details = loaded
+                }
+                if details?.timeZoneIdentifier == nil { details?.timeZoneIdentifier = timeZone }
                 loadedAt = loaded.fetchedAt
+            } else {
+                // An identified object that disappeared must not keep displaying its old cached hours.
+                details = native ?? PlaceDetails.partial(for: result)
+                loadedAt = native?.fetchedAt
             }
         } catch {
             guard !Task.isCancelled else { return }
-            if details?.hasAdditionalInformation != true {
-                loadError = "Nie udało się uzupełnić informacji. Dostępne dane pozostają widoczne."
-            }
-        }
-        if let current = details,
-           current.timeZoneIdentifier == nil,
-           let timeZoneIdentifier = await PlaceTimeZoneResolver.identifier(for: result.destination.coordinate) {
-            guard !Task.isCancelled else { return }
-            var updated = current
-            updated.timeZoneIdentifier = timeZoneIdentifier
-            details = updated
-        }
-        if let current = details,
-           !isNavigating {
-            if PlacePhotoResolver.isEligible(category: current.category)
-                || PlacePhotoResolver.isEligible(category: result.category) {
-                await loadPlacePhoto(for: current, forceRefresh: retry > 0)
-            } else {
-                await loadBrandLogo(for: current, forceRefresh: retry > 0)
-            }
+            loadError = "Nie udało się odświeżyć informacji. Pokazujemy dostępne dane; mogą być nieaktualne."
         }
     }
 
@@ -336,9 +410,29 @@ struct PlaceDetailsView: View {
     }
 
     private var showsPlacePhoto: Bool {
-        !isNavigating && (PlacePhotoResolver.isEligible(category: details?.category)
-                          || PlacePhotoResolver.isEligible(category: result.category)
-                          || placePhoto?.role == .brandLogo)
+        guard !isNavigating else { return false }
+        return lookAroundPreview != nil ||
+            (loadedPhotoImage != nil && loadedPhotoURL == placePhoto?.imageURL)
+    }
+
+    private func imagePhaseKey(_ phase: AsyncImagePhase) -> String {
+        switch phase {
+        case .empty: "/loading"
+        case .success: "/loaded"
+        case .failure: "/failed"
+        @unknown default: "/unknown"
+        }
+    }
+
+    private func handlePlacePhotoFailure() async {
+        if let url = placePhoto?.imageURL { failedPhotoURLs.insert(url) }
+        if let next = placePhotos.first(where: { !failedPhotoURLs.contains($0.imageURL) }) {
+            placePhoto = next
+            placePhotoLoadFailed = false
+        } else {
+            placePhotoLoadFailed = true
+            await loadLookAroundFallback()
+        }
     }
 
     private var detailsRefreshKey: String {
@@ -347,14 +441,55 @@ struct PlaceDetailsView: View {
         return placeKey + "/" + retryAttempt
     }
 
-    @ViewBuilder
+    private var photoRefreshKey: String {
+        [detailsRefreshKey, String(isNavigating), details?.category ?? "", result.category ?? "", details?.imageURL ?? "",
+         details?.imageAttribution ?? "", details?.imageLicense ?? "",
+         details?.wikimediaCommons ?? "", details?.wikidataID ?? "",
+         details?.brandWikidataID ?? ""].joined(separator: "|")
+    }
+
+    private var timeZoneRefreshKey: String {
+        detailsRefreshKey + "/" + (details?.timeZoneIdentifier ?? "unknown")
+    }
+
     private var placePhotoSection: some View {
-        if let placePhoto {
-            AsyncImage(url: placePhoto.imageURL) { imagePhase in
-                placePhotoPresentation(imagePhase: imagePhase)
+        VStack(alignment: .leading, spacing: 10) {
+            if let image = loadedPhotoImage, loadedPhotoURL == placePhoto?.imageURL {
+                placePhotoPresentation(imagePhase: .success(image))
+            } else if lookAroundPreview != nil {
+                placePhotoPresentation(imagePhase: nil)
             }
-        } else {
-            placePhotoPresentation(imagePhase: nil)
+            if placePhotos.count > 1 {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(placePhotos, id: \.imageURL) { photo in
+                            Button {
+                                placePhoto = photo
+                                placePhotoLoadFailed = false
+                            } label: {
+                                AsyncImage(url: photo.imageURL) { phase in
+                                    if let image = phase.image {
+                                        image.resizable().scaledToFill()
+                                    } else {
+                                        Image(systemName: "photo").frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    }
+                                }
+                                .frame(width: 76, height: 58)
+                                .clipped()
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .stroke(placePhoto?.imageURL == photo.imageURL ? Color.accentColor : Color.clear, lineWidth: 2)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Pokaż zdjęcie miejsca: \(photo.attribution)")
+                            .accessibilityAddTraits(placePhoto?.imageURL == photo.imageURL ? .isSelected : [])
+                        }
+                    }
+                    .padding(2)
+                }
+            }
         }
     }
 
@@ -368,13 +503,10 @@ struct PlaceDetailsView: View {
             isLoadingDetails: isLoading,
             category: details?.category ?? result.category ?? "",
             brandName: details?.brand ?? result.brand ?? result.destination.name,
-            photoHeight: presentation == .medium ? 96 : 184,
+            photoHeight: presentation == .medium ? 144 : 220,
             onRetry: { retry += 1 },
             onOpenLookAround: { showLookAround = true },
-            onPlacePhotoLoadFailure: {
-                placePhotoLoadFailed = true
-                await loadLookAroundFallback()
-            })
+            onPlacePhotoLoadFailure: { await handlePlacePhotoFailure() })
     }
 
     private func loadPlacePhoto(for details: PlaceDetails, forceRefresh: Bool) async {
@@ -382,11 +514,12 @@ struct PlaceDetailsView: View {
         defer {
             if !Task.isCancelled { isLoadingPlacePhoto = false }
         }
-        let resolvedPhoto = await PlacePhotoResolver.resolve(for: details, identity: result.placeIdentity,
-                                                             forceRefresh: forceRefresh)
+        let photos = await PlacePhotoResolver.gallery(for: details, identity: result.placeIdentity,
+                                                      forceRefresh: forceRefresh)
         guard !Task.isCancelled else { return }
-        placePhoto = resolvedPhoto
-        if resolvedPhoto == nil {
+        placePhotos = photos
+        placePhoto = photos.first
+        if photos.isEmpty {
             await loadLookAroundFallback(forceRefresh: forceRefresh)
         }
         guard !Task.isCancelled else { return }
@@ -398,22 +531,16 @@ struct PlaceDetailsView: View {
         }
     }
 
-    private func loadBrandLogo(for details: PlaceDetails, forceRefresh: Bool) async {
-        isLoadingPlacePhoto = true
-        defer {
-            if !Task.isCancelled { isLoadingPlacePhoto = false }
-        }
-        let brandLogo = await PlacePhotoResolver.resolveBrandLogo(for: details, identity: result.placeIdentity,
-                                                                   forceRefresh: forceRefresh)
-        guard !Task.isCancelled else { return }
-        placePhoto = brandLogo
-    }
-
     private func loadLookAroundFallback(forceRefresh: Bool = false) async {
-        guard lookAroundPreview == nil, !Task.isCancelled,
-              PlacePhotoResolver.isEligible(category: details?.category)
-                || PlacePhotoResolver.isEligible(category: result.category) else { return }
-        let preview = await PlaceLookAroundProvider.preview(at: result.destination.coordinate)
+        guard lookAroundPreview == nil, !Task.isCancelled else { return }
+        let eligible = PlacePhotoResolver.isEligible(category: details?.category)
+            || PlacePhotoResolver.isEligible(category: result.category)
+        let preview: PlaceLookAroundPreview?
+        if eligible {
+            preview = await PlaceLookAroundProvider.preview(at: result.destination.coordinate)
+        } else {
+            preview = nil
+        }
         guard !Task.isCancelled else { return }
         lookAroundPreview = preview
         guard preview == nil,
@@ -482,6 +609,7 @@ struct PlaceSearchResultRow: View {
     var showsSourceSubtitle = true
     var primaryMetaLine: String? = nil
     var onExpand: (() -> Void)? = nil
+    var showsQuickRouteAction = false
 
     @State private var savedOverride: Bool? = nil
     @State private var favoriteFeedback: FavoriteFeedback? = nil
@@ -547,6 +675,20 @@ struct PlaceSearchResultRow: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityHint(isExpanded ? "Ukryj szczegóły miejsca" : "Pokaż szczegóły miejsca")
+
+                if showsQuickRouteAction {
+                    Button(action: onSelect) {
+                        Image(systemName: isNavigating ? "plus" : "arrow.turn.up.right")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 44, height: 44)
+                            .background(Color.accentColor.opacity(0.12),
+                                        in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(primaryActionTitle): \(result.destination.name)")
+                    .accessibilityHint("Wyznacza trasę bez rozwijania szczegółów miejsca")
+                }
 
                 if !isExpanded {
                     Button(action: toggleFavorite) {

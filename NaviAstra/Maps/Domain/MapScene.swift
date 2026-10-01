@@ -38,4 +38,19 @@ struct MapScene {
     let isBottomSheetDragging: Bool
     let viewportPadding: CameraPadding
     let commands: MapSceneCommands
+    var selectedPlace: SearchResult? = nil
+
+    var placeMarkers: [SearchResult] {
+        let showsOnlyRouteEndpoints = navigationState.destination != nil && navigationState.status != .idle
+        var results = showsOnlyRouteEndpoints ? [] : Array(navigationState.searchResults.prefix(8))
+        if let selectedPlace {
+            let identity = selectedPlace.placeIdentity.cacheKey
+            if let index = results.firstIndex(where: { $0.placeIdentity.cacheKey == identity }) {
+                results[index] = selectedPlace
+            } else {
+                results.append(selectedPlace)
+            }
+        }
+        return results
+    }
 }

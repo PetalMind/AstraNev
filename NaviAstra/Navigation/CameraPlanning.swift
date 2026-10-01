@@ -36,6 +36,38 @@ struct CameraIntent: Equatable {
     var padding: CameraPadding
     var bounds: [Coordinate] = []
     var animationDuration: TimeInterval? = nil
+    /// The user is anchored separately from the route context ahead of them.
+    var followCoordinate: Coordinate? = nil
+    var anchorFraction: Double = 0.66
+
+    func fittingViewport(_ occlusion: CameraPadding, width: Double, height: Double) -> Self {
+        var result = self
+        let horizontalMargin = min(24, max(0, width / 4))
+        result.padding = CameraPadding(
+            top: min(max(0, occlusion.top), max(0, height - 80)),
+            left: min(max(0, occlusion.left), max(0, width / 2 - horizontalMargin)),
+            bottom: min(max(0, occlusion.bottom), max(0, height - 80)),
+            right: min(max(0, occlusion.right), max(0, width / 2 - horizontalMargin)))
+        // Never shrink the sheet's exclusion area to make room for the header.
+        // When panels almost meet, use the actual remaining strip of map.
+        result.padding.top = min(result.padding.top, max(0, height - result.padding.bottom - 24))
+        guard bounds.isEmpty, let followCoordinate else { return result }
+        let availableHeight = max(1, height - result.padding.top - result.padding.bottom)
+        let clearance = min(56, availableHeight / 2)
+        let fraction = min(max(0.5, anchorFraction), max(0.5, 1 - clearance / availableHeight))
+        result.padding.top += availableHeight * (2 * fraction - 1)
+        result.target = followCoordinate
+        // Fit the intended look-ahead into the space above the arrow instead of
+        // moving the arrow below the drawer to show it.
+        let lookAhead = followCoordinate.distance(to: target)
+        if lookAhead > 1 {
+            let forwardPixels = max(1, availableHeight * fraction * 0.75)
+            let metersAtZoomZero = 156_543.03392 * cos(followCoordinate.latitude * .pi / 180)
+            let maximumZoom = log2(max(1, metersAtZoomZero) * forwardPixels / lookAhead)
+            result.zoom = min(zoom, max(10, maximumZoom))
+        }
+        return result
+    }
 }
 
 struct NavigationCameraSmoothingProfile {
@@ -46,6 +78,8 @@ struct NavigationCameraSmoothingProfile {
 
     static let driving = Self(targetResponseTime: 0.30, zoomResponseTime: 0.50,
                               pitchResponseTime: 0.55, bearingResponseTime: 0.25)
+    static let cycling = Self(targetResponseTime: 0.35, zoomResponseTime: 0.75,
+                              pitchResponseTime: 0.75, bearingResponseTime: 0.65)
     static let walking = Self(targetResponseTime: 0.42, zoomResponseTime: 1.10,
                               pitchResponseTime: 0.85, bearingResponseTime: 1.25)
     static let transit = Self(targetResponseTime: 0.50, zoomResponseTime: 1.15,
@@ -95,7 +129,8 @@ struct NavigationCameraIntentSmoother {
             padding: desired.padding,
             bounds: desired.bounds,
             animationDuration: desired.animationDuration ?? animationDuration ??
-                clamp(deltaTime * 1.1, minimum: 0.20, maximum: 0.85))
+                clamp(deltaTime * 1.1, minimum: 0.20, maximum: 0.85),
+            followCoordinate: desired.followCoordinate, anchorFraction: desired.anchorFraction)
         self.previousIntent = smoothed
         self.previousTimestamp = timestamp
         return smoothed
@@ -334,9 +369,8 @@ enum TransitCameraPolicy {
         let nextStopDistance = focusAlightingStop ? distanceToAlightingStop :
             progress.distanceToNextStop ?? nextStop.map { current.distance(to: $0.coordinate) }
         let stopInfluence = nextStopDistance.map { 1 - clamp($0 / 600, minimum: 0, maximum: 1) } ?? 0
-        let isRail = ["RAIL", "TRAIN", "SUBURBAN", "SUBURBAN_RAIL"]
-            .contains(leg.mode.uppercased())
-        let lookAhead = 400 - 250 * stopInfluence
+        let profile = TransitRideCameraProfile(mode: leg.mode)
+        let lookAhead = profile.lookAhead * (1 - 0.65 * stopInfluence)
         let geometry = RouteProgressGeometry(coordinates: leg.coordinates)
         let routeBearing = geometry.bearing(at: progress.legDistance, lookAhead: max(100, lookAhead))
         let vehicle = vehicles
@@ -347,9 +381,9 @@ enum TransitCameraPolicy {
         let routeTarget = geometry.coordinate(at: progress.legDistance + lookAhead) ?? current
         let target = nextStop.map { blend(routeTarget, $0.coordinate, stopInfluence) } ?? routeTarget
 
-        var zoom = isRail ? 12.5 : 16.0
-        var pitch = isRail ? 10.0 : 30.0
-        if isRail {
+        var zoom = profile.zoom
+        var pitch = profile.pitch
+        if profile.isRegionalRail {
             if distanceToAlightingStop <= 3_000 { zoom = 14 }
             if distanceToAlightingStop <= 1_000 { zoom = 15 }
             if distanceToAlightingStop <= 300 { zoom = 16.8; pitch = 15 }
@@ -359,7 +393,7 @@ enum TransitCameraPolicy {
                 if stops <= 2 { zoom += 0.2 }
                 if stops <= 1 { zoom += 0.25 }
             }
-            if distanceToAlightingStop <= 300 { zoom = 16.8; pitch = 20 }
+            if distanceToAlightingStop <= 300 { zoom = 16.8; pitch = min(pitch, 20) }
         }
 
         return TransitCameraPlan(
@@ -492,6 +526,47 @@ final class WalkingCameraController {
 
     private static func normalized(_ value: Double) -> Double {
         (value + 360).truncatingRemainder(dividingBy: 360)
+    }
+}
+
+/// Each public-transport vehicle keeps its own scale and perspective.
+private struct TransitRideCameraProfile {
+    let zoom: Double
+    let pitch: Double
+    let lookAhead: Double
+    let isRegionalRail: Bool
+
+    init(mode: String) {
+        switch mode.uppercased() {
+        case "RAIL", "TRAIN", "REGIONAL_RAIL", "REGIONAL_FAST_RAIL", "LONG_DISTANCE",
+             "NIGHT_RAIL", "HIGHSPEED_RAIL", "SUBURBAN", "SUBURBAN_RAIL":
+            (zoom, pitch, lookAhead, isRegionalRail) = (12.5, 10, 900, true)
+        case "SUBWAY", "METRO":
+            (zoom, pitch, lookAhead, isRegionalRail) = (15.2, 0, 450, false)
+        case "TRAM":
+            (zoom, pitch, lookAhead, isRegionalRail) = (16.3, 22, 250, false)
+        case "FERRY":
+            (zoom, pitch, lookAhead, isRegionalRail) = (13.5, 0, 800, false)
+        case "COACH":
+            (zoom, pitch, lookAhead, isRegionalRail) = (14.8, 25, 650, false)
+        default:
+            (zoom, pitch, lookAhead, isRegionalRail) = (16, 30, 400, false)
+        }
+    }
+}
+
+struct CyclingCameraProfile {
+    let zoom: Double
+    let pitch: Double
+    let lookAhead: Double
+
+    static func plan(speed: Double, maneuverDistance: Double, camera: NavigationCameraState) -> Self {
+        let speed = min(18, max(0, speed))
+        let urgency = 1 - min(1, max(0, maneuverDistance) / max(65, speed * 10))
+        let arriving = camera == .approachingDestination
+        return Self(zoom: arriving ? 18 : min(18.3, 18 - speed * 0.07 + urgency * 0.5),
+                    pitch: arriving ? 15 : max(15, 28 + speed * 0.8 - urgency * 18),
+                    lookAhead: arriving ? 15 : max(15, (25 + speed * 5) * (1 - urgency * 0.65)))
     }
 }
 
@@ -640,6 +715,8 @@ enum CameraPlanner {
                 ? WalkingCameraController.profile(camera: camera, maneuverDistance: maneuverDistance,
                                                   stoppedDuration: walkingCamera?.stoppedDuration ?? 0)
                 : nil
+            let cyclingProfile = transportMode == .bicycle
+                ? CyclingCameraProfile.plan(speed: speed, maneuverDistance: maneuverDistance, camera: camera) : nil
             let speedKPH = speed * 3.6
             let followLookAhead = Self.interpolate(speedKPH, through: [
                 (0, 45), (30, 80), (50, 150), (90, 300), (140, 500)
@@ -648,6 +725,8 @@ enum CameraPlanner {
             let lookAhead: Double
             if let walkingProfile {
                 lookAhead = walkingProfile.lookAhead
+            } else if let cyclingProfile {
+                lookAhead = cyclingProfile.lookAhead
             } else {
                 switch camera {
                 case .approachingDestination: lookAhead = 35
@@ -675,6 +754,8 @@ enum CameraPlanner {
             let zoom: Double
             if let walkingProfile {
                 zoom = walkingProfile.zoom
+            } else if let cyclingProfile {
+                zoom = cyclingProfile.zoom
             } else {
                 let cruisingZoom = Self.interpolate(speedKPH, through: [
                     (0, 17.1), (30, 17.0), (50, 16.6), (70, 16.0),
@@ -705,6 +786,8 @@ enum CameraPlanner {
             let pitch: Double
             if let walkingProfile {
                 pitch = walkingProfile.pitch
+            } else if let cyclingProfile {
+                pitch = cyclingProfile.pitch
             } else {
                 let cruisingPitch = Self.interpolate(speedKPH, through: [
                     (0, 42), (30, 46), (50, 50), (70, 52), (100, 56), (140, 58)
@@ -727,7 +810,9 @@ enum CameraPlanner {
             return CameraIntent(target: target, zoom: zoom, pitch: pitch, bearing: heading,
                                 padding: .navigation,
                                 animationDuration: camera == .startingNavigation
-                                    ? 0.65 : walkingProfile?.animationDuration ?? navigationAnimationDuration)
+                                    ? 0.65 : walkingProfile?.animationDuration ?? navigationAnimationDuration,
+                                followCoordinate: routeProjection?.coordinate ?? position,
+                                anchorFraction: usesWalkingCamera ? 0.58 : (cyclingProfile != nil ? 0.64 : 0.68))
         case .arrived:
             let points = [position, destination?.coordinate].compactMap { $0 }
             let bounds = points.count == 2 && points[0].distance(to: points[1]) >= 100 ? points : []

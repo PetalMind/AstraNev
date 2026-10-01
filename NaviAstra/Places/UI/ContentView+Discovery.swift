@@ -34,24 +34,38 @@ extension ContentView {
                 }
 
                 Divider()
-                Text("Szukaj w pobliżu")
-                    .font(.headline.weight(.semibold))
-                ScrollView(.horizontal) {
-                    HStack(spacing: 8) {
-                        ForEach([NearbyPlaceCategory.fuel, .charging, .parking, .food]) { category in
-                            Button { presentNearby(category) } label: {
-                                Label(category.title, systemImage: category.symbol)
-                                    .font(.subheadline.weight(.medium))
-                                    .padding(.horizontal, 13)
-                                    .frame(minHeight: 44)
-                                    .background(Color.accentColor.opacity(0.08), in: Capsule())
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Szukaj w pobliżu")
+                        .font(.headline.weight(.semibold))
+                    Text("Wybierz kategorię miejsc wokół Ciebie")
+                        .font(.caption)
+                        .foregroundStyle(Color.naviTextSecondary)
+                }
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 8)], spacing: 8) {
+                    ForEach([NearbyPlaceCategory.fuel, .charging, .parking, .food, .parkRide]) { category in
+                        Button { presentNearby(category) } label: {
+                            HStack(spacing: 9) {
+                                Image(systemName: category.symbol)
+                                    .foregroundStyle(Color.naviPOI(category.markerKind))
+                                    .frame(width: 24)
+                                Text(category.title)
+                                    .foregroundStyle(Color.naviTextPrimary)
+                                Spacer(minLength: 0)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(Color.naviTextSecondary)
                             }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(Color.accentColor)
+                            .font(.subheadline.weight(.medium))
+                            .padding(.horizontal, 12)
+                            .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+                            .background(Color.naviPOI(category.markerKind).opacity(0.07),
+                                        in: RoundedRectangle(cornerRadius: 14))
+                            .contentShape(RoundedRectangle(cornerRadius: 14))
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Wyszukaj \(category.title.lowercased()) w pobliżu")
                     }
                 }
-                .scrollIndicators(.visible)
                 .accessibilityLabel("Miejsca w pobliżu")
 
                 HStack(alignment: .firstTextBaseline) {
@@ -330,12 +344,14 @@ extension ContentView {
                         .accessibilityHint(arLaunchReadiness.explanation)
                         .task(id: arLaunchReadinessTaskKey) {
                             arLaunchReadiness = .checking
-                            let readiness = await ARLaunchReadinessChecker.check(
-                                location: navigationStore.state.location,
-                                route: navigationStore.state.route,
-                                progress: navigationStore.state.progress)
-                            guard !Task.isCancelled else { return }
-                            arLaunchReadiness = readiness
+                            while !Task.isCancelled {
+                                arLaunchReadiness = await ARLaunchReadinessChecker.check(
+                                    location: navigationStore.state.location,
+                                    route: navigationStore.state.route,
+                                    progress: navigationStore.state.progress)
+                                // Also expire readiness if GPS stops producing fixes.
+                                do { try await Task.sleep(for: .seconds(5)) } catch { return }
+                            }
                         }
                     }
 #endif

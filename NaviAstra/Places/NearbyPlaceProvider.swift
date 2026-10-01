@@ -14,14 +14,16 @@ enum NearbyPlaceCategory: String, CaseIterable, Identifiable {
         case .parkRide: "Parkingi P+R"
         }
     }
-    var symbol: String {
+    var markerKind: PlacePOIMapMarkerKind {
         switch self {
-        case .fuel: "fuelpump.fill"
-        case .food: "fork.knife"
-        case .parking, .parkRide: "parkingsign.circle.fill"
-        case .charging: "bolt.car.fill"
+        case .fuel: .fuel
+        case .food: .food
+        case .parking: .parking
+        case .charging: .charging
+        case .parkRide: .parkRide
         }
     }
+    var symbol: String { markerKind.symbolName }
     var fallbackName: String {
         switch self {
         case .fuel: "Stacja paliw"
@@ -147,7 +149,7 @@ struct OpenStreetMapNearbyPlaceProvider {
         request.httpBody = components.percentEncodedQuery?.data(using: .utf8)
         let data: Data
         do {
-            let (responseData, response) = try await URLSession.shared.data(for: request)
+            let (responseData, response) = try await RoadRoutingContext.data(for: request)
             guard let http = response as? HTTPURLResponse else { throw NearbyPlaceError.invalidResponse }
             guard (200...299).contains(http.statusCode) else { throw NearbyPlaceError.unavailable }
             data = responseData

@@ -87,7 +87,8 @@ extension ContentView {
             isBottomSheetDragging: isMapBottomSheetDragging,
             viewportPadding: CameraPadding(top: Double(mapHeaderInset), left: 24,
                                            bottom: Double(mapPanelInset), right: 24),
-            commands: commands
+            commands: commands,
+            selectedPlace: placeStore.selectedMapPlaces.count == 1 ? placeStore.selectedMapPlaces.first : nil
         )
     }
 
@@ -128,7 +129,8 @@ extension ContentView {
             }
             .padding(.horizontal, usesFullBleedNavigationPanel ? 16 : 0)
             .onGeometryChange(for: CGFloat.self) {
-                $0.size.height + geometry.safeAreaInsets.top + 20
+                max(0, $0.frame(in: .global).maxY - geometry.frame(in: .global).minY) +
+                    geometry.safeAreaInsets.top + 20
             } action: { mapHeaderInset = $0 }
 
             if let message = navigationStore.state.errorMessage ?? placeStore.errorMessage {
@@ -154,11 +156,11 @@ extension ContentView {
                         .alignmentGuide(.top) { $0[.bottom] + 6 }
                 }
                 .onGeometryChange(for: CGFloat.self) {
-                    $0.size.height + geometry.safeAreaInsets.bottom +
-                        (usesFullBleedNavigationPanel ? 0 : 24)
+                    max(0, geometry.frame(in: .global).maxY - $0.frame(in: .global).minY) +
+                        geometry.safeAreaInsets.bottom + 12
                 } action: { mapPanelInset = $0 }
         }
-        .frame(maxWidth: 560)
+        .frame(width: min(560, max(0, geometry.size.width - (usesFullBleedNavigationPanel ? 0 : 32))))
         .padding(.horizontal, usesFullBleedNavigationPanel ? 0 : 16)
         .padding(.top, 8)
         .padding(.bottom, usesFullBleedNavigationPanel ? -geometry.safeAreaInsets.bottom : 12)
@@ -178,7 +180,7 @@ extension ContentView {
         }
         .onChange(of: isNavigating) { _, navigating in
             if navigating, navigationStore.state.transportMode == .transit {
-                navigationPanelDetent = .expanded
+                navigationPanelDetent = .medium
             } else if !navigating {
                 journeyGuidanceExpanded = false
                 currentStepExpandedOverride = nil
@@ -222,7 +224,7 @@ extension ContentView {
 #if os(iOS)
             if isNavigating {
                 let standardPanelHeight = min(geometry.size.height * 0.88,
-                                              max(220, geometry.size.height - mapHeaderInset - 28))
+                                              max(140, geometry.size.height - mapHeaderInset - 132))
                 let availablePanelHeight = navigationStore.state.transportMode == .transit
                     ? min(standardPanelHeight, max(220, geometry.size.height * 0.68))
                     : standardPanelHeight
@@ -305,9 +307,14 @@ extension ContentView {
     }
 #endif
 
+    @ViewBuilder
     private var mapCanvas: some View {
-        MapLibreView(scene: navigationMapScene)
-            .ignoresSafeArea()
+        if scenePhase == .active {
+            MapLibreView(scene: navigationMapScene)
+                .ignoresSafeArea()
+        } else {
+            Color.clear.ignoresSafeArea()
+        }
     }
 
     @ViewBuilder
@@ -486,6 +493,9 @@ extension ContentView {
             .onChange(of: isNavigating) { _, active in
                 if !active { isARNavigationPresented = false }
             }
+            .onChange(of: navigationStore.state.transportMode) { _, mode in
+                if mode != .walking { isARNavigationPresented = false }
+            }
 #endif
     }
 
@@ -524,23 +534,10 @@ extension ContentView {
 
     private var rootContentWithLifecycle: some View {
         rootContentWithAllSheets
-            .task {
-                navigationStore.onTripFinished = { trip in placeStore.addTrip(trip) }
-                navigationStore.setAppIsForeground(scenePhase == .active)
-                navigationStore.startLocation()
-            }
             .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
                 Task { @MainActor in mapStore.reloadFromDefaults() }
             }
-            .onChange(of: scenePhase) { _, phase in
-                navigationStore.setAppIsForeground(phase == .active)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
-                navigationStore.refreshEnergyPolicy()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: ProcessInfo.thermalStateDidChangeNotification)) { _ in
-                navigationStore.refreshEnergyPolicy()
-            }
+
     }
 
     private var rootContentWithStateObservers: some View {
@@ -551,6 +548,7 @@ extension ContentView {
                 isSavingPlace = false
             }
             .onChange(of: navigationStore.state.location?.coordinate) { _, _ in
+                guard scenePhase == .active else { return }
                 Task { await refreshQuickDestinationETAs() }
             }
             .onChange(of: navigationStore.state.searchMapCenter) { _, center in

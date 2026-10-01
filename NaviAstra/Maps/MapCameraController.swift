@@ -53,6 +53,8 @@ final class MapCameraController {
     }
 
     func cancelNavigationCameraTasks() {
+        transferOverviewTask?.cancel()
+        transferOverviewTask = nil
         routeProjectionTask?.cancel()
         cameraUpdateTask?.cancel()
     }
@@ -128,6 +130,30 @@ final class MapCameraController {
 
         let location = state.cameraLocation ?? state.location
         let routeProjection = precomputedRouteProjection ?? cameraRouteProjection
+        defer {
+            if state.cameraState.usesNavigationPerspective,
+               var intent = state.cameraIntent, intent.bounds.isEmpty {
+                if intent.followCoordinate == nil {
+                    intent.followCoordinate = routeProjection?.coordinate ?? location?.coordinate
+                }
+                switch state.transportMode {
+                case .walking: intent.anchorFraction = 0.58
+                case .bicycle: intent.anchorFraction = 0.64
+                case .car: intent.anchorFraction = 0.68
+                case .transit, .parkRide:
+                    let activeLeg = state.transitProgress.flatMap { progress in
+                        state.route?.journey?.legs.indices.contains(progress.legIndex) == true
+                            ? state.route?.journey?.legs[progress.legIndex] : nil
+                    }
+                    switch activeLeg?.mode.uppercased() {
+                    case "WALK": intent.anchorFraction = 0.58
+                    case "CAR": intent.anchorFraction = 0.68
+                    default: intent.anchorFraction = 0.62
+                    }
+                }
+                state.cameraIntent = intent
+            }
+        }
 
         if let carIntent = carNavigationCameraIntent(
             location: location,
@@ -179,13 +205,13 @@ final class MapCameraController {
             navigationAnimationDuration: navigationAnimationDuration(for: location, routeID: routeID),
             transportMode: state.transportMode,
             walkingCamera: walkingCameraSnapshot)
-        if let intent, state.transportMode == .walking,
+        if let intent, (state.transportMode == .walking || state.transportMode == .bicycle),
            (state.status == .navigating || state.status == .rerouting),
            state.cameraState.usesNavigationPerspective {
             state.cameraIntent = navigationIntentSmoother.update(
                 intent,
                 timestamp: Date().timeIntervalSinceReferenceDate,
-                profile: .walking,
+                profile: state.transportMode == .bicycle ? .cycling : .walking,
                 initialAnimationDuration: state.cameraState == .startingNavigation ? 0.65 : nil,
                 animationDuration: navigationAnimationDuration(for: location, routeID: routeID))
         } else {
@@ -317,7 +343,7 @@ final class MapCameraController {
         let speed = CameraPlanner.usableSpeed(from: location)
         let fixTimestamp = state.location?.timestamp ?? location.timestamp
         let age = max(0, Date().timeIntervalSince(fixTimestamp))
-        let routeDistance = baseDistance + min(15, age) * speed
+        let routeDistance = baseDistance + min(2, age) * speed
         let maneuver = progressIsForRoute ? state.progress?.nextManeuver : nil
         let maneuverDistance = maneuver.map { _ in state.progress?.distanceToNextManeuver ?? 0 }
         let input = NavigationCameraInput(
@@ -440,9 +466,12 @@ final class MapCameraController {
             scheduleFollowAfterManeuver()
         } else if let nextManeuver {
             let distance = state.progress?.distanceToNextManeuver ?? .infinity
-            let maneuverDistanceThreshold = state.transportMode == .walking ? 20.0 : 22.0
-            let approachDistanceThreshold = state.transportMode == .walking
-                ? 120.0 : (nextManeuver.kind.isExit ? 1_600.0 : 300.0)
+            let speed = CameraPlanner.usableSpeed(from: state.cameraLocation ?? state.location)
+            let maneuverDistanceThreshold = state.transportMode == .walking ? 20.0 :
+                (state.transportMode == .bicycle ? max(18, speed * 3) : max(22, speed * 4))
+            let approachDistanceThreshold = state.transportMode == .walking ? 120.0 :
+                (state.transportMode == .bicycle ? max(65, speed * 10) :
+                    (nextManeuver.kind.isExit ? 1_600.0 : max(300, speed * 10)))
             if distance <= maneuverDistanceThreshold {
                 state.cameraState = .maneuverNow
             } else if distance <= approachDistanceThreshold {
@@ -457,9 +486,9 @@ final class MapCameraController {
         if let coordinate = state.cameraLocation?.coordinate ?? state.location?.coordinate {
             refreshTransitVehicles(coordinate)
         }
-        let holdsCamera = (previousState == .maneuverNow && state.cameraState == .maneuverNow) ||
-            (previousState == .leavingManeuver && state.cameraState == .leavingManeuver)
-        if !holdsCamera { updateCameraIntent() }
+        // Keep following through the turn; the smoother stabilizes perspective
+        // without freezing the user's anchor while they continue moving.
+        updateCameraIntent()
     }
 
     func revealRoute() {

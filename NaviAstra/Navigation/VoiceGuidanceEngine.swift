@@ -214,6 +214,13 @@ final class VoiceGuidanceEngine {
         scheduler.enqueue(key: "arrival|\(destinationKey)", text: instruction, priority: .critical)
     }
 
+    func announceFasterRoute(savedSeconds: TimeInterval, routeID: UUID) {
+        guard savedSeconds >= 120 else { return }
+        let minutes = max(2, Int((savedSeconds / 60).rounded()))
+        scheduler.enqueue(key: "faster-route|\(routeID)",
+            text: "Wybrano szybszą trasę. Oszczędzisz około \(minutes) minut.", priority: .navigation)
+    }
+
     func announceReroute(number: Int) {
         scheduler.enqueue(key: "reroute|\(number)", text: "Trasa została przeliczona.", priority: .navigation)
     }

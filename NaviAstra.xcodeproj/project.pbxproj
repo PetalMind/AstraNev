@@ -8,9 +8,17 @@
 
 /* Begin PBXBuildFile section */
 		A10000000000000000000001 /* MapLibre in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000002 /* MapLibre */; };
+		C30000000000000000000001 /* NaviAstraWidgets.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = C30000000000000000000002 /* NaviAstraWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		B4713C1D306D86DB0049D62D /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B4A9D682306335810031037A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C30000000000000000000005;
+			remoteInfo = NaviAstraWidgets;
+		};
 		B4A9D698306335830031037A /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = B4A9D682306335810031037A /* Project object */;
@@ -27,11 +35,24 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		C3000000000000000000000A /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			dstPath = "";
+			dstSubfolder = PlugIns;
+			files = (
+				C30000000000000000000001 /* NaviAstraWidgets.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		A20000000000000000000001 /* NaviAstraMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NaviAstraMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B4A9D68A306335810031037A /* NaviAstra.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NaviAstra.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B4A9D697306335830031037A /* NaviAstraTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NaviAstraTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B4A9D6A1306335830031037A /* NaviAstraUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NaviAstraUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C30000000000000000000002 /* NaviAstraWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; path = NaviAstraWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -48,6 +69,16 @@
 		B4A9D6A4306335830031037A /* NaviAstraUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = NaviAstraUITests;
+			sourceTree = "<group>";
+		};
+		C30000000000000000000003 /* NaviAstraWidgets */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = NaviAstraWidgets;
+			sourceTree = "<group>";
+		};
+		C30000000000000000000004 /* SharedNavigation */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = SharedNavigation;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -74,6 +105,11 @@
 			files = (
 			);
 		};
+		C30000000000000000000008 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -81,6 +117,8 @@
 			isa = PBXGroup;
 			children = (
 				B4A9D68C306335810031037A /* NaviAstra */,
+				C30000000000000000000003 /* NaviAstraWidgets */,
+				C30000000000000000000004 /* SharedNavigation */,
 				B4A9D69A306335830031037A /* NaviAstraTests */,
 				B4A9D6A4306335830031037A /* NaviAstraUITests */,
 				B4A9D68B306335810031037A /* Products */,
@@ -91,6 +129,7 @@
 			isa = PBXGroup;
 			children = (
 				B4A9D68A306335810031037A /* NaviAstra.app */,
+				C30000000000000000000002 /* NaviAstraWidgets.appex */,
 				A20000000000000000000001 /* NaviAstraMac.app */,
 				B4A9D697306335830031037A /* NaviAstraTests.xctest */,
 				B4A9D6A1306335830031037A /* NaviAstraUITests.xctest */,
@@ -126,11 +165,16 @@
 				B4A9D686306335810031037A /* Sources */,
 				B4A9D687306335810031037A /* Frameworks */,
 				B4A9D688306335810031037A /* Resources */,
+				C3000000000000000000000A /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
+			dependencies = (
+				C3000000000000000000000B /* PBXTargetDependency */,
+			);
 			fileSystemSynchronizedGroups = (
 				B4A9D68C306335810031037A /* NaviAstra */,
+				C30000000000000000000004 /* SharedNavigation */,
 			);
 			name = NaviAstra;
 			packageProductDependencies = (
@@ -182,6 +226,25 @@
 			productReference = B4A9D6A1306335830031037A /* NaviAstraUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		C30000000000000000000005 /* NaviAstraWidgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C30000000000000000000006 /* Build configuration list for PBXNativeTarget "NaviAstraWidgets" */;
+			buildPhases = (
+				C30000000000000000000007 /* Sources */,
+				C30000000000000000000008 /* Frameworks */,
+				C30000000000000000000009 /* Resources */,
+			);
+			buildRules = (
+			);
+			fileSystemSynchronizedGroups = (
+				C30000000000000000000003 /* NaviAstraWidgets */,
+				C30000000000000000000004 /* SharedNavigation */,
+			);
+			name = NaviAstraWidgets;
+			productName = NaviAstraWidgets;
+			productReference = C30000000000000000000002 /* NaviAstraWidgets.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -216,12 +279,14 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				A10000000000000000000003 /* XCRemoteSwiftPackageReference "maplibre-gl-native-distribution" */,
+				B4342ADE306EF35600D82EC4 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = B4A9D68B306335810031037A /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				C30000000000000000000005 /* NaviAstraWidgets */,
 				B4A9D689306335810031037A /* NaviAstra */,
 				A20000000000000000000003 /* NaviAstraMac */,
 				B4A9D696306335830031037A /* NaviAstraTests */,
@@ -251,6 +316,11 @@
 			files = (
 			);
 		};
+		C30000000000000000000009 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -274,6 +344,11 @@
 			files = (
 			);
 		};
+		C30000000000000000000007 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -287,6 +362,11 @@
 			target = B4A9D689306335810031037A /* NaviAstra */;
 			targetProxy = B4A9D6A2306335830031037A /* PBXContainerItemProxy */;
 		};
+		C3000000000000000000000B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C30000000000000000000005 /* NaviAstraWidgets */;
+			targetProxy = B4713C1D306D86DB0049D62D /* PBXContainerItemProxy */;
+		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
@@ -297,7 +377,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = NaviAstraMac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 6V7PKF27ZR;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -310,8 +390,8 @@
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Mikrofon służy do zamiany mowy na tekst wyszukiwanej frazy.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Rozpoznawanie mowy zamienia wypowiedzianą frazę na tekst wyszukiwania.";
 				MACOSX_DEPLOYMENT_TARGET = 26.6;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = STDMSolution.NaviAstraMac;
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = Blackmaks.NaviAstras.pl.mac;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
 				SUPPORTED_PLATFORMS = macosx;
@@ -327,7 +407,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = NaviAstraMac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 6V7PKF27ZR;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -340,8 +420,8 @@
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Mikrofon służy do zamiany mowy na tekst wyszukiwanej frazy.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Rozpoznawanie mowy zamienia wypowiedzianą frazę na tekst wyszukiwania.";
 				MACOSX_DEPLOYMENT_TARGET = 26.6;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = STDMSolution.NaviAstraMac;
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = Blackmaks.NaviAstras.pl.mac;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
 				SUPPORTED_PLATFORMS = macosx;
@@ -472,7 +552,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 6V7PKF27ZR;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -480,7 +560,7 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Config/NaviAstra-iOS-Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = NaviAstra;
+				INFOPLIST_KEY_CFBundleDisplayName = NaviAstras;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Kamera wyświetla strzałki na żywo podczas pieszej nawigacji AR.";
 				INFOPLIST_KEY_NSContactsUsageDescription = "Kontakty pomagają wyszukiwać zapisane adresy jako cele nawigacji.";
@@ -488,6 +568,7 @@
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Pozycja jest potrzebna do wyznaczania trasy i prowadzenia nawigacji.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Mikrofon służy do zamiany mowy na tekst wyszukiwanej frazy.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Rozpoznawanie mowy zamienia wypowiedzianą frazę na tekst wyszukiwania.";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -503,8 +584,8 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = Blackmaks.NaviAstra;
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = Blackmaks.NaviAstras.pl;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
@@ -526,7 +607,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 6V7PKF27ZR;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -534,7 +615,7 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Config/NaviAstra-iOS-Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = NaviAstra;
+				INFOPLIST_KEY_CFBundleDisplayName = NaviAstras;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Kamera wyświetla strzałki na żywo podczas pieszej nawigacji AR.";
 				INFOPLIST_KEY_NSContactsUsageDescription = "Kontakty pomagają wyszukiwać zapisane adresy jako cele nawigacji.";
@@ -542,6 +623,7 @@
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Pozycja jest potrzebna do wyznaczania trasy i prowadzenia nawigacji.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Mikrofon służy do zamiany mowy na tekst wyszukiwanej frazy.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Rozpoznawanie mowy zamienia wypowiedzianą frazę na tekst wyszukiwania.";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -557,8 +639,8 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = Blackmaks.NaviAstra;
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = Blackmaks.NaviAstras.pl;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
@@ -579,12 +661,12 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 9WUX6TU729;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = STDMSolution.NaviAstraTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -605,12 +687,12 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 9WUX6TU729;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = STDMSolution.NaviAstraTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -630,12 +712,12 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 9WUX6TU729;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = STDMSolution.NaviAstraUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -655,12 +737,12 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 9WUX6TU729;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = STDMSolution.NaviAstraUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -673,6 +755,60 @@
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_TARGET_NAME = NaviAstra;
 				XROS_DEPLOYMENT_TARGET = 27.0;
+			};
+			name = Release;
+		};
+		C3000000000000000000000C /* Debug configuration for PBXNativeTarget "NaviAstraWidgets" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = 6V7PKF27ZR;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Config/NaviAstraWidgets-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = NaviAstra;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = Blackmaks.NaviAstras.pl.NavigationWidgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		C3000000000000000000000D /* Release configuration for PBXNativeTarget "NaviAstraWidgets" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = 6V7PKF27ZR;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Config/NaviAstraWidgets-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = NaviAstra;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = Blackmaks.NaviAstras.pl.NavigationWidgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -719,6 +855,14 @@
 			);
 			defaultConfigurationName = Release;
 		};
+		C30000000000000000000006 /* Build configuration list for PBXNativeTarget "NaviAstraWidgets" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C3000000000000000000000C /* Debug configuration for PBXNativeTarget "NaviAstraWidgets" */,
+				C3000000000000000000000D /* Release configuration for PBXNativeTarget "NaviAstraWidgets" */,
+			);
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -728,6 +872,14 @@
 			requirement = {
 				kind = exactVersion;
 				version = 6.29.0;
+			};
+		};
+		B4342ADE306EF35600D82EC4 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/firebase/firebase-ios-sdk";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 12.19.2;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */

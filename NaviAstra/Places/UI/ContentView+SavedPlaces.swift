@@ -109,7 +109,7 @@ extension ContentView {
                     }
                     Spacer(minLength: 8)
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text(quickETAEstimates[place.id.uuidString].map { "\($0.minutes) min" } ?? "— min")
+                        Text(quickETAEstimates[place.id.uuidString].map { TravelDurationFormatter.string(minutes: $0.minutes) } ?? "— min")
                         Text(quickETAKilometers(quickETAEstimates[place.id.uuidString]?.distanceMeters))
                             .font(.caption2)
                             .foregroundStyle(Color.naviTextSecondary)
@@ -153,93 +153,14 @@ extension ContentView {
     }
 
     var historySheet: some View {
-        NavigationStack {
-            List {
-                if placeStore.trips.isEmpty && placeStore.searches.isEmpty {
-                    ContentUnavailableView("Brak zakończonych podróży",
-                                           systemImage: "clock.arrow.circlepath",
-                                           description: Text("Wyszukane miejsca i zakończone podróże pojawią się tutaj."))
-                }
-
-                if !placeStore.searches.isEmpty {
-                    Section("Ostatnie wyszukiwania") {
-                        ForEach(placeStore.searches) { item in
-                            let isSaved = isFavoriteDestination(item.destination)
-                            HStack(spacing: 10) {
-                                Button {
-                                    appRouter.dismiss(.history)
-                                    Task { await navigationStore.previewNewTrip(item.destination) }
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(item.destination.name).foregroundStyle(Color.naviTextPrimary)
-                                        Text(item.searchedAt.formatted(date: .abbreviated, time: .shortened))
-                                            .font(.caption).foregroundStyle(Color.naviTextSecondary)
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                                .buttonStyle(.plain)
-                                Button(isSaved ? "Zapisano w Ulubionych" : "Zapisz do ulubionych",
-                                       systemImage: isSaved ? "checkmark" : "heart") {
-                                    if !isSaved { addFavoriteWithFeedback(item.destination) }
-                                }
-                                .labelStyle(.iconOnly)
-                                .disabled(isSaved)
-                                Button("Usuń wyszukiwanie", systemImage: "trash", role: .destructive) {
-                                    placeStore.removeSearch(item.id)
-                                }
-                                .labelStyle(.iconOnly)
-                            }
-                        }
-                    }
-                }
-
-                if !placeStore.trips.isEmpty {
-                    Section("Przebyte trasy") {
-                        ForEach(placeStore.trips) { trip in
-                            let isSaved = isFavoriteDestination(trip.destination)
-                            HStack(spacing: 10) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(trip.destination.name).font(.headline)
-                                    Text(trip.startedAt.formatted(date: .abbreviated, time: .shortened))
-                                        .foregroundStyle(Color.naviTextSecondary)
-                                    Text("\(distance(trip.distanceMeters)) · \(time(trip.duration)) · średnio \(Int(trip.averageSpeedKph.rounded())) km/h")
-                                        .font(.caption)
-                                    if let score = trip.drivingScore {
-                                        Text("Driving Score \(score.score)/100 · \(score.headline)")
-                                            .font(.caption.weight(.semibold))
-                                    }
-                                    Text("\(trip.arrived ? "Dojechano" : "Przerwano") · postoje \(timeAllowingZero(trip.stoppedSeconds)) · przeliczenia \(trip.rerouteCount)")
-                                        .font(.caption).foregroundStyle(Color.naviTextSecondary)
-                                }
-                                Spacer(minLength: 4)
-                                Button("Wyznacz tę trasę ponownie", systemImage: "arrow.triangle.turn.up.right.diamond") {
-                                    replayTrip(trip)
-                                }
-                                .labelStyle(.iconOnly)
-                                Button(isSaved ? "Zapisano w Ulubionych" : "Zapisz cel do ulubionych",
-                                       systemImage: isSaved ? "checkmark" : "heart") {
-                                    if !isSaved { addFavoriteWithFeedback(trip.destination) }
-                                }
-                                .labelStyle(.iconOnly)
-                                .disabled(isSaved)
-                                Button("Usuń podróż", systemImage: "trash", role: .destructive) {
-                                    placeStore.removeTrip(trip.id)
-                                }
-                                .labelStyle(.iconOnly)
-                            }
-                            .padding(.vertical, 5)
-                        }
-                    }
-                }
-            }
-            .listStyle(.plain)
-            .navigationTitle("Historia podróży")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Zamknij") { appRouter.dismiss(.history) }
-                }
-            }
-        }
+        RouteHistoryView(store: placeStore, onPlanTrip: replayTrip, onSearch: { destination in
+            appRouter.dismiss(.history)
+            Task { await navigationStore.previewNewTrip(destination) }
+        }, onFavorite: { destination in
+            addFavoriteWithFeedback(destination)
+        }, onClose: {
+            appRouter.dismiss(.history)
+        })
         .overlay(alignment: .top) {
             FavoriteFeedbackOverlay(feedback: $favoriteFeedback)
                 .padding(.top, 48)

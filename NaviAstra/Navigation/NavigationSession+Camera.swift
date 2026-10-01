@@ -6,6 +6,9 @@ extension NavigationSession {
     }
 
     func returnToFollow() {
+        if state.status != .navigating && state.status != .rerouting {
+            locationManager.requestCurrentLocation()
+        }
         mapCameraController.returnToFollow()
     }
 
@@ -18,10 +21,12 @@ extension NavigationSession {
     }
 
     func updateCameraIntent(using precomputedRouteProjection: RouteProjection? = nil) {
+        guard appIsForeground else { return }
         mapCameraController.updateCameraIntent(using: precomputedRouteProjection)
     }
 
     func prepareNavigationCamera(for route: NavigationRoute) {
+        guard appIsForeground else { return }
         mapCameraController.prepareNavigationCamera(for: route) { [weak self] routeID, projection, timestamp in
             self?.previousRouteMatch = (routeID, projection, timestamp)
             self?.updateCameraIntent(using: projection)
@@ -29,10 +34,12 @@ extension NavigationSession {
     }
 
     func updateNavigationCameraState(force: Bool = false) {
+        guard appIsForeground else { return }
         mapCameraController.updateNavigationCameraState(force: force)
     }
 
     func revealRoute() {
+        guard appIsForeground else { return }
         mapCameraController.revealRoute()
     }
 }

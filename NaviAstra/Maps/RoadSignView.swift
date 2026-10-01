@@ -13,6 +13,7 @@ enum RoadSignSymbol: Equatable {
     case zone(isEnd: Bool, speedLimit: Int?, label: String)
     case railwayCrossing
     case railwayCrossbuck
+    case trafficSignal
     case unknown(String?)
 
     init(_ alert: RoadSafetyAlert) {
@@ -49,6 +50,7 @@ enum RoadSignSymbol: Equatable {
     var displaySize: CGFloat {
         switch self {
         case .stop: 27
+        case .trafficSignal: 28
         case .speedLimit, .speedLimitEnd, .noEntry, .giveWay, .railwayCrossing, .railwayCrossbuck: 25
         default: 24
         }
@@ -230,6 +232,22 @@ struct RoadSignView: View {
                 crossbuckBar.rotationEffect(.degrees(45))
                 crossbuckBar.rotationEffect(.degrees(-45))
             }
+        case .trafficSignal:
+            // A location pictogram, not the signal's live phase.
+            VStack(spacing: size * 0.055) {
+                signalLens(Color(red: 0.95, green: 0.24, blue: 0.22))
+                signalLens(Color(red: 1, green: 0.73, blue: 0.16))
+                signalLens(Color(red: 0.22, green: 0.78, blue: 0.43))
+            }
+            .frame(width: size * 0.48, height: size)
+            .background {
+                RoundedRectangle(cornerRadius: size * 0.12)
+                    .fill(Color(white: 0.10))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: size * 0.12)
+                            .strokeBorder(Color.white.opacity(0.9), lineWidth: 1.2)
+                    }
+            }
         case let .unknown(code):
             ZStack {
                 RoundedRectangle(cornerRadius: size * 0.12)
@@ -244,6 +262,13 @@ struct RoadSignView: View {
                     .padding(2)
             }
         }
+    }
+
+    private func signalLens(_ color: Color) -> some View {
+        Circle()
+            .fill(color)
+            .overlay(Circle().strokeBorder(.black.opacity(0.35), lineWidth: 0.7))
+            .frame(width: size * 0.24, height: size * 0.24)
     }
 
     private var crossbuckBar: some View {

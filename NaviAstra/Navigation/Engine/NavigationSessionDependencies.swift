@@ -22,7 +22,7 @@ struct NavigationSessionDependencies {
             transitProvider: routing.transitProvider,
             transitDataProvider: transitDataProvider ?? LocalTransitDataProvider(),
             speedLimitProvider: routing.speedLimitProvider,
-            roadDataProvider: OpenStreetMapRoadDataProvider(),
+            roadDataProvider: CombinedRoadDataProvider(),
             trafficProvider: trafficProvider,
             trafficProviderFactory: .tomTom,
             voiceGuidance: VoiceGuidanceEngine())

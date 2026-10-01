@@ -78,31 +78,38 @@ final class NavigationCameraEngine {
 
         let baseLookAhead = clamp(65 + speed * 6, minimum: 65, maximum: 320)
         let proximityForLookAhead = proximity(distance: maneuverDistance, range: 350)
-        let lookAhead = baseLookAhead * (1 - 0.5 * proximityForLookAhead * complexity)
+        let lookAhead = input.cameraState == .approachingDestination ? 20 :
+            baseLookAhead * (1 - 0.5 * proximityForLookAhead * complexity)
         let center = routeGeometry.coordinate(at: input.routeDistance + lookAhead)
             ?? input.matchedCoordinate
 
         let bearingLookAhead = clamp(30 + speed * 2.5, minimum: 30, maximum: 120)
         let routeBearing = routeGeometry.bearing(at: input.routeDistance, lookAhead: bearingLookAhead)
-        let desiredBearing = routeBearing ?? input.course ?? smoother.bearing ?? 0
+        let desiredBearing = speed < 0.8 || input.cameraState == .weakGPS
+            ? smoother.bearing ?? routeBearing ?? input.course ?? 0
+            : routeBearing ?? input.course ?? smoother.bearing ?? 0
 
         let speedZoom = interpolate(speedKPH, through: [
             (0, 18.0), (20, 17.6), (40, 17.1), (60, 16.6),
             (90, 16.0), (120, 15.55), (150, 15.2)
         ])
         let zoomBoost = proximity(distance: maneuverDistance, range: 300) * complexity * 0.9
-        let zoom = clamp(speedZoom + zoomBoost, minimum: 14.8, maximum: 18.2)
+        let zoom = input.cameraState == .approachingDestination ? 18 :
+            clamp(speedZoom + zoomBoost - (input.cameraState == .weakGPS ? 0.4 : 0),
+                  minimum: 14.8, maximum: 18.2)
 
         let speedPitch = interpolate(speedKPH, through: [
             (0, 35), (20, 40), (40, 46), (60, 50),
             (90, 54), (120, 56), (150, 58)
         ])
         let pitchReduction = proximity(distance: maneuverDistance, range: 250) * complexity * 14
-        let pitch = clamp(speedPitch - pitchReduction, minimum: 35, maximum: 58)
+        let pitch = input.cameraState == .approachingDestination ? 20 :
+            clamp(speedPitch - pitchReduction, minimum: 28, maximum: 58)
 
         let timestamp = input.timestamp.isFinite ? input.timestamp : Date().timeIntervalSinceReferenceDate
         let desired = CameraIntent(target: center, zoom: zoom, pitch: pitch,
-                                   bearing: desiredBearing, padding: input.viewportPadding)
+                                   bearing: desiredBearing, padding: input.viewportPadding,
+                                   followCoordinate: input.matchedCoordinate)
         let state = smoother.update(
             desired,
             timestamp: timestamp,

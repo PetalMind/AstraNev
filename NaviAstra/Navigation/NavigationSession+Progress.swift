@@ -38,6 +38,7 @@ extension NavigationSession {
     }
 
     func updateProgress(reuseJourneyMatch: Bool = false) {
+        defer { updateLiveActivity() }
         let journeyProgress = updateJourneyVoiceProgress(reuseExistingMatch: reuseJourneyMatch)
         if state.transportMode == .transit,
            let route = state.route, let journey = route.journey {
@@ -80,7 +81,8 @@ extension NavigationSession {
             let destinationCoordinate = state.destination.map { destinationRouteCoordinate(for: $0) }
                 ?? route.coordinates.last
             if isActive, let destinationCoordinate, let location = state.location,
-               location.coordinate.distance(to: destinationCoordinate) <= 45 {
+               arrivalDetector.observe(location, destinationDistance: location.coordinate.distance(to: destinationCoordinate),
+                                       remainingDistance: state.progress?.remainingDistance ?? .infinity) {
                 arriveAtDestination()
                 return
             }
@@ -120,36 +122,19 @@ extension NavigationSession {
         let maneuverDistance = measurement.distanceToNextManeuver
         let remainingDistance = route.distance * (1 - fraction)
         let plannedDrivingTime = max(0, route.expectedTravelTime - route.chargingDuration)
-        var drivingTimeRemaining = plannedDrivingTime * (1 - fraction)
+        var paceMultiplier = 1.0
         if let session = tripSession, session.movingSeconds >= 45, session.distanceMeters > 25,
            plannedDrivingTime > 0 {
             let plannedSpeed = route.distance / plannedDrivingTime
             let observedSpeed = session.distanceMeters / session.movingSeconds
             let paceFactor = max(0.65, min(1.8, plannedSpeed / max(1, observedSpeed)))
-            drivingTimeRemaining *= 1 + (paceFactor - 1) * 0.55
+            paceMultiplier = 1 + (paceFactor - 1) * 0.55
         }
-        if let flow = state.traffic?.flow, flow.coordinates.count > 1,
-           let flowProjection = MapMatcher.project(location.coordinate, onto: flow.coordinates),
-           flowProjection.distanceFromRoute < 80,
-           let flowRange = flowDistanceRange(on: route, flow: flow) {
-            let remainingFlowDistance = max(0, min(geometryLength, flowRange.end) -
-                                            max(projection.alongRoute, flowRange.start))
-            if remainingFlowDistance > 0 {
-                let currentSpeed = max(5, Double(flow.currentSpeedKph)) / 3.6
-                let freeFlowSpeed = Double(max(1, flow.freeFlowSpeedKph)) / 3.6
-                drivingTimeRemaining += max(0, remainingFlowDistance / currentSpeed -
-                                            remainingFlowDistance / freeFlowSpeed)
-            }
-        }
-        let chargingDistances = chargingStopDistances(on: route)
-        let chargingTimeRemaining = route.chargingStops.enumerated().reduce(0.0) { total, item in
-            guard chargingDistances.indices.contains(item.offset),
-                  let chargeDistance = chargingDistances[item.offset],
-                  chargeDistance > projection.alongRoute + 40 else { return total }
-            return total + item.element.estimatedChargingTime
-        }
-        let remainingTime = drivingTimeRemaining + chargingTimeRemaining
-            + upcomingTrafficDelay(on: route, after: projection.alongRoute)
+        let estimate = RoadRouteETA.estimate(route, from: projection.alongRoute,
+                                            traffic: state.traffic, paceMultiplier: paceMultiplier)
+        // A closure triggers rerouting separately; retain a finite display while it is calculated.
+        let remainingTime = estimate.isFinite ? estimate : RoadRouteETA.estimate(
+            route, from: projection.alongRoute, traffic: nil, paceMultiplier: paceMultiplier)
         state.progress = RouteProgress(traveledDistance: route.distance * fraction,
                                        remainingDistance: remainingDistance,
                                        remainingTime: max(0, remainingTime),
@@ -158,14 +143,15 @@ extension NavigationSession {
                                        geometryRouteID: route.id)
         state.estimatedArrival = Date().addingTimeInterval(max(0, remainingTime))
         guard state.status == .navigating || state.status == .rerouting else { return }
+        guard abs(location.timestamp.timeIntervalSinceNow) <= 10 else {
+            arrivalDetector.reset()
+            return
+        }
         guard let targetCoordinate = state.destination.map({ destinationRouteCoordinate(for: $0) })
                 ?? route.coordinates.last else { return }
         let destinationDistance = location.coordinate.distance(to: targetCoordinate)
-        if usesJourneyVoiceGuidance, destinationDistance <= 45 {
-            arriveAtDestination()
-            return
-        } else if location.speed >= 0, location.speed < 2,
-                  state.progress!.remainingDistance < 35, destinationDistance < 50 {
+        if arrivalDetector.observe(location, destinationDistance: destinationDistance,
+                                   remainingDistance: state.progress?.remainingDistance ?? .infinity) {
             arriveAtDestination()
             return
         }
@@ -265,6 +251,16 @@ extension NavigationSession {
     }
 
     func arriveAtDestination() {
+        guard state.status == .navigating || state.status == .rerouting else { return }
+        arrivalDetector.reset()
+        rerouteController.stop()
+        requestGeneration += 1
+        invalidateTraffic()
+        navigationTransitionTask?.cancel()
+        mapCameraController.cancelNavigationCameraTasks()
+        mapCameraController.cancelManeuverTransition()
+        liveActivity.end()
+        state.arrivalLocation = state.location
         state.status = .arrived
         refreshEnergyPolicy()
         state.cameraState = .arrived

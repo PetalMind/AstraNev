@@ -98,6 +98,7 @@ struct NavigationRoute: Identifiable, Sendable {
     var journey: Journey?
     var chargingDuration: TimeInterval = 0
     var chargingStops: [EVChargingStop] = []
+    var travelSegments: [RouteTravelSegment] = []
 }
 
 struct EVChargingStop: Identifiable, Sendable {
@@ -110,7 +111,7 @@ struct EVChargingStop: Identifiable, Sendable {
     let publicAccess: Bool?
 }
 
-enum TransportMode: String, CaseIterable, Identifiable, Sendable {
+enum TransportMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case car, walking, bicycle, transit, parkRide
 
     static var configuredDefault: Self {
@@ -257,4 +258,95 @@ protocol AdvancedRouteProvider: RouteProvider {
                          preferences: RoutingPreferences, avoiding: [Coordinate]) async throws -> [NavigationRoute]
     func optimizedWaypointOrder(from: Coordinate, to: Coordinate, waypoints: [Destination], mode: TransportMode,
                                 preferences: RoutingPreferences) async throws -> [Int]
+}
+
+/// Times supplied by the routing engine, attached to their actual geometry intervals.
+nonisolated struct RouteTravelSegment: Sendable {
+    let startDistance: Double
+    let endDistance: Double
+    let duration: TimeInterval
+}
+
+nonisolated enum RoadRoutingContext {
+    @TaskLocal static var cancellationToken: TransitPlanningCancellationToken?
+    @TaskLocal static var heading: Double?
+
+    static func checkCancellation() throws {
+        try Task.checkCancellation()
+        try cancellationToken?.checkCancellation()
+    }
+
+    static func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        try checkCancellation()
+        let task = Task { try await URLSession.shared.data(for: request) }
+        let token = cancellationToken
+        let handler = token?.addCancellationHandler { task.cancel() }
+        defer { if let handler { token?.removeCancellationHandler(handler) } }
+        return try await withTaskCancellationHandler {
+            let result = try await task.value
+            try checkCancellation()
+            return result
+        } onCancel: { task.cancel() }
+    }
+}
+
+/// Bounded multi-label search over charging stations ordered along each base route.
+/// Reachability uses the same 20 percent range margin as final route validation.
+enum EVStopPlanner {
+    struct Label { let indices: [Int]; let cost: Double }
+
+    static func plans(chargers: [NearbyPlaceCandidate], routeLength: Double,
+                      initialRange: Double, fullRange: Double, consumption: Double,
+                      maximumPower: Double) -> [[NearbyPlaceCandidate]] {
+        var labels = Array(repeating: [Label](), count: chargers.count)
+        var completed: [Label] = []
+        for index in chargers.indices {
+            let station = chargers[index]
+            let position = station.distanceFromRoute
+            var options: [Label] = []
+            if position + station.distanceToRoute <= initialRange * 0.8 {
+                options.append(Label(indices: [index], cost: station.distanceToRoute / 8 + 300))
+            }
+            for previous in 0..<index {
+                let distance = position - chargers[previous].distanceFromRoute +
+                    chargers[previous].distanceToRoute + station.distanceToRoute
+                guard distance > 0, distance <= fullRange * 0.8 else { continue }
+                let power = min(maximumPower, chargers[previous].chargingStation?.maximumPowerKW ?? 0)
+                guard power > 0 else { continue }
+                let charging = distance / 100_000 * consumption / (power * 0.7) * 3_600
+                for label in labels[previous] where label.indices.count < 10 {
+                    options.append(Label(indices: label.indices + [index],
+                                         cost: label.cost + charging + station.distanceToRoute / 8 + 300))
+                }
+            }
+            labels[index] = Array(options.sorted { $0.cost < $1.cost }.prefix(3))
+            let finalDistance = routeLength - position + station.distanceToRoute
+            if finalDistance >= 0, finalDistance <= fullRange * 0.8 {
+                let power = min(maximumPower, station.chargingStation?.maximumPowerKW ?? 0)
+                if power > 0 {
+                    completed += labels[index].map {
+                        Label(indices: $0.indices, cost: $0.cost +
+                            finalDistance / 100_000 * consumption / (power * 0.7) * 3_600)
+                    }
+                }
+            }
+        }
+        return completed.sorted { $0.cost < $1.cost }.prefix(3).map { label in
+            label.indices.map { chargers[$0] }
+        }
+    }
+
+    nonisolated static func chargingTime(from initialSOC: Double, to targetSOC: Double,
+                                        batteryKWh: Double, power: Double) -> TimeInterval {
+        guard power > 0, batteryKWh > 0 else { return .infinity }
+        let start = max(0, min(1, initialSOC))
+        let end = max(start, min(1, targetSOC))
+        guard end > start else { return 0 }
+        var time = 5.0 * 60 // Parking, connection and departure; queue time remains unknown.
+        for (lower, upper, factor) in [(0.0, 0.6, 0.85), (0.6, 0.8, 0.65), (0.8, 1.0, 0.35)] {
+            let fraction = max(0, min(end, upper) - max(start, lower))
+            time += fraction * batteryKWh / (power * factor) * 3_600
+        }
+        return time
+    }
 }

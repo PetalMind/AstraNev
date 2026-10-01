@@ -225,7 +225,7 @@ struct TrafficMapPresentation {
     init(_ poi: MapRoadPOI) {
         symbolName = poi.category.symbolName
         markerText = nil
-        roadSign = nil
+        roadSign = poi.category == .trafficSignals ? .trafficSignal : nil
         isDirectionUncertain = false
         colorHex = poi.category.colorHex
         priority = 1

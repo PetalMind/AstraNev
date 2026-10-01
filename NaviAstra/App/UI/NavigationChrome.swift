@@ -15,8 +15,8 @@ struct NavigationGlassSurface: ViewModifier {
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         let tint = colorScheme == .dark
-            ? Color(naviHex: NaviAstraColorPalette.navigationSurface).opacity(0.8)
-            : Color.white.opacity(0.88)
+            ? Color(naviHex: NaviAstraColorPalette.navigationSurface).opacity(0.32)
+            : Color.white.opacity(0.26)
         if reduceTransparency || contrast == .increased {
             content
                 .background(colorScheme == .dark
@@ -52,15 +52,35 @@ struct NavigationStableSurface: ViewModifier {
     }
 }
 
-/// Stable dark HUD surface for active navigation and arrival.
+/// Match the panel surface to the same appearance as its semantic text colors.
 struct NavigationGlassPanelSurface: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.colorScheme) private var colorScheme
     let shape: UnevenRoundedRectangle
 
+    @ViewBuilder
     func body(content: Content) -> some View {
-        content
-            .background(Color(naviHex: NaviAstraColorPalette.navigationSurface), in: shape)
-            .overlay(shape.strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
-            .shadow(color: .black.opacity(0.28), radius: 22, y: -8)
+        let tint = Color(naviHex: colorScheme == .dark
+            ? NaviAstraColorPalette.navigationSurface : NaviAstraColorPalette.surfaceDay)
+        if reduceTransparency || contrast == .increased {
+            content
+                .background(tint, in: shape)
+                .overlay(shape.strokeBorder(Color.primary.opacity(0.24), lineWidth: 1))
+        } else if #available(iOS 26.0, macOS 26.0, *) {
+            content
+                .glassEffect(.regular.tint(tint.opacity(0.72)), in: shape)
+                .overlay(shape.strokeBorder(Color.primary.opacity(0.16), lineWidth: 1))
+                .shadow(color: .black.opacity(0.2), radius: 22, y: -8)
+        } else {
+            content
+                .background {
+                    shape.fill(.regularMaterial)
+                        .overlay(shape.fill(tint.opacity(0.72)))
+                }
+                .overlay(shape.strokeBorder(Color.primary.opacity(0.16), lineWidth: 1))
+                .shadow(color: .black.opacity(0.2), radius: 22, y: -8)
+        }
     }
 }
 
@@ -184,7 +204,6 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
         if appearance == .navigation {
             sheetBody
                 .modifier(NavigationGlassPanelSurface(shape: sheetShape))
-                .environment(\.colorScheme, .dark)
         } else {
             sheetBody.modifier(NavigationGlassSurface(radius: cornerRadius))
         }
@@ -235,7 +254,7 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
         ZStack {
             Button(action: advanceDetent) {
                 Capsule()
-                    .fill(Color.white.opacity(0.55 + 0.25 * min(1, abs(height - restingHeight) / 30)))
+                    .fill(Color.naviTextSecondary.opacity(0.7 + 0.25 * min(1, abs(height - restingHeight) / 30)))
                     .frame(width: 38, height: 5)
                     .scaleEffect(x: isDragging ? 1.06 : 1, y: 1, anchor: .center)
                     .frame(width: 60, height: 44)
@@ -256,9 +275,7 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
                     Button(action: onClose) {
                         Image(systemName: "xmark")
                             .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(appearance == .navigation
-                                             ? Color.white.opacity(0.72)
-                                             : Color.naviTextSecondary)
+                            .foregroundStyle(Color.naviTextSecondary)
                             .frame(width: 44, height: 44)
                             .background(Color.primary.opacity(0.06), in: Circle())
                             .contentShape(Circle())
@@ -268,9 +285,7 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
                 } else if !hidesExpandedChevron || selectedIndex < detentHeights.count - 1 {
                     Image(systemName: selectedIndex == detentHeights.count - 1 ? "chevron.down" : "chevron.up")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(appearance == .navigation
-                                         ? Color.white.opacity(0.48)
-                                         : Color.secondary.opacity(0.5))
+                        .foregroundStyle(Color.naviTextSecondary)
                         .frame(width: 40, height: 40)
                         .accessibilityHidden(true)
                 }

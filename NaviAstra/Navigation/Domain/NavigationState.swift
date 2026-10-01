@@ -6,6 +6,7 @@ final class NavigationState {
     var searchMapCenter: Coordinate?
     var routeOriginMapSelectionActive = false
     var searchResults: [SearchResult] = []
+    var arrivalLocation: NavigationLocation?
     var location: NavigationLocation?
     var cameraLocation: NavigationLocation?
     var deviceHeading: Double?
@@ -73,6 +74,12 @@ final class NavigationState {
     var speedLimitMessage: String?
     var roadSafetyAlerts: [RoadSafetyAlert] = []
     var roadSafetyStatus: RoadSafetyStatus = .idle
+    // Alert positions are measured on the polyline, independently of provider route distance.
+    var roadAlertRouteDistance: Double {
+        guard status == .navigating || status == .rerouting,
+              let route, let routeMatch, routeMatch.routeID == route.id else { return 0 }
+        return routeMatch.match.projection.alongRoute
+    }
     var traffic: TrafficSnapshot?
     var trafficStatus: TrafficStatus = .notConfigured
     var trafficLightTileURLTemplate: String?

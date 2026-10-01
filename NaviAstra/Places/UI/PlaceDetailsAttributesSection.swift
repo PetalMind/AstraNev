@@ -3,6 +3,7 @@ import SwiftUI
 
 struct PlaceDetailsAttributesSection: View {
     let details: PlaceDetails
+    var isLoading = false
     @Binding var showHours: Bool
 
     var body: some View {
@@ -10,7 +11,7 @@ struct PlaceDetailsAttributesSection: View {
             if details.category != nil || hasBrand || details.address?.isEmpty == false {
                 detailGroup("Miejsce") {
                     if let category = details.category {
-                        Label(categoryTitle(category), systemImage: "tag")
+                        Label(PlaceCategoryPresentation.title(category), systemImage: "tag")
                             .font(.caption)
                             .foregroundStyle(Color.naviTextSecondary)
                     }
@@ -35,6 +36,14 @@ struct PlaceDetailsAttributesSection: View {
                         countryCode: details.countryCode,
                         timeZoneIdentifier: details.timeZoneIdentifier,
                         isExpanded: $showHours)
+                }
+            }
+
+            if !isLoading, details.openingHours == nil, details.osmParking?.openingHours == nil {
+                detailGroup("Godziny") {
+                    Label("Godziny otwarcia niedostępne", systemImage: "clock.badge.questionmark")
+                        .font(.subheadline)
+                        .foregroundStyle(Color.naviTextSecondary)
                 }
             }
 
@@ -105,16 +114,9 @@ struct PlaceDetailsAttributesSection: View {
                 .foregroundStyle(Color.naviTextSecondary)
             content()
         }
-    }
-
-    private func categoryTitle(_ category: String) -> String {
-        let labels = [
-            "supermarket": "Supermarket", "convenience": "Sklep spożywczy", "bakery": "Piekarnia",
-            "restaurant": "Restauracja", "fast_food": "Fast food", "cafe": "Kawiarnia",
-            "fuel": "Stacja paliw", "parking": "Parking", "charging_station": "Ładowarka EV",
-            "pharmacy": "Apteka", "bank": "Bank", "hotel": "Hotel", "park": "Park"
-        ]
-        return labels[category] ?? category.replacingOccurrences(of: "_", with: " ").capitalized
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 16))
     }
 
     private func wheelchairTitle(_ value: String) -> String {
@@ -181,7 +183,27 @@ private struct PlaceDetailsOpeningHoursSection: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            hoursContent(at: context.date)
+                .task(id: evaluationKey + "/" + String(Int(context.date.timeIntervalSince1970 / 60))) {
+                    let evaluated = await PlaceOpeningHours(rawValue: rawHours, coordinate: coordinate,
+                                                            countryCode: countryCode,
+                                                            timeZoneIdentifier: timeZoneIdentifier)
+                        .presentation(at: context.date)
+                    guard !Task.isCancelled else { return }
+                    presentation = evaluated
+                }
+        }
+    }
+
+    private func isToday(_ index: Int, at date: Date) -> Bool {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZoneIdentifier.flatMap(TimeZone.init(identifier:)) ?? .current
+        return (calendar.component(.weekday, from: date) + 5) % 7 == index
+    }
+
+    private func hoursContent(at date: Date) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
             if let status = presentation?.statusText {
                 Label(status, systemImage: status.hasPrefix("Otwarte") ? "clock.fill" : "clock")
                     .font(.subheadline.weight(.semibold))
@@ -200,12 +222,14 @@ private struct PlaceDetailsOpeningHoursSection: View {
                 if let rows = presentation?.weeklyRows {
                     ForEach(Array(rows.enumerated()), id: \.offset) { item in
                         HStack {
-                            Text(item.element.day).frame(width: 46, alignment: .leading)
-                            Text(item.element.hours)
-                            Spacer(minLength: 0)
+                            Text(item.element.day).frame(width: 52, alignment: .leading)
+                            Spacer(minLength: 8)
+                            Text(item.element.hours).multilineTextAlignment(.trailing)
                         }
-                        .font(.caption)
-                        .foregroundStyle(Color.naviTextSecondary)
+                        .font(.subheadline)
+                        .fontWeight(isToday(item.offset, at: date) ? .semibold : .regular)
+                        .foregroundStyle(isToday(item.offset, at: date) ? Color.naviTextPrimary : Color.naviTextSecondary)
+                        .padding(.vertical, 5)
                     }
                 } else if let failure = presentation?.failure {
                     Text(failure.errorDescription ?? "Godziny niedostępne")
@@ -226,19 +250,7 @@ private struct PlaceDetailsOpeningHoursSection: View {
             }
             .font(.subheadline)
         }
-        .task(id: evaluationKey) {
-            guard !Task.isCancelled else { return }
-            guard coordinate == nil || timeZoneIdentifier != nil else {
-                presentation = .unavailable(.timeZoneUnavailable)
-                return
-            }
-            let evaluated = await PlaceOpeningHours(rawValue: rawHours,
-                                                    coordinate: coordinate,
-                                                    countryCode: countryCode,
-                                                    timeZoneIdentifier: timeZoneIdentifier).presentation()
-            guard !Task.isCancelled else { return }
-            presentation = evaluated
-        }
+
     }
 }
 
@@ -460,13 +472,14 @@ private struct PlaceParkingOpeningHoursDisclosure: View {
         }
         .font(.caption)
         .task(id: evaluationKey) {
-            guard !Task.isCancelled else { return }
-            let evaluated = await PlaceOpeningHours(rawValue: rawHours,
-                                                    coordinate: details.coordinate,
-                                                    countryCode: details.countryCode,
-                                                    timeZoneIdentifier: details.timeZoneIdentifier).presentation()
-            guard !Task.isCancelled else { return }
-            presentation = evaluated
+            while !Task.isCancelled {
+                let evaluated = await PlaceOpeningHours(rawValue: rawHours, coordinate: details.coordinate,
+                                                        countryCode: details.countryCode,
+                                                        timeZoneIdentifier: details.timeZoneIdentifier).presentation()
+                guard !Task.isCancelled else { return }
+                presentation = evaluated
+                do { try await Task.sleep(for: .seconds(60)) } catch { return }
+            }
         }
     }
 }

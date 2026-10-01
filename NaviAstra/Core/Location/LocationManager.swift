@@ -8,8 +8,12 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
     var onHeading: ((CLHeading) -> Void)?
     var onAuthorization: ((CLAuthorizationStatus) -> Void)?
     var onFailure: ((Error) -> Void)?
+    private var locationWaiters: [UUID: CheckedContinuation<CLLocation?, Never>] = [:]
     private var appliedPolicy: LocationPolicy?
     private var headingUpdatesEnabled = false
+#if os(iOS)
+    private var backgroundActivitySession: CLBackgroundActivitySession?
+#endif
 
     override init() {
         super.init()
@@ -51,8 +55,41 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
         setHeadingUpdatesEnabled(policy.updatesHeading)
     }
 
+    func requestCurrentLocation() {
+        guard canUseLocationServices else { prepareAuthorization(); return }
+        manager.requestLocation()
+    }
+
+    func freshLocation() async -> CLLocation? {
+        guard canUseLocationServices else { prepareAuthorization(); return nil }
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            guard !Task.isCancelled else { return nil }
+            return await withCheckedContinuation { continuation in
+                locationWaiters[id] = continuation
+                manager.requestLocation()
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(10))
+                    self?.locationWaiters.removeValue(forKey: id)?.resume(returning: nil)
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.locationWaiters.removeValue(forKey: id)?.resume(returning: nil)
+            }
+        }
+    }
+
+    private func completeLocationWaiters(with location: CLLocation?) {
+        let waiters = locationWaiters.values
+        locationWaiters.removeAll()
+        for waiter in waiters { waiter.resume(returning: location) }
+    }
+
     func stop() {
+        appliedPolicy = .stopped
         manager.stopUpdatingLocation()
+        applyBackgroundLocationSettings(manager.authorizationStatus)
 #if os(iOS)
         manager.stopUpdatingHeading()
 #endif
@@ -123,6 +160,8 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
 
     func stopBackgroundNavigationUpdates() {
 #if os(iOS)
+        backgroundActivitySession?.invalidate()
+        backgroundActivitySession = nil
         manager.allowsBackgroundLocationUpdates = false
         manager.pausesLocationUpdatesAutomatically = true
 #endif
@@ -134,13 +173,28 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
         let isAuthorized = authorization == .authorizedAlways || authorization == .authorizedWhenInUse
         let enabled = wantsBackgroundUpdates && isAuthorized && backgroundLocationModeEnabled
         manager.allowsBackgroundLocationUpdates = enabled
+        manager.showsBackgroundLocationIndicator = enabled
         manager.pausesLocationUpdatesAutomatically = !enabled
+        if enabled {
+            if backgroundActivitySession == nil {
+                backgroundActivitySession = CLBackgroundActivitySession()
+            }
+        } else {
+            backgroundActivitySession?.invalidate()
+            backgroundActivitySession = nil
+        }
 #endif
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
-        Task { @MainActor [weak self] in self?.onLocation?(location) }
+        Task { @MainActor [weak self] in
+            self?.onLocation?(location)
+            if location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 70,
+               abs(location.timestamp.timeIntervalSinceNow) <= 15 {
+                self?.completeLocationWaiters(with: location)
+            }
+        }
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
@@ -163,6 +217,9 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        Task { @MainActor [weak self] in self?.onFailure?(error) }
+        Task { @MainActor [weak self] in
+            self?.onFailure?(error)
+            self?.completeLocationWaiters(with: nil)
+        }
     }
 }

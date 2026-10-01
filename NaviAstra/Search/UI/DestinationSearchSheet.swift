@@ -156,28 +156,48 @@ struct DestinationSearchSheet: View {
     }
 
     private var searchAreaControls: some View {
-        HStack {
-            if let center = navigationStore.state.searchMapCenter {
-                Button("Szukaj w tym obszarze") {
-                    searchArea = center
-                    startSearch(query)
+        ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                if let center = navigationStore.state.searchMapCenter {
+                    Button {
+                        searchArea = center
+                        startSearch(query)
+                    } label: {
+                        Label(searchArea == nil ? "Obszar mapy" : "W obszarze mapy", systemImage: "map")
+                    }
+                    .tint(searchArea == nil ? Color.naviTextSecondary : Color.accentColor)
+                }
+                if searchArea != nil {
+                    Button {
+                        searchArea = nil
+                        startSearch(query)
+                    } label: {
+                        Label("Blisko mnie", systemImage: "location.fill")
+                    }
+                }
+                if navigationStore.state.status == .navigating && searchScope == .places {
+                    Toggle(isOn: $searchStore.alongRoute) {
+                        Label("Po trasie", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                    }
+                    .toggleStyle(.button)
+                    .onChange(of: alongRoute) { _, _ in startSearch(query) }
                 }
             }
-            if searchArea != nil {
-                Button("Blisko mnie") { searchArea = nil; startSearch(query) }
-            }
-            if navigationStore.state.status == .navigating && searchScope == .places {
-                Toggle("Po trasie", isOn: $searchStore.alongRoute)
-                    .onChange(of: alongRoute) { _, _ in startSearch(query) }
-            }
+            .font(.caption.weight(.semibold))
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.capsule)
         }
-        .font(.caption)
+        .scrollIndicators(.hidden)
     }
 
     @ViewBuilder
     private var searchResultSections: some View {
         if trimmedQuery.isEmpty {
             if searchScope == .places {
+                if !selectingRouteOrigin {
+                    quickPlacesSection
+                    categoryShortcuts
+                }
                 savedDestinations
             } else {
                 ContentUnavailableView(
@@ -189,9 +209,10 @@ struct DestinationSearchSheet: View {
             }
         } else if searchScope == .places {
             matchingDestinations
-            contactsResultsSection
+            if !visibleContactResults.isEmpty { contactsResultsSection }
             searchStatus
             remoteResults
+            if visibleContactResults.isEmpty { contactsResultsSection }
         } else {
             transitResultsSection
             searchStatus
@@ -200,58 +221,83 @@ struct DestinationSearchSheet: View {
 
     private var searchResultsScrollView: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            LazyVStack(alignment: .leading, spacing: 24) {
                 searchResultSections
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 20)
+            .padding(.top, 20)
+            .padding(.bottom, 28)
+            .frame(maxWidth: 620, alignment: .leading)
+            .frame(maxWidth: .infinity)
         }
         .scrollIndicators(.hidden)
+        .scrollDismissesKeyboard(.interactively)
     }
 
     private var searchMainContent: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            searchField
-            if speechInput.isListening {
-                Label("Słucham… Powiedz nazwę miejsca lub przystanku.", systemImage: "waveform")
-                    .font(.caption)
-                    .foregroundStyle(Color.accentColor)
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    Text(searchNavigationTitle)
+                        .font(.title2.weight(.bold))
+                        .foregroundStyle(Color.naviTextPrimary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Color.naviTextSecondary)
+                            .frame(width: 44, height: 44)
+                            .background(Color.primary.opacity(0.06), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Zamknij wyszukiwanie")
+                }
+                searchField
+                if speechInput.isListening {
+                    Label("Słucham… Powiedz nazwę miejsca lub przystanku.", systemImage: "waveform")
+                        .font(.caption)
+                        .foregroundStyle(Color.accentColor)
+                }
+                if let message = speechInput.errorMessage {
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(Color.naviTextSecondary)
+                }
+                if let savedPlaceNotice {
+                    Label(savedPlaceNotice, systemImage: "checkmark.circle.fill")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Color(naviHex: NaviAstraColorPalette.success))
+                        .transition(.opacity)
+                }
+                if !selectingRouteOrigin { searchScopePicker }
+                if !trimmedQuery.isEmpty || navigationStore.state.status == .navigating {
+                    searchAreaControls
+                }
             }
-            if let message = speechInput.errorMessage {
-                Label(message, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(Color.naviTextSecondary)
-            }
-            if let savedPlaceNotice {
-                Label(savedPlaceNotice, systemImage: "checkmark.circle.fill")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(Color(naviHex: NaviAstraColorPalette.success))
-                    .transition(.opacity)
-            }
-            if !selectingRouteOrigin && searchScope == .places && trimmedQuery.isEmpty {
-                quickPlacesSection
-            }
-            if !selectingRouteOrigin { searchScopePicker }
-            searchAreaControls
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+            .padding(.bottom, 16)
+            .frame(maxWidth: 620)
+            .frame(maxWidth: .infinity)
+            .background(.regularMaterial)
+
+            Divider()
             searchResultsScrollView
         }
-        .padding(.horizontal, 17)
-        .padding(.top, 14)
-        .frame(maxWidth: 620, maxHeight: .infinity, alignment: .top)
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private var searchNavigationTitle: String {
         if selectingRouteOrigin { return "Skąd zaczynasz?" }
         if let savingKind { return "Dodaj \(savingKind.title.lowercased())" }
-        return "Szukaj"
+        return "Dokąd jedziemy?"
     }
 
     private func prepareSearchPresentation() {
         contactsAccessStatus = ContactsAccessStatus.current()
         searchStore.resetForPresentation(selectingRouteOrigin: selectingRouteOrigin)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            isSearchFocused = true
-        }
     }
 
     private func handleLocationChange(previous: Coordinate?, current: Coordinate?) {
@@ -290,18 +336,22 @@ struct DestinationSearchSheet: View {
     var body: some View {
         NavigationStack {
             searchMainContent
-                .navigationTitle(searchNavigationTitle)
+                #if os(iOS)
+                .toolbar(.hidden, for: .navigationBar)
+                #endif
                 .alert("Nie udało się dodać miejsca", isPresented: $showSaveAlert) {
                     Button("OK", role: .cancel) { }
                 } message: {
                     Text(saveAlertMessage)
                 }
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("Zamknij") { dismiss() }
-                    }
-                }
                 .onAppear(perform: prepareSearchPresentation)
+                .task {
+                    do {
+                        try await Task.sleep(for: .milliseconds(200))
+                        try Task.checkCancellation()
+                        isSearchFocused = true
+                    } catch { }
+                }
                 .onChange(of: navigationStore.state.location?.coordinate) { previous, current in
                     handleLocationChange(previous: previous, current: current)
                 }
@@ -383,8 +433,9 @@ struct DestinationSearchSheet: View {
     }
 
     private var searchField: some View {
-        HStack(spacing: 11) {
+        HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
+                .padding(.trailing, 5)
                 .foregroundStyle(Color.accentColor)
             TextField(searchScope == .places
                       ? (savingKind.map { "Adres lub miejsce dla \($0.title.lowercased())" }
@@ -406,6 +457,8 @@ struct DestinationSearchSheet: View {
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.tertiary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Wyczyść wyszukiwanie")
@@ -423,7 +476,7 @@ struct DestinationSearchSheet: View {
                             .symbolEffect(.pulse, isActive: speechInput.isListening)
                     }
                 }
-                .frame(width: 24, height: 24)
+                .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -433,9 +486,10 @@ struct DestinationSearchSheet: View {
         }
         .font(.body)
         .padding(.horizontal, 15)
-        .frame(height: 52)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08)))
+        .frame(minHeight: 54)
+        .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16)
+            .strokeBorder(isSearchFocused ? Color.accentColor.opacity(0.35) : Color.primary.opacity(0.06)))
     }
 
     private func toggleSpeechInput() {
@@ -452,10 +506,7 @@ struct DestinationSearchSheet: View {
     private var quickPlacesSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("SZYBKIE MIEJSCA")
-                    .font(.caption.weight(.semibold))
-                    .tracking(0.7)
-                    .foregroundStyle(Color.naviTextSecondary)
+                sectionHeading("Szybkie miejsca")
                 Spacer()
                 addPlaceMenu
             }
@@ -491,6 +542,37 @@ struct DestinationSearchSheet: View {
         }
     }
 
+    private var categoryShortcuts: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeading(alongRoute ? "Znajdź po trasie" : "Odkrywaj miejsca")
+            ScrollView(.horizontal) {
+                HStack(spacing: 10) {
+                    categoryShortcut("Paliwo", query: "stacja paliw", symbol: "fuelpump.fill")
+                    categoryShortcut("Jedzenie", query: "restauracja", symbol: "fork.knife")
+                    categoryShortcut("Kawa", query: "kawa", symbol: "cup.and.saucer.fill")
+                    categoryShortcut("Parking", query: "parking", symbol: "parkingsign.circle.fill")
+                }
+            }
+            .scrollIndicators(.hidden)
+        }
+    }
+
+    private func categoryShortcut(_ title: String, query value: String, symbol: String) -> some View {
+        Button {
+            isSearchFocused = false
+            query = value
+        } label: {
+            Label(title, systemImage: symbol)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+                .padding(.horizontal, 14)
+                .frame(minHeight: 44)
+                .background(Color.accentColor.opacity(0.08), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Wyszukaj: \(title)")
+    }
+
     private var pinnedFavoritePlaces: [SavedPlace] {
         var seen = Set<String>()
         return places.filter { place in
@@ -516,8 +598,8 @@ struct DestinationSearchSheet: View {
                         .foregroundStyle(Color.naviTextPrimary)
                         .lineLimit(1)
                     Text(quickEstimates[place.id.uuidString].map {
-                        "\($0.minutes) min · \(formattedRouteDistance($0.distanceMeters))"
-                    } ?? "— min · — km")
+                        "\(TravelDurationFormatter.string(minutes: $0.minutes)) · \(formattedRouteDistance($0.distanceMeters))"
+                    } ?? place.destination.address ?? "Zapisane miejsce")
                         .font(.caption.weight(.medium).monospacedDigit())
                         .foregroundStyle(Color.naviTextSecondary)
                         .lineLimit(1)
@@ -744,7 +826,13 @@ struct DestinationSearchSheet: View {
 
     @ViewBuilder
     private var searchStatus: some View {
-        if isSearching {
+        if trimmedQuery.count == 1 && !hasResultsForCurrentScope {
+            Label("Wpisz co najmniej 2 znaki, aby wyszukać.", systemImage: "magnifyingglass")
+                .font(.subheadline)
+                .foregroundStyle(Color.naviTextSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 12)
+        } else if isSearching {
             ProgressView(results.isEmpty ? "Wyszukiwanie miejsc…" : "Uzupełnianie wyników…")
                 .frame(maxWidth: .infinity)
                 .padding(.top, 12)
@@ -792,7 +880,13 @@ struct DestinationSearchSheet: View {
     private var remoteResults: some View {
         if !visibleRemoteResults.isEmpty {
             VStack(alignment: .leading, spacing: 7) {
-                sectionHeading("Wyniki")
+                HStack {
+                    sectionHeading("Wyniki")
+                    Spacer()
+                    Text("\(visibleRemoteResults.count)")
+                        .font(.caption.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(Color.naviTextSecondary)
+                }
                 ForEach(Array(visibleRemoteResults.enumerated()), id: \.element.placeIdentity.cacheKey) { index, result in
                     PlaceSearchResultRow(
                         result: result,
@@ -806,7 +900,11 @@ struct DestinationSearchSheet: View {
                         onRename: { onRenameFavorite(result.destination, $0) },
                         onSelect: { selectResult(result) },
                         isNavigating: alongRoute || QueryClassifier().classify(query).alongRoute,
-                        primaryActionTitle: alongRoute || QueryClassifier().classify(query).alongRoute ? "Dodaj przystanek" : "Wyznacz trasę")
+                        primaryActionTitle: savingKind != nil ? "Zapisz miejsce" : selectingRouteOrigin ? "Ustaw punkt startowy" : alongRoute || QueryClassifier().classify(query).alongRoute ? "Dodaj przystanek" : "Wyznacz trasę",
+                        onExpand: { isSearchFocused = false })
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 4)
+                        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 18))
                 }
             }
         }
@@ -939,10 +1037,14 @@ struct DestinationSearchSheet: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.tertiary)
             }
-            .padding(.vertical, 8)
+            .padding(.vertical, 12)
+            .frame(minHeight: 64)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .overlay(alignment: .bottom) {
+            Divider().padding(.leading, 51)
+        }
     }
 
     private func handleDestination(_ destination: Destination, contactIdentifier: String?) {
@@ -981,11 +1083,11 @@ struct DestinationSearchSheet: View {
     }
 
     private func sectionHeading(_ title: String) -> some View {
-        Text(title.uppercased())
-            .font(.caption.weight(.semibold))
-            .tracking(0.7)
-            .foregroundStyle(Color.naviTextSecondary)
-            .padding(.top, 3)
+        Text(title)
+            .font(.headline)
+            .foregroundStyle(Color.naviTextPrimary)
+            .accessibilityAddTraits(.isHeader)
+            .padding(.bottom, 4)
     }
 
     private func append(_ destination: Destination, subtitle: String, symbol: String,

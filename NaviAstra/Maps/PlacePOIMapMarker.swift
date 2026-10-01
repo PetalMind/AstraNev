@@ -1,20 +1,24 @@
 import Foundation
 
 enum PlacePOIMapMarkerKind: String, CaseIterable, Sendable {
-    case fuel, parking, parkRide, charging, food, shopping, health, attraction, transit, lodging, generic
+    case fuel, parking, parkRide, charging, food, shopping, health, attraction, transit, lodging, cafe, nature, culture, airport, generic
 
     var symbolName: String {
         switch self {
         case .fuel: "fuelpump.fill"
-        case .parking, .parkRide: "parkingsign.circle.fill"
+        case .parking, .parkRide: "parkingsign"
         case .charging: "bolt.car.fill"
         case .food: "fork.knife"
         case .shopping: "bag.fill"
         case .health: "cross.case.fill"
-        case .attraction: "sparkles"
+        case .attraction: "camera.fill"
         case .transit: "tram.fill"
         case .lodging: "bed.double.fill"
-        case .generic: "mappin.and.ellipse"
+        case .cafe: "cup.and.saucer.fill"
+        case .nature: "leaf.fill"
+        case .culture: "building.columns.fill"
+        case .airport: "airplane"
+        case .generic: "mappin"
         }
     }
 
@@ -30,6 +34,10 @@ enum PlacePOIMapMarkerKind: String, CaseIterable, Sendable {
         case .attraction: "Atrakcja"
         case .transit: "Transport publiczny"
         case .lodging: "Nocleg"
+        case .cafe: "Kawiarnia"
+        case .nature: "Park i rekreacja"
+        case .culture: "Kultura i zabytki"
+        case .airport: "Lotnisko"
         case .generic: "Miejsce"
         }
     }
@@ -40,12 +48,16 @@ enum PlacePOIMapMarkerKind: String, CaseIterable, Sendable {
         case .parking: ["parking"]
         case .parkRide: ["park_ride", "parkride", "park_and_ride"]
         case .charging: ["charging_station", "ev_charger", "ev_charging"]
-        case .food: ["food", "restaurant", "cafe", "fast_food", "bar", "pub", "bakery"]
+        case .food: ["food", "restaurant", "fast_food", "bar", "pub", "bakery"]
         case .shopping: ["shop", "grocery", "supermarket", "mall", "clothes", "convenience"]
         case .health: ["hospital", "pharmacy", "doctor", "doctors", "clinic"]
-        case .attraction: ["attraction", "museum", "monument", "viewpoint", "castle", "theatre", "theater", "park"]
-        case .transit: ["bus", "rail", "railway", "station", "bus_stop", "tram_stop", "subway", "airport", "public_transport"]
+        case .attraction: ["attraction", "viewpoint"]
+        case .transit: ["bus", "rail", "railway", "station", "bus_stop", "tram_stop", "subway", "public_transport"]
         case .lodging: ["lodging", "hotel", "hostel", "motel", "guest_house", "camp_site"]
+        case .cafe: ["cafe"]
+        case .nature: ["park"]
+        case .culture: ["museum", "monument", "castle", "theatre", "theater"]
+        case .airport: ["airport"]
         case .generic: []
         }
     }
@@ -58,19 +70,40 @@ enum PlacePOIMapMarkerKind: String, CaseIterable, Sendable {
         else if value.contains("gasstation") || value.contains("fuel") { self = .fuel }
         else if value.contains("parking") { self = .parking }
         else if value.contains("chargingstation") || value.contains("evcharger") || value.contains("evcharging") { self = .charging }
+        else if value.contains("cafe") { self = .cafe }
+        else if value.hasSuffix("park") { self = .nature }
+        else if ["museum", "monument", "castle", "theatre", "theater"].contains(where: { value.contains($0) }) { self = .culture }
+        else if value.contains("airport") { self = .airport }
         else if ["food", "restaurant", "cafe", "fastfood", "bar", "pub", "bakery"].contains(where: { value.contains($0) }) { self = .food }
         else if ["shop", "grocery", "supermarket", "mall", "clothes", "convenience", "store"].contains(where: { value.contains($0) }) { self = .shopping }
         else if ["hospital", "pharmacy", "doctor", "clinic"].contains(where: { value.contains($0) }) { self = .health }
-        else if ["attraction", "museum", "monument", "viewpoint", "castle", "theatre", "theater", "park"].contains(where: { value.contains($0) }) { self = .attraction }
+        else if ["attraction", "viewpoint"].contains(where: { value.contains($0) }) { self = .attraction }
         else if ["bus", "rail", "railway", "station", "tram", "subway", "airport", "publictransport"].contains(where: { value.contains($0) }) { self = .transit }
         else if ["lodging", "hotel", "hostel", "motel", "guesthouse", "campsite"].contains(where: { value.contains($0) }) { self = .lodging }
         else { return nil }
     }
 }
 
-/// Semantic backgrounds for POI markers. Their accent comes from the app's AccentColor asset.
+extension PlacePOIMapMarkerKind {
+    /// Category identity stays consistent across map tiles, search pins and nearby filters.
+    func colorHex(dark: Bool) -> UInt32 {
+        switch self {
+        case .fuel: dark ? 0xC49BEB : 0x8054A8
+        case .parking, .parkRide, .transit, .airport: dark ? 0x82B4EC : 0x286DB5
+        case .charging, .nature: dark ? 0x81C698 : 0x327D4B
+        case .food, .cafe: dark ? 0xF1AF70 : 0xAF5C20
+        case .shopping: dark ? 0x85AFDD : 0x456FA4
+        case .health: dark ? 0xF19B9B : 0xBD444A
+        case .attraction, .culture: dark ? 0xB49BEB : 0x7953AF
+        case .lodging: dark ? 0xD69CCA : 0x995785
+        case .generic: dark ? 0xACBAC8 : 0x5B6B7C
+        }
+    }
+}
+
+/// Neutral marker rims separate category colors from the underlying map.
 enum PlacePOIMapPalette {
-    static func backgroundHex(dark: Bool) -> UInt32 { dark ? 0x17283A : 0xF9FCFF }
+    static func backgroundHex(dark: Bool) -> UInt32 { dark ? 0x26313D : 0xFFFFFF }
 }
 
 #if os(iOS)
@@ -94,25 +127,27 @@ extension PlacePOIMapMarkerKind {
         return UIGraphicsImageRenderer(size: size, format: format).image { renderer in
             let context = renderer.cgContext
             let rect = CGRect(origin: .zero, size: size).insetBy(dx: 1.5, dy: 1.5)
-            let path = CGPath(roundedRect: rect, cornerWidth: 11, cornerHeight: 11, transform: nil)
-            context.setFillColor(UIColor(
-                red: CGFloat((PlacePOIMapPalette.backgroundHex(dark: dark) >> 16) & 0xff) / 255,
-                green: CGFloat((PlacePOIMapPalette.backgroundHex(dark: dark) >> 8) & 0xff) / 255,
-                blue: CGFloat(PlacePOIMapPalette.backgroundHex(dark: dark) & 0xff) / 255,
-                alpha: 1).cgColor)
+            let path = CGPath(roundedRect: rect, cornerWidth: rect.width / 2, cornerHeight: rect.height / 2, transform: nil)
+            let categoryColor = UIColor(naviHex: colorHex(dark: dark))
+            context.setFillColor(categoryColor.cgColor)
             context.addPath(path)
             context.fillPath()
 
-            let accentColor = PlacePOIMapPalette.accentColor(dark: dark)
-            context.setStrokeColor(accentColor.cgColor)
+            let rim = UIColor(naviHex: PlacePOIMapPalette.backgroundHex(dark: dark))
+            context.setStrokeColor(rim.cgColor)
             context.setLineWidth(1.8)
             context.addPath(path)
             context.strokePath()
 
             let configuration = UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold)
-            UIImage(systemName: symbolName, withConfiguration: configuration)?
-                .withTintColor(accentColor, renderingMode: .alwaysOriginal)
-                .draw(in: CGRect(x: 9, y: 9, width: 18, height: 18))
+            if let glyph = UIImage(systemName: symbolName, withConfiguration: configuration)?
+                .withTintColor(dark ? UIColor(naviHex: 0x17212B) : .white, renderingMode: .alwaysOriginal) {
+                let scale = 18 / max(glyph.size.width, glyph.size.height)
+                let glyphSize = CGSize(width: glyph.size.width * scale, height: glyph.size.height * scale)
+                glyph.draw(in: CGRect(x: (size.width - glyphSize.width) / 2,
+                                      y: (size.height - glyphSize.height) / 2,
+                                      width: glyphSize.width, height: glyphSize.height))
+            }
         }
     }
 }

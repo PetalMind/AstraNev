@@ -1,7 +1,10 @@
 import SwiftUI
 
 struct ArrivalCelebration: View {
-    private let green = Color(red: 0.16, green: 0.82, blue: 0.36)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var appeared = false
+    @State private var burstFinished = false
+    private let green = Color(naviHex: NaviAstraColorPalette.success)
     private let pieces = [
         ArrivalConfettiPiece(id: 0, x: -128, y: -8, width: 10, height: 4, angle: -52, color: Color(red: 0.12, green: 0.61, blue: 1)),
         ArrivalConfettiPiece(id: 1, x: -106, y: 25, width: 9, height: 4, angle: 38, color: Color(red: 0.97, green: 0.72, blue: 0.20)),
@@ -23,26 +26,85 @@ struct ArrivalCelebration: View {
                 Capsule()
                     .fill(piece.color)
                     .frame(width: piece.width, height: piece.height)
-                    .rotationEffect(.degrees(piece.angle))
-                    .offset(x: piece.x, y: piece.y)
+                    .rotationEffect(.degrees(appeared ? piece.angle : 0))
+                    .offset(x: appeared ? piece.x : piece.x * 0.15,
+                            y: appeared ? piece.y : 12)
+                    .scaleEffect(burstFinished ? 0.7 : 1)
+                    .opacity(reduceMotion ? 0 : (appeared && !burstFinished ? 0.85 : 0))
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.7).delay(Double(piece.id % 3) * 0.04), value: appeared)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.45), value: burstFinished)
             }
 
             Circle()
                 .stroke(green.opacity(0.13), lineWidth: 13)
                 .frame(width: 96, height: 96)
+                .scaleEffect(appeared ? 1 : 0.55)
+                .opacity(appeared ? 1 : 0)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.65), value: appeared)
             Circle()
                 .stroke(green.opacity(0.24), lineWidth: 8)
                 .frame(width: 75, height: 75)
+                .scaleEffect(appeared ? 1 : 0.65)
+                .animation(reduceMotion ? nil : .spring(response: 0.55, dampingFraction: 0.75).delay(0.08), value: appeared)
             Circle()
-                .fill(green)
-                .frame(width: 52, height: 52)
-                .shadow(color: green.opacity(0.42), radius: 11, y: 2)
-            Image(systemName: "checkmark")
-                .font(.system(size: 23, weight: .bold))
-                .foregroundStyle(.white)
+                .fill(green.gradient)
+                .frame(width: 58, height: 58)
+                .shadow(color: green.opacity(0.28), radius: 12, y: 4)
+                .scaleEffect(appeared ? 1 : 0.6)
+                .animation(reduceMotion ? nil : .spring(response: 0.5, dampingFraction: 0.65), value: appeared)
+            ArrivalCheckmark()
+                .trim(from: 0, to: appeared ? 1 : 0)
+                .stroke(.white, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                .frame(width: 25, height: 20)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.32).delay(0.18), value: appeared)
         }
         .frame(maxWidth: .infinity)
         .accessibilityHidden(true)
+        .task {
+            guard !appeared else { return }
+            appeared = true
+            guard !reduceMotion else { return }
+            do {
+                try await Task.sleep(for: .milliseconds(850))
+                burstFinished = true
+            } catch { }
+        }
+    }
+}
+
+private struct ArrivalCheckmark: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.height * 0.5))
+        path.addLine(to: CGPoint(x: rect.width * 0.36, y: rect.height * 0.9))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.height * 0.1))
+        return path
+    }
+}
+
+/// Each section appears once; live trip updates do not replay the entrance.
+struct ArrivalSectionEntrance: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var appeared = false
+    var delay: Double = 0
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(appeared || reduceMotion ? 1 : 0)
+            .offset(y: appeared || reduceMotion ? 0 : 12)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.38).delay(delay), value: appeared)
+            .onAppear { appeared = true }
+    }
+}
+
+struct ArrivalActionButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
+            .opacity(configuration.isPressed ? 0.82 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: configuration.isPressed)
     }
 }
 

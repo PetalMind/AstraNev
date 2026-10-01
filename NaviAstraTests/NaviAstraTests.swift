@@ -5,6 +5,7 @@
 //  Created by Dominik on 23/09/2026.
 //
 
+import Foundation
 import Testing
 @testable import NaviAstra
 
@@ -17,7 +18,7 @@ struct NaviAstraTests {
             navigationStatus: .idle, transportMode: .car, appIsForeground: true,
             lowPowerMode: false, thermalState: .nominal, speedMetersPerSecond: nil)
         #expect(browsing.mode == .mapBrowsing)
-        #expect(browsing.location.demand == .continuous)
+        #expect(browsing.location.demand == .oneShot)
         #expect(browsing.location.accuracy == .hundredMeters)
         #expect(browsing.location.distanceFilter == 50)
         #expect(browsing.trafficRefreshInterval == nil)
@@ -36,9 +37,9 @@ struct NaviAstraTests {
         #expect(background.mode == .backgroundNavigation)
         #expect(background.location.demand == .continuous)
         #expect(background.location.allowsBackgroundUpdates)
-        #expect(background.location.distanceFilter == 8)
+        #expect(background.location.distanceFilter == 0)
         #expect(background.mapFramesPerSecond == 0)
-        #expect(background.trafficRefreshInterval == 60)
+        #expect(background.trafficRefreshInterval == 90)
 
         let idleBackground = policyEngine.update(
             navigationStatus: .idle, transportMode: .car, appIsForeground: false,

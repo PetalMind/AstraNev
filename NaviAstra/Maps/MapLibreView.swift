@@ -234,6 +234,9 @@ struct MapLibreView: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ map: MLNMapView, coordinator: Coordinator) {
+        map.delegate = nil
+        map.setCamera(map.camera, withDuration: 0, animationTimingFunction: nil)
+        map.prefetchesTiles = false
         coordinator.stopPuckDisplayLink()
         coordinator.stopCyclingPathUpdates()
         coordinator.stopMapRoadPOIUpdates()
@@ -266,6 +269,7 @@ struct MapLibreView: UIViewRepresentable {
         private var cyclingPathTask: Task<Void, Never>?
         private var cyclingPathStatus: OSMCyclingPathsStatus = .disabled
         private var mapRoadPOIs: [MapRoadPOI] = []
+        private var mapRoadPOIRetryAfter: Date?
         private var mapRoadPOIQueryID: String?
         private var mapRoadPOITask: Task<Void, Never>?
         private var mapRoadPOIStatus: MapRoadPOIStatus = .disabled
@@ -274,6 +278,7 @@ struct MapLibreView: UIViewRepresentable {
         private var closurePin: MLNPointAnnotation?
         private var searchPins: [MLNPointAnnotation] = []
         private var searchIDs: [UUID] = []
+        private var shownPlaceResults: [SearchResult] = []
         private var trafficEventPins: [MLNPointAnnotation] = []
         private var shownTrafficEventGroupIDs: [String] = []
         private var shownTrafficEventGroups: [[TrafficMapEvent]] = []
@@ -501,7 +506,8 @@ struct MapLibreView: UIViewRepresentable {
             puckDisplayLink?.isPaused = !energyPolicy.mapRenderingEnabled
             guard energyPolicy.mapRenderingEnabled else { return }
 
-            let results = showsOnlyRouteEndpoints ? [] : Array(parent.state.searchResults.prefix(8))
+            let results = parent.scene.placeMarkers
+            shownPlaceResults = results
             if searchIDs != results.map(\.id) {
                 map.removeAnnotations(searchPins)
                 searchIDs = results.map(\.id)
@@ -586,13 +592,14 @@ struct MapLibreView: UIViewRepresentable {
             let routeDistance = parent.state.progress?.traveledDistance ?? 0
             let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
             let showsRoadAlerts = !showsOnlyRouteEndpoints || isNavigating
+            let roadAlertDistance = parent.state.roadAlertRouteDistance
             let roadAlerts = (showsRoadAlerts ? parent.state.roadSafetyAlerts : [])
                 .filter { alert in
                     if let category = alert.type.mapSafetyPOICategory,
                        !parent.settings.safetyPOICategories.contains(category) { return false }
                     guard let distance = alert.distanceAlongRoute else { return false }
                     guard isNavigating else { return true }
-                    return distance >= routeDistance - 60 && distance <= routeDistance + 20_000
+                    return distance >= roadAlertDistance - 60 && distance <= roadAlertDistance + 20_000
                         && alert.type.isImportantDuringNavigation
                 }
                 .sorted { ($0.distanceAlongRoute ?? .infinity) < ($1.distanceAlongRoute ?? .infinity) }
@@ -771,9 +778,9 @@ struct MapLibreView: UIViewRepresentable {
             guard lastPOIMarkerDark != dark else { return }
             lastPOIMarkerDark = dark
             for (index, pin) in searchPins.enumerated()
-                where parent.state.searchResults.indices.contains(index) {
-                guard parent.state.searchResults[index].isPOI,
-                      let kind = PlacePOIMapMarkerKind(category: parent.state.searchResults[index].category),
+                where shownPlaceResults.indices.contains(index) {
+                guard shownPlaceResults[index].isPOI,
+                      let kind = PlacePOIMapMarkerKind(category: shownPlaceResults[index].category),
                       let marker = map.view(for: pin) else { continue }
                 stylePlacePOIMarker(marker, annotation: pin, kind: kind, dark: dark)
             }
@@ -795,13 +802,14 @@ struct MapLibreView: UIViewRepresentable {
             let routePreviewPaddingChanged = lastViewportPadding != parent.viewportPadding || lastMapSize != map.bounds.size
             let followsSheetGesture = parent.isBottomSheetDragging && routePreviewPaddingChanged
             var effectiveIntent = intent
-            effectiveIntent.padding = parent.viewportPadding
+            if intent.followCoordinate != nil, let frame = puckEngine.frame() {
+                effectiveIntent.followCoordinate = frame.coordinate
+            }
+            effectiveIntent = effectiveIntent.fittingViewport(
+                parent.viewportPadding, width: Double(map.bounds.width), height: Double(map.bounds.height))
             if followsSheetGesture {
                 effectiveIntent.animationDuration = 0
             }
-            // Keep a usable map viewport even when the drawer is fully expanded.
-            effectiveIntent.padding.bottom = min(effectiveIntent.padding.bottom,
-                max(0, Double(map.bounds.height) - effectiveIntent.padding.top - 100))
             if cameraState == .routeOverview, !enteringOverview, !newOverview, !cameraCommandChanged,
                !routePreviewPaddingChanged, !cameraModeChanged,
                let route = parent.state.route {
@@ -813,7 +821,7 @@ struct MapLibreView: UIViewRepresentable {
             if intent == lastIntent && !enteringOverview && !newOverview && !cameraCommandChanged &&
                !routePreviewPaddingChanged && !cameraModeChanged && !cameraStateChanged { return }
             if cameraAnimationInFlight {
-                if followsSheetGesture {
+                if routePreviewPaddingChanged || cameraCommandChanged {
                     cameraAnimationGeneration &+= 1
                     cameraAnimationInFlight = false
                     cameraUpdatePending = false
@@ -894,8 +902,8 @@ struct MapLibreView: UIViewRepresentable {
                 return
             }
             guard let index = searchPins.firstIndex(where: { $0 === annotation }),
-                  parent.state.searchResults.indices.contains(index) else { return }
-            parent.onPlaceSelect([parent.state.searchResults[index]])
+                  shownPlaceResults.indices.contains(index) else { return }
+            parent.onPlaceSelect([shownPlaceResults[index]])
         }
 
         func mapView(_ mapView: MLNMapView, viewFor annotation: MLNAnnotation) -> MLNAnnotationView? {
@@ -958,9 +966,9 @@ struct MapLibreView: UIViewRepresentable {
             }
 
             if let index = searchPins.firstIndex(where: { $0 === annotation }) {
-                if parent.state.searchResults.indices.contains(index),
-                   parent.state.searchResults[index].isPOI,
-                   let kind = PlacePOIMapMarkerKind(category: parent.state.searchResults[index].category) {
+                if shownPlaceResults.indices.contains(index),
+                   shownPlaceResults[index].isPOI,
+                   let kind = PlacePOIMapMarkerKind(category: shownPlaceResults[index].category) {
                     return placePOIMarkerView(for: annotation, kind: kind, dark: usesDarkMapAppearance)
                 }
                 let marker = MLNAnnotationView(reuseIdentifier: nil)
@@ -1203,14 +1211,15 @@ struct MapLibreView: UIViewRepresentable {
                                          kind: PlacePOIMapMarkerKind, dark: Bool) {
             marker.subviews.forEach { $0.removeFromSuperview() }
             marker.frame = CGRect(x: 0, y: 0, width: 36, height: 36)
-            let background = PlacePOIMapPalette.backgroundHex(dark: dark)
+            let background = kind.colorHex(dark: dark)
             marker.backgroundColor = UIColor(red: CGFloat((background >> 16) & 0xff) / 255,
                                               green: CGFloat((background >> 8) & 0xff) / 255,
                                               blue: CGFloat(background & 0xff) / 255, alpha: 1)
-            marker.layer.cornerRadius = 11
+            marker.layer.cornerRadius = 18
             marker.layer.borderWidth = 1.8
-            let color = PlacePOIMapPalette.accentColor(dark: dark)
-            marker.layer.borderColor = color.cgColor
+            let color = dark ? UIColor(naviHex: 0x17212B) : UIColor.white
+            let rim = UIColor(naviHex: PlacePOIMapPalette.backgroundHex(dark: dark))
+            marker.layer.borderColor = rim.cgColor
             marker.layer.shadowColor = UIColor.black.cgColor
             marker.layer.shadowOpacity = 0.18
             marker.layer.shadowRadius = 3
@@ -1280,16 +1289,15 @@ struct MapLibreView: UIViewRepresentable {
             let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
             let events = MainActor.assumeIsolated { () -> [TrafficMapEvent] in
                 var events: [TrafficMapEvent] = []
-                for poi in mapRoadPOIs {
+                let routePOIIDs = Set(shownRoadAlerts.map { $0.mapPOIID ?? $0.id })
+                for poi in mapRoadPOIs where !routePOIIDs.contains(poi.id) {
                     events.append(TrafficMapEvent(poi))
                 }
                 for incident in shownIncidents {
                     events.append(TrafficMapEvent(incident))
                 }
-                let mapPOIIDs = Set(mapRoadPOIs.map(\.id))
                 for alert in shownRoadAlerts {
-                    guard !mapPOIIDs.contains(alert.id) else { continue }
-                    events.append(TrafficMapEvent(alert, routeDistance: routeDistance))
+                    events.append(TrafficMapEvent(alert, routeDistance: parent.state.roadAlertRouteDistance))
                 }
                 return events
             }
@@ -1535,32 +1543,56 @@ struct MapLibreView: UIViewRepresentable {
                                        routeDistance: parent.state.progress?.traveledDistance ?? 0)
                 return
             }
-            guard mapRoadPOIQueryID != query.id else { return }
+            guard mapRoadPOIQueryID != query.id ||
+                    (mapRoadPOIStatus.needsRetry && (mapRoadPOIRetryAfter ?? .distantFuture) <= .now)
+            else { return }
 
+            let queryChanged = mapRoadPOIQueryID != query.id
             mapRoadPOIQueryID = query.id
             stopMapRoadPOIUpdates()
-            mapRoadPOIs = []
+            if queryChanged {
+                // Keep visible, eligible points while the replacement request is loading.
+                mapRoadPOIs = mapRoadPOIs.filter { query.contains($0) }
+            }
             setMapRoadPOIStatus(.loading)
             updateTrafficEventPins(on: map,
                                    routeDistance: parent.state.progress?.traveledDistance ?? 0)
             mapRoadPOITask = Task { [weak self, weak map] in
                 do {
                     try await Task.sleep(nanoseconds: 350_000_000)
-                    let points = try await MapRoadPOIProvider.shared.points(in: query)
+                    let result = try await MapRoadPOIProvider.shared.points(in: query)
                     guard !Task.isCancelled, let self, let map,
                           self.mapRoadPOIQueryID == query.id,
                           self.parent.settings.safetyPOICategories.isSuperset(of: query.categories) else { return }
-                    self.mapRoadPOIs = points
-                    self.setMapRoadPOIStatus(.loaded(count: points.count))
+                    self.mapRoadPOIRetryAfter = nil
+                    self.mapRoadPOIs = result.points
+                    self.setMapRoadPOIStatus(result.unavailableSources.isEmpty
+                        ? .loaded(count: result.points.count)
+                        : .partial(count: result.points.count,
+                                   message: "Niedostępne źródło: " + result.unavailableSources.joined(separator: ", ")))
                     self.updateTrafficEventPins(on: map,
                                                 routeDistance: self.parent.state.progress?.traveledDistance ?? 0)
+                    if !result.unavailableSources.isEmpty {
+                        self.mapRoadPOIRetryAfter = Date().addingTimeInterval(60)
+                        do { try await Task.sleep(nanoseconds: 60_000_000_000) }
+                        catch { return }
+                        guard !Task.isCancelled, self.mapRoadPOIQueryID == query.id else { return }
+                        self.mapRoadPOITask = nil
+                        self.updateMapRoadPOIs(on: map)
+                    }
                 } catch {
                     guard !Task.isCancelled, let self, let map,
                           self.mapRoadPOIQueryID == query.id else { return }
-                    self.mapRoadPOIs = []
+                    // A failed refresh must not remove previously downloaded points.
+                    self.mapRoadPOIRetryAfter = Date().addingTimeInterval(30)
                     self.setMapRoadPOIStatus(.unavailable)
                     self.updateTrafficEventPins(on: map,
                                                 routeDistance: self.parent.state.progress?.traveledDistance ?? 0)
+                    do { try await Task.sleep(nanoseconds: 30_000_000_000) }
+                    catch { return }
+                    guard !Task.isCancelled, self.mapRoadPOIQueryID == query.id else { return }
+                    self.mapRoadPOITask = nil
+                    self.updateMapRoadPOIs(on: map)
                 }
             }
         }

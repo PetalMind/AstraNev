@@ -1,4 +1,5 @@
 import Foundation
+import MapKit
 
 enum PlaceProvider: String, Codable, Sendable {
     case openStreetMap
@@ -29,7 +30,7 @@ struct PlaceIdentity {
            let object = OpenStreetMapObjectID("\(osmType):\(externalID)") {
             return object.cacheKey
         }
-        if let providerID, !providerID.isEmpty {
+        if provider == .mapKit, let providerID, !providerID.isEmpty {
             return "mapkit/\(providerID)"
         }
         if provider == .openFreeMap, let externalID, Int64(externalID) != nil {
@@ -100,7 +101,7 @@ struct PlaceDetails: Codable, Identifiable {
         return PlaceDetails(id: result.placeIdentity.cacheKey,
                             name: result.destination.name,
                             brand: result.brand,
-                            operatorName: nil,
+                            operatorName: result.operatorName,
                             category: result.category,
                             address: result.destination.address,
                             openingHours: result.openingHours,
@@ -121,8 +122,8 @@ struct PlaceDetails: Codable, Identifiable {
     static func partial(for identity: PlaceIdentity) -> PlaceDetails {
         PlaceDetails(id: identity.cacheKey,
                      name: identity.name,
-                     brand: nil,
-                     operatorName: nil,
+                     brand: identity.brand,
+                     operatorName: identity.operatorName,
                      category: identity.category,
                      address: identity.address,
                      openingHours: nil,
@@ -221,8 +222,41 @@ protocol PlaceDetailsProvider {
     func details(for identity: PlaceIdentity) async throws -> PlaceDetails?
 }
 
+/// Refresh Apple POIs by their stable identifier. This also fills contact details omitted
+/// by nearby-place results without guessing which branch of a business was selected.
+struct MapKitPlaceDetailsProvider: PlaceDetailsProvider {
+    func details(for identity: PlaceIdentity) async throws -> PlaceDetails? {
+        guard identity.provider == .mapKit, let rawID = identity.providerID,
+              let identifier = MKMapItem.Identifier(rawValue: rawID) else { return nil }
+        try Task.checkCancellation()
+        let request = MKMapItemRequest(mapItemIdentifier: identifier)
+        let item = try await withTaskCancellationHandler {
+            try await request.mapItem
+        } onCancel: {
+            Task { @MainActor in request.cancel() }
+        }
+        try Task.checkCancellation()
+        var details = PlaceDetails.partial(for: identity)
+        details.name = item.name ?? identity.name
+        details.address = item.address?.fullAddress ?? identity.address
+        details.category = item.pointOfInterestCategory?.rawValue ?? identity.category
+        details.phone = item.phoneNumber
+        details.website = item.url?.absoluteString
+        details.timeZoneIdentifier = item.timeZone?.identifier ?? identity.timeZoneIdentifier
+        details.countryCode = item.addressRepresentations?.region?.identifier.lowercased() ?? identity.countryCode
+        return details
+    }
+}
+
 struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
-    private let endpoint = URL(string: UserDefaults.standard.string(forKey: "overpassServer") ?? "https://overpass-api.de/api/interpreter")!
+    private var endpoint: URL {
+        if let configured = UserDefaults.standard.string(forKey: "overpassServer"),
+           let url = URL(string: configured),
+           ["https", "http"].contains(url.scheme?.lowercased() ?? ""), url.host != nil {
+            return url
+        }
+        return URL(string: "https://overpass-api.de/api/interpreter")!
+    }
     private static let fallbackEndpoints = [
         "https://overpass.private.coffee/api/interpreter",
         "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
@@ -234,6 +268,10 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
     }
 
     /// Search responses already contain full OSM tags; reuse them instead of fetching the same object again.
+    static func maintainCache() async {
+        await PlaceDetailsCache.shared.maintain()
+    }
+
     static func cacheSearchDetails(_ objects: [(id: String, name: String, tags: [String: String])]) async {
         let details = objects.compactMap { object -> PlaceDetails? in
             guard let id = OpenStreetMapObjectID(object.id) else { return nil }
@@ -284,7 +322,6 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         }
         let query = "[out:json][timeout:6];\(selector)out center tags;"
         var receivedValidResponse = false
-        var encounteredFailure = false
         for (attempt, requestEndpoint) in requestEndpoints.enumerated() {
             try Task.checkCancellation()
             do {
@@ -332,11 +369,10 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                encounteredFailure = true
                 // Try the next public instance after a timeout, rate limit, or malformed response.
             }
         }
-        if receivedValidResponse && !encounteredFailure { return nil }
+        if receivedValidResponse { return nil }
         throw PlaceDetailsError.unavailable
     }
 
@@ -432,8 +468,8 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         let actualValue = normalized(taggedAddress)
         guard !actualValue.isEmpty else { return 0 }
         if expectedValue.contains(actualValue) || actualValue.contains(expectedValue) { return 220 }
-        let expectedTokens = Set(expectedValue.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
-        let actualTokens = Set(actualValue.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+        let expectedTokens = Set(expected.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map { normalized(String($0)) })
+        let actualTokens = Set(taggedAddress.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map { normalized(String($0)) })
         guard !expectedTokens.isEmpty else { return 0 }
         return Double(expectedTokens.intersection(actualTokens).count) / Double(expectedTokens.count) * 120
     }
@@ -646,6 +682,13 @@ private actor PlaceDetailsCache {
             entries = Dictionary(uniqueKeysWithValues: entries.sorted { $0.value.fetchedAt > $1.value.fetchedAt }
                 .prefix(1_000).map { ($0.key, $0.value) })
         }
+        persist()
+    }
+
+    func maintain() {
+        guard !Task.isCancelled else { return }
+        let cutoff = Date().addingTimeInterval(-30 * 86_400)
+        entries = entries.filter { $0.value.fetchedAt >= cutoff }
         persist()
     }
 

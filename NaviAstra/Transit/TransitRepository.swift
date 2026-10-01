@@ -19,6 +19,11 @@ actor TransitRepository {
     init(region: TransitRegion = .lodz) {
         self.region = region
     }
+    func cancelMaintenance() {
+        databaseLoadTask?.cancel()
+        realtimeLoadTask?.cancel()
+    }
+
     var compiledDatabaseURL: URL {
         cacheDirectory.appendingPathComponent("compiled-transit-index-v4.plist")
     }

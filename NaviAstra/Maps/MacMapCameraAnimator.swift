@@ -21,6 +21,7 @@ enum MacMapCameraAnimator {
                                           bottom: CGFloat(intent.padding.bottom), right: CGFloat(intent.padding.right)), animated: animated)
             return
         }
+        let previousCamera = map.camera
         let camera = map.camera
         camera.centerCoordinate = intent.target.cl
         camera.pitch = CGFloat(intent.pitch)
@@ -40,6 +41,22 @@ enum MacMapCameraAnimator {
                                   edgePadding: NSEdgeInsets(top: intent.padding.top, left: intent.padding.left,
                                                             bottom: intent.padding.bottom, right: intent.padding.right),
                                   animated: animated)
+        } else if intent.followCoordinate != nil {
+            // MapKit has no padded perspective-camera setter. Resolve the offset
+            // in its own projection so heading and pitch participate in framing.
+            map.setCamera(camera, animated: false)
+            let desiredX = (intent.padding.left + Double(map.bounds.width) - intent.padding.right) / 2
+            let desiredTopY = (intent.padding.top + Double(map.bounds.height) - intent.padding.bottom) / 2
+            let desiredY = map.isFlipped ? desiredTopY : Double(map.bounds.height) - desiredTopY
+            for _ in 0..<2 {
+                let actual = map.convert(intent.target.cl, toPointTo: map)
+                let centerPoint = CGPoint(x: map.bounds.midX + actual.x - desiredX,
+                                          y: map.bounds.midY + actual.y - desiredY)
+                camera.centerCoordinate = map.convert(centerPoint, toCoordinateFrom: map)
+                map.setCamera(camera, animated: false)
+            }
+            if animated { map.setCamera(previousCamera, animated: false) }
+            map.setCamera(camera, animated: animated)
         } else {
             map.setCamera(camera, animated: animated)
         }

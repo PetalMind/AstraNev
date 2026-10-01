@@ -22,8 +22,9 @@ struct AppDependencies {
             transitProvider: transitProvider,
             transitDataProvider: transitDataProvider)
         let placeStore = PlaceStore()
-        let navigationStore = NavigationStore(
-            session: NavigationSession(dependencies: navigationDependencies))
+        let session = NavigationSession(dependencies: navigationDependencies)
+        session.onTripFinished = { [weak placeStore] trip in placeStore?.addTrip(trip) }
+        let navigationStore = NavigationStore(session: session)
         return AppDependencies(
             router: AppRouter(),
             navigationStore: navigationStore,

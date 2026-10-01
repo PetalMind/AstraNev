@@ -2,6 +2,9 @@ import SwiftUI
 
 extension ContentView {
     var currentParkedCarLocation: NavigationLocation? {
+        if navigationStore.state.status == .arrived,
+           navigationStore.state.transportMode == .car,
+           let arrival = navigationStore.state.arrivalLocation { return arrival }
         guard let location = navigationStore.state.location,
               Date().timeIntervalSince(location.timestamp) >= 0,
               Date().timeIntervalSince(location.timestamp) <= 15,
@@ -24,12 +27,12 @@ extension ContentView {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Zaparkowałeś tutaj?")
                             .font(.system(size: 13, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Color.naviTextPrimary)
                         Text(currentParkedCarLocation == nil
                              ? "Czekam na aktualną pozycję GPS."
                              : "Zapisz pozycję auta, żeby łatwo do niego wrócić.")
                             .font(.system(size: 11, weight: .medium, design: .rounded))
-                            .foregroundStyle(Color.white.opacity(0.58))
+                            .foregroundStyle(Color.naviTextSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 2)
@@ -49,15 +52,15 @@ extension ContentView {
 
                         Button("Nie teraz") { arrivalCarPromptDismissed = true }
                             .font(.system(size: 10, weight: .medium, design: .rounded))
-                            .foregroundStyle(Color.white.opacity(0.58))
+                            .foregroundStyle(Color.naviTextSecondary)
                             .buttonStyle(.plain)
                     }
                 }
                 .padding(12)
-                .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 19, style: .continuous))
+                .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 19, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 19, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.09), lineWidth: 1)
+                        .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
                 }
                 .modifier(NavigationGlassSurface(radius: 19))
             }

@@ -12,6 +12,7 @@ struct NearbyPlacesSheet: View {
     let onSelect: (Destination) -> Void
     @State private var category: NearbyPlaceCategory
     @State private var retryID = UUID()
+    @State private var nameQuery = ""
     @State private var expandedRadius = false
     @State private var openNowOnly = false
     @State private var open24HoursOnly = false
@@ -45,7 +46,8 @@ struct NearbyPlacesSheet: View {
         let categoryKey = category.rawValue
         let retryKey = retryID.uuidString
         let radiusKey = expandedRadius ? "expanded" : "default"
-        return categoryKey + "-" + retryKey + "-" + radiusKey
+        return [categoryKey, retryKey, radiusKey, String(nearestSearch),
+                String(navigationStore.state.location != nil)].joined(separator: "-")
     }
 
     private var openingHoursRefreshKey: String {
@@ -89,7 +91,7 @@ struct NearbyPlacesSheet: View {
 
     private var hasOpeningHoursData: Bool {
         navigationStore.state.nearbySuggestions.contains {
-            $0.candidate.category == category && openingHoursPresentations[$0.id]?.isOpen != nil
+            $0.candidate.category == category && ($0.candidate.isOpen24Hours || openingHoursPresentations[$0.id]?.isOpen != nil)
         }
     }
 
@@ -98,9 +100,10 @@ struct NearbyPlacesSheet: View {
     }
 
     private var hasApplicableFilters: Bool {
-        category == .fuel
-            ? hasOpeningHoursData || has24HourData || !availableFuelTypes.isEmpty || !availableOperators.isEmpty
-            : category == .charging && (!availableConnectors.isEmpty || !availablePowerThresholds.isEmpty || !availableOperators.isEmpty)
+        hasOpeningHoursData || has24HourData || !availableOperators.isEmpty
+            || (category == .fuel && !availableFuelTypes.isEmpty)
+            || (category == .charging && (!availableConnectors.isEmpty || !availablePowerThresholds.isEmpty))
+            || activeFilterCount > 0
     }
 
     private var activeFilterCount: Int {
@@ -110,9 +113,18 @@ struct NearbyPlacesSheet: View {
     }
 
     private var filteredSuggestions: [RouteStopSuggestion] {
-        navigationStore.state.nearbySuggestions.filter { suggestion in
+        let query = nameQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        return navigationStore.state.nearbySuggestions.filter { suggestion in
             let candidate = suggestion.candidate
-            if openNowOnly && openingHoursPresentations[suggestion.id]?.isOpen != true { return false }
+            guard candidate.category == category else { return false }
+            if !query.isEmpty {
+                let searchableText = [candidate.destination.name, candidate.destination.address,
+                                      candidate.operatorName, candidate.brand]
+                    .compactMap { $0 }.joined(separator: " ")
+                if !searchableText.localizedStandardContains(query) { return false }
+            }
+            if openNowOnly && !candidate.isOpen24Hours
+                && openingHoursPresentations[suggestion.id]?.isOpen != true { return false }
             if open24HoursOnly && !candidate.isOpen24Hours { return false }
             if let selectedFuelType, !candidate.fuelTypes.contains(selectedFuelType) { return false }
             if let selectedOperator, candidate.operatorOrBrand != selectedOperator { return false }
@@ -248,17 +260,32 @@ struct NearbyPlacesSheet: View {
                     guard category != value else { return }
                     category = value
                     expandedRadius = false
+                    nameQuery = ""
                     clearFilters()
                     navigationStore.state.nearbySuggestions = []
                     navigationStore.state.nearbyStatus = .searching
                 } label: {
-                    Label(value.title, systemImage: value.symbol)
-                        .font(.subheadline.weight(.medium))
-                        .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
-                        .padding(.horizontal, 12)
-                        .foregroundStyle(category == value ? Color.accentColor : Color.naviTextPrimary)
-                        .background(category == value ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.08),
-                                    in: Capsule())
+                    HStack(spacing: 8) {
+                        Image(systemName: value.symbol)
+                            .foregroundStyle(Color.naviPOI(value.markerKind))
+                            .frame(width: 22)
+                        Text(value.title)
+                            .foregroundStyle(Color.naviTextPrimary)
+                        Spacer(minLength: 0)
+                        if category == value {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(Color.naviPOI(value.markerKind))
+                        }
+                    }
+                    .font(.subheadline.weight(category == value ? .semibold : .medium))
+                    .frame(maxWidth: .infinity, minHeight: 46, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .background(category == value ? Color.naviPOI(value.markerKind).opacity(0.12) : Color.primary.opacity(0.04),
+                                in: RoundedRectangle(cornerRadius: 14))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 14)
+                            .strokeBorder(category == value ? Color.naviPOI(value.markerKind).opacity(0.45) : .clear)
+                    }
                 }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(category == value ? .isSelected : [])
@@ -319,18 +346,63 @@ struct NearbyPlacesSheet: View {
                     .font(.subheadline.weight(.medium))
             }
             Spacer()
+            if activeFilterCount > 0 {
+                Button("Wyczyść", action: clearFilters)
+                    .font(.subheadline)
+                    .frame(minHeight: 44)
+                    .accessibilityLabel("Wyczyść filtry miejsc")
+            }
         }
+        .frame(minHeight: 44)
+    }
+
+    private func filterChip(_ title: String, remove: @escaping () -> Void) -> some View {
+        Button(action: remove) {
+            HStack(spacing: 6) {
+                Text(title)
+                Image(systemName: "xmark").font(.caption2.weight(.bold))
+            }
+            .font(.caption.weight(.medium))
+            .padding(.horizontal, 12)
+            .frame(minHeight: 44)
+            .background(Color.accentColor.opacity(0.09), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Color.accentColor)
+        .accessibilityLabel("Usuń filtr: \(title)")
+    }
+
+    private var activeFilterChips: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                if openNowOnly { filterChip("Otwarte teraz") { openNowOnly = false } }
+                if open24HoursOnly { filterChip("Całodobowe") { open24HoursOnly = false } }
+                if let selectedFuelType {
+                    filterChip(fuelTypeTitle(selectedFuelType)) { self.selectedFuelType = nil }
+                }
+                if let selectedOperator {
+                    filterChip(selectedOperator) { self.selectedOperator = nil }
+                }
+                if let minimumChargingPower {
+                    filterChip("Od \(Int(minimumChargingPower)) kW") { self.minimumChargingPower = nil }
+                }
+                if let selectedConnector {
+                    filterChip(connectorTitle(selectedConnector)) { self.selectedConnector = nil }
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
     }
 
     private var searchDescription: String {
         if nearDestination {
-            return "Parking jest wyszukiwany w pobliżu celu. Dostępność wolnych miejsc nie jest sprawdzana."
+            return "Do 2 km od celu. Brak danych o wolnych miejscach parkingowych."
         }
         if nearestSearch {
             let radius = expandedRadius ? 15 : 5
             return "\(category.title) w promieniu do \(radius) km od Twojej lokalizacji."
         }
-        return "Miejsca do 1,5 km od pozostałej trasy. Czas objazdu uzupełniamy po znalezieniu wyników."
+        return "Do 1,5 km od pozostałej trasy. Czas objazdu pokazujemy, jeśli jest dostępny."
     }
 
     private var searchStatusTitle: String {
@@ -340,7 +412,7 @@ struct NearbyPlacesSheet: View {
 
     private var navigationTitle: String {
         if nearDestination { return "Parking przy celu" }
-        return nearestSearch ? category.title : "\(category.title) po trasie"
+        return nearestSearch ? "Szukaj w pobliżu" : "Miejsca po drodze"
     }
 
     private var searchRadius: Double {
@@ -353,15 +425,19 @@ struct NearbyPlacesSheet: View {
 
     private var canExpandSearchRadius: Bool {
         nearestSearch && !expandedRadius && navigationStore.state.nearbyStatus == .available
-            && navigationStore.state.nearbySuggestions.allSatisfy { $0.estimateStatus != .calculating }
     }
 
     @ViewBuilder
     private var nearbyStatusContent: some View {
         switch navigationStore.state.nearbyStatus {
         case .idle, .searching:
-            ProgressView(searchStatusTitle)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 14) {
+                ProgressView()
+                Text(searchStatusTitle)
+                    .font(.subheadline)
+                    .foregroundStyle(Color.naviTextSecondary)
+            }
+            .frame(maxWidth: .infinity, minHeight: 180)
         case .unavailable(let message):
             unavailableSearchContent(message: message)
         case .available:
@@ -385,7 +461,7 @@ struct NearbyPlacesSheet: View {
                 .buttonStyle(.borderedProminent)
                 .padding(.top, 4)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, minHeight: 220)
     }
 
     @ViewBuilder
@@ -395,29 +471,45 @@ struct NearbyPlacesSheet: View {
                 "Brak miejsc w pobliżu",
                 systemImage: category.symbol,
                 description: Text(nearestSearch
-                    ? "Możesz rozszerzyć wyszukiwanie do 15 km."
-                    : "Spróbuj innej kategorii lub wyszukaj w innym miejscu."))
+                    ? expandedRadius
+                        ? "Nie znaleziono miejsc do 15 km. Wybierz inną kategorię."
+                        : "Nie znaleziono miejsc do 5 km. Rozszerz zasięg lub wybierz inną kategorię."
+                    : "Spróbuj innej kategorii lub ponów wyszukiwanie."))
         } else if filteredSuggestions.isEmpty {
             VStack(spacing: 8) {
                 ContentUnavailableView(
-                    "Brak wyników z tymi filtrami",
+                    "Brak pasujących miejsc",
                     systemImage: "line.3.horizontal.decrease.circle",
-                    description: Text("Zmień filtry albo wyczyść je, aby zobaczyć wszystkie miejsca."))
-                Button("Wyczyść filtry", action: clearFilters)
+                    description: Text("Zmień nazwę lub filtry, aby zobaczyć więcej znalezionych miejsc."))
+                Button("Pokaż wszystkie znalezione miejsca") {
+                    nameQuery = ""
+                    clearFilters()
+                }
                     .buttonStyle(.bordered)
             }
         } else {
-            Text("Znaleziono: \(filteredSuggestions.count)")
-                .font(.subheadline.weight(.semibold))
+            HStack(alignment: .firstTextBaseline) {
+                Text("Wyniki · \(filteredSuggestions.count)")
+                    .font(.headline)
+                Spacer()
+                Text(nearDestination ? "Przy celu" : nearestSearch ? "Najbliżej najpierw" : "Wzdłuż trasy")
+                    .font(.caption)
+                    .foregroundStyle(Color.naviTextSecondary)
+            }
             nearbyResultsList
         }
     }
 
     private var nearbyResultsList: some View {
-        List(Array(filteredSuggestions.enumerated()), id: \.element.id) { index, suggestion in
-            nearbyResultRow(suggestion, index: index)
+        LazyVStack(spacing: 10) {
+            ForEach(Array(filteredSuggestions.enumerated()), id: \.element.id) { index, suggestion in
+                nearbyResultRow(suggestion, index: index)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+                    .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 18))
+            }
         }
-        .listStyle(.plain)
+        .id(category)
     }
 
     private func nearbyResultRow(_ suggestion: RouteStopSuggestion, index: Int) -> some View {
@@ -455,7 +547,8 @@ struct NearbyPlacesSheet: View {
             expandedDetails: expandedDetails(for: suggestion.candidate),
             showsSourceSubtitle: false,
             primaryMetaLine: operatorName,
-            onExpand: estimateOnExpand)
+            onExpand: estimateOnExpand,
+            showsQuickRouteAction: true)
     }
 
     @ViewBuilder
@@ -475,22 +568,76 @@ struct NearbyPlacesSheet: View {
         }
     }
 
+    private var searchContextTitle: String {
+        if nearDestination { return navigationStore.state.destination?.name ?? "Przy celu podróży" }
+        return nearestSearch ? "Wokół Twojej lokalizacji" : "Na dalszej części trasy"
+    }
+
+    private var nameSearchField: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(Color.naviTextSecondary)
+            TextField("Filtruj wyniki po nazwie", text: $nameQuery)
+                .textFieldStyle(.plain)
+                .submitLabel(.search)
+            if !nameQuery.isEmpty {
+                Button { nameQuery = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(Color.naviTextSecondary)
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Wyczyść nazwę")
+            }
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, nameQuery.isEmpty ? 12 : 0)
+        .frame(minHeight: 48)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14))
+    }
+
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 12) {
-                categorySelector
-                if hasApplicableFilters { nearbyFilterControls }
-                Text(searchDescription)
-                    .font(.footnote)
-                    .foregroundStyle(Color.naviTextSecondary)
-                nearbyStatusContent
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(searchContextTitle, systemImage: nearDestination ? "flag.fill" : nearestSearch ? "location.fill" : "point.topleft.down.to.point.bottomright.curvepath")
+                            .font(.subheadline.weight(.semibold))
+                        Text(searchDescription)
+                            .font(.footnote)
+                            .foregroundStyle(Color.naviTextSecondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+                    .background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 16))
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Kategorie").font(.headline)
+                        categorySelector
+                    }
+                    if navigationStore.state.nearbyStatus == .available {
+                        VStack(spacing: 4) {
+                            nameSearchField
+                            if hasApplicableFilters { nearbyFilterControls }
+                            if activeFilterCount > 0 { activeFilterChips }
+                        }
+                    }
+                    nearbyStatusContent
+                }
+                .padding(16)
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 14)
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle(navigationTitle)
+#if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+#endif
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Zamknij") { dismiss() }
+                    Button("Zamknij", systemImage: "xmark") { dismiss() }
+                }
+                ToolbarItem(placement: .secondaryAction) {
+                    Button("Odśwież", systemImage: "arrow.clockwise") { retryID = UUID() }
+                        .disabled(navigationStore.state.nearbyStatus == .searching)
                 }
             }
             .task(id: nearbySearchRefreshKey) {

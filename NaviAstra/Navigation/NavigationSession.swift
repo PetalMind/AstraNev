@@ -29,7 +29,9 @@ final class NavigationSession {
     private var lastAcceptedFix = Date.distantPast
     private var locationStartedAt = Date.distantPast
     private var gpsWatchdog: Task<Void, Never>?
-    private var appIsForeground = true
+    var appIsForeground = true
+    var arrivalDetector = ArrivalDetector()
+    let liveActivity = NavigationLiveActivityManager()
     private var didStartLocation = false
     var navigationTransitionTask: Task<Void, Never>?
     var routeProvider: RouteProvider
@@ -38,8 +40,14 @@ final class NavigationSession {
     var transitPlanningCancellationToken: TransitPlanningCancellationToken?
     var transitRefreshCancellationToken: TransitPlanningCancellationToken?
     var laterTransitPlanningCancellationToken: TransitPlanningCancellationToken?
+    var roadPlanningCancellationToken: TransitPlanningCancellationToken?
+    var roadRerouteCancellationToken: TransitPlanningCancellationToken?
+    var trafficComparisonInFlight = false
+    var lastTrafficComparison = Date.distantPast
     var requestGeneration = 0 {
         didSet {
+            roadPlanningCancellationToken?.cancel()
+            roadRerouteCancellationToken?.cancel()
             transitPlanningCancellationToken?.cancel()
             transitRefreshCancellationToken?.cancel()
             laterTransitPlanningCancellationToken?.cancel()
@@ -52,6 +60,7 @@ final class NavigationSession {
     var trafficGeneration = 0
     var trafficRouteSelectionGeneration = 0
     private var speedLimitGeneration = 0
+    private var roadDataTask: Task<Void, Never>?
     private var roadDataGeneration = 0
     var lastTrafficFetch = Date.distantPast
     private var lastSpeedLimitFetch = Date.distantPast
@@ -123,6 +132,7 @@ final class NavigationSession {
             guard self.state.transportMode == .walking,
                   (self.state.status == .navigating || self.state.status == .rerouting) else { return }
             self.state.deviceHeading = direction
+            guard self.appIsForeground else { return }
             self.mapCameraController.updateWalkingCamera(
                 location: self.state.cameraLocation ?? self.state.location,
                 deviceHeading: direction, isNewLocationFix: false)
@@ -163,6 +173,7 @@ final class NavigationSession {
         }
     }
     func startLocation() {
+        guard !didStartLocation else { return }
         didStartLocation = true
         locationStartedAt = Date()
         locationManager.prepareAuthorization()
@@ -172,7 +183,23 @@ final class NavigationSession {
     func setAppIsForeground(_ isForeground: Bool) {
         guard appIsForeground != isForeground else { return }
         appIsForeground = isForeground
+        if !isForeground {
+            mapCameraController.cancelNavigationCameraTasks()
+            mapCameraController.cancelManeuverTransition()
+            mapCameraController.cancelRouteReveal()
+            navigationTransitionTask?.cancel()
+            state.routeRevealProgress = 1
+            if state.cameraState == .startingNavigation || state.cameraState == .leavingManeuver {
+                state.cameraState = .followNavigation
+            }
+        }
         refreshEnergyPolicy()
+        if isForeground {
+            if state.status == .navigating || state.status == .rerouting {
+                updateNavigationCameraState(force: true)
+            }
+            updateCameraIntent()
+        }
     }
 
     func refreshEnergyPolicy() {
@@ -196,7 +223,9 @@ final class NavigationSession {
                     guard let self else { return }
                     guard self.state.status == .navigating || self.state.status == .rerouting else { return }
                     self.checkGPS()
-                    if self.state.transportMode == .walking {
+                    self.updateLiveActivity()
+                    self.refreshTraffic()
+                    if self.appIsForeground, self.state.transportMode == .walking {
                         self.updateCameraIntent()
                     }
                     if self.usesJourneyVoiceGuidance,
@@ -204,7 +233,7 @@ final class NavigationSession {
                         self.lastTransitProgressRefresh = Date()
                         self.updateProgress()
                     }
-                    if self.energyPolicyEngine.currentPolicy.transitRefreshInterval != nil,
+                    if self.appIsForeground, self.energyPolicyEngine.currentPolicy.transitRefreshInterval != nil,
                        let coordinate = self.state.location?.coordinate {
                         self.refreshTransitVehicles(near: coordinate)
                     }
@@ -235,6 +264,7 @@ final class NavigationSession {
         guard age > 5 else { return }
         state.weakGPS = true
         if state.status == .navigating || state.status == .rerouting {
+            guard appIsForeground else { return }
             state.cameraLocation = CameraPlanner.predictedLocation(from: location, elapsed: age, route: state.route)
             updateNavigationCameraState()
         }
@@ -339,6 +369,8 @@ final class NavigationSession {
         guard state.status == .routePreview,
               let route = state.route,
               (!usesJourneyVoiceGuidance || route.journey != nil) else { return }
+        arrivalDetector.reset()
+        state.arrivalLocation = nil
         rerouteController.beginNavigation()
         resetOffRouteEvidence()
         mapCameraController.cancelNavigationCameraTasks()
@@ -358,7 +390,7 @@ final class NavigationSession {
         state.cameraState = .startingNavigation
         refreshEnergyPolicy()
         mapCameraController.resetWalkingCamera()
-        locationManager.setHeadingUpdatesEnabled(state.transportMode == .walking)
+        locationManager.setHeadingUpdatesEnabled(appIsForeground && state.transportMode == .walking)
         if state.transportMode == .walking {
             mapCameraController.updateWalkingCamera(location: state.location,
                                                     deviceHeading: state.deviceHeading)
@@ -392,12 +424,18 @@ final class NavigationSession {
             tripSession = TripSession(destination: destination, waypoints: state.waypoints,
                                       originalExpectedTravelTime: route.expectedTravelTime,
                                       startedAt: Date(), lastLocation: state.location,
-                                      tracksDriving: state.transportMode == .car)
+                                      tracksDriving: state.transportMode == .car,
+                                      transportMode: state.transportMode)
         }
         invalidateSpeedLimit()
+        updateProgress()
+        updateLiveActivity()
     }
     func stop() {
         guard state.status != .idle else { return }
+        arrivalDetector.reset()
+        liveActivity.end()
+        state.arrivalLocation = nil
         finishTrip(arrived: state.status == .arrived)
         rerouteController.stop()
         requestGeneration += 1
@@ -476,7 +514,7 @@ final class NavigationSession {
                             speedLimitKph: state.transportMode == .car
                                 ? drivingSpeedLimit(at: navigationLocation) : nil)
         updateProgress()
-        if state.transportMode == .walking,
+        if appIsForeground, state.transportMode == .walking,
            (state.status == .navigating || state.status == .rerouting) {
             mapCameraController.updateWalkingCamera(location: state.cameraLocation,
                                                     deviceHeading: state.deviceHeading)
@@ -485,7 +523,7 @@ final class NavigationSession {
             updateCameraIntent()
         }
         if state.status == .navigating || state.status == .rerouting {
-            if state.cameraState != .startingNavigation { updateNavigationCameraState() }
+            if appIsForeground, state.cameraState != .startingNavigation { updateNavigationCameraState() }
             if state.transportMode == .car ||
                 (state.transportMode == .parkRide && state.transitProgress?.legIndex == 0) {
                 refreshSpeedLimit(for: state.location!)
@@ -496,6 +534,8 @@ final class NavigationSession {
     }
     func invalidateTraffic() {
         trafficGeneration += 1
+        trafficComparisonInFlight = false
+        lastTrafficComparison = .distantPast
         trafficRouteSelectionGeneration += 1
         trafficRequestInFlight = false
         routeTrafficRequestInFlight = false
@@ -582,7 +622,7 @@ final class NavigationSession {
         return speedLimit
     }
 
-    func loadRoadData(for route: NavigationRoute) {
+    func loadRoadData(for route: NavigationRoute, isRetry: Bool = false) {
         guard usesRoadVoiceGuidance else { return }
         let roadCoordinates: [Coordinate]
         if state.transportMode == .parkRide {
@@ -591,25 +631,30 @@ final class NavigationSession {
             roadCoordinates = route.coordinates
         }
         guard roadCoordinates.count > 1 else { return }
+        roadDataTask?.cancel()
         roadDataGeneration &+= 1
         let generation = roadDataGeneration
         let routeID = route.id
         let provider = roadDataProvider
-        roadDataSnapshot = nil
-        state.roadSafetyAlerts = []
-        state.roadSafetyStatus = .loading
-        invalidateSpeedLimit()
-        Task { @MainActor [weak self] in
+        if !isRetry {
+            roadDataSnapshot = nil
+            state.roadSafetyAlerts = []
+            state.roadSafetyStatus = .loading
+            invalidateSpeedLimit()
+        }
+        roadDataTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 let snapshot = try await provider.load(for: roadCoordinates)
-                guard generation == self.roadDataGeneration,
+                guard !Task.isCancelled, generation == self.roadDataGeneration,
                       self.state.route?.id == routeID,
                       self.usesRoadVoiceGuidance else { return }
                 self.invalidateSpeedLimit()
                 self.roadDataSnapshot = snapshot
                 self.state.roadSafetyAlerts = snapshot.matchedAlerts(on: roadCoordinates)
-                self.state.roadSafetyStatus = .available
+                self.state.roadSafetyStatus = snapshot.unavailableSources.flatMap { sources in
+                    sources.isEmpty ? nil : .partial("Niedostępne źródło: " + sources.joined(separator: ", "))
+                } ?? .available
                 self.updateProgress()
                 if let location = self.state.location,
                    self.state.status == .navigating || self.state.status == .rerouting,
@@ -617,8 +662,14 @@ final class NavigationSession {
                     (self.state.transportMode == .parkRide && self.state.transitProgress?.legIndex == 0) {
                     self.refreshSpeedLimit(for: location, force: true)
                 }
+                if snapshot.unavailableSources?.isEmpty == false {
+                    try await Task.sleep(nanoseconds: 60_000_000_000)
+                    guard !Task.isCancelled, generation == self.roadDataGeneration,
+                          self.state.route?.id == routeID, self.usesRoadVoiceGuidance else { return }
+                    self.loadRoadData(for: route, isRetry: true)
+                }
             } catch {
-                guard generation == self.roadDataGeneration,
+                guard !Task.isCancelled, generation == self.roadDataGeneration,
                       self.state.route?.id == routeID,
                       self.usesRoadVoiceGuidance else { return }
                 self.roadDataSnapshot = nil
@@ -629,6 +680,8 @@ final class NavigationSession {
     }
 
     func resetRoadSafetyData() {
+        roadDataTask?.cancel()
+        roadDataTask = nil
         roadDataGeneration &+= 1
         roadDataSnapshot = nil
         state.roadSafetyAlerts = []
@@ -643,7 +696,10 @@ final class NavigationSession {
                                 endedAt: Date(), distanceMeters: session.distanceMeters,
                                 movingSeconds: session.movingSeconds, rerouteCount: session.rerouteCount, arrived: arrived,
                                 originalExpectedTravelTime: session.originalExpectedTravelTime,
-                                drivingScore: arrived ? session.drivingScore : nil)
+                                drivingScore: arrived ? session.drivingScore : nil,
+                                transportMode: session.transportMode,
+                                trace: session.traceRecorder.points,
+                                maximumSpeedKph: session.traceRecorder.maximumSpeedKph)
         state.lastTrip = record
         onTripFinished?(record)
     }
@@ -667,20 +723,28 @@ struct TripSession {
     var movingSeconds: TimeInterval = 0
     var rerouteCount = 0
     var drivingAnalyzer: DrivingBehaviorAnalyzer?
+    var transportMode: TransportMode?
+    var traceRecorder = TripTraceRecorder()
 
     init(destination: Destination, waypoints: [Destination],
          originalExpectedTravelTime: TimeInterval, startedAt: Date,
-         lastLocation: NavigationLocation?, tracksDriving: Bool) {
+         lastLocation: NavigationLocation?, tracksDriving: Bool,
+         transportMode: TransportMode? = nil) {
         self.destination = destination
         self.waypoints = waypoints
         self.originalExpectedTravelTime = originalExpectedTravelTime
         self.startedAt = startedAt
         self.lastLocation = lastLocation
         self.tracksDriving = tracksDriving
+        self.transportMode = transportMode
         drivingAnalyzer = tracksDriving ? DrivingBehaviorAnalyzer() : nil
+        if let lastLocation, abs(lastLocation.timestamp.timeIntervalSince(startedAt)) <= 15 {
+            traceRecorder.record(lastLocation)
+        }
     }
 
     mutating func record(_ location: NavigationLocation, speedLimitKph: Int?) {
+        traceRecorder.record(location)
         defer { lastLocation = location }
 
         if let previous = lastLocation {

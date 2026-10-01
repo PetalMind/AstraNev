@@ -28,7 +28,7 @@ final class NaviAstraMapStyle {
             configure(style)
             configured = true
         }
-        let density = Self.densityLevel(for: zoom)
+        let density = densityLevel(for: zoom)
         let categories = settings.visiblePOICategories.sorted { $0.rawValue < $1.rawValue }
         let key = "\(dark)-\(activelyNavigating)-\(settings.context)-\(categories.map(\.rawValue))-\(settings.overlays.buildings3D)-\(settings.cameraMode)-\(settings.overlays.transit)"
         guard key != lastKey else {
@@ -57,7 +57,7 @@ final class NaviAstraMapStyle {
         let majorRoad = color(dark
             ? (activelyNavigating ? NaviAstraColorPalette.mapMainRoadNightNavigation
                                   : NaviAstraColorPalette.mapMainRoadNightExploration)
-            : 0xFFFFFF)
+            : NaviAstraColorPalette.mapMainRoadDay)
         let minorRoad = color(dark ? NaviAstraColorPalette.mapLocalRoadNight : 0xFFFFFF)
         let roadOutline = color(dark ? NaviAstraColorPalette.mapBackgroundNight
                                      : NaviAstraColorPalette.mapMainRoadOutlineDay)
@@ -109,7 +109,7 @@ final class NaviAstraMapStyle {
                 }
                 layer.fillColor = NSExpression(forConstantValue: fill)
                 if source == "building" {
-                    let neutralColor = dark ? "#1A2531" : "#E2E7EA"
+                    let neutralColor = hexColor(dark ? NaviAstraColorPalette.mapBuildingNight : NaviAstraColorPalette.mapBuildingDay)
                     layer.fillColor = buildingColorExpression(neutralColor: neutralColor)
                     layer.fillOpacity = NSExpression(forConstantValue: navigating ? 0.42 : 0.75)
                     layer.fillOutlineColor = NSExpression(forConstantValue: roadOutline)
@@ -117,7 +117,7 @@ final class NaviAstraMapStyle {
             }
             if let layer = layer as? MLNFillExtrusionStyleLayer {
                 layer.isVisible = settings.overlays.buildings3D && settings.cameraMode == .threeD
-                layer.fillExtrusionColor = buildingColorExpression(neutralColor: dark ? "#1A2531" : "#E2E7EA")
+                layer.fillExtrusionColor = buildingColorExpression(neutralColor: hexColor(dark ? NaviAstraColorPalette.mapBuildingNight : NaviAstraColorPalette.mapBuildingDay))
                 layer.fillExtrusionOpacity = NSExpression(mglJSONObject: [
                     "interpolate", ["linear"], ["zoom"],
                     15, navigating ? 0.08 : 0.12,
@@ -175,6 +175,10 @@ final class NaviAstraMapStyle {
                 layer.textHaloWidth = NSExpression(forConstantValue: 1.2)
                 if source == "poi" {
                     layer.iconImageName = poiIconExpression(dark: dark)
+                    layer.textColor = poiColorExpression(dark: dark)
+                    layer.iconScale = NSExpression(mglJSONObject: [
+                        "interpolate", ["linear"], ["zoom"], 12, 0.64, 17, 0.82
+                    ])
                     layer.predicate = poiPredicate(for: id, categories: categories, density: density)
                     layer.isVisible = !categories.isEmpty
                     layer.textOpacity = NSExpression(forConstantValue: 1)
@@ -191,7 +195,7 @@ final class NaviAstraMapStyle {
 
     func updatePOIDensity(to style: MLNStyle, zoom: Double) {
         guard configured else { return }
-        let density = Self.densityLevel(for: zoom)
+        let density = densityLevel(for: zoom)
         guard poiDensity != density else { return }
         for id in poiLayerIDs {
             guard let layer = style.layer(withIdentifier: id) as? MLNSymbolStyleLayer else { continue }
@@ -200,8 +204,17 @@ final class NaviAstraMapStyle {
         poiDensity = density
     }
 
-    private static func densityLevel(for zoom: Double) -> Int {
-        zoom < 15 ? 0 : (zoom < 17 ? 1 : 2)
+    private func densityLevel(for zoom: Double) -> Int {
+        // Keep the current density until zoom moves clearly past the boundary.
+        // This also applies when appearance or travel context changes.
+        switch poiDensity {
+        case 2:
+            return zoom >= 16.7 ? 2 : (zoom >= 14.7 ? 1 : 0)
+        case 1:
+            return zoom >= 17 ? 2 : (zoom >= 14.7 ? 1 : 0)
+        default:
+            return zoom >= 17 ? 2 : (zoom >= 15 ? 1 : 0)
+        }
     }
 
     private func poiPredicate(for layerID: String, categories: [MapPOICategory], density: Int) -> NSPredicate {
@@ -241,16 +254,19 @@ final class NaviAstraMapStyle {
                 if let predicate = layer.predicate { originalPredicates[layer.identifier] = predicate }
                 switch layer.identifier {
                 case "poi_r1": layer.minimumZoomLevel = 12
-                case "poi_r7": layer.minimumZoomLevel = 15
-                case "poi_r20": layer.minimumZoomLevel = 17
+                case "poi_r7": layer.minimumZoomLevel = 14.7
+                case "poi_r20": layer.minimumZoomLevel = 16.7
                 case "poi_transit": layer.minimumZoomLevel = 14
                 default: break
                 }
                 layer.textFontNames = NSExpression(forConstantValue: ["Noto Sans Regular"])
                 layer.textFontSize = NSExpression(mglJSONObject: ["interpolate", ["linear"], ["zoom"], 12, 11, 17, 13])
-                // Preserve collision detection: more available features must not mean overlapping labels.
+                // Labels may be omitted without hiding the place's icon. Icons do not
+                // compete with labels, so newly appearing text cannot displace a POI.
                 layer.textAllowsOverlap = NSExpression(forConstantValue: false)
-                layer.iconAllowsOverlap = NSExpression(forConstantValue: false)
+                layer.textOptional = NSExpression(forConstantValue: true)
+                layer.iconAllowsOverlap = NSExpression(forConstantValue: true)
+                layer.iconIgnoresPlacement = NSExpression(forConstantValue: true)
             }
             if let layer = layer as? MLNFillStyleLayer, layer.sourceLayerIdentifier == "building" {
                 layer.maximumZoomLevel = 24 // Retain footprints when extrusion is disabled.
@@ -314,7 +330,7 @@ final class NaviAstraMapStyle {
             layer.minimumZoomLevel = minimumZoom
             layer.maximumZoomLevel = maximumZoom
             layer.fillPattern = NSExpression(forConstantValue: forestPatternName(dark: false, dense: dense))
-            layer.fillOpacity = NSExpression(forConstantValue: 0.78)
+            layer.fillOpacity = NSExpression(forConstantValue: 0.18)
             style.insertLayer(layer, above: lastLandcoverFill)
         }
     }
@@ -337,7 +353,7 @@ final class NaviAstraMapStyle {
             layer.minimumZoomLevel = minimumZoom
             layer.maximumZoomLevel = maximumZoom
             layer.fillPattern = NSExpression(forConstantValue: waterPatternName(dark: false, dense: dense))
-            layer.fillOpacity = NSExpression(forConstantValue: dense ? 0.2 : 0.12)
+            layer.fillOpacity = NSExpression(forConstantValue: dense ? 0.08 : 0.05)
             style.insertLayer(layer, above: lastWaterFill)
         }
     }
@@ -477,8 +493,22 @@ final class NaviAstraMapStyle {
             expression.append(fallback)
             return expression
         }
-        let subclassMatch = matchExpression(for: "subclass", fallback: poiImageName(.generic, dark: dark))
-        return NSExpression(mglJSONObject: matchExpression(for: "class", fallback: subclassMatch))
+        let classMatch = matchExpression(for: "class", fallback: poiImageName(.generic, dark: dark))
+        return NSExpression(mglJSONObject: matchExpression(for: "subclass", fallback: classMatch))
+    }
+
+    private func poiColorExpression(dark: Bool) -> NSExpression {
+        func matchExpression(for property: String, fallback: Any) -> [Any] {
+            var expression: [Any] = ["match", ["get", property]]
+            for kind in PlacePOIMapMarkerKind.allCases where !kind.tileValues.isEmpty {
+                expression.append(kind.tileValues)
+                expression.append(hexColor(kind.colorHex(dark: dark)))
+            }
+            expression.append(fallback)
+            return expression
+        }
+        let classMatch = matchExpression(for: "class", fallback: hexColor(PlacePOIMapMarkerKind.generic.colorHex(dark: dark)))
+        return NSExpression(mglJSONObject: matchExpression(for: "subclass", fallback: classMatch))
     }
 
     private func buildingColorExpression(neutralColor: String) -> NSExpression {

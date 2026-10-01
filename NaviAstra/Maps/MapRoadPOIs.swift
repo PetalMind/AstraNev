@@ -11,7 +11,7 @@ nonisolated enum MapSafetyPOICategory: Int, CaseIterable, Identifiable, Sendable
 
     var title: String {
         switch self {
-        case .speedCameras: "Fotoradary i pomiar odcinkowy"
+        case .speedCameras: "Fotoradary, pomiar odcinkowy i czerwone światło"
         case .surveillanceCameras: "Kamery monitoringu"
         case .trafficSignals: "Sygnalizacja świetlna"
         }
@@ -40,7 +40,15 @@ nonisolated enum MapRoadPOIStatus: Equatable, Sendable {
     case zoomIn
     case loading
     case loaded(count: Int)
+    case partial(count: Int, message: String)
     case unavailable
+
+    var needsRetry: Bool {
+        switch self {
+        case .partial, .unavailable: true
+        default: false
+        }
+    }
 }
 
 nonisolated struct MapRoadPOI: Identifiable, Equatable, Sendable {
@@ -64,10 +72,8 @@ nonisolated struct MapRoadPOI: Identifiable, Equatable, Sendable {
 extension RoadAlertType {
     nonisolated var mapSafetyPOICategory: MapSafetyPOICategory? {
         switch self {
-        case .speedCamera, .averageSpeedStart, .averageSpeedEnd:
+        case .speedCamera, .averageSpeedStart, .averageSpeedEnd, .redLightCamera:
             .speedCameras
-        case .redLightCamera:
-            .surveillanceCameras
         default:
             nil
         }
@@ -80,6 +86,17 @@ nonisolated struct MapRoadPOIQuery: Hashable, Sendable {
     let north: Double
     let east: Double
     let categories: Set<MapSafetyPOICategory>
+
+    func contains(_ other: MapRoadPOIQuery) -> Bool {
+        south <= other.south && west <= other.west && north >= other.north && east >= other.east
+            && categories.isSuperset(of: other.categories)
+    }
+
+    func contains(_ point: MapRoadPOI) -> Bool {
+        categories.contains(point.category)
+            && (south...north).contains(point.coordinate.latitude)
+            && (west...east).contains(point.coordinate.longitude)
+    }
 
     var id: String {
         let bounds = [south, west, north, east]
@@ -97,23 +114,22 @@ nonisolated struct MapRoadPOIQuery: Hashable, Sendable {
         var selectors: [String] = []
         if categories.contains(.speedCameras) {
             selectors.append("node[\"highway\"=\"speed_camera\"](\(bounds));")
+            selectors.append("node[\"enforcement\"=\"traffic_signals\"](\(bounds));")
+            selectors.append("node[\"camera:type\"=\"red_light\"](\(bounds));")
         }
         if categories.contains(.surveillanceCameras) {
             selectors.append("nwr[\"man_made\"=\"surveillance\"](\(bounds));")
             selectors.append("nwr[\"camera:type\"=\"traffic\"](\(bounds));")
             selectors.append("nwr[\"contact:webcam\"](\(bounds));")
-            selectors.append("node[\"highway\"=\"speed_camera\"][\"camera:type\"=\"red_light\"](\(bounds));")
-            selectors.append("node[\"highway\"=\"speed_camera\"][\"enforcement\"=\"traffic_signals\"](\(bounds));")
         }
         if categories.contains(.trafficSignals) {
             selectors.append("node[\"highway\"=\"traffic_signals\"](\(bounds));")
+            selectors.append("node[\"highway\"=\"crossing\"][\"crossing\"=\"traffic_signals\"](\(bounds));")
+            selectors.append("node[\"highway\"=\"crossing\"][\"crossing:signals\"=\"yes\"](\(bounds));")
         }
         var relationSelectors: [String] = []
         if categories.contains(.speedCameras) {
-            relationSelectors.append("relation[\"type\"=\"enforcement\"][\"enforcement\"=\"average_speed\"](\(bounds));")
-        }
-        if categories.contains(.surveillanceCameras) {
-            relationSelectors.append("relation[\"type\"=\"enforcement\"][\"enforcement\"=\"traffic_signals\"](\(bounds));")
+            relationSelectors.append("relation[\"type\"=\"enforcement\"][\"enforcement\"~\"^(maxspeed|average_speed|traffic_signals)$\"](\(bounds));")
         }
         let enforcementRelations = relationSelectors.isEmpty ? "" : """
         (
@@ -159,34 +175,58 @@ nonisolated struct MapRoadPOIQuery: Hashable, Sendable {
     }
 }
 
+nonisolated struct MapRoadPOIResult: Sendable {
+    let points: [MapRoadPOI]
+    var unavailableSources: [String] = []
+}
+
 actor MapRoadPOIProvider {
     static let shared = MapRoadPOIProvider()
 
     private struct CacheEntry {
-        let points: [MapRoadPOI]
+        let query: MapRoadPOIQuery
+        let endpoint: String
+        let result: MapRoadPOIResult
         let fetchedAt: Date
     }
 
     private var cache: [String: CacheEntry] = [:]
-    private var inFlight: [String: Task<[MapRoadPOI], Error>] = [:]
+    private var inFlight: [String: Task<MapRoadPOIResult, Error>] = [:]
     private var preferredEndpoint: URL?
 
-    func points(in query: MapRoadPOIQuery) async throws -> [MapRoadPOI] {
-        if let entry = cache[query.id], Date().timeIntervalSince(entry.fetchedAt) < 30 * 60 {
-            return entry.points
+    func points(in query: MapRoadPOIQuery) async throws -> MapRoadPOIResult {
+        let queryID = query.id
+        let endpoint = MapRoadPOIEndpoint.url.absoluteString
+        if let entry = cache[queryID], Date().timeIntervalSince(entry.fetchedAt) < 30 * 60 {
+            return entry.result
         }
-        if let task = inFlight[query.id] { return try await task.value }
+        // A closer view can reuse complete data already downloaded for a larger area.
+        let coveringEntry = cache.values.filter {
+            Date().timeIntervalSince($0.fetchedAt) < 30 * 60
+                && $0.endpoint == endpoint
+                && $0.query.contains(query)
+        }.min {
+            ($0.query.north - $0.query.south) * ($0.query.east - $0.query.west)
+                < ($1.query.north - $1.query.south) * ($1.query.east - $1.query.west)
+        }
+        if let entry = coveringEntry {
+            return MapRoadPOIResult(points: entry.result.points.filter { query.contains($0) })
+        }
+        if let task = inFlight[queryID] { return try await task.value }
 
-        let task = Task { try await self.download(query) }
-        inFlight[query.id] = task
+        let task = Task { try await self.loadCombined(query) }
+        inFlight[queryID] = task
         do {
             let points = try await task.value
-            cache[query.id] = CacheEntry(points: points, fetchedAt: .now)
-            inFlight[query.id] = nil
+            if points.unavailableSources.isEmpty {
+                cache[queryID] = CacheEntry(query: query, endpoint: endpoint,
+                                          result: points, fetchedAt: .now)
+            }
+            inFlight[queryID] = nil
             trimCacheIfNeeded()
             return points
         } catch {
-            inFlight[query.id] = nil
+            inFlight[queryID] = nil
             throw error
         }
     }
@@ -196,6 +236,37 @@ actor MapRoadPOIProvider {
         let oldestKeys = cache.sorted { $0.value.fetchedAt < $1.value.fetchedAt }
             .prefix(cache.count - 64).map(\.key)
         oldestKeys.forEach { cache[$0] = nil }
+    }
+
+    private func loadCombined(_ query: MapRoadPOIQuery) async throws -> MapRoadPOIResult {
+        guard query.categories.contains(.speedCameras), CANARDRoadDataProvider.intersects(query) else {
+            return MapRoadPOIResult(points: try await download(query))
+        }
+        async let osm = RoadSafetyFetch.capture { try await self.download(query) }
+        async let canard = RoadSafetyFetch.capture { try await CANARDRoadDataProvider.shared.load() }
+        let (osmResult, canardResult) = await (osm, canard)
+        let official: [MapRoadPOI]
+        if case .success(let snapshot) = canardResult {
+            official = snapshot.alerts.filter {
+                (query.south...query.north).contains($0.coordinate.latitude) &&
+                    (query.west...query.east).contains($0.coordinate.longitude)
+            }.map {
+                MapRoadPOI(id: $0.id, category: .speedCameras, coordinate: $0.coordinate,
+                           title: $0.title, subtitle: CANARDRoadDataProvider.attribution)
+            }
+        } else { official = [] }
+        switch (osmResult, canardResult) {
+        case (.success(let points), .success):
+            let merged = points + official.filter { device in
+                !points.contains { $0.category == .speedCameras && $0.coordinate.distance(to: device.coordinate) < 40 }
+            }
+            return MapRoadPOIResult(points: merged)
+        case (.success(let points), .failure):
+            return MapRoadPOIResult(points: points, unavailableSources: ["CANARD"])
+        case (.failure, .success):
+            return MapRoadPOIResult(points: official, unavailableSources: ["OpenStreetMap"])
+        case (.failure(let error), .failure): throw error
+        }
     }
 
     private func download(_ query: MapRoadPOIQuery) async throws -> [MapRoadPOI] {
@@ -257,9 +328,14 @@ actor MapRoadPOIProvider {
     private static func parseElements(_ elements: [MapRoadPOIElement],
                                       categories: Set<MapSafetyPOICategory>) -> [MapRoadPOI] {
         var unique: [String: MapRoadPOI] = [:]
-        for element in elements {
-            if element.type == "relation", let enforcement = element.tags?["enforcement"] {
+        // Process relations last so their richer classification overrides bare device tags.
+        for element in elements.sorted(by: { ($0.type == "relation" ? 1 : 0) < ($1.type == "relation" ? 1 : 0) }) {
+            if element.type == "relation", element.tags?["type"] == "enforcement",
+               let enforcement = element.tags?["enforcement"] {
                 if enforcement == "average_speed", categories.contains(.speedCameras) {
+                    for member in element.members ?? [] where member.role == "device" {
+                        if let id = member.osmID { unique[id] = nil }
+                    }
                     let sections = element.members?.filter { $0.role == "section" } ?? []
                     let start = element.members?.first(where: { $0.role == "from" })?.coordinate
                         ?? sections.first?.geometry?.first?.coordinate
@@ -280,15 +356,20 @@ actor MapRoadPOIProvider {
                             subtitle: "\(detail)© OpenStreetMap contributors")
                         unique[point.id] = point
                     }
-                } else if enforcement == "traffic_signals", categories.contains(.surveillanceCameras) {
-                    let devices = element.members?.filter { $0.role == "device" }
-                        .compactMap(\.coordinate) ?? []
-                    for (index, coordinate) in devices.enumerated() {
+                } else if ["traffic_signals", "maxspeed"].contains(enforcement),
+                          categories.contains(.speedCameras) {
+                    let devices = element.members?.filter { $0.role == "device" } ?? []
+                    for (index, device) in devices.enumerated() {
+                        guard let coordinate = device.coordinate else { continue }
+                        let speed = SpeedLimitParser.parse(element.tags?["maxspeed"])
+                        let detail = speed.map { "Limit \($0) km/h · " } ?? ""
                         let point = MapRoadPOI(
-                            id: "osm-relation-\(element.id)-redlight-\(index)",
-                            category: .surveillanceCameras,
+                            id: device.osmID ?? "osm-relation-\(element.id)-camera-\(index)",
+                            category: .speedCameras,
                             coordinate: coordinate,
-                            title: "Kamera rejestrująca przejazd na czerwonym")
+                            title: enforcement == "traffic_signals"
+                                ? "Kamera rejestrująca przejazd na czerwonym" : "Fotoradar",
+                            subtitle: "\(detail)© OpenStreetMap contributors")
                         unique[point.id] = point
                     }
                 }
@@ -299,7 +380,7 @@ actor MapRoadPOIProvider {
                   let longitude = element.lon ?? element.center?.lon,
                   latitude.isFinite, longitude.isFinite,
                   (-90...90).contains(latitude), (-180...180).contains(longitude),
-                  let category = category(for: tags), categories.contains(category) else { continue }
+                  let category = category(for: tags, categories: categories) else { continue }
 
             let coordinate = Coordinate(latitude: latitude, longitude: longitude)
             let osmID = "osm-\(element.type)-\(element.id)"
@@ -327,12 +408,11 @@ actor MapRoadPOIProvider {
         }.prefix(1_200).map { $0 }
     }
 
-    private static func category(for tags: [String: String]) -> MapSafetyPOICategory? {
-        if tags["highway"] == "speed_camera" {
-            return tags["enforcement"] == "traffic_signals" || tags["camera:type"] == "red_light"
-                ? .surveillanceCameras : .speedCameras
-        }
-        if tags["highway"] == "traffic_signals" { return .trafficSignals }
+    private static func category(for tags: [String: String],
+                                 categories: Set<MapSafetyPOICategory>) -> MapSafetyPOICategory? {
+        if OSMSafetyTags.enforcementType(tags) != nil, categories.contains(.speedCameras) { return .speedCameras }
+        if OSMSafetyTags.isTrafficSignal(tags), categories.contains(.trafficSignals) { return .trafficSignals }
+        guard categories.contains(.surveillanceCameras), OSMSafetyTags.enforcementType(tags) == nil else { return nil }
         if tags["man_made"] == "surveillance" {
             let surveillanceType = tags["surveillance:type"]?.lowercased()
             guard surveillanceType == nil || surveillanceType == "camera" || surveillanceType == "alpr" else {
@@ -346,11 +426,13 @@ actor MapRoadPOIProvider {
 
     private static func defaultTitle(for category: MapSafetyPOICategory, tags: [String: String]) -> String {
         switch category {
-        case .speedCameras: "Fotoradar"
+        case .speedCameras:
+            OSMSafetyTags.enforcementType(tags) == .redLightCamera
+                ? "Kamera rejestrująca przejazd na czerwonym" : "Fotoradar"
         case .surveillanceCameras:
             if tags["camera:type"] == "red_light" || tags["enforcement"] == "traffic_signals" {
                 "Kamera rejestrująca przejazd na czerwonym"
-            } else if tags["surveillance:type"] == "ALPR" {
+            } else if tags["surveillance:type"]?.lowercased() == "alpr" {
                 "Kamera kontroli ruchu"
             } else {
                 "Kamera monitoringu"
@@ -360,7 +442,7 @@ actor MapRoadPOIProvider {
     }
 }
 
-nonisolated private enum MapRoadPOIEndpoint {
+nonisolated enum MapRoadPOIEndpoint {
     static var url: URL {
         let configured = UserDefaults.standard.string(forKey: "overpassServer")
         return configured.flatMap(URL.init(string:))
@@ -402,6 +484,12 @@ nonisolated private struct MapRoadPOIElement: Decodable {
 
     nonisolated struct Member: Decodable {
         let role: String
+        let type: String?
+        let ref: Int64?
+        var osmID: String? {
+            guard let type, let ref else { return nil }
+            return "osm-\(type)-\(ref)"
+        }
         let lat: Double?
         let lon: Double?
         let geometry: [Location]?
@@ -422,4 +510,20 @@ nonisolated private struct MapRoadPOIElement: Decodable {
 
 nonisolated private enum MapRoadPOIError: Error {
     case unavailable
+}
+
+// Both browsing and route warnings must interpret enforcement tags identically.
+nonisolated enum OSMSafetyTags {
+    static func enforcementType(_ tags: [String: String]) -> RoadAlertType? {
+        if tags["enforcement"] == "traffic_signals" || tags["camera:type"] == "red_light" {
+            return .redLightCamera
+        }
+        return tags["highway"] == "speed_camera" ? .speedCamera : nil
+    }
+
+    static func isTrafficSignal(_ tags: [String: String]) -> Bool {
+        tags["highway"] == "traffic_signals" ||
+            (tags["highway"] == "crossing" &&
+                (tags["crossing"] == "traffic_signals" || tags["crossing:signals"] == "yes"))
+    }
 }

@@ -1,6 +1,18 @@
 import Foundation
 import MapKit
 
+/// Formats whole travel minutes consistently across search results and saved places.
+nonisolated enum TravelDurationFormatter {
+    static func string(minutes totalMinutes: Int) -> String {
+        let totalMinutes = max(0, totalMinutes)
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+        guard hours > 0 else { return "\(totalMinutes) min" }
+        guard minutes > 0 else { return "\(hours) godz." }
+        return "\(hours) godz. \(minutes) min"
+    }
+}
+
 enum SearchError: LocalizedError, Equatable {
     case unavailable, offline, timeout, rateLimited, locationRequired, noActiveRoute
     case locationNotFound(String)
@@ -102,6 +114,7 @@ struct SearchResult: Identifiable {
                              address: destination.address,
                              brand: brand,
                              operatorName: operatorName,
+                             countryCode: countryCode,
                              timeZoneIdentifier: timeZoneIdentifier)
     }
 
@@ -140,14 +153,15 @@ struct SearchResult: Identifiable {
 
     var travelSummary: String? {
         if let detour {
-            let minutes = max(0, Int((detour / 60).rounded(.up)))
+            let duration = TravelDurationFormatter.string(minutes: max(0, Int((detour / 60).rounded(.up))))
             if let detourDistance {
-                return "\(String(format: "%.1f", detourDistance / 1_000)) km od trasy • +\(minutes) min"
+                return "\(String(format: "%.1f", detourDistance / 1_000)) km od trasy • +\(duration)"
             }
-            return "+\(minutes) min objazdu (szacunek)"
+            return "+\(duration) objazdu (szacunek)"
         }
         if let travelTime, let travelDistance {
-            return "\(String(format: "%.1f", travelDistance / 1000)) km · ~\(max(1, Int((travelTime / 60).rounded(.up)))) min"
+            let duration = TravelDurationFormatter.string(minutes: max(1, Int((travelTime / 60).rounded(.up))))
+            return "\(String(format: "%.1f", travelDistance / 1000)) km · ~\(duration)"
         }
         switch travelEstimateStatus {
         case .calculating:

@@ -12,7 +12,7 @@ actor ValhallaRequestGate {
         let interval = host == publicServerHost ? publicServerMinimumInterval : 0
         guard interval > 0 else { return }
         while true {
-            try Task.checkCancellation()
+            try RoadRoutingContext.checkCancellation()
             let now = Date()
             let nextRequestDate = nextRequestDateByHost[host] ?? .distantPast
             guard nextRequestDate > now else {
@@ -59,7 +59,7 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
             "shape_format": "polyline6"
         ])
         try await ValhallaRequestGate.shared.waitUntilAllowed(for: endpoint)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await RoadRoutingContext.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw RoutingError.invalidResponse }
         guard (200...299).contains(http.statusCode) else { throw RoutingError.server(http.statusCode) }
         let result = try JSONDecoder().decode(MatrixResponse.self, from: data)
@@ -97,8 +97,15 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
             "costing": mode.valhallaCosting,
             "units": "kilometers",
             "directions_options": ["language": "pl-PL"],
-            "alternates": 2
+            "alternates": through.isEmpty ? 2 : 0,
+            "turn_lanes": true
         ]
+        if let heading = RoadRoutingContext.heading {
+            var locations = payload["locations"] as! [[String: Double]]
+            locations[0]["heading"] = heading
+            locations[0]["heading_tolerance"] = 45
+            payload["locations"] = locations
+        }
         if !avoiding.isEmpty {
             payload["avoid_locations"] = avoiding.map { ["lat": $0.latitude, "lon": $0.longitude] }
         }
@@ -112,7 +119,7 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
         try await ValhallaRequestGate.shared.waitUntilAllowed(for: endpoint)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await RoadRoutingContext.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw RoutingError.invalidResponse }
         guard (200...299).contains(http.statusCode) else { throw RoutingError.server(http.statusCode) }
         let result = try JSONDecoder().decode(Response.self, from: data)
@@ -121,11 +128,26 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
             let legs = trip.legs
             var coordinates: [Coordinate] = []
             var maneuvers: [Maneuver] = []
+            var travelSegments: [RouteTravelSegment] = []
+            var legStart = 0.0
             for leg in legs {
                 let legCoordinates = Polyline6.decode(leg.shape)
                 guard !legCoordinates.isEmpty else { return nil }
                 let offset = max(0, coordinates.count - (coordinates.isEmpty ? 0 : 1))
                 coordinates.append(contentsOf: coordinates.isEmpty ? legCoordinates : Array(legCoordinates.dropFirst()))
+                var cumulative = [0.0]
+                for pair in zip(legCoordinates, legCoordinates.dropFirst()) {
+                    cumulative.append(cumulative.last! + pair.0.distance(to: pair.1))
+                }
+                for turn in leg.maneuvers {
+                    guard let endIndex = turn.endShapeIndex, let time = turn.time,
+                          turn.beginShapeIndex >= 0, endIndex < cumulative.count,
+                          endIndex > turn.beginShapeIndex, time.isFinite, time >= 0 else { continue }
+                    travelSegments.append(RouteTravelSegment(
+                        startDistance: legStart + cumulative[turn.beginShapeIndex],
+                        endDistance: legStart + cumulative[endIndex], duration: time))
+                }
+                legStart += cumulative.last ?? 0
                 maneuvers += leg.maneuvers.map {
                     Maneuver(shapeIndex: min(coordinates.count - 1, offset + $0.beginShapeIndex),
                              instruction: $0.instruction, type: $0.type,
@@ -139,9 +161,11 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
                              exitToward: $0.sign?.exitToward)
                 }
             }
-            guard coordinates.count > 1 else { return nil }
+            guard coordinates.count > 1, trip.summary.length.isFinite, trip.summary.length > 0,
+                  trip.summary.time.isFinite, trip.summary.time >= 0 else { return nil }
             return NavigationRoute(coordinates: coordinates, distance: trip.summary.length * 1000,
-                                   expectedTravelTime: trip.summary.time, maneuvers: maneuvers, journey: nil)
+                                   expectedTravelTime: trip.summary.time, maneuvers: maneuvers, journey: nil,
+                                   travelSegments: travelSegments)
         }
         guard !routes.isEmpty else { throw RoutingError.invalidResponse }
         return routes
@@ -153,6 +177,7 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
               waypoints.count >= 2 else { throw RoutingError.invalidEndpoint }
         var request = URLRequest(url: endpoint.appendingPathComponent("optimized_route"))
         request.httpMethod = "POST"
+        request.timeoutInterval = 25
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var payload: [String: Any] = [
             "locations": ([from] + waypoints.map(\.coordinate) + [to]).map {
@@ -171,7 +196,7 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
         try await ValhallaRequestGate.shared.waitUntilAllowed(for: endpoint)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await RoadRoutingContext.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw RoutingError.invalidResponse }
         guard (200...299).contains(http.statusCode) else { throw RoutingError.server(http.statusCode) }
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -228,13 +253,15 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
         let type: Int
         let instruction: String
         let streetNames: [String]
+        let endShapeIndex: Int?
+        let time: Double?
         let beginShapeIndex: Int
         let lanes: [Lane]
         let sign: Sign?
 
         enum CodingKeys: String, CodingKey {
             case type, instruction, lanes, streetNames = "street_names", turnLanes = "turn_lanes", sign
-            case beginShapeIndex = "begin_shape_index"
+            case beginShapeIndex = "begin_shape_index", endShapeIndex = "end_shape_index", time
         }
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -242,6 +269,8 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
             instruction = try container.decode(String.self, forKey: .instruction)
             streetNames = (try? container.decode([String].self, forKey: .streetNames)) ?? []
             beginShapeIndex = try container.decode(Int.self, forKey: .beginShapeIndex)
+            endShapeIndex = try container.decodeIfPresent(Int.self, forKey: .endShapeIndex)
+            time = try container.decodeIfPresent(Double.self, forKey: .time)
             lanes = (try? container.decode([Lane].self, forKey: .lanes))
                 ?? (try? container.decode([Lane].self, forKey: .turnLanes)) ?? []
             sign = try? container.decode(Sign.self, forKey: .sign)
@@ -289,7 +318,7 @@ enum Polyline6 {
             while index < bytes.count && shift < 35 {
                 let byte = Int(bytes[index]) - 63
                 index += 1
-                guard byte >= 0 else { return nil }
+                guard (0...63).contains(byte) else { return nil }
                 result |= (byte & 31) << shift
                 if byte < 32 { return result & 1 == 1 ? ~(result >> 1) : result >> 1 }
                 shift += 5
@@ -297,7 +326,7 @@ enum Polyline6 {
             return nil
         }
         while index < bytes.count {
-            guard let lat = value(), let lon = value() else { break }
+            guard let lat = value(), let lon = value() else { return [] }
             latitude += lat; longitude += lon
             points.append(Coordinate(latitude: Double(latitude) / 1_000_000, longitude: Double(longitude) / 1_000_000))
         }

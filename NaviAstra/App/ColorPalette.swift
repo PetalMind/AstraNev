@@ -19,8 +19,8 @@ nonisolated enum NaviAstraColorPalette {
     static let cyclingRouteNight: UInt32 = 0x2BD9A8
     static let transitFallback: UInt32 = routeAlternativeDay
 
-    static let userLocationDay: UInt32 = 0x00B8D9
-    static let userLocationNight: UInt32 = 0x22D3EE
+    static let userLocationDay: UInt32 = 0x007AFF
+    static let userLocationNight: UInt32 = 0x64A8FF
     static let success: UInt32 = 0x2BB673
     static let warning: UInt32 = 0xF5A524
     static let trafficModerate: UInt32 = 0xF5C227
@@ -30,20 +30,21 @@ nonisolated enum NaviAstraColorPalette {
     static let info: UInt32 = 0x3B82F6
     static let roadSignRed: UInt32 = 0xD10A14
 
-    static let mapBackgroundDay: UInt32 = 0xEEF1F3
-    static let mapBackgroundNight: UInt32 = 0x0E1620
-    static let mapBuildingDay: UInt32 = 0xE2E7EA
-    static let mapBuildingNight: UInt32 = 0x1A2531
-    static let mapParkDay: UInt32 = 0xD3E6D0
-    static let mapParkNight: UInt32 = 0x1B3630
-    static let mapWaterDay: UInt32 = 0xBCD9EA
-    static let mapWaterNight: UInt32 = 0x12324A
-    static let mapLocalRoadNight: UInt32 = 0x26343F
-    static let mapMainRoadNightExploration: UInt32 = 0x3A4B58
-    static let mapMainRoadNightNavigation: UInt32 = 0x2F3D49
-    static let mapMainRoadOutlineDay: UInt32 = 0xC3CCD2
-    static let mapLabelDay: UInt32 = 0x2B3640
-    static let mapLabelNight: UInt32 = 0xC5D0D8
+    static let mapBackgroundDay: UInt32 = 0xF3F2EF
+    static let mapBackgroundNight: UInt32 = 0x171C24
+    static let mapBuildingDay: UInt32 = 0xE4E2DE
+    static let mapBuildingNight: UInt32 = 0x272F39
+    static let mapParkDay: UInt32 = 0xD8E8CD
+    static let mapParkNight: UInt32 = 0x253D32
+    static let mapWaterDay: UInt32 = 0xB4DDF2
+    static let mapWaterNight: UInt32 = 0x183B52
+    static let mapLocalRoadNight: UInt32 = 0x36414D
+    static let mapMainRoadNightExploration: UInt32 = 0x536170
+    static let mapMainRoadNightNavigation: UInt32 = 0x465565
+    static let mapMainRoadDay: UInt32 = 0xFFF0C2
+    static let mapMainRoadOutlineDay: UInt32 = 0xD5D2CC
+    static let mapLabelDay: UInt32 = 0x35414C
+    static let mapLabelNight: UInt32 = 0xD8E0E8
 
     static let routeCasingDay: UInt32 = 0x0A2A5C
     static let routeCasingNight: UInt32 = 0x0B121B
@@ -80,6 +81,11 @@ extension Color {
         naviAdaptive(day: NaviAstraColorPalette.textInactiveDay,
                      night: NaviAstraColorPalette.textInactiveNight,
                      name: "NaviAstra.TextInactive")
+    }
+
+    static func naviPOI(_ kind: PlacePOIMapMarkerKind) -> Color {
+        naviAdaptive(day: kind.colorHex(dark: false), night: kind.colorHex(dark: true),
+                     name: "NaviAstra.POI.\(kind.rawValue)")
     }
 
     private static func naviAdaptive(day: UInt32, night: UInt32, name: String) -> Color {

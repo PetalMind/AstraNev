@@ -75,10 +75,7 @@ final class EnergyPolicyEngine {
         let thermallyLimited = thermalState == .serious || thermalState == .critical
         let performanceLimited = lowPowerMode || thermallyLimited
         let routeActivity = transportMode == .car || transportMode == .parkRide
-        let speedKph = max(0, speedMetersPerSecond ?? 0) * 3.6
-        let drivingTrafficInterval: TimeInterval = performanceLimited
-            ? 60
-            : (speedKph > 90 ? 60 : (speedKph > 30 ? 30 : 45))
+        let drivingTrafficInterval: TimeInterval = performanceLimited ? 120 : 90
 
         let location: LocationPolicy
         let frameRate: Int
@@ -91,7 +88,7 @@ final class EnergyPolicyEngine {
             trafficInterval = nil
             transitInterval = nil
         case .mapBrowsing:
-            location = LocationPolicy(demand: .continuous, accuracy: .hundredMeters,
+            location = LocationPolicy(demand: .oneShot, accuracy: .hundredMeters,
                                       distanceFilter: lowPowerMode ? 100 : 50, activity: .other,
                                       allowsBackgroundUpdates: false, updatesHeading: false)
             frameRate = 30
@@ -106,7 +103,7 @@ final class EnergyPolicyEngine {
             transitInterval = nil
         case .driving:
             location = LocationPolicy(demand: .continuous, accuracy: .bestForNavigation,
-                                      distanceFilter: 3,
+                                      distanceFilter: 0,
                                       activity: transportMode == .car ? .automotiveNavigation : .otherNavigation,
                                       allowsBackgroundUpdates: true, updatesHeading: false)
             frameRate = performanceLimited ? 30 : 60
@@ -115,24 +112,22 @@ final class EnergyPolicyEngine {
                 ? (performanceLimited ? 60 : 30) : nil
         case .walking:
             location = LocationPolicy(demand: .continuous, accuracy: .nearestTenMeters,
-                                      distanceFilter: 5, activity: .fitness,
+                                      distanceFilter: 0, activity: .otherNavigation,
                                       allowsBackgroundUpdates: true, updatesHeading: true)
             frameRate = performanceLimited ? 30 : 60
             trafficInterval = nil
             transitInterval = nil
         case .backgroundNavigation:
             location = LocationPolicy(demand: .continuous, accuracy: .bestForNavigation,
-                                      distanceFilter: 8,
+                                      distanceFilter: 0,
                                       activity: transportMode == .car || transportMode == .parkRide
                                         ? .automotiveNavigation : .otherNavigation,
                                       allowsBackgroundUpdates: true, updatesHeading: false)
             frameRate = 0
-            trafficInterval = routeActivity ? 60 : nil
+            trafficInterval = routeActivity ? drivingTrafficInterval : nil
             transitInterval = transportMode == .transit || transportMode == .parkRide ? 60 : nil
         case .arrived:
-            location = LocationPolicy(demand: .oneShot, accuracy: .nearestTenMeters,
-                                      distanceFilter: 0, activity: .other,
-                                      allowsBackgroundUpdates: false, updatesHeading: false)
+            location = .stopped
             frameRate = 30
             trafficInterval = nil
             transitInterval = nil

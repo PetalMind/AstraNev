@@ -34,6 +34,9 @@ extension NavigationSession {
     }
 
     func selectDestination(_ destination: Destination, applyConfiguredMode: Bool = true) {
+        arrivalDetector.reset()
+        liveActivity.end()
+        state.arrivalLocation = nil
         let isEndingActiveTrip = state.status == .navigating || state.status == .rerouting
         if isEndingActiveTrip {
             finishTrip(arrived: false)
@@ -209,6 +212,18 @@ extension NavigationSession {
     }
 
     func optimizeWaypoints() async {
+        guard state.waypoints.count >= 2, state.status != .navigating, state.status != .rerouting else { return }
+        requestGeneration += 1
+        roadPlanningCancellationToken?.cancel()
+        let token = TransitPlanningCancellationToken()
+        roadPlanningCancellationToken = token
+        await RoadRoutingContext.$cancellationToken.withValue(token) {
+            await performWaypointOptimization()
+        }
+        if roadPlanningCancellationToken === token { roadPlanningCancellationToken = nil }
+    }
+
+    private func performWaypointOptimization() async {
         guard state.waypoints.count >= 2, let destination = state.destination,
               let origin = await resolvedRouteOriginCoordinate(for: state.transportMode) else { return }
         guard state.transportMode == .car || state.transportMode == .walking || state.transportMode == .bicycle else {
@@ -219,17 +234,26 @@ extension NavigationSession {
             state.errorMessage = "Wybrany serwer nie obsługuje optymalizacji przystanków."
             return
         }
+        let generation = requestGeneration
+        let waypoints = state.waypoints
+        let mode = state.transportMode
+        let preferences = state.routingPreferences
         do {
             let target = destinationRouteCoordinate(for: destination)
             let routedWaypoints = await routedDestinations(state.waypoints, mode: state.transportMode)
             let order = try await provider.optimizedWaypointOrder(from: origin, to: target,
-                                                                 waypoints: routedWaypoints, mode: state.transportMode,
-                                                                 preferences: state.routingPreferences)
+                                                                 waypoints: routedWaypoints, mode: mode,
+                                                                 preferences: preferences)
+            try RoadRoutingContext.checkCancellation()
+            guard generation == requestGeneration, state.destination?.id == destination.id,
+                  state.waypoints == waypoints, state.transportMode == mode,
+                  state.routingPreferences == preferences else { return }
             guard order.count == state.waypoints.count,
                   order.allSatisfy({ $0 >= 0 && $0 < state.waypoints.count }) else { throw RoutingError.invalidResponse }
             state.waypoints = order.map { state.waypoints[$0] }
             await preview(destination)
         } catch {
+            guard generation == requestGeneration, RoadRoutingContext.cancellationToken?.isCancelled != true else { return }
             state.errorMessage = "Nie udało się zoptymalizować kolejności: \(error.localizedDescription)"
         }
     }
