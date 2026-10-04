@@ -27,6 +27,7 @@ struct PlaceDetailsView: View {
     let presentation: PlaceDetailsPresentation
     let embeddedInBottomSheet: Bool
     let showsPrimaryAction: Bool
+    let onExpandDetails: (() -> Void)?
 
     @State private var details: PlaceDetails?
     @State private var isSaved: Bool
@@ -58,6 +59,7 @@ struct PlaceDetailsView: View {
          presentation: PlaceDetailsPresentation = .full,
          embeddedInBottomSheet: Bool = false,
          showsPrimaryAction: Bool = true,
+         onExpandDetails: (() -> Void)? = nil,
          supplementalDetails: [String] = [],
          onRouteFromPlace: (() -> Void)? = nil,
          onRemove: (() -> Bool)? = nil,
@@ -75,84 +77,89 @@ struct PlaceDetailsView: View {
         self.presentation = presentation
         self.embeddedInBottomSheet = embeddedInBottomSheet
         self.showsPrimaryAction = showsPrimaryAction
+        self.onExpandDetails = onExpandDetails
         self.supplementalDetails = supplementalDetails
         _details = State(initialValue: PlaceDetails.partial(for: result))
         _isSaved = State(initialValue: isSaved)
         _savedName = State(initialValue: result.destination.name)
+        _isLoading = State(initialValue: result.isPOI)
     }
 
     private var placeDetailsContent: some View {
         VStack(alignment: .leading, spacing: presentation == .compact ? 12 : 16) {
-            PlaceDetailsHeroSummary(
-                title: details?.name ?? result.destination.name,
-                symbol: photoSymbol(for: details?.category ?? result.category ?? ""),
-                showsPOIIcon: result.isPOI && !showsPlacePhoto,
-                categoryTitle: (details?.category ?? result.category).map(PlaceCategoryPresentation.title),
-                travelSummary: travelSummary)
+            HStack(alignment: .top, spacing: 12) {
+                PlaceDetailsHeroSummary(
+                    title: details?.name ?? result.destination.name,
+                    symbol: photoSymbol(for: details?.category ?? result.category ?? ""),
+                    showsPOIIcon: result.isPOI,
+                    categoryTitle: (details?.category ?? result.category).map(PlaceCategoryPresentation.title),
+                    travelSummary: travelSummary)
 
-            if presentation != .compact && showsPlacePhoto {
-                placePhotoSection
+                PlaceDetailsFavoriteButton(
+                    isSaved: isSaved, pulseScale: favoritePulseScale,
+                    canRemove: onRemove != nil, onToggle: toggleSavedState)
             }
 
-            if presentation == .medium {
-                compactDetailsSummary(includeCategory: false)
+            // The same essentials stay above photos in every presentation.
+            compactDetailsSummary()
+            detailsLoadStatus
+
+            if showsPrimaryAction || (onRouteFromPlace != nil && !isNavigating) {
+                placeDetailsActionBar
             }
 
-            placeDetailsActionBar
+            if favoriteFeedback != nil {
+                FavoriteFeedbackOverlay(feedback: $favoriteFeedback)
+            }
+            if let saveError {
+                Text(saveError).font(.caption).foregroundStyle(Color(naviHex: NaviAstraColorPalette.danger))
+            }
+
+            if presentation != .compact, let details,
+               details.phoneURL != nil || details.websiteURL != nil {
+                PlaceDetailsQuickContact(details: details, showsPhoneNumber: presentation == .full)
+            }
+
+            if presentation == .medium, let onExpandDetails {
+                Button(action: onExpandDetails) {
+                    HStack {
+                        Text("Wszystkie szczegóły")
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.up")
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+                .accessibilityHint("Rozwiń panel, aby zobaczyć pełne informacje o miejscu")
+            }
 
             if presentation != .compact, result.isPOI,
                PaliwoMapaFuelPriceProvider.isFuelStation(category: details?.category ?? result.category) {
                 PlaceFuelPricesSection(identity: fuelPriceIdentity)
             }
 
-            if presentation != .compact, let details,
-               details.phoneURL != nil || details.websiteURL != nil {
-                PlaceDetailsQuickContact(details: details)
-            }
-
-            if favoriteFeedback != nil {
-                FavoriteFeedbackOverlay(feedback: $favoriteFeedback)
-            }
-
-            if let saveError {
-                Text(saveError).font(.caption).foregroundStyle(Color(naviHex: NaviAstraColorPalette.danger))
-            }
-
-            if presentation == .compact {
-                compactDetailsSummary(includeCategory: false)
-            } else if presentation == .full {
-                Divider()
-                if !supplementalDetails.isEmpty || details?.hasAdditionalInformation == true {
-                    Text("Szczegóły miejsca")
-                        .font(.headline.weight(.semibold))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+            if presentation == .full {
                 ForEach(supplementalDetails, id: \.self) { detail in
                     Label(detail, systemImage: "info.circle")
                         .font(.subheadline)
                 }
                 if let details {
-                    PlaceDetailsAttributesSection(details: details, isLoading: isLoading, showHours: $showHours)
+                    PlaceDetailsAttributesSection(details: details, showHours: $showHours)
                 }
 
-                if isLoading {
-                    ProgressView("Uzupełnianie informacji…")
-                        .font(.caption)
-                } else if let loadError {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(loadError).font(.caption).foregroundStyle(Color.naviTextSecondary)
-                        Button("Spróbuj ponownie", systemImage: "arrow.clockwise") { retry += 1 }
-                            .font(.caption.weight(.semibold))
-                    }
-                } else if result.isPOI, details?.hasAdditionalInformation != true, supplementalDetails.isEmpty {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Brak dodatkowych informacji o tym miejscu.")
-                            .font(.caption).foregroundStyle(Color.naviTextSecondary)
-                        Button("Sprawdź ponownie", systemImage: "arrow.clockwise") { retry += 1 }
-                            .font(.caption.weight(.semibold))
+                if showsPlacePhoto {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(placePhoto?.role == .brandLogo ? "Marka" : "Zdjęcia i okolica")
+                            .font(.headline.weight(.semibold))
+                        placePhotoSection
                     }
                 }
+            }
 
+            if presentation == .full {
                 if let loadedAt {
                     let sourceTitle = details?.source.title ?? "OpenStreetMap"
                     let sources = hasAppleDetails && details?.source != .mapKit ? "Apple Maps + " + sourceTitle : sourceTitle
@@ -173,13 +180,9 @@ struct PlaceDetailsView: View {
         PlaceDetailsActionBar(
             primaryActionTitle: primaryActionTitle,
             isNavigating: isNavigating,
-            isSaved: isSaved,
-            favoritePulseScale: favoritePulseScale,
-            canRemoveSavedPlace: onRemove != nil,
             showsPrimaryAction: showsPrimaryAction,
             onPlanRoute: onPlanRoute,
-            onRouteFromPlace: onRouteFromPlace,
-            onToggleSavedState: toggleSavedState)
+            onRouteFromPlace: onRouteFromPlace)
     }
 
     private var fuelPriceIdentity: PlaceIdentity {
@@ -190,43 +193,44 @@ struct PlaceDetailsView: View {
         return identity
     }
 
-    @ViewBuilder
-    private func compactDetailsSummary(includeCategory: Bool = true) -> some View {
+    private func compactDetailsSummary() -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            if includeCategory, let category = details?.category ?? result.category {
-                Label(PlaceCategoryPresentation.title(category),
-                      systemImage: "tag")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(Color.naviTextSecondary)
-            }
             if let address = details?.address ?? result.destination.address, !address.isEmpty {
                 Label(address, systemImage: "mappin.and.ellipse")
                     .font(.subheadline)
                     .foregroundStyle(Color.naviTextPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
-            if let details {
-                PlaceDetailsCompactAttributesSection(details: details, showHours: $showHours)
-            }
-            if isLoading {
-                ProgressView("Uzupełnianie informacji…")
-                    .font(.caption)
-            } else if let loadError {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(loadError)
-                        .font(.caption)
-                        .foregroundStyle(Color.naviTextSecondary)
-                    Button("Spróbuj ponownie", systemImage: "arrow.clockwise") { retry += 1 }
-                        .font(.caption.weight(.semibold))
-                }
-            } else if result.isPOI, details?.hasAdditionalInformation != true,
-                      (details?.address ?? result.destination.address) == nil {
-                Text("Brak dodatkowych informacji o tym miejscu.")
-                    .font(.caption)
-                    .foregroundStyle(Color.naviTextSecondary)
+            if result.isPOI, let details {
+                PlaceDetailsCompactAttributesSection(details: details, isLoading: isLoading,
+                                                     showHours: $showHours)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var detailsLoadStatus: some View {
+        if isLoading {
+            ProgressView("Uzupełnianie informacji…")
+                .font(.caption)
+        } else if let loadError {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(loadError).font(.caption).foregroundStyle(Color.naviTextSecondary)
+                Button("Spróbuj ponownie", systemImage: "arrow.clockwise") { retry += 1 }
+                    .font(.caption.weight(.semibold))
+                    .frame(minHeight: 44)
+            }
+        } else if result.isPOI, details?.hasAdditionalInformation != true, supplementalDetails.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Brak dodatkowych informacji o tym miejscu.")
+                    .font(.caption).foregroundStyle(Color.naviTextSecondary)
+                Button("Sprawdź ponownie", systemImage: "arrow.clockwise") { retry += 1 }
+                    .font(.caption.weight(.semibold))
+                    .frame(minHeight: 44)
+            }
+        }
     }
 
     var body: some View {
@@ -503,7 +507,7 @@ struct PlaceDetailsView: View {
             isLoadingDetails: isLoading,
             category: details?.category ?? result.category ?? "",
             brandName: details?.brand ?? result.brand ?? result.destination.name,
-            photoHeight: presentation == .medium ? 144 : 220,
+            photoHeight: 220,
             onRetry: { retry += 1 },
             onOpenLookAround: { showLookAround = true },
             onPlacePhotoLoadFailure: { await handlePlacePhotoFailure() })

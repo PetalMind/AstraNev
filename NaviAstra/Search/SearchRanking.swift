@@ -102,9 +102,9 @@ enum SearchDeduplicator {
         if hasConflictingHouseNumbers(lhs.destination.address, rhs.destination.address) { return false }
 
         let leftNames = Set([lhs.destination.name, lhs.brand, lhs.operatorName]
-            .compactMap { $0 }.map(SearchRanking.normalizedIdentity))
+            .compactMap { $0 }.map { SearchRanking.normalizedIdentity($0) })
         let rightNames = Set([rhs.destination.name, rhs.brand, rhs.operatorName]
-            .compactMap { $0 }.map(SearchRanking.normalizedIdentity))
+            .compactMap { $0 }.map { SearchRanking.normalizedIdentity($0) })
         let sharedNames = leftNames.intersection(rightNames).filter { !$0.isEmpty }
         guard !sharedNames.isEmpty else { return false }
         let titleMatch = SearchRanking.normalizedIdentity(lhs.destination.name)

@@ -1,6 +1,6 @@
 import Foundation
 
-struct TransitRegion: Sendable {
+nonisolated struct TransitRegion: Sendable {
     let id: String
     let displayName: String
     let staticFeedFilename: String

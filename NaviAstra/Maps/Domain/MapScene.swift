@@ -38,6 +38,8 @@ struct MapScene {
     let isBottomSheetDragging: Bool
     let viewportPadding: CameraPadding
     let commands: MapSceneCommands
+    var weather = WeatherVisualConfiguration()
+    var weatherSamples: [RouteWeatherSample] = []
     var selectedPlace: SearchResult? = nil
 
     var placeMarkers: [SearchResult] {

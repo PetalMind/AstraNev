@@ -29,13 +29,6 @@ extension NavigationSession {
                 self.transitPlanningCancellationToken = nil
             }
         }
-        guard let origin = await resolvedRouteOriginCoordinate(for: mode),
-              generation == requestGeneration else {
-            guard generation == requestGeneration else { return }
-            state.status = .error
-            state.errorMessage = "Czekam na dokładną pozycję GPS."
-            return
-        }
         let requestedJourneyTimeMode = state.journeyTimeMode
         let requestedJourneyTime = state.journeyTargetTime
         state.destination = destination
@@ -59,6 +52,13 @@ extension NavigationSession {
         lastTransitProgressLegIndex = nil
         resetTransitRideConfirmation()
         state.errorMessage = nil
+        guard let origin = await resolvedRouteOriginCoordinate(for: mode),
+              generation == requestGeneration else {
+            guard generation == requestGeneration else { return }
+            state.status = .error
+            state.errorMessage = "Czekam na dokładną pozycję GPS."
+            return
+        }
         // The destination camera stays in place until route geometry is available.
         do {
             let accessTargets = await resolveAccessTargets(for: destination, mode: state.transportMode)

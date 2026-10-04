@@ -103,7 +103,9 @@ Szczegóły są przechowywane lokalnie w pliku `Application Support/NaviAstra/pl
 
 Szczegóły OSM karta pobiera najpierw z wybranego w ustawieniach serwera Overpass. Gdy żądanie kończy się błędem, przekracza limit czasu albo serwer nie ma pasującego obiektu, aplikacja próbuje kolejno publiczne instancje Overpass Private.coffee i VK Maps. Połączenia są sekwencyjne, a przy powodzeniu dane są zapisywane w tym samym cache. Dostępność tych instancji zależy od ich operatorów; lista pochodzi z [dokumentacji OpenStreetMap](https://wiki.openstreetmap.org/wiki/Overpass_API#Public_Overpass_API_instances).
 
-Jeśli odświeżenie się nie powiedzie, karta zachowuje dane już dostępne. Błąd i przycisk ponowienia pokazują się tylko wtedy, gdy karta nie ma dodatkowych informacji do wyświetlenia. Brak tagu oznacza brak informacji w źródle, a nie stan przeciwny: brak `opening_hours` nie znaczy, że sklep jest zamknięty; brak tagu opłaty nie znaczy, że parking jest bezpłatny.
+Jeśli odświeżenie się nie powiedzie, karta zachowuje dane już dostępne. Komunikat o błędzie i przycisk ponowienia są widoczne również wtedy, gdy karta ma informacje do wyświetlenia; komunikat wskazuje, że mogą być nieaktualne. Brak tagu oznacza brak informacji w źródle, a nie stan przeciwny: brak `opening_hours` nie znaczy, że sklep jest zamknięty; brak tagu opłaty nie znaczy, że parking jest bezpłatny.
+
+Panel szczegółów na mapie iOS otwiera się w trybie średnim. Nazwa, dojazd, adres i godziny znajdują się nad informacjami dodatkowymi, a główna akcja trasy jest przypięta na dole. Przycisk „Wszystkie szczegóły” rozwija panel; zdjęcia i Look Around pojawiają się w pełnym widoku. Zwijanie do skrótu zachowuje pobrane dane i stan karty. Pełna analiza hierarchii, sposobu otwierania i zmian jest w [POI_UX_REVIEW.md](POI_UX_REVIEW.md).
 
 ## Ograniczenia i prywatność żądań
 
@@ -124,3 +126,12 @@ Najważniejsze miejsca w kodzie:
 - `NaviAstra/THIRD_PARTY_NOTICES.txt` — informacje o licencjach dołączonych bibliotek;
 - `NaviAstra/Places/PlaceDetailsView.swift` — prezentacja szczegółów oraz godzin;
 - `NaviAstra/Places/NearbyPlaceProvider.swift` — pobliskie kategorie i POI wyszukiwane wzdłuż trasy.
+
+
+## Zaparkowany samochód
+
+Miejsce samochodu i jego szczegóły są zapisywane lokalnie. Zapis z GPS zachowuje dokładność pozycji; zapis wskazanego punktu mapy nie otrzymuje fikcyjnej dokładności. Starsze zapisy pozostają obsługiwane. Znacznik ma grot wskazujący zapisane współrzędne i pokazuje godzinę dla dzisiejszego parkowania albo datę dla wcześniejszego. Kartę można otworzyć ze znacznika lub skrótu samochodu w kontrolkach mapy.
+
+Karta pokazuje datę parkowania, adres lub współrzędne, dystans trasy pieszej i ETA z planera tras, szczegóły miejsca, zdjęcie i zapisany koniec parkowania. Przycisk dojścia pieszo pozostaje widoczny u dołu panelu. Dystans i ETA pochodzą z rzeczywistej trasy pieszej, wyznaczonej przez skonfigurowanego dostawcę routingu z aktualnej pozycji GPS. Karta odświeża trasę co 30 sekund. Przy braku GPS, błędzie lub braku trasy nie pokazuje odległości zastępczej ani fikcyjnego ETA. Rozpoczęcie prowadzenia również korzysta z aktualnego GPS, a nie z pozycji zapamiętanej przy przyjeździe. Otwarta karta odświeża pozycję co 10 sekund; prowadzenie do auta jest niedostępne w trakcie innej nawigacji. „Pokaż auto na mapie” zamyka kartę i ustawia kamerę na zapisanym punkcie. Edycja rozwija panel na iOS.
+
+Koniec parkowania jest informacją w karcie, bez powiadomienia systemowego. Po upływie terminu karta pokazuje „Czas parkowania minął” wraz z pełną datą i godziną. Błąd zapisu szczegółów pozostawia formularz otwarty. Zdjęcie jest powiązane z samochodem dopiero po udanym zapisie obu plików, a anulowane wczytywanie nie zmienia danych. Usunięcie miejsca nadal wymaga potwierdzenia.

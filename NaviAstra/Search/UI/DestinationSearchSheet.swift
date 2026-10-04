@@ -797,7 +797,7 @@ struct DestinationSearchSheet: View {
                 sectionHeading("Ostatnie wyszukiwania")
                 ForEach(recentSearches.prefix(5)) { item in
                     destinationRow(item.destination,
-                                   subtitle: item.searchedAt.formatted(date: .abbreviated, time: .shortened),
+                                   subtitle: TripHistoryFormat.date(item.searchedAt),
                                    symbol: "magnifyingglass")
                 }
             }

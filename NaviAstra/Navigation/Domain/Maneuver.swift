@@ -50,7 +50,7 @@ enum ManeuverKind: Int, Sendable {
         case .uTurnRight:
             "arrow.uturn.right"
         case .roundaboutEnter, .roundaboutExit:
-            "arrow.clockwise"
+            "arrow.triangle.2.circlepath"
         case .merge:
             "arrow.merge"
         case .straight, .stayStraight, .rampStraight:
@@ -124,4 +124,11 @@ struct TurnLaneGuidance: Identifiable, Sendable {
     var id: Int
     var indications: [String]
     var valid: Bool
+    /// A lane marked active is the preferred lane for completing the maneuver
+    /// without an extra lane change. `valid` can include wider alternatives.
+    var active: Bool = false
+    /// Direction-specific selections decoded from the router masks. They let
+    /// the UI emphasize the correct arrow when a lane allows more than one movement.
+    var validIndications: [String] = []
+    var activeIndications: [String] = []
 }

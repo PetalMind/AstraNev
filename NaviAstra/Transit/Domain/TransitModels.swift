@@ -123,7 +123,7 @@ nonisolated enum TransitStopMode: String, CaseIterable, Hashable, Sendable {
     }
 }
 
-struct TransitMapViewport: Equatable, Sendable {
+nonisolated struct TransitMapViewport: Equatable, Sendable {
     let south: Double
     let west: Double
     let north: Double

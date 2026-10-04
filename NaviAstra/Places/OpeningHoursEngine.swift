@@ -1,7 +1,7 @@
 import Foundation
 import JavaScriptCore
 
-struct OpeningHoursInterval: Decodable, Equatable, Sendable {
+nonisolated struct OpeningHoursInterval: Decodable, Equatable, Sendable {
     let startMilliseconds: Double
     let endMilliseconds: Double
     let unknown: Bool
@@ -20,7 +20,7 @@ struct OpeningHoursInterval: Decodable, Equatable, Sendable {
     var end: Date { Date(timeIntervalSince1970: endMilliseconds / 1_000) }
 }
 
-struct OpeningHoursEvaluation: Decodable, Equatable, Sendable {
+nonisolated struct OpeningHoursEvaluation: Decodable, Equatable, Sendable {
     let open: Bool
     let unknown: Bool
     var nextChangeMilliseconds: Double?

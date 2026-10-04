@@ -121,7 +121,9 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
     private let appearance: NavigationBottomSheetAppearance
     private let mediumHeightFraction: CGFloat
     private let minimumPeekHeight: CGFloat?
+    private let minimumMediumHeight: CGFloat?
     private let hidesExpandedChevron: Bool
+    private let resizesFromContent: Bool
     private let onClose: (() -> Void)?
     private let closeAccessibilityLabel: String
     private let content: (NavigationBottomSheetDetent, CGFloat) -> Content
@@ -140,7 +142,9 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
          isDragging: Binding<Bool>,
          mediumHeightFraction: CGFloat = 0.48,
          minimumPeekHeight: CGFloat? = nil,
+         minimumMediumHeight: CGFloat? = nil,
          hidesExpandedChevron: Bool = false,
+         resizesFromContent: Bool = true,
          onClose: (() -> Void)? = nil,
          closeAccessibilityLabel: String = "Zamknij panel",
          @ViewBuilder content: @escaping (NavigationBottomSheetDetent, CGFloat) -> Content,
@@ -151,7 +155,9 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
         self.appearance = appearance
         self.mediumHeightFraction = min(0.72, max(0.28, mediumHeightFraction))
         self.minimumPeekHeight = minimumPeekHeight
+        self.minimumMediumHeight = minimumMediumHeight
         self.hidesExpandedChevron = hidesExpandedChevron
+        self.resizesFromContent = resizesFromContent
         self.onClose = onClose
         self.closeAccessibilityLabel = closeAccessibilityLabel
         self._isDragging = isDragging
@@ -163,18 +169,22 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
 
     private var detentHeights: [CGFloat] {
         let expanded = expandedHeight
+        // Keep medium distinct from expanded on short screens and in landscape.
+        let minimumMedium = min(minimumMediumHeight ?? 0, expanded * 0.8)
         if expanded < 240 {
             let basePeek = min(expanded * 0.6, max(84, expanded * 0.45))
             let maximumPeek = max(basePeek, expanded - 40)
             let peek = min(maximumPeek, max(basePeek, minimumPeekHeight ?? basePeek))
-            let medium = min(expanded - 1, max(peek + 24, expanded * mediumHeightFraction))
+            let medium = min(expanded - 1, max(peek + 24, expanded * mediumHeightFraction,
+                                              minimumMedium))
             return [peek, medium, expanded]
         }
         // The compact summary sits below a 60 pt grabber; keep enough room for both.
         let basePeek = min(140, max(124, expanded * 0.18))
         let maximumPeek = max(basePeek, expanded - 60)
         let peek = min(maximumPeek, max(basePeek, minimumPeekHeight ?? basePeek))
-        let medium = min(expanded - 1, max(peek + 40, expanded * mediumHeightFraction))
+        let medium = min(expanded - 1, max(peek + 40, expanded * mediumHeightFraction,
+                                          minimumMedium))
         return [peek, medium, expanded]
     }
 
@@ -228,10 +238,11 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
                     }
                 }
                 .coordinateSpace(name: scrollSpaceName)
-                .scrollIndicators(.hidden)
+                .scrollIndicators(resizesFromContent ? .hidden : .visible)
                 .scrollBounceBehavior(.basedOnSize)
-                .scrollDisabled(detent == .peek)
-                .simultaneousGesture(dragGesture(fromContent: true))
+                .scrollDisabled(detent == .peek || (detent == .medium && resizesFromContent))
+                .simultaneousGesture(dragGesture(fromContent: true),
+                                     including: resizesFromContent ? .all : .none)
                 .onPreferenceChange(NavigationBottomSheetScrollOffsetKey.self) { minY in
                     scrollOffset = max(0, -minY)
                 }
@@ -243,6 +254,8 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
             }
 
             footer(detent, progress)
+                .fixedSize(horizontal: false, vertical: true)
+                .simultaneousGesture(dragGesture(fromContent: false))
         }
         .frame(maxWidth: .infinity)
         .frame(height: height, alignment: .top)
@@ -305,30 +318,37 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
     }
 
     private func dragGesture(fromContent: Bool) -> some Gesture {
-        DragGesture(minimumDistance: 7)
+        // The sheet's top edge moves during resizing; measure in a stable space.
+        DragGesture(minimumDistance: 7, coordinateSpace: .global)
             .onChanged { value in
-                guard abs(value.translation.height) > abs(value.translation.width) else { return }
                 if dragStartHeight == nil {
+                    guard abs(value.translation.height) > abs(value.translation.width) else { return }
                     let isPullingUp = value.translation.height < 0
                     let canExpand = selectedIndex < detentHeights.count - 1
                     if fromContent {
                         guard scrollOffset <= 1 else { return }
                         if isPullingUp {
-                            guard detent == .peek && canExpand else { return }
+                            guard canExpand else { return }
                         } else {
                             guard detent != .peek else { return }
                         }
                     }
                     dragStartHeight = restingHeight
-                    dragStartTranslation = value.translation.height
+                    // Only subtract motion already consumed by an expanded ScrollView.
+                    dragStartTranslation = fromContent && detent == .expanded
+                        ? value.translation.height : 0
                     ownsCurrentDrag = true
                 }
                 guard ownsCurrentDrag,
                       let startHeight = self.dragStartHeight,
                       let startTranslation = self.dragStartTranslation else { return }
                 let translationSinceCapture = value.translation.height - startTranslation
-                interactiveHeight = rubberBanded(startHeight - translationSinceCapture)
-                isDragging = true
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    interactiveHeight = rubberBanded(startHeight - translationSinceCapture)
+                    isDragging = true
+                }
             }
             .onEnded { value in
                 guard ownsCurrentDrag,

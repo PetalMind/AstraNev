@@ -5,6 +5,10 @@ extension NavigationSession {
         mapCameraController.setFreeLook()
     }
 
+    func refreshCurrentLocation() {
+        locationManager.requestCurrentLocation()
+    }
+
     func returnToFollow() {
         if state.status != .navigating && state.status != .rerouting {
             locationManager.requestCurrentLocation()

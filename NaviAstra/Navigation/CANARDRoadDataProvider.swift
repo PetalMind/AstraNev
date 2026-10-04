@@ -186,6 +186,14 @@ nonisolated enum RoadSafetyFetch {
 struct CombinedRoadDataProvider: RoadDataProvider {
     let osm: RoadDataProvider = OpenStreetMapRoadDataProvider()
 
+    func loadSpeedLimits(near coordinate: Coordinate) async throws -> RoadDataSnapshot? {
+        try await osm.loadSpeedLimits(near: coordinate)
+    }
+
+    func loadSpeedLimits(near coordinate: Coordinate, along corridor: [Coordinate]) async throws -> RoadDataSnapshot? {
+        try await osm.loadSpeedLimits(near: coordinate, along: corridor)
+    }
+
     func load(for route: [Coordinate]) async throws -> RoadDataSnapshot {
         guard CANARDRoadDataProvider.covers(route) else { return try await osm.load(for: route) }
         async let osmResult = RoadSafetyFetch.capture { try await osm.load(for: route) }

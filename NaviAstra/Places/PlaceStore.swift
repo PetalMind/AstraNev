@@ -34,8 +34,8 @@ final class PlaceStore {
     }
 
     @discardableResult
-    func saveParkedCar(at coordinate: Coordinate, parkedAt: Date = Date()) -> Bool {
-        repository.saveParkedCar(at: coordinate, parkedAt: parkedAt)
+    func saveParkedCar(at coordinate: Coordinate, parkedAt: Date = Date(), gpsAccuracy: Double? = nil) -> Bool {
+        repository.saveParkedCar(at: coordinate, parkedAt: parkedAt, gpsAccuracy: gpsAccuracy)
     }
 
     @discardableResult
@@ -48,8 +48,8 @@ final class PlaceStore {
         repository.removeParkedCar()
     }
 
-    func saveParkedCarPhoto(_ data: Data) -> String? {
-        repository.saveParkedCarPhoto(data)
+    func saveParkedCarPhoto(_ data: Data, for carID: UUID) -> String? {
+        repository.saveParkedCarPhoto(data, for: carID)
     }
 
     func parkedCarPhotoData(for car: ParkedCar) -> Data? {

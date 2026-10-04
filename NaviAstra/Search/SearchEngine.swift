@@ -162,7 +162,7 @@ struct SearchEngine {
                         try Task.checkCancellation()
                         results[index].travelEstimateStatus = .unavailable
                     }
-                    await onUpdate(Array(results.prefix(8)))
+                    onUpdate(Array(results.prefix(8)))
                 }
             } else {
                 let poiIndexes = results.indices.filter { results[$0].isPOI }
@@ -224,7 +224,7 @@ struct SearchEngine {
                                 results[target.index].travelEstimateStatus = .unavailable
                             }
                         }
-                        await onUpdate(Array(results.prefix(8)))
+                        onUpdate(Array(results.prefix(8)))
                     }
                     if intent.alongRoute, let routeTarget = context.routeTarget {
                         // Compare the same routing model on both sides; never subtract a stale live ETA.
@@ -260,7 +260,7 @@ struct SearchEngine {
             return (a.straightDistance ?? .infinity) < (b.straightDistance ?? .infinity)
         }
         let visibleResults = Array(results.prefix(8))
-        await onUpdate(visibleResults)
+        onUpdate(visibleResults)
         return visibleResults
     }
 

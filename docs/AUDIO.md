@@ -69,9 +69,9 @@ Scheduler porządkuje wypowiedzi według priorytetów (od najwyższego):
 
 Priorytet bezpieczeństwa może przerwać informację. Wypowiedzi niższego priorytetu nie przerywają bieżącej. Gdy audio jest zajęte, nowe informacje są pomijane, a pozostałe trafiają do uporządkowanej kolejki. Dla wypowiedzi poza krytycznymi i bezpośrednimi scheduler zachowuje odstęp 2,5 sekundy po zakończonej mowie.
 
-Klucz `pending` blokuje dodanie tego samego zdarzenia drugi raz podczas oczekiwania lub mówienia. Klucz trafia do `spoken` dopiero po callbacku `didFinish` syntezatora. Błąd aktywacji sesji, watchdog bez startu i callback anulowania zwalniają klucz, pozwalając na ponowienie. Callback `didStart` oznacza jedynie rozpoczęcie, nie sukces. Watchdog kończy próbę, jeśli syntezator nie rozpocznie jej w ciągu 8 sekund.
+Klucz `pending` blokuje dodanie tego samego zdarzenia drugi raz podczas oczekiwania lub mówienia. Po callbacku `didStart` klucz jest już traktowany jako zużyty, dzięki czemu przerwanie przez pilniejszy komunikat nie uruchamia pętli powtórzeń przy kolejnym GPS. Callback `didFinish` kończy wypowiedź, a błąd aktywacji sesji, watchdog bez startu i anulowanie przed rozpoczęciem zwalniają klucz, pozwalając na ponowienie. Watchdog kończy próbę, jeśli syntezator nie rozpocznie jej w ciągu 8 sekund.
 
-Manewry są deduplikowane semantycznie na podstawie rodzaju, znormalizowanej nazwy ulicy i przybliżonej lokalizacji, osobno dla każdego etapu. Alerty i incydenty używają ich stabilnego ID i etapu, a podróże — ID odcinka lub kursu. Klucze zakończonych wypowiedzi przetrwają rerouting; rozpoczęcie nowej nawigacji czyści je.
+Manewry są deduplikowane semantycznie na podstawie rodzaju, znormalizowanej nazwy ulicy i przybliżonej lokalizacji, osobno dla każdego etapu. Alerty i incydenty drogowe używają wspólnego klucza typu oraz przybliżonej lokalizacji i etapu, więc to samo zdarzenie nie wraca przy zmianie ID dostawcy ani między źródłami. Klucze zakończonych i rozpoczętych wypowiedzi przetrwają rerouting; rozpoczęcie nowej nawigacji czyści je.
 
 ## Ustawienia i panel audio
 
@@ -80,7 +80,7 @@ Preferencje są zapisywane w `UserDefaults` pod kluczami `voiceEnabled`, `voiceV
 Użytkownik może ustawić:
 
 - **Gadatliwość:** „Mała”, „Standardowa” lub „Szczegółowa”. Mała pomija bliższy etap manewru, korek, zdarzenia zbiorcze i część mniej krytycznych alertów; nadal podaje wysiadanie na następnym przystanku. Standardowa pomija korki i zdarzenia zbiorcze. Szczegółowa obejmuje znane typy i podaje czas opóźnienia korka, gdy dostawca go udostępni.
-- **Głos:** automatyczny polski głos systemowy albo głos `pl-PL` z listy udostępnionej przez system. Niedostępny zapisany identyfikator wraca do automatycznego wyboru.
+- **Głos:** automatyczny polski głos systemowy albo dowolny głos z listy udostępnionej przez system, podzielonej na polskie i pozostałe języki. Lista pokazuje nazwę, język i jakość; odświeża się przy otwarciu i po powrocie do aplikacji. Komunikaty pozostają po polsku, więc głosy innych języków mogą wymawiać je z akcentem. Niedostępny zapisany identyfikator jest oznaczony w ustawieniach; synteza korzysta wtedy z automatycznego polskiego głosu. Dodatkowe głosy pobiera się w ustawieniach dostępności urządzenia.
 - **Tempo:** suwak `0.38–0.62` przekazywany do `AVSpeechUtterance.rate`.
 - **Głośność komunikatu:** suwak `0–1` przekazywany do `AVSpeechUtterance.volume`; nie zmienia systemowej głośności ani muzyki.
 

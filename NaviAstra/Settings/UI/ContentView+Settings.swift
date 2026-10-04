@@ -1,5 +1,5 @@
 import SwiftUI
-import AVFAudio
+import AVFoundation
 
 extension ContentView {
     var trafficDetailsSheet: some View {
@@ -36,9 +36,18 @@ extension ContentView {
     private var settingsForm: some View {
         Form {
             Section("Nawigacja") {
+                settingsCategory("Historia przejazdów", subtitle: "Ukończone trasy i oceny prowadzenia",
+                                 icon: "clock.arrow.circlepath") {
+                    settingsTripHistoryPage
+                }
                 settingsCategory("Trasy i pojazd", subtitle: defaultTransportTitle,
                                  icon: "point.topleft.down.curvedto.point.bottomright.up") {
                     settingsRoutePage
+                }
+                settingsCategory("Twój znacznik",
+                                 subtitle: mapStore.transportPositionIconsEnabled ? "Modele i kolory" : "Klasyczna strzałka",
+                                 icon: "location.north.circle") {
+                    NavigationMarkerSettingsView(store: mapStore)
                 }
                 settingsCategory("Głos i ostrzeżenia",
                                  subtitle: navigationStore.state.voiceEnabled
@@ -57,7 +66,7 @@ extension ContentView {
             }
             Section("Usługi nawigacyjne") {
                 settingsCategory("Ruch drogowy",
-                                 subtitle: trafficConfigured ? "TomTom · klucz zapisany" : "TomTom · wymaga klucza API",
+                                 subtitle: TrafficCredential.read() != nil ? "TomTom · konfiguracja aplikacji" : "TomTom · usługa niedostępna",
                                  icon: "car.side.fill") {
                     settingsPage("Ruch drogowy") { settingsTrafficSection }
                 }
@@ -75,11 +84,33 @@ extension ContentView {
                                  icon: "info.circle.fill") {
                     settingsPage("Dane i prywatność") {
                         Section("Dostępność i dane") { settingsDisclaimer }
+                        Section("Ikonografia nawigacji") {
+                            Link("Mapbox Directions Icons · CC0 1.0",
+                                 destination: URL(string: "https://github.com/mapbox/directions-icons")!)
+                        }
                     }
                 }
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var settingsTripHistoryPage: some View {
+        RouteHistoryView(store: placeStore, onPlanTrip: { trip in
+            appRouter.dismiss(.settings)
+            replayTrip(trip)
+        }, onSearch: { destination in
+            appRouter.dismiss(.settings)
+            Task { await navigationStore.previewNewTrip(destination) }
+        }, onFavorite: { destination in
+            addFavoriteWithFeedback(destination)
+        }, onClose: {
+            appRouter.dismiss(.settings)
+        }, completedOnly: true, embeddedInNavigation: true)
+        .overlay(alignment: .top) {
+            FavoriteFeedbackOverlay(feedback: $favoriteFeedback)
+                .padding(.top, 48)
+        }
     }
 
     private var defaultTransportTitle: String {
@@ -130,6 +161,7 @@ extension ContentView {
             settingsAppearanceSection
             settingsMapTypeSection
             settingsCameraSection
+            settingsWeatherSection
             settingsMapDetailsSection
             Section("Miejsca i punkty drogowe") {
                 settingsCategory("Kategorie miejsc",
@@ -169,17 +201,9 @@ extension ContentView {
                 }
             }
             Section {
-                Button {
-                    Task { await routePlanningStore.applyPreferences(to: navigationStore) }
-                } label: {
-                    Text("Zastosuj preferencje trasy")
-                        .fontWeight(.semibold)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 4)
-                }
-                .buttonStyle(.borderedProminent)
-            } footer: {
-                Text("Domyślny środek transportu zapisuje się automatycznie. Preferencje dróg i pojazdu elektrycznego zatwierdź przyciskiem powyżej.")
+                Text("Zmiany zapisują się automatycznie i będą użyte przy kolejnym wyznaczeniu lub przeliczeniu trasy.")
+                    .font(.footnote)
+                    .foregroundStyle(Color.naviTextSecondary)
             }
         }
     }
@@ -297,7 +321,7 @@ extension ContentView {
     }
 
     private var settingsSafetyCategoryToggles: some View {
-        ForEach(MapSafetyPOICategory.allCases) { category in
+        ForEach(MapSafetyPOICategory.allCases.filter { $0 != .trafficSigns }) { category in
             Toggle(category.title, isOn: Binding(
                 get: { mapStore.mapSafetyPOICategories & category.mask != 0 },
                 set: { enabled in
@@ -308,13 +332,13 @@ extension ContentView {
     }
 
     private var settingsRoadDataDescription: some View {
-        Text("Punkty pochodzą z OpenStreetMap oraz publicznej mapy CANARD w Polsce. Dane CANARD są odświeżane co 24 godziny i mają charakter poglądowy. Kamery monitoringu i sygnalizatory pojawiają się po zbliżeniu mapy. Sygnalizacja oznacza lokalizację świateł, bez informacji o ich aktualnym kolorze.")
+        Text("Punkty pochodzą z OpenStreetMap oraz publicznej mapy CANARD w Polsce. Dane CANARD są odświeżane co 24 godziny i mają charakter poglądowy. Kamery monitoringu i sygnalizatory pojawiają się po zbliżeniu mapy. Sygnalizacja oznacza lokalizację świateł, bez informacji o ich aktualnym kolorze. Ograniczenia wysokości B-16 są dostępne bez profilu ciężarówki: z oznaczonych znaków lub początku odcinka drogi z maxheight. Szczegóły punktu wskazują sposób wyznaczenia lokalizacji. Sam tag maxheight:physical nie jest pokazywany jako znak. B-18 przedstawia limit masy rzeczywistej (maxweight), a B-5 zakaz wjazdu ciężarówek (hgv=no) lub próg DMC (maxweightrating:hgv). Te znaki również są dostępne bez profilu ciężarówki.")
             .font(.footnote)
             .foregroundStyle(Color.naviTextSecondary)
     }
 
     @ViewBuilder
-    private var roadPOIStatusLabel: some View {
+    var roadPOIStatusLabel: some View {
         switch mapStore.roadPOIStatus {
         case .disabled:
             EmptyView()
@@ -359,37 +383,28 @@ extension ContentView {
             }
             Text(navigationStore.state.voicePreferences.verbosity.detail)
                 .font(.footnote).foregroundStyle(Color.naviTextSecondary)
-            Picker("Głos polski", selection: voiceIdentifierBinding) {
-                Text("Automatyczny").tag("")
-                ForEach(availablePolishVoices, id: \.identifier) { voice in
-                    Text(voice.name).tag(voice.identifier)
-                }
-            }
-            if availablePolishVoices.isEmpty {
-                Text("System nie udostępnia listy głosów polskich; aplikacja poprosi o głos systemowy.")
-                    .font(.footnote).foregroundStyle(Color.naviTextSecondary)
-            }
-            voiceSliderRow(
+            VoiceSettingsPicker(selection: voiceIdentifierBinding)
+            VoiceSettingsSlider(
                 title: "Tempo mowy",
                 value: voiceRateBinding,
                 range: 0.38...0.62,
-                valueDescription: String(format: "%.0f%%", Double(navigationStore.state.voicePreferences.speechRate) * 200)
+                percentageMultiplier: 200
             )
-            voiceSliderRow(
+            VoiceSettingsSlider(
                 title: "Głośność komunikatów",
                 value: voiceVolumeBinding,
                 range: 0...1,
-                valueDescription: String(format: "%.0f%%", Double(navigationStore.state.voicePreferences.volume) * 100)
+                percentageMultiplier: 100
             )
         }
     }
 
     private var settingsRoutingSection: some View {
         Section {
-            Toggle("Unikaj dróg płatnych", isOn: $routePlanningStore.draftPreferences.avoidTolls)
-            Toggle("Unikaj autostrad", isOn: $routePlanningStore.draftPreferences.avoidHighways)
-            Toggle("Unikaj promów", isOn: $routePlanningStore.draftPreferences.avoidFerries)
-            Toggle("Unikaj dróg gruntowych", isOn: $routePlanningStore.draftPreferences.avoidUnpaved)
+            Toggle("Unikaj dróg płatnych", isOn: routePreferenceBinding(\.avoidTolls))
+            Toggle("Unikaj autostrad", isOn: routePreferenceBinding(\.avoidHighways))
+            Toggle("Unikaj promów", isOn: routePreferenceBinding(\.avoidFerries))
+            Toggle("Unikaj dróg gruntowych", isOn: routePreferenceBinding(\.avoidUnpaved))
         } header: {
             Text("Preferencje dróg")
         } footer: {
@@ -399,15 +414,15 @@ extension ContentView {
 
     private var settingsElectricVehicleSection: some View {
         Section {
-            Toggle("Uwzględnij zasięg EV", isOn: $routePlanningStore.draftPreferences.evPlanningEnabled)
+            Toggle("Uwzględnij zasięg EV", isOn: routePreferenceBinding(\.evPlanningEnabled))
             if routePlanningStore.draftPreferences.evPlanningEnabled {
-                TextField("Zasięg przy pełnej baterii (km)", value: $routePlanningStore.draftPreferences.evRangeKilometers,
+                TextField("Zasięg przy pełnej baterii (km)", value: routePreferenceBinding(\.evRangeKilometers),
                           format: .number.precision(.fractionLength(0)))
                 Stepper("Poziom baterii: \(routePlanningStore.draftPreferences.evBatteryPercent)%",
-                        value: $routePlanningStore.draftPreferences.evBatteryPercent, in: 1...100, step: 5)
-                TextField("Zużycie (kWh/100 km)", value: $routePlanningStore.draftPreferences.evConsumptionKWhPer100Km,
+                        value: routePreferenceBinding(\.evBatteryPercent), in: 1...100, step: 5)
+                TextField("Zużycie (kWh/100 km)", value: routePreferenceBinding(\.evConsumptionKWhPer100Km),
                           format: .number.precision(.fractionLength(1)))
-                TextField("Maks. moc ładowania auta (kW)", value: $routePlanningStore.draftPreferences.evMaximumChargingPowerKW,
+                TextField("Maks. moc ładowania auta (kW)", value: routePreferenceBinding(\.evMaximumChargingPowerKW),
                           format: .number.precision(.fractionLength(0)))
                 LabeledContent("Dostępny zasięg",
                                value: "\(Int(routePlanningStore.draftPreferences.availableEVRangeKilometers.rounded())) km")
@@ -445,27 +460,9 @@ extension ContentView {
             } label: {
                 Label("Bieżące warunki", systemImage: "car.side")
             }
-            Text(trafficConfigured
-                 ? "Klucz API zapisany na tym urządzeniu."
-                 : "Wpisz klucz API TomTom, aby włączyć bieżący ruch.")
-            SecureField("Klucz API TomTom", text: $trafficKey)
-            Button("Zapisz klucz") {
-                guard !trafficKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-                if navigationStore.configureTraffic(apiKey: trafficKey) {
-                    trafficConfigured = true
-                    trafficKey = ""
-                } else {
-                    navigationStore.state.errorMessage = "Nie udało się zapisać klucza w pęku kluczy."
-                }
-            }
-            .disabled(trafficKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-            if trafficConfigured {
-                Button("Wyłącz ruch i usuń klucz", role: .destructive) {
-                    if navigationStore.configureTraffic(apiKey: nil) { trafficConfigured = false }
-                    else { navigationStore.state.errorMessage = "Nie udało się usunąć klucza z pęku kluczy." }
-                }
-            }
+            Text("Dane o ruchu są pobierane automatycznie z TomTom. Dostępność zależy od połączenia z internetem i odpowiedzi usługi.")
+                .font(.footnote)
+                .foregroundStyle(Color.naviTextSecondary)
         }
     }
 
@@ -522,24 +519,24 @@ extension ContentView {
             Form {
                 if supportsActiveTripRoadPreferences {
                     Section(mode == .parkRide ? "Odcinek samochodowy" : "Preferencje trasy") {
-                        Toggle("Unikaj dróg płatnych", isOn: $routePlanningStore.draftPreferences.avoidTolls)
-                        Toggle("Unikaj autostrad", isOn: $routePlanningStore.draftPreferences.avoidHighways)
-                        Toggle("Unikaj promów", isOn: $routePlanningStore.draftPreferences.avoidFerries)
-                        Toggle("Unikaj dróg gruntowych", isOn: $routePlanningStore.draftPreferences.avoidUnpaved)
+                        Toggle("Unikaj dróg płatnych", isOn: routePreferenceBinding(\.avoidTolls))
+                        Toggle("Unikaj autostrad", isOn: routePreferenceBinding(\.avoidHighways))
+                        Toggle("Unikaj promów", isOn: routePreferenceBinding(\.avoidFerries))
+                        Toggle("Unikaj dróg gruntowych", isOn: routePreferenceBinding(\.avoidUnpaved))
                     }
                 }
 
                 if mode == .car {
                     Section("Pojazd elektryczny") {
-                        Toggle("Uwzględnij zasięg EV", isOn: $routePlanningStore.draftPreferences.evPlanningEnabled)
+                        Toggle("Uwzględnij zasięg EV", isOn: routePreferenceBinding(\.evPlanningEnabled))
                         if routePlanningStore.draftPreferences.evPlanningEnabled {
-                            TextField("Zasięg przy pełnej baterii (km)", value: $routePlanningStore.draftPreferences.evRangeKilometers,
+                            TextField("Zasięg przy pełnej baterii (km)", value: routePreferenceBinding(\.evRangeKilometers),
                                       format: .number.precision(.fractionLength(0)))
                             Stepper("Poziom baterii: \(routePlanningStore.draftPreferences.evBatteryPercent)%",
-                                    value: $routePlanningStore.draftPreferences.evBatteryPercent, in: 1...100, step: 5)
-                            TextField("Zużycie (kWh/100 km)", value: $routePlanningStore.draftPreferences.evConsumptionKWhPer100Km,
+                                    value: routePreferenceBinding(\.evBatteryPercent), in: 1...100, step: 5)
+                            TextField("Zużycie (kWh/100 km)", value: routePreferenceBinding(\.evConsumptionKWhPer100Km),
                                       format: .number.precision(.fractionLength(1)))
-                            TextField("Maks. moc ładowania auta (kW)", value: $routePlanningStore.draftPreferences.evMaximumChargingPowerKW,
+                            TextField("Maks. moc ładowania auta (kW)", value: routePreferenceBinding(\.evMaximumChargingPowerKW),
                                       format: .number.precision(.fractionLength(0)))
                             evConnectorToggle("ccs", title: "CCS")
                             evConnectorToggle("type2", title: "Type 2")
@@ -551,16 +548,9 @@ extension ContentView {
                 }
 
                 Section {
-                    Text("Zmiany zostaną użyte przy kolejnym przeliczeniu odcinka samochodowego.")
+                    Text("Zmiany zapisują się automatycznie i zostaną użyte przy kolejnym przeliczeniu odcinka samochodowego.")
                         .font(.footnote)
                         .foregroundStyle(Color.naviTextSecondary)
-                    Button("Zastosuj ustawienia trasy") {
-                        Task {
-                            await routePlanningStore.applyPreferences(to: navigationStore)
-                            appRouter.dismiss(.routeSettings)
-                        }
-                    }
-                    .fontWeight(.semibold)
                 }
             }
             .navigationTitle("Ustawienia trasy")
@@ -578,9 +568,21 @@ extension ContentView {
         Toggle(title, isOn: Binding(
             get: { routePlanningStore.draftPreferences.evConnectorTypes.contains(connector) },
             set: { isEnabled in
-                if isEnabled { routePlanningStore.draftPreferences.evConnectorTypes.insert(connector) }
-                else { routePlanningStore.draftPreferences.evConnectorTypes.remove(connector) }
+                routePlanningStore.updatePreferences({ preferences in
+                    if isEnabled { preferences.evConnectorTypes.insert(connector) }
+                    else { preferences.evConnectorTypes.remove(connector) }
+                }, to: navigationStore)
             }))
+    }
+
+    private func routePreferenceBinding<Value>(
+        _ keyPath: WritableKeyPath<RoutingPreferences, Value>
+    ) -> Binding<Value> {
+        Binding(
+            get: { routePlanningStore.draftPreferences[keyPath: keyPath] },
+            set: { value in
+                routePlanningStore.updatePreference(keyPath, value: value, to: navigationStore)
+            })
     }
 
     private func unavailableReason(_ title: String, reason: String) -> some View {
@@ -618,7 +620,7 @@ extension ContentView {
 
             switch navigationStore.state.trafficStatus {
             case .notConfigured:
-                Label("Wpisz klucz TomTom w ustawieniach.", systemImage: "key")
+                Label("Usługa ruchu jest niedostępna w tej konfiguracji aplikacji.", systemImage: "wifi.slash")
                     .foregroundStyle(Color.naviTextSecondary)
             case .updating:
                 Label("Pobieranie danych o ruchu…", systemImage: "arrow.triangle.2.circlepath")
@@ -667,4 +669,114 @@ extension ContentView {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 
+}
+
+private struct VoiceSettingsPicker: View {
+    @Binding var selection: String
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var voices: [AVSpeechSynthesisVoice] = []
+
+    private var polishVoices: [AVSpeechSynthesisVoice] {
+        voices.filter { $0.language.hasPrefix("pl-") || $0.language == "pl" }
+    }
+
+    private var otherVoices: [AVSpeechSynthesisVoice] {
+        voices.filter { !$0.language.hasPrefix("pl-") && $0.language != "pl" }
+    }
+
+    var body: some View {
+        Picker("Głos nawigacji", selection: $selection) {
+            Text("Automatyczny (polski)").tag("")
+            if !selection.isEmpty && !voices.contains(where: { $0.identifier == selection }) {
+                Text("Wybrany głos niedostępny (używany polski)").tag(selection)
+            }
+            Section("Polskie") {
+                ForEach(polishVoices, id: \.identifier) { voice in
+                    Text(label(for: voice)).tag(voice.identifier)
+                }
+            }
+            Section("Pozostałe języki") {
+                ForEach(otherVoices, id: \.identifier) { voice in
+                    Text(label(for: voice)).tag(voice.identifier)
+                }
+            }
+        }
+        .onAppear(perform: refreshVoices)
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { refreshVoices() }
+        }
+        Text("Komunikaty są po polsku. Głosy innych języków mogą czytać je z obcym akcentem. Lista zawiera głosy udostępnione przez system na tym urządzeniu.")
+            .font(.footnote).foregroundStyle(Color.naviTextSecondary)
+        if polishVoices.isEmpty {
+            Text("System nie udostępnia polskiego głosu. Wybierz dostępny głos lub pobierz polski głos w ustawieniach dostępności urządzenia.")
+                .font(.footnote).foregroundStyle(Color.naviTextSecondary)
+        }
+        Text("Dodatkowe głosy i warianty jakości pobierzesz w ustawieniach dostępności urządzenia. Po powrocie do aplikacji lista odświeży się automatycznie.")
+            .font(.footnote).foregroundStyle(Color.naviTextSecondary)
+    }
+
+    private func refreshVoices() {
+        voices = AVSpeechSynthesisVoice.speechVoices().sorted {
+            let first = label(for: $0)
+            let second = label(for: $1)
+            if first == second { return $0.identifier < $1.identifier }
+            return first.localizedStandardCompare(second) == .orderedAscending
+        }
+    }
+
+    private func label(for voice: AVSpeechSynthesisVoice) -> String {
+        let language = Locale(identifier: "pl_PL").localizedString(forIdentifier: voice.language) ?? voice.language
+        let quality: String
+        switch voice.quality {
+        case .enhanced: quality = "ulepszony"
+        case .premium: quality = "premium"
+        default: quality = "standardowy"
+        }
+        return "\(voice.name) · \(language) · \(quality)"
+    }
+}
+
+// Keep drag updates inside the row; persist the preference when editing ends.
+private struct VoiceSettingsSlider: View {
+    let title: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let percentageMultiplier: Double
+    @State private var draftValue: Double
+    @State private var isEditing = false
+
+    init(title: String, value: Binding<Double>, range: ClosedRange<Double>,
+         percentageMultiplier: Double) {
+        self.title = title
+        self._value = value
+        self.range = range
+        self.percentageMultiplier = percentageMultiplier
+        self._draftValue = State(initialValue: value.wrappedValue)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(String(format: "%.0f%%", draftValue * percentageMultiplier))
+                    .foregroundStyle(Color.naviTextSecondary)
+                    .monospacedDigit()
+            }
+            Slider(value: $draftValue, in: range) { editing in
+                isEditing = editing
+                if !editing { value = draftValue }
+            }
+        }
+        .onChange(of: value) { _, newValue in
+            guard !isEditing else { return }
+            draftValue = newValue
+        }
+        .onDisappear {
+            if isEditing {
+                value = draftValue
+                isEditing = false
+            }
+        }
+    }
 }

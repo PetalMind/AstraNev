@@ -437,7 +437,6 @@ struct TransitRouteProgressGeometry {
         let boundedAccuracy = accuracy.isFinite ? max(0, accuracy) : 0
         let maximumMatchDistance = max(150, boundedAccuracy * 2)
         let matches = legs.indices.compactMap { index -> (Int, RouteProjection, Double)? in
-            let leg = journey.legs[index]
             guard legs[index].length > 0 else { return nil }
             guard let projection = legs[index].geometry.project(coordinate, within: maximumMatchDistance),
                   projection.distanceFromRoute <= maximumMatchDistance else { return nil }

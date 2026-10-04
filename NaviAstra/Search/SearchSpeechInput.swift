@@ -91,8 +91,21 @@ final class SearchSpeechInput {
             return
         }
 
-        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: format) { buffer, _ in
-            request.append(buffer)
+        if #available(iOS 27.0, macOS 27.0, *) {
+            do {
+                try inputNode.__installTap(onBus: 0, bufferSize: 1_024, format: format,
+                                          error: (), block: { buffer, _ in
+                    request.append(buffer)
+                })
+            } catch {
+                errorMessage = "Nie można uruchomić wejścia audio."
+                stopCapture()
+                return
+            }
+        } else {
+            inputNode.installTap(onBus: 0, bufferSize: 1_024, format: format) { buffer, _ in
+                request.append(buffer)
+            }
         }
         hasInstalledAudioTap = true
         audioEngine.prepare()

@@ -1,16 +1,26 @@
 import SwiftUI
 
 extension ContentView {
-    var currentParkedCarLocation: NavigationLocation? {
-        if navigationStore.state.status == .arrived,
-           navigationStore.state.transportMode == .car,
-           let arrival = navigationStore.state.arrivalLocation { return arrival }
+    // Arrival is a parking suggestion only; distance and routing need a live fix.
+    var freshParkedCarLocation: NavigationLocation? {
         guard let location = navigationStore.state.location,
               Date().timeIntervalSince(location.timestamp) >= 0,
               Date().timeIntervalSince(location.timestamp) <= 15,
-              location.accuracy >= 0,
-              location.accuracy.isFinite else { return nil }
+              location.accuracy >= 0, location.accuracy.isFinite,
+              location.coordinate.isValidParkedCarCoordinate else { return nil }
         return location
+    }
+
+    var currentParkedCarLocation: NavigationLocation? {
+        if let location = freshParkedCarLocation { return location }
+        if navigationStore.state.status == .arrived,
+           navigationStore.state.transportMode == .car,
+           let arrival = navigationStore.state.arrivalLocation,
+           Date().timeIntervalSince(arrival.timestamp) >= 0,
+           Date().timeIntervalSince(arrival.timestamp) <= 15,
+           arrival.accuracy >= 0, arrival.accuracy.isFinite,
+           arrival.coordinate.isValidParkedCarCoordinate { return arrival }
+        return nil
     }
 
     var arrivalParkedCarPrompt: some View {
@@ -155,7 +165,7 @@ extension ContentView {
 
     func persistParkedCar(at coordinate: Coordinate, accuracy: Double?, parkedAt: Date = Date()) {
         let previousCar = placeStore.parkedCar
-        guard placeStore.saveParkedCar(at: coordinate, parkedAt: parkedAt) else { return }
+        guard placeStore.saveParkedCar(at: coordinate, parkedAt: parkedAt, gpsAccuracy: accuracy) else { return }
         arrivalCarPromptDismissed = true
         parkedCarPromptExpiresAt = nil
         let savedCar = placeStore.parkedCar
@@ -179,13 +189,15 @@ extension ContentView {
     }
 
     func undoParkedCarSave() {
-        parkedCarToastDismissTask?.cancel()
         guard let parkedCarToast else { return }
+        let succeeded: Bool
         if let previousCar = parkedCarToast.previousCar {
-            _ = placeStore.updateParkedCar(previousCar)
+            succeeded = placeStore.updateParkedCar(previousCar)
         } else {
-            _ = placeStore.removeParkedCar()
+            succeeded = placeStore.removeParkedCar()
         }
+        guard succeeded else { return }
+        parkedCarToastDismissTask?.cancel()
         withAnimation(.easeOut(duration: 0.2)) { self.parkedCarToast = nil }
     }
 
@@ -198,7 +210,8 @@ extension ContentView {
     }
 
     func guideToParkedCar(_ car: ParkedCar) {
-        guard currentParkedCarLocation != nil else {
+        guard placeStore.parkedCar?.id == car.id else { return }
+        guard freshParkedCarLocation != nil, !isNavigating else {
             navigationStore.state.errorMessage = "Czekam na aktualną pozycję GPS, aby wyznaczyć trasę do auta."
             return
         }

@@ -71,7 +71,7 @@ enum TransitRouteProfile: String, Codable, Hashable, Sendable {
     case fewestTransfers
 }
 
-struct TransitRoutePreferences: Hashable, Sendable {
+nonisolated struct TransitRoutePreferences: Hashable, Sendable {
     var profile: TransitRouteProfile = .balanced
     var additionalTransferBufferMinutes: Int = 1
     var pedestrianProfile: PedestrianProfile = .foot

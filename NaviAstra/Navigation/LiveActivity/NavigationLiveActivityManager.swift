@@ -1,12 +1,14 @@
+// Temporarily disabled for distribution without the widget extension.
+// Re-enable NAVIGATION_WIDGETS_ENABLED together with extension embedding and Live Activities support.
 import Foundation
 import OSLog
-#if os(iOS)
+#if os(iOS) && NAVIGATION_WIDGETS_ENABLED
 import ActivityKit
 #endif
 
 @MainActor
 final class NavigationLiveActivityManager {
-#if os(iOS)
+#if os(iOS) && NAVIGATION_WIDGETS_ENABLED
     private var activity: Activity<NavigationActivityAttributes>?
     private var pending: NavigationActivityAttributes.ContentState?
     private var worker: Task<Void, Never>?
@@ -85,7 +87,7 @@ final class NavigationLiveActivityManager {
 
 extension NavigationSession {
     func updateLiveActivity() {
-#if os(iOS)
+#if os(iOS) && NAVIGATION_WIDGETS_ENABLED
         guard state.status == .navigating || state.status == .rerouting else { return }
         guard let progress = state.progress, let destination = state.destination else { return }
         let maneuver = progress.nextManeuver

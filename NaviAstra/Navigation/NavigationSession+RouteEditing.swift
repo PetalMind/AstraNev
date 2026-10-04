@@ -1,6 +1,29 @@
 import Foundation
 
 extension NavigationSession {
+    func estimatedWalkingRoute(to destination: Destination) async throws -> SearchRouteEstimate? {
+        guard let location = state.location,
+              Date().timeIntervalSince(location.timestamp) >= 0,
+              Date().timeIntervalSince(location.timestamp) <= 15,
+              location.accuracy.isFinite, location.accuracy >= 0,
+              location.coordinate.isValidParkedCarCoordinate,
+              destination.coordinate.isValidParkedCarCoordinate else { return nil }
+        let routes: [NavigationRoute]
+        if let provider = routeProvider as? AdvancedRouteProvider {
+            routes = try await provider.calculateRoutes(
+                from: location.coordinate, to: destination.coordinate, through: [], mode: .walking,
+                preferences: state.routingPreferences, avoiding: [])
+        } else {
+            routes = try await routeProvider.calculateRoutes(
+                from: location.coordinate, to: destination.coordinate, mode: .walking)
+        }
+        try Task.checkCancellation()
+        guard let route = routes.first,
+              route.distance.isFinite, route.distance >= 0,
+              route.expectedTravelTime.isFinite, route.expectedTravelTime >= 0 else { return nil }
+        return SearchRouteEstimate(travelTime: route.expectedTravelTime, distanceMeters: route.distance)
+    }
+
     func estimatedCarRouteEstimate(to destination: Destination) async -> PlaceRouteEstimate? {
         guard let origin = state.location?.coordinate else { return nil }
         return await estimatedCarRouteEstimate(to: destination, from: origin)
@@ -112,10 +135,6 @@ extension NavigationSession {
 
     func planRoute() async {
         guard let destination = state.destination else { return }
-        guard routeOriginCoordinate != nil else {
-            state.errorMessage = "Czekam na dokładną pozycję GPS."
-            return
-        }
         await preview(destination)
     }
 

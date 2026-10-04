@@ -157,10 +157,14 @@ actor OSMCyclingRequestGate {
     static let shared = OSMCyclingRequestGate()
     private var lastRequestStartedAt: Date?
     private var requestInFlight = false
+    private var priorityWaiters = 0
 
-    func waitUntilAllowed() async -> Bool {
+    func waitUntilAllowed(priority: Bool = false) async -> Bool {
+        if priority { priorityWaiters += 1 }
+        defer { if priority { priorityWaiters -= 1 } }
         while true {
-            if requestInFlight {
+            if Task.isCancelled { return false }
+            if requestInFlight || (!priority && priorityWaiters > 0) {
                 try? await Task.sleep(nanoseconds: 100_000_000)
                 if Task.isCancelled { return false }
                 continue

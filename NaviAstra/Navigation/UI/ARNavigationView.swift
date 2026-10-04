@@ -176,8 +176,8 @@ struct ARNavigationView: View {
     private var maneuverCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 14) {
-                Image(systemName: currentProgress?.nextManeuver?.iconName ?? "figure.walk")
-                    .font(.system(size: 30, weight: .bold))
+                ManeuverIcon(type: currentProgress?.nextManeuver?.type,
+                             fallbackSymbol: currentProgress?.nextManeuver?.iconName ?? "figure.walk", size: 34)
                     .foregroundStyle(.white)
                     .frame(width: 56, height: 56)
                     .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16))
@@ -523,8 +523,11 @@ private struct ARGuidanceScene: UIViewRepresentable {
             }
             let camera = frame.camera.transform.columns.3
             let candidates = frame.anchors.compactMap { $0 as? ARPlaneAnchor }.filter { plane in
-                guard plane.alignment == .horizontal,
-                      plane.classification == .floor || plane.classification == .none else { return false }
+                guard plane.alignment == .horizontal else { return false }
+                switch plane.classification {
+                case .floor, .none: break
+                default: return false
+                }
                 let center = plane.transform * SIMD4<Float>(plane.center, 1)
                 let belowCamera = camera.y - center.y
                 let distance = hypot(camera.x - center.x, camera.z - center.z)

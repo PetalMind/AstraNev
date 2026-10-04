@@ -54,6 +54,10 @@ final class NavigationStore {
 
     func refreshTransitRouteIfNeeded() async { await session.refreshTransitRouteIfNeeded() }
 
+    func estimatedWalkingRoute(to destination: Destination) async throws -> SearchRouteEstimate? {
+        try await session.estimatedWalkingRoute(to: destination)
+    }
+
     func estimatedCarRouteEstimate(to destination: Destination) async -> PlaceRouteEstimate? {
         await session.estimatedCarRouteEstimate(to: destination)
     }
@@ -105,12 +109,12 @@ final class NavigationStore {
 
     func begin() { session.begin() }
     func stop() { session.stop() }
-    func configureTraffic(apiKey: String?) -> Bool { session.configureTraffic(apiKey: apiKey) }
     func refreshTraffic(force: Bool = false, forceRouteRefresh: Bool = true) {
         session.refreshTraffic(force: force, forceRouteRefresh: forceRouteRefresh)
     }
 
     func showRouteOverview() { session.showRouteOverview() }
+    func refreshCurrentLocation() { session.refreshCurrentLocation() }
     func returnToFollow() { session.returnToFollow() }
     func focusMap(on coordinate: Coordinate, zoom: Double = 15.5) {
         session.focusMap(on: coordinate, zoom: zoom)

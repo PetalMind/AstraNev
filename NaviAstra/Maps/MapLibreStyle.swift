@@ -63,6 +63,7 @@ final class NaviAstraMapStyle {
                                      : NaviAstraColorPalette.mapMainRoadOutlineDay)
 
         for layer in style.layers {
+            if layer.identifier.hasPrefix("naviastra-weather-") { continue }
             let id = layer.identifier
             if let layer = layer as? MLNBackgroundStyleLayer {
                 layer.backgroundColor = NSExpression(forConstantValue: background)
@@ -115,12 +116,13 @@ final class NaviAstraMapStyle {
                     layer.fillOutlineColor = NSExpression(forConstantValue: roadOutline)
                 }
             }
-            if let layer = layer as? MLNFillExtrusionStyleLayer {
+            if let layer = layer as? MLNFillExtrusionStyleLayer,
+               layer.sourceLayerIdentifier == "building" {
                 layer.isVisible = settings.overlays.buildings3D && settings.cameraMode == .threeD
                 layer.fillExtrusionColor = buildingColorExpression(neutralColor: hexColor(dark ? NaviAstraColorPalette.mapBuildingNight : NaviAstraColorPalette.mapBuildingDay))
                 layer.fillExtrusionOpacity = NSExpression(mglJSONObject: [
                     "interpolate", ["linear"], ["zoom"],
-                    15, navigating ? 0.08 : 0.12,
+                    14, navigating ? 0.28 : 0.48,
                     16, navigating ? 0.28 : 0.48,
                     17, navigating ? 0.42 : 0.72
                 ])
@@ -271,18 +273,19 @@ final class NaviAstraMapStyle {
             if let layer = layer as? MLNFillStyleLayer, layer.sourceLayerIdentifier == "building" {
                 layer.maximumZoomLevel = 24 // Retain footprints when extrusion is disabled.
             }
-            if let layer = layer as? MLNFillExtrusionStyleLayer {
-                layer.minimumZoomLevel = 15
-                layer.predicate = NSPredicate(format: "hide_3d != true")
+            if let layer = layer as? MLNFillExtrusionStyleLayer,
+               layer.sourceLayerIdentifier == "building" {
+                // OpenMapTiles omits hide_3d unless an outline must be hidden.
+                // Include that missing value explicitly in the native style filter.
+                layer.minimumZoomLevel = 14
+                layer.predicate = NSPredicate(format: "hide_3d == nil OR hide_3d != true")
+                // Keep the provider's height and base in meters at every zoom.
+                // Scaling them to zero at zoom 15 made the 3D view look flat.
                 layer.fillExtrusionHeight = NSExpression(mglJSONObject: [
-                    "interpolate", ["linear"], ["zoom"],
-                    15, 0, 16, ["*", ["coalesce", ["get", "render_height"], 0], 0.4],
-                    17, ["coalesce", ["get", "render_height"], 0]
+                    "coalesce", ["get", "render_height"], 0
                 ])
                 layer.fillExtrusionBase = NSExpression(mglJSONObject: [
-                    "interpolate", ["linear"], ["zoom"],
-                    15, 0, 16, ["*", ["coalesce", ["get", "render_min_height"], 0], 0.4],
-                    17, ["coalesce", ["get", "render_min_height"], 0]
+                    "coalesce", ["get", "render_min_height"], 0
                 ])
             }
             if let layer = layer as? MLNLineStyleLayer, layer.sourceLayerIdentifier == "transportation",

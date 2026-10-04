@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 private struct AppScene: View {
     let appPhase: ScenePhase
@@ -9,10 +12,15 @@ private struct AppScene: View {
             .task {
                 dependencies.navigationStore.setAppIsForeground(appPhase == .active)
                 dependencies.navigationStore.startLocation()
+                updateScreenIdleTimer()
             }
             .onChange(of: appPhase) { _, phase in
                 dependencies.navigationStore.setAppIsForeground(phase == .active)
+                updateScreenIdleTimer()
                 if phase == .background { BackgroundMaintenance.schedule() }
+            }
+            .onChange(of: dependencies.navigationStore.state.status) { _, _ in
+                updateScreenIdleTimer()
             }
             .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
                 dependencies.navigationStore.refreshEnergyPolicy()
@@ -20,6 +28,14 @@ private struct AppScene: View {
             .onReceive(NotificationCenter.default.publisher(for: ProcessInfo.thermalStateDidChangeNotification)) { _ in
                 dependencies.navigationStore.refreshEnergyPolicy()
             }
+    }
+
+    private func updateScreenIdleTimer() {
+        #if os(iOS)
+        let status = dependencies.navigationStore.state.status
+        UIApplication.shared.isIdleTimerDisabled = appPhase == .active &&
+            (status == .navigating || status == .rerouting)
+        #endif
     }
 }
 

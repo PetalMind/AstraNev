@@ -100,9 +100,6 @@ struct MapLibreView: NSViewRepresentable {
         private var positionPin: MKPointAnnotation?
         private let puckEngine = NavigationPuckEngine()
         private var puckRenderTimer: Timer?
-        private var lastPositionMarkerAngle: Int?
-        private var lastPositionMarkerIsNavigating: Bool?
-        private var lastPositionMarkerIsDark: Bool?
         private var lastDestinationMarkerIsArrived: Bool?
         private var transitVehiclePins: [String: MKPointAnnotation] = [:]
         private let transitStopRenderer = MacTransitStopRenderer()
@@ -144,7 +141,6 @@ struct MapLibreView: NSViewRepresentable {
         private var lastCameraCommandID: Int?
         private var lastOverviewRouteID: UUID?
         private var lastRoutePreviewExpanded: Bool?
-        private var programmaticCamera = false
         private var lastBaseMap: BaseMap?
         private var lastDimension: MapDimension?
         private var lastCameraMode: MapDimension?
@@ -250,11 +246,12 @@ struct MapLibreView: NSViewRepresentable {
             guard gesture.state == .began else { return }
             placeSearch?.cancel()
             placeRequestID = UUID()
-            programmaticCamera = false
             if gesture is NSPanGestureRecognizer { parent.onMapPan() }
             parent.state.cameraState = .freeLook
             parent.state.cameraIntent = nil
         }
+
+        private let weatherRenderer = WeatherMapRenderer()
 
         func update(_ map: MKMapView) {
             routeRenderer.updateContext(parent)
@@ -275,12 +272,12 @@ struct MapLibreView: NSViewRepresentable {
                 map.addAnnotations(searchPins)
             }
             if let car = parent.scene.parkedCar {
-                if parkedCarPin == nil || shownParkedCarID != car.id {
+                if parkedCarPin == nil || shownParkedCarID != car.id || parkedCarPin?.subtitle != car.mapTimestamp {
                     if let parkedCarPin { map.removeAnnotation(parkedCarPin) }
                     let pin = MKPointAnnotation()
                     pin.coordinate = car.coordinate.cl
                     pin.title = "Zaparkowany samochód"
-                    pin.subtitle = car.parkedAt.formatted(date: .omitted, time: .shortened)
+                    pin.subtitle = car.mapTimestamp
                     parkedCarPin = pin
                     shownParkedCarID = car.id
                     map.addAnnotation(pin)
@@ -329,6 +326,7 @@ struct MapLibreView: NSViewRepresentable {
                 map.showsBuildings = parent.settings.overlays.buildings3D
                 lastBuildingVisibility = parent.settings.overlays.buildings3D
             }
+            weatherRenderer.update(map: map, configuration: parent.scene.weather, samples: parent.scene.weatherSamples)
             routeRenderer.updateRoutes(on: map, previousStatus: lastStatus)
             routeRenderer.updateTrafficOverlay(on: map)
             routeRenderer.updateRouteTrafficOverlays(on: map)
@@ -397,7 +395,7 @@ struct MapLibreView: NSViewRepresentable {
             let roadAlertDistance = parent.state.roadAlertRouteDistance
             let roadAlerts = (showsRoadAlerts ? parent.state.roadSafetyAlerts : [])
                 .filter { alert in
-                    if let category = alert.type.mapSafetyPOICategory,
+                    if let category = alert.mapSafetyPOICategory,
                        !parent.settings.safetyPOICategories.contains(category) { return false }
                     guard let distance = alert.distanceAlongRoute else { return false }
                     guard isNavigating else { return true }
@@ -571,7 +569,6 @@ struct MapLibreView: NSViewRepresentable {
                let route = parent.state.route, lastStatus == .routePreview {
                 effectiveIntent.bounds = (parent.state.alternatives + [route]).flatMap(\.coordinates)
             }
-            programmaticCamera = true
             MacMapCameraAnimator.apply(effectiveIntent, state: cameraState, to: map)
             lastViewportPadding = parent.viewportPadding
             lastMapSize = map.bounds.size
@@ -644,7 +641,7 @@ struct MapLibreView: NSViewRepresentable {
                     && shownPlaceResults[$0].id == parent.scene.selectedPlace?.id
             } ?? false
             marker.displayPriority = isSelectedPlace ? .required : .defaultHigh
-            marker.setAccessibilityLabel("\(kind.accessibilityName): \(annotation.title ?? "")")
+            marker.setAccessibilityLabel("\(kind.accessibilityName): \(annotation.title.flatMap { $0 } ?? "")")
             marker.setAccessibilityRole(.button)
         }
 
@@ -703,33 +700,42 @@ struct MapLibreView: NSViewRepresentable {
             if let marker = routeRenderer.annotationView(for: annotation) { return marker }
             if let pin = parkedCarPin, annotation === pin {
                 let marker = MKAnnotationView(annotation: annotation, reuseIdentifier: "parked-car")
-                marker.frame = NSRect(x: 0, y: 0, width: 64, height: 54)
+                marker.frame = NSRect(x: 0, y: 0, width: 80, height: 70)
+                marker.centerOffset = CGPoint(x: 0, y: -35)
                 marker.wantsLayer = true
-                marker.layer?.backgroundColor = PlacePOIMapPalette.accentColor(dark: usesDarkMapAppearance).cgColor
-                marker.layer?.cornerRadius = 16
-                marker.layer?.borderWidth = 2
-                marker.layer?.borderColor = NSColor.white.cgColor
-                marker.layer?.shadowColor = NSColor.black.cgColor
-                marker.layer?.shadowOpacity = 0.25
-                marker.layer?.shadowRadius = 4
+                let bubble = CAShapeLayer()
+                let path = CGMutablePath()
+                path.addRoundedRect(in: CGRect(x: 1, y: 11, width: 78, height: 58), cornerWidth: 18, cornerHeight: 18)
+                path.move(to: CGPoint(x: 31, y: 13))
+                path.addLine(to: CGPoint(x: 40, y: 1))
+                path.addLine(to: CGPoint(x: 49, y: 13))
+                path.closeSubpath()
+                bubble.path = path
+                bubble.fillColor = PlacePOIMapPalette.accentColor(dark: usesDarkMapAppearance).cgColor
+                bubble.strokeColor = NSColor.white.cgColor
+                bubble.lineWidth = 2
+                bubble.shadowColor = NSColor.black.cgColor
+                bubble.shadowOpacity = 0.25
+                bubble.shadowRadius = 4
+                marker.layer?.addSublayer(bubble)
 
-                let icon = NSImageView(frame: NSRect(x: 22, y: 31, width: 20, height: 19))
+                let icon = NSImageView(frame: NSRect(x: 28, y: 41, width: 24, height: 23))
                 icon.image = NSImage(systemSymbolName: "car.side.fill", accessibilityDescription: "Samochód")?
                     .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 16, weight: .semibold))
                 icon.contentTintColor = .white
                 icon.imageScaling = .scaleProportionallyUpOrDown
                 marker.addSubview(icon)
                 let label = NSTextField(labelWithString: "Auto")
-                label.frame = NSRect(x: 3, y: 17, width: 58, height: 13)
+                label.frame = NSRect(x: 4, y: 25, width: 72, height: 16)
                 label.alignment = .center
                 label.textColor = .white
-                label.font = .boldSystemFont(ofSize: 10)
+                label.font = .boldSystemFont(ofSize: 12)
                 marker.addSubview(label)
                 let time = NSTextField(labelWithString: pin.subtitle ?? "")
-                time.frame = NSRect(x: 3, y: 4, width: 58, height: 12)
+                time.frame = NSRect(x: 4, y: 13, width: 72, height: 13)
                 time.alignment = .center
                 time.textColor = NSColor.white.withAlphaComponent(0.9)
-                time.font = .systemFont(ofSize: 8, weight: .medium)
+                time.font = .systemFont(ofSize: 10, weight: .medium)
                 marker.addSubview(time)
                 marker.setAccessibilityLabel("Zaparkowany samochód, \(pin.subtitle ?? "")")
                 marker.setAccessibilityRole(.button)
@@ -828,20 +834,12 @@ struct MapLibreView: NSViewRepresentable {
 
             if let pin = positionPin, annotation === pin {
                 let identifier = "user-position"
-                let view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) ?? MKAnnotationView(annotation: annotation, reuseIdentifier: identifier)
+                let view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) as? NavigationMarkerMapKitView
+                    ?? NavigationMarkerMapKitView(annotation: annotation, reuseIdentifier: identifier)
                 view.annotation = annotation
-                let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
-                let location = parent.state.weakGPS ? parent.state.cameraLocation : parent.state.location
-                let relativeBearing = location.flatMap { location -> CLLocationDirection? in
-                    guard isNavigating, location.course.isFinite, location.course >= 0 else { return nil }
-                    return location.course - mapView.camera.heading
-                }
-                view.image = positionMarkerImage(navigating: isNavigating, relativeBearing: relativeBearing)
-                view.centerOffset = isNavigating ? CGPoint(x: 0, y: 16) : .zero
-                lastPositionMarkerAngle = relativeBearing.map { Int($0.rounded()) }
-                lastPositionMarkerIsNavigating = isNavigating
-                lastPositionMarkerIsDark = parent.colorScheme == .dark
+                view.update(positionMarkerPresentation(on: mapView, bearing: puckEngine.frame()?.bearing))
                 view.displayPriority = .required
+                view.collisionMode = .none
                 return view
             }
             if let routeOriginPin, annotation === routeOriginPin {
@@ -888,9 +886,13 @@ struct MapLibreView: NSViewRepresentable {
             }
             puckEngine.update(location: parent.state.location, route: activeRoute,
                               isNavigating: isNavigating, matchedRoute: matchedRoute)
-            if isNavigating, parent.state.location != nil {
+            if isNavigating, parent.state.location != nil, parent.scene.energyPolicy.mapRenderingEnabled {
+                let interval = 1.0 / Double(max(1, parent.scene.energyPolicy.mapFramesPerSecond))
+                if let puckRenderTimer, abs(puckRenderTimer.timeInterval - interval) > 0.001 {
+                    stopPuckRenderTimer()
+                }
                 if puckRenderTimer == nil {
-                    let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+                    let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
                         self?.renderPositionPuckFrame()
                     }
                     RunLoop.main.add(timer, forMode: .common)
@@ -922,50 +924,17 @@ struct MapLibreView: NSViewRepresentable {
 
         private func updatePositionPuckStyle(on map: MKMapView, isNavigating: Bool,
                                              bearing: CLLocationDirection?) {
-            guard let positionPin, let view = map.view(for: positionPin) else { return }
-            view.centerOffset = isNavigating ? CGPoint(x: 0, y: 16) : .zero
-            let relativeBearing = bearing.flatMap { isNavigating ? $0 - map.camera.heading : nil }
-            let angle = relativeBearing.map { Int($0.rounded()) }
-            if lastPositionMarkerAngle != angle || lastPositionMarkerIsNavigating != isNavigating
-                || lastPositionMarkerIsDark != (parent.colorScheme == .dark) {
-                view.image = positionMarkerImage(navigating: isNavigating, relativeBearing: relativeBearing)
-                lastPositionMarkerAngle = angle
-                lastPositionMarkerIsNavigating = isNavigating
-                lastPositionMarkerIsDark = parent.colorScheme == .dark
-            }
+            guard let positionPin, let view = map.view(for: positionPin) as? NavigationMarkerMapKitView else { return }
+            view.update(positionMarkerPresentation(on: map, bearing: bearing))
         }
 
-        private func positionMarkerImage(navigating: Bool, relativeBearing: CLLocationDirection?) -> NSImage {
-            NSImage(size: NSSize(width: 28, height: 28), flipped: false) { rect in
-                guard let context = NSGraphicsContext.current?.cgContext else { return false }
-                let circle = rect.insetBy(dx: 1.25, dy: 1.25)
-                context.setFillColor(NSColor(naviHex: self.parent.colorScheme == .dark
-                    ? NaviAstraColorPalette.userLocationNight : NaviAstraColorPalette.userLocationDay).cgColor)
-                context.setShadow(offset: .zero, blur: 4,
-                                  color: NSColor(naviHex: NaviAstraColorPalette.navigationSurface).withAlphaComponent(0.8).cgColor)
-                context.fillEllipse(in: circle)
-                context.setShadow(offset: .zero, blur: 0, color: nil)
-                context.setStrokeColor(NSColor.white.cgColor)
-                context.setLineWidth(2.5)
-                context.strokeEllipse(in: circle)
-                guard navigating, let relativeBearing else { return true }
-
-                context.saveGState()
-                context.translateBy(x: rect.midX, y: rect.midY)
-                context.rotate(by: CGFloat(relativeBearing * .pi / 180))
-                context.translateBy(x: -rect.midX, y: -rect.midY)
-                let arrow = CGMutablePath()
-                arrow.move(to: CGPoint(x: 14, y: 22))
-                arrow.addLine(to: CGPoint(x: 20, y: 8))
-                arrow.addLine(to: CGPoint(x: 14, y: 11))
-                arrow.addLine(to: CGPoint(x: 8, y: 8))
-                arrow.closeSubpath()
-                context.addPath(arrow)
-                context.setFillColor(NSColor.white.cgColor)
-                context.fillPath()
-                context.restoreGState()
-                return true
-            }
+        private func positionMarkerPresentation(on map: MKMapView, bearing: Double?) -> NavigationMarkerPresentation {
+            let zoom = log2(360 / max(0.00001, map.region.span.longitudeDelta))
+            return NavigationMarkerPresentation.resolve(
+                state: parent.state, settings: parent.settings, bearing: bearing,
+                cameraHeading: map.camera.heading, pitch: Double(map.camera.pitch), zoom: zoom,
+                night: parent.colorScheme == .dark,
+                increasedContrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast)
         }
 
         private func destinationMarkerImage(arrived: Bool) -> NSImage? {
@@ -977,6 +946,7 @@ struct MapLibreView: NSViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
+            updatePositionPuckStyle(on: mapView, isNavigating: false, bearing: puckEngine.frame()?.bearing)
             let center = Coordinate(latitude: mapView.centerCoordinate.latitude, longitude: mapView.centerCoordinate.longitude)
             scheduleSearchMapCenterUpdate(center)
             let region = mapView.region
@@ -989,16 +959,12 @@ struct MapLibreView: NSViewRepresentable {
                 east: min(180, region.center.longitude + halfLongitude),
                 zoom: log2(360 / max(0.00001, region.span.longitudeDelta))))
 
-            let wasProgrammaticCamera = programmaticCamera
-            if wasProgrammaticCamera { programmaticCamera = false }
-            if !wasProgrammaticCamera, parent.state.status == .routePreview {
-                parent.state.cameraState = .freeLook
-                parent.state.cameraIntent = nil
-                parent.onMapPan()
-            }
+            // Region changes also come from automatic route fitting and sheet resizing.
+            // Only userGesture should enter free look and collapse the sheet.
             scheduleTransitAnnotationUpdate(on: mapView)
             updateCyclingPaths(on: mapView)
             updateMapRoadPOIs(on: mapView)
+            updateMapRoadPOIAnnotations(on: mapView)
         }
 
         func mapViewDidFinishRenderingMap(_ mapView: MKMapView, fullyRendered: Bool) {
@@ -1007,6 +973,7 @@ struct MapLibreView: NSViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            if let renderer = weatherRenderer.renderer(for: overlay) { return renderer }
             if let tileOverlay = overlay as? MKTileOverlay {
                 return MKTileOverlayRenderer(tileOverlay: tileOverlay)
             }
@@ -1055,10 +1022,10 @@ struct MapLibreView: NSViewRepresentable {
                 center: center,
                 latitudeDelta: region.span.latitudeDelta,
                 longitudeDelta: region.span.longitudeDelta,
-                categories: parent.settings.safetyPOICategories
+                categories: parent.settings.roadPOICategories
             ) else {
                 stopMapRoadPOIUpdates()
-                setMapRoadPOIStatus(parent.settings.safetyPOICategories.isEmpty ? .disabled : .zoomIn)
+                setMapRoadPOIStatus(parent.settings.roadPOICategories.isEmpty ? .disabled : .zoomIn)
                 guard mapRoadPOIQueryID != nil || !mapRoadPOIs.isEmpty else { return }
                 mapRoadPOIQueryID = nil
                 mapRoadPOIs = []
@@ -1080,11 +1047,17 @@ struct MapLibreView: NSViewRepresentable {
             updateMapRoadPOIAnnotations(on: map)
             mapRoadPOITask = Task { [weak self, weak map] in
                 do {
-                    try await Task.sleep(nanoseconds: 350_000_000)
-                    let result = try await MapRoadPOIProvider.shared.points(in: query)
+                    let result: MapRoadPOIResult
+                    if let cached = await MapRoadPOIProvider.shared.cachedPoints(in: query) {
+                        result = cached
+                    } else {
+                        try await Task.sleep(nanoseconds: 350_000_000)
+                        try Task.checkCancellation()
+                        result = try await MapRoadPOIProvider.shared.points(in: query)
+                    }
                     guard !Task.isCancelled, let self, let map,
                           self.mapRoadPOIQueryID == query.id,
-                          self.parent.settings.safetyPOICategories.isSuperset(of: query.categories) else { return }
+                          self.parent.settings.roadPOICategories.isSuperset(of: query.categories) else { return }
                     self.mapRoadPOIRetryAfter = nil
                     self.mapRoadPOIs = result.points
                     self.setMapRoadPOIStatus(result.unavailableSources.isEmpty
@@ -1124,26 +1097,31 @@ struct MapLibreView: NSViewRepresentable {
 
         private func updateMapRoadPOIAnnotations(on map: MKMapView) {
             let routeAlertIDs = Set(shownRoadAlerts.map { $0.mapPOIID ?? $0.id })
-            let points = mapRoadPOIs.filter { !routeAlertIDs.contains($0.id) }
-            let ids = points.map(\.id)
-            if ids != shownMapRoadPOIIDs {
-                map.removeAnnotations(mapRoadPOIPins)
-                mapRoadPOIPins = points.map { point in
-                    let pin = MKPointAnnotation()
+            let area = map.visibleMapRect
+            let visibleArea = area.insetBy(dx: -area.size.width * 0.15, dy: -area.size.height * 0.15)
+            let points = mapRoadPOIs.filter {
+                !routeAlertIDs.contains($0.id) && visibleArea.contains(MKMapPoint($0.coordinate.cl))
+            }
+            var retainedPins = Dictionary(uniqueKeysWithValues: zip(shownMapRoadPOIIDs, mapRoadPOIPins))
+            var addedPins: [MKPointAnnotation] = []
+            let pins = points.map { point in
+                if let pin = retainedPins.removeValue(forKey: point.id) { return pin }
+                let pin = MKPointAnnotation()
+                addedPins.append(pin)
+                return pin
+            }
+            if !retainedPins.isEmpty { map.removeAnnotations(Array(retainedPins.values)) }
+            mapRoadPOIPins = pins
+            shownMapRoadPOIIDs = points.map(\.id)
+            shownMapRoadPOIs = points
+            for (point, pin) in zip(points, pins) {
+                if pin.coordinate.latitude != point.coordinate.latitude || pin.coordinate.longitude != point.coordinate.longitude {
                     pin.coordinate = point.coordinate.cl
-                    pin.title = point.title
-                    pin.subtitle = point.subtitle
-                    return pin
                 }
-                shownMapRoadPOIIDs = ids
-                shownMapRoadPOIs = points
-                map.addAnnotations(mapRoadPOIPins)
+                if pin.title != point.title { pin.title = point.title }
+                if pin.subtitle != point.subtitle { pin.subtitle = point.subtitle }
             }
-            for (point, pin) in zip(points, mapRoadPOIPins) {
-                pin.coordinate = point.coordinate.cl
-                pin.title = point.title
-                pin.subtitle = point.subtitle
-            }
+            if !addedPins.isEmpty { map.addAnnotations(addedPins) }
         }
 
         private func updateCyclingPaths(on map: MKMapView) {
@@ -1192,7 +1170,7 @@ struct MapLibreView: NSViewRepresentable {
                     self.cyclingPathOverlays = result.paths.map { path in
                         var coordinates = path.coordinates.map(\.cl)
                         let line = MKPolyline(coordinates: &coordinates, count: coordinates.count)
-                        line.title = "Ścieżka OSM · © OpenStreetMap contributors"
+                        line.title = "Ścieżka rowerowa"
                         return line
                     }
                     map.addOverlays(self.cyclingPathOverlays, level: .aboveRoads)
@@ -1249,7 +1227,7 @@ struct MapLibreView: NSViewRepresentable {
             if closurePin == nil {
                 let pin = MKPointAnnotation()
                 pin.title = "Droga zamknięta"
-                pin.subtitle = "TomTom zgłasza zamknięty odcinek drogi."
+                pin.subtitle = "Zgłoszone zamknięcie odcinka drogi."
                 closurePin = pin
                 map.addAnnotation(pin)
             }

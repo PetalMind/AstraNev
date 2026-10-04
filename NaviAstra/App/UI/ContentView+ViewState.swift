@@ -405,12 +405,6 @@ extension ContentView {
         return components?.url
     }
 
-    var availablePolishVoices: [AVSpeechSynthesisVoice] {
-        AVSpeechSynthesisVoice.speechVoices()
-            .filter { $0.language == "pl-PL" }
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-    }
-
     var voiceEnabledBinding: Binding<Bool> {
         Binding(
             get: { navigationStore.state.voiceEnabled },
@@ -425,10 +419,7 @@ extension ContentView {
 
     var voiceIdentifierBinding: Binding<String> {
         Binding(
-            get: {
-                let identifier = navigationStore.state.voicePreferences.voiceIdentifier ?? ""
-                return availablePolishVoices.contains(where: { $0.identifier == identifier }) ? identifier : ""
-            },
+            get: { navigationStore.state.voicePreferences.voiceIdentifier ?? "" },
             set: { value in updateVoicePreferences { $0.voiceIdentifier = value.isEmpty ? nil : value } })
     }
 

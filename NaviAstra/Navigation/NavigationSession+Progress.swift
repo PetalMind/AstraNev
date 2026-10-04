@@ -107,7 +107,6 @@ extension NavigationSession {
         let projection = measurement.projection
         let routeMatch = measurement.matchedRoute
         previousRouteMatch = (route.id, projection, location.timestamp)
-        let geometryLength = measurement.geometryLength
         state.routeMatch = NavigationRouteMatch(
             routeID: route.id,
             locationTimestamp: location.timestamp,

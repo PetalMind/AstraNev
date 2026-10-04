@@ -139,27 +139,47 @@ extension ContentView {
         let maneuver = navigationStore.state.progress?.nextManeuver
         let fallbackSymbol = navigationStore.state.transportMode == .parkRide
             ? "parkingsign.circle.fill" : "arrow.up"
+        let instruction = maneuver?.displayInstruction
+            ?? (navigationStore.state.transportMode == .parkRide
+                ? "Jedź do parkingu P+R" : "Kontynuuj do celu")
 
         return Button {
             withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
                 currentStepExpandedOverride = true
             }
         } label: {
-            HStack(spacing: 7) {
-                Image(systemName: maneuver?.iconName ?? fallbackSymbol)
-                    .font(.system(size: 21, weight: .semibold))
+            HStack(spacing: 10) {
+                ManeuverIcon(type: maneuver?.type, fallbackSymbol: maneuver?.iconName ?? fallbackSymbol, size: 25)
                     .foregroundStyle(.white)
                     .frame(width: 44, height: 44)
                     .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(instruction)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.naviTextPrimary)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.85)
+
+                    if let streetLine = maneuver?.streetLine {
+                        Text(streetLine)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Color.naviTextSecondary)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
                 Image(systemName: "arrowtriangle.down.fill")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(Color.naviTextSecondary)
                     .frame(width: 18, height: 18)
             }
-            .padding(7)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 7)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(maneuver?.displayInstruction ?? "Kontynuuj do celu")
+        .accessibilityLabel(instruction)
         .accessibilityHint("Rozwiń informacje o kroku")
     }
 
@@ -170,6 +190,8 @@ extension ContentView {
                               isDragging: $isMapBottomSheetDragging,
                               mediumHeightFraction: navigationStore.state.transportMode == .transit ? 0.62 : 0.30,
                               minimumPeekHeight: navigationStore.state.transportMode == .transit ? 156 : nil,
+                              minimumMediumHeight: navigationStore.state.transportMode == .transit ? nil : 280,
+                              resizesFromContent: false,
                               onClose: navigationStore.state.transportMode == .transit
                                 ? { navigationStore.stop() } : nil,
                               closeAccessibilityLabel: "Zakończ nawigację") { detent, _ in
@@ -227,11 +249,11 @@ extension ContentView {
                                         .padding(.top, 4)
                                 }
 
-                                journeyNavigationQuickActions
-                                    .padding(.horizontal, 18)
-                                    .padding(.top, 8)
-
                             }
+
+                            journeyNavigationQuickActions
+                                .padding(.horizontal, 18)
+                                .padding(.top, 8)
                         } else {
                             transitCompactNavigationSummary(transitLeg)
                                 .padding(.horizontal, 18)
@@ -245,6 +267,11 @@ extension ContentView {
                             .padding(.horizontal, 18)
                     }
                 } else {
+                    if detent == .expanded && isOnRoadDrivingLeg {
+                        navigationRoadAlertsPanel
+                            .padding(.horizontal, 18)
+                            .padding(.bottom, 12)
+                    }
                     journeyNavigationSummaryRow(detent: detent)
                         .padding(.horizontal, 18)
                         .padding(.top, detent == .peek ? 0 : 4)
@@ -261,7 +288,7 @@ extension ContentView {
                             .padding(.top, 14)
                     }
 
-                    if detent == .expanded {
+                    if detent != .peek {
                         journeyNavigationQuickActions
                             .padding(.horizontal, 18)
                             .padding(.top, 14)
@@ -601,8 +628,7 @@ extension ContentView {
     private var journeyNextStepPreview: some View {
         if showsRoadManeuverTimeline, let next = nextRoadManeuverAfterCurrent {
             HStack(spacing: 11) {
-                Image(systemName: next.maneuver.iconName)
-                    .font(.system(size: 15, weight: .semibold))
+                ManeuverIcon(type: next.maneuver.type, fallbackSymbol: next.maneuver.iconName, size: 20)
                     .foregroundStyle(Color.naviTextPrimary)
                     .frame(width: 32, height: 32)
                     .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
@@ -763,8 +789,7 @@ extension ContentView {
                                        distanceToStep: Double?,
                                        isCurrent: Bool) -> some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: maneuver.iconName)
-                .font(.system(size: 13, weight: .semibold))
+            ManeuverIcon(type: maneuver.type, fallbackSymbol: maneuver.iconName, size: 19)
                 .foregroundStyle(isCurrent ? Color.accentColor : Color.naviTextSecondary)
                 .frame(width: 32, height: 32)
                 .background(isCurrent ? Color.accentColor.opacity(0.13) : Color.primary.opacity(0.055),

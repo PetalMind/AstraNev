@@ -155,11 +155,6 @@ extension ContentView {
         }
         let limit = navigationStore.state.speedLimitKph
         let aboveLimit = speedWarningsEnabled && (current.map { value in limit.map { value > $0 + 5 } ?? false } ?? false)
-        let routeDistance = navigationStore.state.roadAlertRouteDistance
-        let nextRoadAlert = nextNavigationRoadSafetyAlert
-        let nextRoadAlertDistance = nextRoadAlert.map {
-            max(0, ($0.distanceAlongRoute ?? routeDistance) - routeDistance)
-        } ?? 0
         let speedDescription = current.map { "Prędkość \($0) kilometrów na godzinę" } ?? "Prędkość niedostępna"
         let accessibilityDescription = [
             limit.map { "Limit \($0) kilometrów na godzinę" },
@@ -208,27 +203,6 @@ extension ContentView {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilityDescription)
 
-            if let alert = nextRoadAlert {
-                NavigationAlertDisclosure(
-                    title: alert.title,
-                    distanceText: distance(nextRoadAlertDistance),
-                    distance: nextRoadAlertDistance,
-                    details: [
-                        alert.type.isEnforcement ? "Kontrola drogowa" :
-                            (alert.type.isTrafficSign ? "Znak drogowy na trasie" : "Zmiana limitu prędkości")
-                    ],
-                    tint: Color(naviHex: NaviAstraColorPalette.warning),
-                    cornerRadius: 15,
-                    symbol: roadAlertSymbol(alert))
-                    .id("\(navigationStore.state.route?.id.uuidString ?? "no-route")-\(alert.id)")
-            } else if let message = navigationStore.state.speedLimitMessage {
-                Label(message, systemImage: "exclamationmark.triangle")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Color.naviTextSecondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-            }
-
             if current == nil {
                 Label(navigationStore.state.location == nil
                       ? "Prędkość niedostępna"
@@ -240,6 +214,29 @@ extension ContentView {
             }
         }
         .frame(maxWidth: 230, alignment: .leading)
+    }
+
+    @ViewBuilder
+    var navigationRoadSafetyBanner: some View {
+        if let alert = nextNavigationRoadSafetyAlert {
+            let remainingDistance = max(0, (alert.distanceAlongRoute ?? navigationStore.state.roadAlertRouteDistance)
+                                        - navigationStore.state.roadAlertRouteDistance)
+            NavigationAlertDisclosure(
+                title: alert.title,
+                distanceText: distance(remainingDistance),
+                distance: remainingDistance,
+                details: [alert.type.isEnforcement ? "Kontrola drogowa" :
+                    (alert.type.isTrafficSign ? "Znak drogowy na trasie" : "Zmiana limitu prędkości")],
+                tint: Color(naviHex: NaviAstraColorPalette.warning),
+                cornerRadius: 15,
+                symbol: roadAlertSymbol(alert))
+                .id("\(navigationStore.state.route?.id.uuidString ?? "no-route")-\(alert.id)")
+        } else if let message = navigationStore.state.speedLimitMessage {
+            Label(message, systemImage: "exclamationmark.triangle")
+                .font(.caption2)
+                .foregroundStyle(Color.naviTextSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     var nextNavigationRoadSafetyAlert: RoadSafetyAlert? {

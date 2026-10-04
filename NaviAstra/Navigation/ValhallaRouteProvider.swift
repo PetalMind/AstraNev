@@ -6,13 +6,20 @@ actor ValhallaRequestGate {
     private let publicServerHost = "valhalla1.openstreetmap.de"
     private let publicServerMinimumInterval: TimeInterval = 1.1
     private var nextRequestDateByHost: [String: Date] = [:]
+    private var priorityWaitersByHost: [String: Int] = [:]
 
-    func waitUntilAllowed(for endpoint: URL) async throws {
+    func waitUntilAllowed(for endpoint: URL, priority: Bool = false) async throws {
         let host = endpoint.host?.lowercased() ?? endpoint.absoluteString
         let interval = host == publicServerHost ? publicServerMinimumInterval : 0
         guard interval > 0 else { return }
+        if priority { priorityWaitersByHost[host, default: 0] += 1 }
+        defer { if priority { priorityWaitersByHost[host, default: 0] -= 1 } }
         while true {
             try RoadRoutingContext.checkCancellation()
+            if !priority && priorityWaitersByHost[host, default: 0] > 0 {
+                try await Task.sleep(nanoseconds: 100_000_000)
+                continue
+            }
             let now = Date()
             let nextRequestDate = nextRequestDateByHost[host] ?? .distantPast
             guard nextRequestDate > now else {
@@ -153,8 +160,7 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
                              instruction: $0.instruction, type: $0.type,
                              streetNames: $0.streetNames,
                              lanes: $0.lanes.enumerated().map { index, lane in
-                                 TurnLaneGuidance(id: index, indications: lane.indications,
-                                                  valid: lane.valid ?? lane.active ?? false)
+                                 lane.guidance(id: index)
                              },
                              exitNumber: $0.sign?.exitNumber,
                              exitRoad: $0.sign?.exitRoad,
@@ -280,13 +286,88 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
         let indications: [String]
         let valid: Bool?
         let active: Bool?
+        let validIndications: [String]
+        let activeIndications: [String]
+
         enum CodingKeys: String, CodingKey { case indications, directions, valid, active }
+
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            indications = (try? container.decode([String].self, forKey: .indications))
-                ?? (try? container.decode([String].self, forKey: .directions)) ?? []
-            valid = try? container.decode(Bool.self, forKey: .valid)
-            active = try? container.decode(Bool.self, forKey: .active)
+            if let mask = try? container.decode(Int.self, forKey: .directions) {
+                indications = Self.directionNames(for: mask)
+            } else if let values = try? container.decode([String].self, forKey: .directions) {
+                indications = values
+            } else if let mask = try? container.decode(Int.self, forKey: .indications) {
+                indications = Self.directionNames(for: mask)
+            } else {
+                indications = (try? container.decode([String].self, forKey: .indications)) ?? []
+            }
+
+            let validSelection = Self.decodeSelection(from: container, forKey: .valid,
+                                                      indications: indications)
+            let activeSelection = Self.decodeSelection(from: container, forKey: .active,
+                                                       indications: indications)
+            valid = validSelection.flag
+            active = activeSelection.flag
+            validIndications = validSelection.indications
+            activeIndications = activeSelection.indications
+        }
+
+        func guidance(id: Int) -> TurnLaneGuidance {
+            let isActive = active ?? false
+            let isValid = valid ?? isActive
+            let resolvedValidIndications: [String]
+            if !validIndications.isEmpty {
+                resolvedValidIndications = validIndications
+            } else if valid == true {
+                resolvedValidIndications = indications
+            } else if valid == nil, isActive {
+                resolvedValidIndications = activeIndications.isEmpty ? indications : activeIndications
+            } else {
+                resolvedValidIndications = []
+            }
+            return TurnLaneGuidance(
+                id: id,
+                indications: indications,
+                valid: isValid,
+                active: isActive,
+                validIndications: resolvedValidIndications,
+                activeIndications: activeIndications.isEmpty && isActive ? indications : activeIndications)
+        }
+
+        private static let directionBits: [(mask: Int, name: String)] = [
+            (4, "sharp_left"),
+            (8, "left"),
+            (16, "slight_left"),
+            (2, "through"),
+            (32, "slight_right"),
+            (64, "right"),
+            (128, "sharp_right"),
+            (256, "reverse"),
+            (512, "merge_left"),
+            (1024, "merge_right")
+        ]
+
+        private static func directionNames(for mask: Int) -> [String] {
+            if mask == 1 { return ["none"] }
+            return directionBits.compactMap { mask & $0.mask != 0 ? $0.name : nil }
+        }
+
+        private static func decodeSelection(
+            from container: KeyedDecodingContainer<CodingKeys>,
+            forKey key: CodingKeys,
+            indications: [String]
+        ) -> (flag: Bool?, indications: [String]) {
+            if let mask = try? container.decode(Int.self, forKey: key) {
+                return (mask != 0, directionNames(for: mask))
+            }
+            if let flag = try? container.decode(Bool.self, forKey: key) {
+                return (flag, flag ? indications : [])
+            }
+            if let values = try? container.decode([String].self, forKey: key) {
+                return (!values.isEmpty, values)
+            }
+            return (nil, [])
         }
     }
     private struct Sign: Decodable {

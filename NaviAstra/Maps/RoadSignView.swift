@@ -5,7 +5,7 @@ enum RoadSignSymbol: Equatable {
     case giveWay
     case noEntry
     case noOvertaking
-    case noTrucks
+    case noTrucks(String?)
     case speedLimit(Int?)
     case speedLimitEnd(Int?)
     case weightLimit(String?)
@@ -41,9 +41,38 @@ enum RoadSignSymbol: Equatable {
             self = codes.contains("G-3") || codes.contains("G-4") || codes.contains("RAILWAY=LEVEL_CROSSING")
                 ? .railwayCrossbuck : .railwayCrossing
         case .trafficSign:
-            self = codes.contains("B-5") ? .noTrucks : .unknown(codes.last)
+            self = codes.contains("B-5") ? .noTrucks(alert.signValue) : .unknown(codes.last)
         default:
             self = .unknown(codes.last)
+        }
+    }
+
+    init(_ poi: MapRoadPOI) {
+        let raw = poi.signCode ?? ""
+        let parts = raw.uppercased().split(separator: ":")
+        let code = String(parts.last ?? "").split(separator: "[").first.map(String.init) ?? ""
+        // National codes are country-specific; use Polish artwork only for PL codes.
+        guard parts.count == 1 || parts.first == "PL" else { self = .unknown(raw); return }
+        let embedded = raw.split(separator: "[").dropFirst().first.map {
+            String($0).replacingOccurrences(of: "]", with: "")
+        }
+        let speed = embedded.flatMap { SpeedLimitParser.parse($0) } ?? poi.signSpeedLimit
+        switch code {
+        case "STOP", "B-20": self = .stop
+        case "GIVE_WAY", "YIELD", "A-7": self = .giveWay
+        case "B-2": self = .noEntry
+        case "B-25": self = .noOvertaking
+        case "B-5": self = .noTrucks(poi.weightValue)
+        case "MAXSPEED", "B-33": self = .speedLimit(speed)
+        case "B-34": self = .speedLimitEnd(speed)
+        case "MAXHEIGHT", "B-16": self = .heightLimit(poi.heightValue)
+        case "MAXWEIGHT", "B-18": self = .weightLimit(poi.weightValue)
+        case "B-43", "B-44": self = .zone(isEnd: code == "B-44", speedLimit: speed, label: "STREFA")
+        case "D-40", "D-41": self = .zone(isEnd: code == "D-41", speedLimit: nil, label: "STREFA")
+        case "D-42", "D-43": self = .zone(isEnd: code == "D-43", speedLimit: nil, label: "OBSZAR")
+        case "A-9", "A-10": self = .railwayCrossing
+        case "G-3", "G-4": self = .railwayCrossbuck
+        default: self = .unknown(raw)
         }
     }
 
@@ -51,6 +80,7 @@ enum RoadSignSymbol: Equatable {
         switch self {
         case .stop: 27
         case .trafficSignal: 28
+        case .heightLimit, .weightLimit, .noTrucks: 30
         case .speedLimit, .speedLimitEnd, .noEntry, .giveWay, .railwayCrossing, .railwayCrossbuck: 25
         default: 24
         }
@@ -124,13 +154,22 @@ struct RoadSignView: View {
                 .frame(width: size * 0.66, height: size * 0.36)
                 .offset(y: size * 0.03)
             }
-        case .noTrucks:
+        case let .noTrucks(value):
             prohibitionRing {
-                Image(systemName: "truck.box.fill")
-                    .resizable()
-                    .scaledToFit()
-                    .foregroundStyle(.black)
-                    .frame(width: size * 0.55, height: size * 0.38)
+                VStack(spacing: size * 0.02) {
+                    Image(systemName: "truck.box.fill")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: size * 0.55, height: size * (value == nil ? 0.38 : 0.28))
+                    if let value {
+                        Text(value)
+                            .font(.system(size: size * 0.22, weight: .heavy, design: .rounded))
+                            .minimumScaleFactor(0.6)
+                            .lineLimit(1)
+                            .frame(width: size * 0.66)
+                    }
+                }
+                .foregroundStyle(.black)
             }
         case let .speedLimit(value):
             prohibitionRing {
@@ -162,7 +201,7 @@ struct RoadSignView: View {
             }
         case let .weightLimit(value):
             prohibitionRing {
-                Text(value ?? "t")
+                Text(value ?? "? t")
                     .font(.system(size: size * ((value?.count ?? 1) > 3 ? 0.29 : 0.34),
                                   weight: .heavy, design: .rounded))
                     .minimumScaleFactor(0.64)
@@ -172,16 +211,15 @@ struct RoadSignView: View {
             }
         case let .heightLimit(value):
             prohibitionRing {
-                VStack(spacing: -size * 0.08) {
-                    if size >= 29 {
-                        Text("↕")
-                            .font(.system(size: size * 0.29, weight: .bold))
-                    }
-                    Text(value ?? "m")
-                        .font(.system(size: size * ((value?.count ?? 1) > 3 ? 0.28 : 0.33),
-                                      weight: .heavy, design: .rounded))
+                VStack(spacing: 0) {
+                    Image(systemName: "arrow.down")
+                        .font(.system(size: size * 0.17, weight: .black))
+                    Text(value ?? "? m")
+                        .font(.system(size: size * 0.25, weight: .heavy, design: .rounded))
                         .minimumScaleFactor(0.62)
                         .lineLimit(1)
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: size * 0.17, weight: .black))
                 }
                 .foregroundStyle(.black)
                 .frame(width: size * 0.72)

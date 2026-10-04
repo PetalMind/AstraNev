@@ -50,7 +50,7 @@ enum RoadAlertType: String, Codable, Equatable, Sendable {
     case schoolZone
     case dangerousCurve
 
-    var title: String {
+    nonisolated var title: String {
         switch self {
         case .speedCamera: "Fotoradar"
         case .averageSpeedStart: "Początek odcinkowego pomiaru"
@@ -129,11 +129,13 @@ enum RoadAlertSource: String, Codable, Equatable, Sendable {
 struct RoadSafetyAlert: Identifiable, Codable, Equatable, Sendable {
     let id: String
     var type: RoadAlertType
-    let coordinate: Coordinate
+    var coordinate: Coordinate
     let source: RoadAlertSource
     var speedLimitKph: Int?
     var signCode: String? = nil
     var signValue: String? = nil
+    var signSource: RoadSignSource? = nil
+    var restrictionEndCoordinate: Coordinate? = nil
     var hasDirectionalSignTag: Bool? = nil
     var distanceAlongRoute: Double?
     var distanceFromRoute: Double?
@@ -142,8 +144,12 @@ struct RoadSafetyAlert: Identifiable, Codable, Equatable, Sendable {
     var mapPOIID: String? = nil
     var sectionOtherEnd: Coordinate? = nil
 
-    var title: String {
+    nonisolated var title: String {
         if sectionOtherEnd != nil, distanceAlongRoute == nil { return "Odcinkowy pomiar prędkości" }
+        if type == .heightLimitSign, let signValue {
+            return "Ograniczenie wysokości: \(signValue)"
+        }
+        if type == .weightLimitSign, let signValue { return "Ograniczenie masy: \(signValue)" }
         if type == .speedLimitSign, signCode?.hasSuffix("B-34") == true {
             return "Koniec ograniczenia prędkości"
         }
@@ -154,7 +160,9 @@ struct RoadSafetyAlert: Identifiable, Codable, Equatable, Sendable {
             return "Limit zmienia się na \(speedLimitKph) km/h"
         }
         if type == .trafficSign, let signCode {
-            if signCode.hasSuffix("B-5") { return "Zakaz wjazdu samochodów ciężarowych" }
+            if OSMWeightRestriction.isTruckSign(signCode) {
+                return "Zakaz wjazdu samochodów ciężarowych" + (signValue.map { " powyżej \($0) DMC" } ?? "")
+            }
             return "Znak drogowy \(signCode)"
         }
         if type == .trafficZoneSign, let signCode {
@@ -184,6 +192,16 @@ struct RoadSafetyAlert: Identifiable, Codable, Equatable, Sendable {
     func mapSubtitle(from routeDistance: Double) -> String {
         let sign = signCode.map { "\($0) · " } ?? ""
         let attribution = source == .canard ? CANARDRoadDataProvider.attribution : "© OpenStreetMap contributors"
+        if type == .heightLimitSign {
+            let detail = OSMHeightRestriction(value: signValue,
+                                             source: signSource ?? .explicitTrafficSign).subtitle
+            return "\(distanceText(from: routeDistance)) · B-16 · \(detail)"
+        }
+        if type == .weightLimitSign || (type == .trafficSign && OSMWeightRestriction.isTruckSign(signCode)) {
+            let restriction = OSMWeightRestriction(kind: type == .weightLimitSign ? .actualMass : .trucks,
+                                                   value: signValue, source: signSource ?? .explicitTrafficSign)
+            return "\(distanceText(from: routeDistance)) · \(restriction.subtitle)"
+        }
         return "\(distanceText(from: routeDistance)) · \(sign)\(attribution)"
     }
 }
@@ -269,7 +287,16 @@ nonisolated struct RoadDataSnapshot: Codable, Sendable {
     func matchedAlerts(on route: [Coordinate]) -> [RoadSafetyAlert] {
         guard route.count > 1 else { return [] }
         var unique: [String: RoadSafetyAlert] = [:]
-        for alert in alerts {
+        for original in alerts {
+            var alert = original
+            // OSM way direction is unrelated to the user's travel direction.
+            if let end = alert.restrictionEndCoordinate,
+               let startProjection = MapMatcher.project(alert.coordinate, onto: route),
+               let endProjection = MapMatcher.project(end, onto: route),
+               endProjection.distanceFromRoute <= 45,
+               endProjection.alongRoute < startProjection.alongRoute {
+                alert.coordinate = end
+            }
             guard let projection = MapMatcher.project(alert.coordinate, onto: route),
                   projection.distanceFromRoute <= (alert.type.isTrafficSign ? 45 : 60) else { continue }
             if let approach = alert.enforcementApproach, let exit = alert.enforcementExit {
@@ -294,16 +321,21 @@ nonisolated struct RoadDataSnapshot: Codable, Sendable {
             unique[matched.id] = matched
         }
         let sorted = unique.values.sorted {
-            ($0.distanceAlongRoute ?? .infinity) < ($1.distanceAlongRoute ?? .infinity)
+            let leftInferred = $0.signSource == .inferredFromRoadRestriction
+            let rightInferred = $1.signSource == .inferredFromRoadRestriction
+            if leftInferred != rightInferred { return !leftInferred }
+            return ($0.distanceAlongRoute ?? .infinity) < ($1.distanceAlongRoute ?? .infinity)
         }
         var compacted: [RoadSafetyAlert] = []
         for alert in sorted {
             if compacted.contains(where: {
                 $0.type == alert.type && $0.coordinate.distance(to: alert.coordinate) < 20
+                    && (![RoadAlertType.heightLimitSign, .weightLimitSign, .trafficSign].contains(alert.type)
+                        || ($0.signValue == alert.signValue && $0.signCode == alert.signCode))
             }) { continue }
             compacted.append(alert)
         }
-        return compacted
+        return compacted.sorted { ($0.distanceAlongRoute ?? .infinity) < ($1.distanceAlongRoute ?? .infinity) }
     }
 
     private static func headingPenalty(_ heading: Double, segment: OSMRoadSpeedSegment,
@@ -342,6 +374,15 @@ nonisolated struct RoadDataSnapshot: Codable, Sendable {
 
 protocol RoadDataProvider: Sendable {
     func load(for route: [Coordinate]) async throws -> RoadDataSnapshot
+    func loadSpeedLimits(near coordinate: Coordinate) async throws -> RoadDataSnapshot?
+    func loadSpeedLimits(near coordinate: Coordinate, along corridor: [Coordinate]) async throws -> RoadDataSnapshot?
+}
+
+extension RoadDataProvider {
+    func loadSpeedLimits(near coordinate: Coordinate) async throws -> RoadDataSnapshot? { nil }
+    func loadSpeedLimits(near coordinate: Coordinate, along corridor: [Coordinate]) async throws -> RoadDataSnapshot? {
+        try await loadSpeedLimits(near: coordinate)
+    }
 }
 
 struct OpenStreetMapRoadDataProvider: RoadDataProvider {
@@ -349,6 +390,49 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
 
     init(endpoint: URL? = nil) {
         self.endpoint = endpoint ?? MapRoadPOIEndpoint.url
+    }
+
+    func loadSpeedLimits(near coordinate: Coordinate) async throws -> RoadDataSnapshot? {
+        try await loadSpeedLimits(near: coordinate, along: [])
+    }
+
+    func loadSpeedLimits(near coordinate: Coordinate, along corridor: [Coordinate]) async throws -> RoadDataSnapshot? {
+        let center = String(format: "%.5f,%.5f", locale: Locale(identifier: "en_US_POSIX"),
+                            arguments: [coordinate.latitude, coordinate.longitude])
+        let cacheKey = "speed-corridor-v1-" + Self.cacheKey([coordinate] + corridor)
+        let cached = await RoadDataLocalCache.shared.snapshot(for: cacheKey)
+        if let cached, Date().timeIntervalSince(cached.fetchedAt) < 300 { return cached }
+        let corridorCenters = Self.sampled(corridor, maxStep: 150).map {
+            String(format: "%.5f,%.5f", locale: Locale(identifier: "en_US_POSIX"),
+                   arguments: [$0.latitude, $0.longitude])
+        }.joined(separator: ",")
+        let speedTags = "[highway][~\"^(maxspeed(:.*)?|source:maxspeed|maxspeed:type|zone:traffic)$\"~\".\"]"
+        let corridorQuery = corridorCenters.isEmpty ? "" : "way(around:120,\(corridorCenters))\(speedTags);"
+        // Query the road ahead in a narrow corridor, with a smaller local area
+        // to cover departures from the planned route. Do not wait for alerts.
+        let query = """
+        [out:json][timeout:8];
+        (
+          way(around:\(corridor.isEmpty ? 1500 : 350),\(center))\(speedTags);
+          \(corridorQuery)
+        );
+        out tags geom;
+        """
+        var lastError: Error = RoadDataError.unavailable
+        for candidate in [endpoint] + MapRoadPOIEndpoint.urls.filter({ $0 != endpoint }) {
+            do {
+                let decoded = try await Self.download(query: query, endpoint: candidate, priority: true)
+                let snapshot = RoadDataSnapshot(speedSegments: Self.speedSegments(from: decoded.elements),
+                                                alerts: [], fetchedAt: .now)
+                await RoadDataLocalCache.shared.store(snapshot, for: cacheKey)
+                return snapshot
+            } catch {
+                try Task.checkCancellation()
+                lastError = error
+            }
+        }
+        if let cached { return cached }
+        throw lastError
     }
 
     func load(for route: [Coordinate]) async throws -> RoadDataSnapshot {
@@ -376,16 +460,17 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
         return snapshot
     }
 
-    private static func download(query: String, endpoint: URL) async throws -> OverpassResponse {
+    private static func download(query: String, endpoint: URL, priority: Bool = false) async throws -> OverpassResponse {
         var components = URLComponents()
         components.queryItems = [URLQueryItem(name: "data", value: query)]
-        var request = URLRequest(url: endpoint, timeoutInterval: 30)
+        var request = URLRequest(url: endpoint, timeoutInterval: priority ? 12 : 30)
+        if priority { request.networkServiceType = .responsiveData }
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("NaviAstra/1.0 (OpenStreetMap road-safety data)", forHTTPHeaderField: "User-Agent")
         request.httpBody = components.percentEncodedQuery?.data(using: .utf8)
-        guard await OSMCyclingRequestGate.shared.waitUntilAllowed() else { throw CancellationError() }
+        guard await OSMCyclingRequestGate.shared.waitUntilAllowed(priority: priority) else { throw CancellationError() }
         do {
             try Task.checkCancellation()
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -415,7 +500,7 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
                 }
             }
         }
-        return "road-safety-v3-" + String(format: "%016llx", hash)
+        return "road-safety-v5-" + String(format: "%016llx", hash)
     }
 
     private static func query(route: [Coordinate]) -> String {
@@ -427,6 +512,14 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
         [out:json][timeout:25];
         (
           \(roads)[maxspeed];
+          \(roads)[maxheight];
+          \(roads)[maxweight];
+          \(roads)["maxweightrating:hgv"];
+          \(roads)[hgv="no"];
+          node(around:120,\(centers))[maxweight];
+          node(around:120,\(centers))["maxweightrating:hgv"];
+          node(around:120,\(centers))[hgv="no"];
+          node(around:120,\(centers))[maxheight];
           \(roads)[\"maxspeed:forward\"];
           \(roads)[\"maxspeed:backward\"];
           \(roads)[\"maxspeed:conditional\"];
@@ -519,13 +612,63 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
                                             signCode: "railway=level_crossing")
                 unique[alert.id] = alert
             }
-            if let sign = trafficSign(from: tags) {
+            if let restriction = OSMHeightRestriction.parse(tags) {
+                let alert = RoadSafetyAlert(id: "osm-height-node-\(element.id)", type: .heightLimitSign,
+                                            coordinate: coordinate, source: .openStreetMap,
+                                            signCode: "B-16", signValue: restriction.value,
+                                            signSource: restriction.source,
+                                            hasDirectionalSignTag: tags["traffic_sign:forward"] != nil
+                                                || tags["traffic_sign:backward"] != nil)
+                unique[alert.id] = alert
+            }
+            for restriction in OSMWeightRestriction.parse(tags) {
+                let alert = RoadSafetyAlert(id: "osm-\(restriction.idPrefix)-node-\(element.id)",
+                                            type: restriction.kind == .actualMass ? .weightLimitSign : .trafficSign,
+                                            coordinate: coordinate, source: .openStreetMap,
+                                            signCode: restriction.code, signValue: restriction.value,
+                                            signSource: restriction.source,
+                                            hasDirectionalSignTag: tags["traffic_sign:forward"] != nil
+                                                || tags["traffic_sign:backward"] != nil)
+                unique[alert.id] = alert
+            }
+            if let sign = trafficSign(from: tags), sign.type != .heightLimitSign,
+               sign.type != .weightLimitSign, !OSMWeightRestriction.isTruckSign(sign.code) {
                 let alert = RoadSafetyAlert(id: "osm-sign-\(element.id)", type: sign.type,
                                             coordinate: coordinate, source: .openStreetMap,
                                             speedLimitKph: sign.speedLimit, signCode: sign.code,
                                             signValue: sign.value,
                                             hasDirectionalSignTag: tags["traffic_sign:forward"] != nil
                                                 || tags["traffic_sign:backward"] != nil)
+                unique[alert.id] = alert
+            }
+        }
+
+        for element in elements where element.type == "way" {
+            guard let tags = element.tags, tags["highway"] != nil,
+                  let restriction = OSMHeightRestriction.parse(tags),
+                  let points = element.geometry, points.count > 1 else { continue }
+            let start = Coordinate(latitude: points[0].lat, longitude: points[0].lon)
+            let end = Coordinate(latitude: points[points.count - 1].lat, longitude: points[points.count - 1].lon)
+            let alert = RoadSafetyAlert(id: "osm-height-way-\(element.id)", type: .heightLimitSign,
+                                        coordinate: start, source: .openStreetMap,
+                                        signCode: "B-16", signValue: restriction.value,
+                                        signSource: .inferredFromRoadRestriction,
+                                        restrictionEndCoordinate: end)
+            unique[alert.id] = alert
+        }
+
+        for element in elements where element.type == "way" {
+            guard let tags = element.tags, tags["highway"] != nil,
+                  let points = element.geometry, points.count > 1 else { continue }
+            let start = Coordinate(latitude: points[0].lat, longitude: points[0].lon)
+            let end = Coordinate(latitude: points[points.count - 1].lat, longitude: points[points.count - 1].lon)
+            for restriction in OSMWeightRestriction.parse(tags) {
+                let alert = RoadSafetyAlert(id: "osm-\(restriction.idPrefix)-way-\(element.id)",
+                                            type: restriction.kind == .actualMass ? .weightLimitSign : .trafficSign,
+                                            coordinate: start, source: .openStreetMap,
+                                            signCode: restriction.code, signValue: restriction.value,
+                                            signSource: .inferredFromRoadRestriction,
+                                            restrictionEndCoordinate: end)
                 unique[alert.id] = alert
             }
         }
@@ -615,7 +758,7 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
             (["B-2"], .noEntrySign),
             (["B-25"], .noOvertakingSign),
             (["B-33", "B-34", "MAXSPEED"], .speedLimitSign),
-            (["B-16"], .heightLimitSign),
+            (["B-16", "MAXHEIGHT"], .heightLimitSign),
             (["B-18"], .weightLimitSign),
             (["B-5"], .trafficSign),
             (["D-40", "D-41", "D-42", "D-43", "B-43", "B-44"], .trafficZoneSign)

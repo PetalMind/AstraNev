@@ -15,12 +15,18 @@ extension ContentView {
                 : (navigationStore.state.progress?.remainingDistance ?? .infinity))
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
-                Image(systemName: maneuver?.iconName
-                      ?? (navigationStore.state.transportMode == .parkRide ? "parkingsign.circle.fill" : "arrow.up"))
-                    .font(.system(size: 27, weight: .semibold))
+                ManeuverIcon(type: maneuver?.type,
+                             fallbackSymbol: maneuver?.iconName
+                                ?? (navigationStore.state.transportMode == .parkRide ? "parkingsign.circle.fill" : "arrow.up"),
+                             size: 36)
                     .foregroundStyle(.white)
-                    .frame(width: 52, height: 52)
+                    .frame(width: 60, height: 60)
                     .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 15, style: .continuous)
+                            .stroke(Color.white.opacity(0.22), lineWidth: 1)
+                    }
+                    .shadow(color: Color.accentColor.opacity(0.30), radius: 8, y: 3)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(navigationStore.state.status == .rerouting
@@ -58,7 +64,7 @@ extension ContentView {
             if let maneuver = navigationStore.state.progress?.nextManeuver,
                let exitNumber = maneuver.exitNumber {
                 HStack(spacing: 6) {
-                    Image(systemName: maneuver.iconName)
+                    ManeuverIcon(type: maneuver.type, fallbackSymbol: maneuver.iconName, size: 16)
                     Text("Zjazd \(exitNumber)")
                     if let road = maneuver.exitRoad { Text("· \(road)") }
                     if let toward = maneuver.exitToward { Text("· kierunek \(toward)") }
@@ -73,6 +79,16 @@ extension ContentView {
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
         .accessibilityElement(children: .combine)
+    }
+
+    // This dock belongs to the measured map panel, so the camera keeps the route above it.
+    var navigationRoadAlertsPanel: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            navigationRoadSafetyBanner
+            navigationTrafficIncidentBanner
+            navigationRoadDataFooter
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -116,17 +132,20 @@ extension ContentView {
             Label("Pobieranie ostrzeżeń…", systemImage: "arrow.triangle.2.circlepath")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(Color.naviTextSecondary)
-                .lineLimit(1)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
         } else if case .partial(let message) = navigationStore.state.roadSafetyStatus {
             Label(message, systemImage: "exclamationmark.triangle")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(Color.naviTextSecondary)
-                .lineLimit(1)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
         } else if case .unavailable = navigationStore.state.roadSafetyStatus {
             Label("Ostrzeżenia drogowe niedostępne", systemImage: "wifi.slash")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(Color.naviTextSecondary)
-                .lineLimit(1)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -235,25 +254,116 @@ extension ContentView {
         if let lanes = navigationStore.state.progress?.nextManeuver?.lanes, !lanes.isEmpty {
             HStack(spacing: 4) {
                 ForEach(lanes) { lane in
-                    Image(systemName: laneSymbol(lane.indications))
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(lane.valid ? Color.accentColor : Color.naviTextSecondary.opacity(0.55))
-                        .frame(width: 20, height: 30)
-                        .background(lane.valid ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04),
-                                    in: RoundedRectangle(cornerRadius: 6))
+                    laneGuidanceCell(lane)
                 }
             }
-            .accessibilityLabel("Wskazówki wyboru pasa")
+            .padding(5)
+            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(laneGuidanceAccessibilityLabel(lanes))
         }
     }
 
-    func laneSymbol(_ indications: [String]) -> String {
-        let value = indications.joined(separator: " ").lowercased()
-        if value.contains("uturn") { return "arrow.uturn.left" }
-        if value.contains("left") && value.contains("right") { return "arrow.up.left.and.arrow.up.right" }
-        if value.contains("left") { return "arrow.turn.up.left" }
-        if value.contains("right") { return "arrow.turn.up.right" }
-        return "arrow.up"
+    private func laneGuidanceCell(_ lane: TurnLaneGuidance) -> some View {
+        let indications = lane.indications.isEmpty ? ["unknown"] : lane.indications
+        return HStack(spacing: indications.count > 1 ? 0 : 1) {
+            ForEach(Array(indications.enumerated()), id: \.offset) { item in
+                let indication = item.element
+                let isActive = lane.active && indicationMatches(indication, lane.activeIndications)
+                let isValid = !isActive && lane.valid && indicationMatches(indication, lane.validIndications)
+                Image(systemName: laneArrowSymbol(for: indication))
+                    .font(.system(size: indications.count > 1 ? 12 : 16, weight: .bold))
+                    .foregroundStyle(isActive ? Color.white :
+                                        isValid ? Color.accentColor : Color.naviTextSecondary.opacity(0.58))
+                    .frame(width: indications.count > 1 ? 18 : 22, height: 28)
+                    .background(isActive ? Color.accentColor :
+                                    isValid ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.035),
+                                in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
+        }
+        .padding(.horizontal, indications.count > 1 ? 2 : 4)
+        .frame(minWidth: indications.count > 1 ? 40 : 30, minHeight: 34)
+        .overlay {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(lane.active ? Color.accentColor :
+                            lane.valid ? Color.accentColor.opacity(0.42) : Color.clear,
+                        lineWidth: lane.active ? 1.2 : 0.8)
+        }
+        .accessibilityLabel(laneCellAccessibilityLabel(lane))
+    }
+
+    private func laneGuidanceAccessibilityLabel(_ lanes: [TurnLaneGuidance]) -> String {
+        let activeCount = lanes.filter(\.active).count
+        let activeText = activeCount > 0
+            ? ", " + String(activeCount) + " " + (activeCount == 1 ? "preferowany pas" : "preferowane pasy")
+            : ", brak oznaczonego preferowanego pasa"
+        return String(lanes.count) + " " + (lanes.count == 1 ? "pas" : "pasy") + activeText
+    }
+
+    private func laneCellAccessibilityLabel(_ lane: TurnLaneGuidance) -> String {
+        let directions = lane.indications.map(laneDirectionLabel).joined(separator: ", ")
+        let status = lane.active ? "preferowany" : (lane.valid ? "dopuszczalny" : "niedopuszczalny")
+        return "Pas " + String(lane.id + 1) + ", "
+            + (directions.isEmpty ? "kierunek nieokreślony" : directions) + ", " + status
+    }
+
+    private func indicationMatches(_ indication: String, _ selected: [String]) -> Bool {
+        let key = laneDirectionKey(indication)
+        guard key != "unknown" else { return false }
+        guard !selected.isEmpty else { return true }
+        return selected.contains { laneDirectionKey($0) == key }
+    }
+
+    private func laneDirectionKey(_ indication: String) -> String {
+        let value = indication.lowercased().replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+        if value.contains("uturn") || value.contains("u_turn") || value.contains("reverse") {
+            if value.contains("right") { return "reverse_right" }
+            if value.contains("left") { return "reverse_left" }
+            return "reverse"
+        }
+        if value.contains("merge") && value.contains("left") { return "merge_left" }
+        if value.contains("merge") && value.contains("right") { return "merge_right" }
+        if value.contains("sharp") && value.contains("left") { return "sharp_left" }
+        if value.contains("sharp") && value.contains("right") { return "sharp_right" }
+        if value.contains("slight") && value.contains("left") { return "slight_left" }
+        if value.contains("slight") && value.contains("right") { return "slight_right" }
+        if value.contains("left") { return "left" }
+        if value.contains("right") { return "right" }
+        if value.contains("through") || value.contains("straight") || value == "none" {
+            return "through"
+        }
+        return "unknown"
+    }
+
+    private func laneArrowSymbol(for indication: String) -> String {
+        switch laneDirectionKey(indication) {
+        case "sharp_left", "left", "slight_left": return "arrow.turn.up.left"
+        case "through": return "arrow.up"
+        case "slight_right", "right", "sharp_right": return "arrow.turn.up.right"
+        case "reverse_left", "reverse": return "arrow.uturn.left"
+        case "reverse_right": return "arrow.uturn.right"
+        case "merge_left", "merge_right": return "arrow.merge"
+        default: return "questionmark"
+        }
+    }
+
+    private func laneDirectionLabel(_ indication: String) -> String {
+        switch laneDirectionKey(indication) {
+        case "sharp_left": return "ostro w lewo"
+        case "left": return "w lewo"
+        case "slight_left": return "lekko w lewo"
+        case "through": return "prosto"
+        case "slight_right": return "lekko w prawo"
+        case "right": return "w prawo"
+        case "sharp_right": return "ostro w prawo"
+        case "reverse_left": return "zawracanie w lewo"
+        case "reverse_right": return "zawracanie w prawo"
+        case "reverse": return "zawracanie"
+        case "merge_left": return "włączenie w lewo"
+        case "merge_right": return "włączenie w prawo"
+        default: return "kierunek nieokreślony"
+        }
     }
 
     var destinationCard: some View {
@@ -1063,8 +1173,7 @@ struct NavigationAlertDisclosure<Symbol: View>: View {
     let cornerRadius: CGFloat
     let symbol: Symbol
 
-    @State private var userExpandedOverride: Bool?
-    @State private var highestReachedStage = 0
+    @State private var isExpanded = false
 
     private var rawProximityStage: Int {
         if distance <= 100 { 3 }
@@ -1073,13 +1182,7 @@ struct NavigationAlertDisclosure<Symbol: View>: View {
         else { 0 }
     }
 
-    private var proximityStage: Int {
-        max(highestReachedStage, rawProximityStage)
-    }
-
-    private var isExpanded: Bool {
-        userExpandedOverride ?? (proximityStage > 0)
-    }
+    private var proximityStage: Int { rawProximityStage }
 
     private var stageTint: Color {
         if proximityStage >= 3 { Color(naviHex: NaviAstraColorPalette.danger) }
@@ -1099,7 +1202,7 @@ struct NavigationAlertDisclosure<Symbol: View>: View {
     var body: some View {
         Button {
             withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                userExpandedOverride = !isExpanded
+                isExpanded.toggle()
             }
         } label: {
             VStack(alignment: .leading, spacing: 6) {
@@ -1107,17 +1210,15 @@ struct NavigationAlertDisclosure<Symbol: View>: View {
                     symbol
                         .frame(minWidth: 18)
                         .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(title)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Color.naviTextPrimary)
-                            .lineLimit(1)
-                        Text(distanceText)
-                            .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
-                            .foregroundStyle(Color.naviTextSecondary)
-                            .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.naviTextPrimary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(distanceText)
+                        .font(.system(size: 14, weight: .bold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(stageTint)
+                        .fixedSize()
 
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 10, weight: .semibold))
@@ -1132,7 +1233,7 @@ struct NavigationAlertDisclosure<Symbol: View>: View {
                                 .foregroundStyle(stageTint)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
-                        if proximityStage >= 2 || userExpandedOverride == true {
+                        if !details.isEmpty {
                             ForEach(Array(details.enumerated()), id: \.offset) { item in
                                 Text(item.element)
                                     .font(.system(size: 11, weight: .medium))
@@ -1141,27 +1242,22 @@ struct NavigationAlertDisclosure<Symbol: View>: View {
                             }
                         }
                     }
-                    .padding(.leading, 27)
+                    .padding(.leading, 45)
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
             .foregroundStyle(Color.naviTextPrimary)
             .padding(.horizontal, 12)
-            .padding(.vertical, isExpanded ? 9 : 7)
-            .frame(maxWidth: 230, alignment: .leading)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .background(stageTint.opacity(0.10), in: RoundedRectangle(cornerRadius: cornerRadius))
             .modifier(NavigationGlassSurface(radius: cornerRadius, interactive: true))
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(title), \(distanceText)")
+        .accessibilityLabel([title, distanceText, proximityMessage].compactMap { $0 }.joined(separator: ", "))
         .accessibilityValue(isExpanded ? "Rozwinięte" : "Zwinięte")
         .accessibilityHint(isExpanded ? "Stuknij, aby zwinąć ostrzeżenie" : "Stuknij, aby rozwinąć ostrzeżenie")
-        .onAppear { highestReachedStage = max(highestReachedStage, rawProximityStage) }
-        .onChange(of: rawProximityStage) { _, stage in
-            guard stage > highestReachedStage else { return }
-            highestReachedStage = stage
-            userExpandedOverride = nil
-        }
         .animation(.spring(response: 0.28, dampingFraction: 0.86), value: proximityStage)
     }
 }

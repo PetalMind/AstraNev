@@ -8,7 +8,9 @@ private struct RoutePlanningEndpointMarker: View {
     var body: some View {
         Image(systemName: symbolName)
             .font(.system(size: symbolName == "flag.fill" ? 13 : 14, weight: .semibold))
-            .foregroundStyle(.white)
+            .foregroundStyle(isCurrentLocation || colorScheme == .light
+                ? Color.white
+                : Color(naviHex: NaviAstraColorPalette.textPrimaryDay))
             .frame(width: 31, height: 31)
             .background(Color(naviHex: markerColor), in: Circle())
     }
@@ -687,8 +689,7 @@ extension ContentView {
                         .foregroundStyle(Color.naviTextPrimary)
                     ForEach(Array(route.maneuvers.prefix(12))) { maneuver in
                         HStack(alignment: .top, spacing: 9) {
-                            Image(systemName: maneuver.iconName)
-                                .font(.system(size: 13, weight: .semibold))
+                            ManeuverIcon(type: maneuver.type, fallbackSymbol: maneuver.iconName, size: 18)
                                 .foregroundStyle(Color.accentColor)
                                 .frame(width: 20)
                             VStack(alignment: .leading, spacing: 1) {

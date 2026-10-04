@@ -38,6 +38,15 @@ struct MapSettings {
     var cameraMode: MapDimension
     var overlays: MapOverlays
     var poiCategories: Set<MapPOICategory> = Set(MapPOICategory.allCases)
+    var transportPositionIconsEnabled = false
+    var markerAppearance = NavigationMarkerAppearance()
+    var roadSignsVisible = false
+    var roadPOICategories: Set<MapSafetyPOICategory> {
+        var categories = safetyPOICategories
+        categories.remove(.trafficSigns)
+        if roadSignsVisible { categories.insert(.trafficSigns) }
+        return categories
+    }
     var safetyPOICategories: Set<MapSafetyPOICategory> = Set(MapSafetyPOICategory.allCases)
     var context: MapDisplayContext = .browse
 }

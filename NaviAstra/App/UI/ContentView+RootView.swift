@@ -39,16 +39,20 @@ extension ContentView {
             onRoadPOIStatus: { mapStore.roadPOIStatus = $0 },
             onTransitViewportChange: { transitStore.updateMapStops(in: $0) },
             onMapPan: {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
-                    routePreviewDetent = .peek
-                    destinationExpanded = false
-                    navigationPanelDetent = .peek
-                    if !placeStore.selectedMapPlaces.isEmpty {
-                        selectedMapPlaceDetent = .peek
+                // Map delegates can call this synchronously during a representable update.
+                // Defer SwiftUI state changes until that update has finished.
+                DispatchQueue.main.async {
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
+                        if routePreviewDetent != .peek { routePreviewDetent = .peek }
+                        if destinationExpanded { destinationExpanded = false }
+                        if navigationPanelDetent != .peek { navigationPanelDetent = .peek }
+                        if !placeStore.selectedMapPlaces.isEmpty, selectedMapPlaceDetent != .peek {
+                            selectedMapPlaceDetent = .peek
+                        }
                     }
-                }
-                if navigationState.destination == nil {
-                    discoveryDrawerCollapseRequest += 1
+                    if navigationStore.state.destination == nil {
+                        discoveryDrawerCollapseRequest += 1
+                    }
                 }
             },
             onLongPress: { coordinate in
@@ -88,6 +92,8 @@ extension ContentView {
             viewportPadding: CameraPadding(top: Double(mapHeaderInset), left: 24,
                                            bottom: Double(mapPanelInset), right: 24),
             commands: commands,
+            weather: weatherEnabled && scenePhase == .active ? weatherConfiguration : .init(),
+            weatherSamples: visibleWeatherSamples,
             selectedPlace: placeStore.selectedMapPlaces.count == 1 ? placeStore.selectedMapPlaces.first : nil
         )
     }
@@ -123,6 +129,7 @@ extension ContentView {
         VStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 8) {
                 header
+                weatherMapNotice
 #if os(iOS)
                 journeyNavigationGuidanceOverlay
 #endif
@@ -150,11 +157,6 @@ extension ContentView {
             }
 
             navigationMapPanel(in: geometry)
-                .overlay(alignment: .topLeading) {
-                    cyclingMapAttribution
-                        .padding(.leading, 18)
-                        .alignmentGuide(.top) { $0[.bottom] + 6 }
-                }
                 .onGeometryChange(for: CGFloat.self) {
                     max(0, geometry.frame(in: .global).maxY - $0.frame(in: .global).minY) +
                         geometry.safeAreaInsets.bottom + 12
@@ -179,7 +181,9 @@ extension ContentView {
             if !expanded { journeyGuidanceExpanded = false }
         }
         .onChange(of: isNavigating) { _, navigating in
-            if navigating, navigationStore.state.transportMode == .transit {
+            if navigating, navigationStore.state.transportMode == .car {
+                navigationPanelDetent = .peek
+            } else if navigating, navigationStore.state.transportMode == .transit {
                 navigationPanelDetent = .medium
             } else if !navigating {
                 journeyGuidanceExpanded = false
@@ -224,12 +228,14 @@ extension ContentView {
 #if os(iOS)
             if isNavigating {
                 let standardPanelHeight = min(geometry.size.height * 0.88,
-                                              max(140, geometry.size.height - mapHeaderInset - 132))
-                let availablePanelHeight = navigationStore.state.transportMode == .transit
-                    ? min(standardPanelHeight, max(220, geometry.size.height * 0.68))
-                    : standardPanelHeight
-                journeyNavigationPanel(
-                    maxHeight: availablePanelHeight)
+                                              max(140, geometry.size.height - mapHeaderInset - 28))
+                VStack(spacing: 8) {
+                    if isOnRoadDrivingLeg && !isMapBottomSheetExpanded {
+                        navigationRoadAlertsPanel
+                            .padding(.horizontal, 16)
+                    }
+                    journeyNavigationPanel(maxHeight: standardPanelHeight)
+                }
             } else {
                 activeScrollableMapPanel(in: geometry)
             }
@@ -276,6 +282,10 @@ extension ContentView {
     private var rootMapContent: some View {
         ZStack {
             mapCanvas
+            WeatherEffectLayer(configuration: weatherEnabled && scenePhase == .active ? weatherConfiguration : .init(),
+                               active: scenePhase == .active,
+                               perspective: mapStore.mapDimension == MapDimension.threeD.rawValue)
+                .ignoresSafeArea()
             mapTopGradient
             mapInteractionLayer
 #if os(iOS)
@@ -293,11 +303,9 @@ extension ContentView {
             TimelineView(.periodic(from: .now, by: 5)) { context in
                 VStack(alignment: .leading, spacing: 8) {
                     speedCard(at: context.date)
-                    navigationTrafficIncidentBanner
-                    navigationRoadDataFooter
                 }
             }
-            .frame(maxWidth: 230, alignment: .leading)
+            .frame(maxWidth: 100, alignment: .leading)
             .frame(maxWidth: 560, maxHeight: .infinity, alignment: .bottomLeading)
             .padding(.leading, 16)
             .padding(.bottom, mapPanelInset + 12)
@@ -307,26 +315,12 @@ extension ContentView {
     }
 #endif
 
-    @ViewBuilder
     private var mapCanvas: some View {
-        if scenePhase == .active {
-            MapLibreView(scene: navigationMapScene)
-                .ignoresSafeArea()
-        } else {
-            Color.clear.ignoresSafeArea()
-        }
-    }
-
-    @ViewBuilder
-    private var cyclingMapAttribution: some View {
-        if case .loaded = mapStore.cyclingPathsStatus {
-            Link("© OpenStreetMap contributors",
-                 destination: URL(string: "https://www.openstreetmap.org/copyright")!)
-                .font(.system(size: 10, weight: .medium))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(.regularMaterial, in: Capsule())
-        }
+        // Keep the map and its camera across temporary scene interruptions, such as
+        // the screenshot UI. The energy policy pauses map updates while inactive.
+        MapLibreView(scene: navigationMapScene)
+            .ignoresSafeArea()
+            .task(id: weatherRequestKey) { await updateWeather() }
     }
 
     private var mapTopGradient: some View {
@@ -414,18 +408,36 @@ extension ContentView {
                               appearance: .discovery,
                               isDragging: $isMapBottomSheetDragging,
                               mediumHeightFraction: 0.58,
+                              minimumMediumHeight: 400,
                               onClose: dismissSelectedMapPlaces,
                               closeAccessibilityLabel: "Zamknij szczegóły miejsca") { detent, _ in
             Group {
-                if detent == .peek {
+                if placeStore.selectedMapPlaces.count == 1,
+                   let result = placeStore.selectedMapPlaces.first {
+                    VStack(spacing: 0) {
+                        // Preserve loaded details and disclosure state while viewing the map.
+                        selectedMapPlaceDetails(for: result,
+                                                presentation: detent == .expanded ? .full : .medium,
+                                                embeddedInBottomSheet: true,
+                                                showsPrimaryAction: false,
+                                                onExpandDetails: {
+                            withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+                                selectedMapPlaceDetent = .expanded
+                            }
+                        })
+                        .frame(height: detent == .peek ? 0 : nil, alignment: .top)
+                        .clipped()
+                        .allowsHitTesting(detent != .peek)
+                        .accessibilityHidden(detent == .peek)
+
+                        if detent == .peek {
+                            selectedMapPlacesPeek
+                        }
+                    }
+                } else if detent == .peek {
                     selectedMapPlacesPeek
-                } else if placeStore.selectedMapPlaces.count > 1 {
+                } else {
                     selectedMapPlacesChoices
-                } else if let result = placeStore.selectedMapPlaces.first {
-                    selectedMapPlaceDetails(for: result,
-                                            presentation: detent == .expanded ? .full : .medium,
-                                            embeddedInBottomSheet: true,
-                                            showsPrimaryAction: false)
                 }
             }
             .padding(.horizontal, 18)
@@ -517,7 +529,9 @@ extension ContentView {
     private var rootContentWithPlaceSheets: some View {
         rootContentWithPrimarySheets
             .sheet(item: $selectedParkedCar) { car in
-                parkedCarDetailsSheet(for: car)
+                TimelineView(.periodic(from: .now, by: 5)) { _ in
+                    parkedCarDetailsSheet(for: car)
+                }
             }
             .sheet(isPresented: selectedMapPlacesSheetBinding,
                    onDismiss: handleSelectedMapPlacesSheetDismissal) {
@@ -622,28 +636,49 @@ extension ContentView {
     }
 
     private func parkedCarDetailsSheet(for car: ParkedCar) -> some View {
-        let distanceMeters = currentParkedCarLocation.map { location in
-            location.coordinate.distance(to: car.coordinate)
-        }
+        let car = placeStore.parkedCar.flatMap { $0.id == car.id ? $0 : nil } ?? car
         let initialPhotoData = placeStore.parkedCarPhotoData(for: car)
         let sheet = ParkedCarDetailsSheet(
             car: car,
-            distanceMeters: distanceMeters,
+            onEstimateRoute: {
+                guard !isNavigating, placeStore.parkedCar?.id == car.id else { return nil }
+                return try await navigationStore.estimatedWalkingRoute(to: car.destination)
+            },
             initialPhotoData: initialPhotoData,
             startsEditing: parkedCarStartsInEditMode,
+            canGuide: freshParkedCarLocation != nil && !isNavigating,
+            guideUnavailableReason: isNavigating ? "Zakończ bieżącą nawigację, aby wrócić do auta." : "Czekam na aktualną pozycję GPS.",
+            onShowMap: {
+                selectedParkedCar = nil
+                navigationStore.focusMap(on: car.coordinate, zoom: 17)
+            },
             onGuide: { guideToParkedCar(car) },
             onUpdate: { updated in
                 guard placeStore.parkedCar?.id == updated.id,
-                      placeStore.updateParkedCar(updated) else { return }
-                selectedParkedCar = updated
+                      placeStore.updateParkedCar(updated) else { return false }
+                selectedParkedCar = placeStore.parkedCar
+                return true
             },
-            onSavePhoto: { data in placeStore.saveParkedCarPhoto(data) },
+            onSavePhoto: { data in
+                guard let path = placeStore.saveParkedCarPhoto(data, for: car.id) else { return nil }
+                selectedParkedCar = placeStore.parkedCar
+                return path
+            },
             onRemove: {
-                if placeStore.removeParkedCar() { selectedParkedCar = nil }
+                guard placeStore.parkedCar?.id == car.id,
+                      placeStore.removeParkedCar() else { return false }
+                selectedParkedCar = nil
+                return true
             })
+            .task {
+                while !Task.isCancelled {
+                    if !isNavigating { navigationStore.refreshCurrentLocation() }
+                    do { try await Task.sleep(for: .seconds(10)) }
+                    catch { return }
+                }
+            }
 #if os(iOS)
         return sheet
-            .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
 #else
         return sheet

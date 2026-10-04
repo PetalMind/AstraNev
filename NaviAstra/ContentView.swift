@@ -16,6 +16,13 @@ struct ContentView: View {
     @State var transitStore: TransitStore
     @State var mapStore: MapStore
     @State var placeStore: PlaceStore
+    @State var weatherStore = WeatherStore()
+    @AppStorage("weatherEnabled") var weatherEnabled = true
+    @AppStorage("weatherIntensity") var weatherIntensity = WeatherEffectIntensity.subtle.rawValue
+    @AppStorage("weatherAnimations") var weatherAnimations = true
+    @AppStorage("weatherMapColors") var weatherMapColors = true
+    @AppStorage("weatherDuringNavigation") var weatherDuringNavigation = true
+    @AppStorage("weatherRouteForecast") var weatherRouteForecast = true
     @State var panelHeight: CGFloat = 320
     @State var mapPanelInset: CGFloat = 340
     @State var mapHeaderInset: CGFloat = 100
@@ -59,8 +66,6 @@ struct ContentView: View {
     @State var parkedCarToastDismissTask: Task<Void, Never>?
     @State var arrivalCarPromptDismissed = false
     @State var parkedCarPromptExpiresAt: Date?
-    @State var trafficKey = ""
-    @State var trafficConfigured = TrafficCredential.read() != nil
     @State var discoveryDrawerCollapseRequest = 0
     @State var discoverySheetDetent: NavigationBottomSheetDetent = .medium
     @State var navigationPanelDetent: NavigationBottomSheetDetent = .medium

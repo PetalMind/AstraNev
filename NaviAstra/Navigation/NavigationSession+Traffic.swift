@@ -1,18 +1,6 @@
 import Foundation
 
 extension NavigationSession {
-    func configureTraffic(apiKey: String?) -> Bool {
-        guard TrafficCredential.save(apiKey?.trimmingCharacters(in: .whitespacesAndNewlines)) else { return false }
-        trafficProvider = trafficProviderFactory.make(apiKey: apiKey)
-        updateTrafficTileURLTemplates()
-        invalidateTraffic()
-        state.traffic = nil
-        state.trafficStatus = trafficProvider == nil ? .notConfigured : .updating
-        lastTrafficFetch = .distantPast
-        if trafficProvider != nil { refreshTraffic(force: true) }
-        return true
-    }
-
     func updateTrafficTileURLTemplates() {
         state.trafficLightTileURLTemplate = trafficProvider?.rasterFlowTileURLTemplate(style: .light)
         state.trafficDarkTileURLTemplate = trafficProvider?.rasterFlowTileURLTemplate(style: .dark)

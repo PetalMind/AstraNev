@@ -62,13 +62,15 @@ struct DrivingScoreHistoryLabel: View {
             Image(systemName: "steeringwheel")
             Text("Ocena \(score.score)/100")
                 .monospacedDigit()
-            Text("· Szczegóły")
-            Image(systemName: "chevron.right")
-                .font(.caption2.weight(.bold))
+            Text(score.headline)
+                .foregroundStyle(Color.naviTextSecondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .font(.caption.weight(.semibold))
-        .foregroundStyle(Color.accentColor)
-        .padding(.vertical, 8)
+        .foregroundStyle(score.displayColor)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(score.displayColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
         .accessibilityLabel("Ocena prowadzenia: \(score.score) na 100. \(score.headline). Zobacz szczegóły")
     }
 }
@@ -107,7 +109,7 @@ struct DrivingScoreReport: View {
             VStack(alignment: .leading, spacing: 22) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(trip.destination.name).font(.title3.weight(.semibold))
-                    Text(trip.startedAt.formatted(date: .abbreviated, time: .shortened))
+                    Text(TripHistoryFormat.date(trip.startedAt))
                         .font(.subheadline)
                         .foregroundStyle(Color.naviTextSecondary)
                 }
@@ -125,6 +127,7 @@ struct DrivingScoreReport: View {
             .frame(maxWidth: .infinity)
         }
         .foregroundStyle(Color.naviTextPrimary)
+        .environment(\.locale, TripHistoryFormat.locale)
         .navigationTitle("Ocena prowadzenia")
         .inlineDrivingScoreTitle()
     }

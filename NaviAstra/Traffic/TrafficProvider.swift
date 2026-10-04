@@ -1,5 +1,4 @@
 import Foundation
-import Security
 
 nonisolated struct TrafficFlow: Sendable {
     let currentSpeedKph: Int
@@ -87,7 +86,7 @@ nonisolated enum TrafficIncidentSeverity: String, Equatable, Sendable {
 }
 
 extension TrafficIncidentCategory {
-    var mapLabel: String {
+    nonisolated var mapLabel: String {
         switch self {
         case .unknown: "Zdarzenie drogowe"
         case .accident: "Wypadek"
@@ -156,7 +155,7 @@ extension TrafficIncidentCategory {
 }
 
 extension TrafficIncidentSeverity {
-    var mapLabel: String {
+    nonisolated var mapLabel: String {
         switch self {
         case .unknown: "Nieokreślone utrudnienie"
         case .minor: "Niewielkie utrudnienie"
@@ -225,7 +224,11 @@ struct TrafficMapPresentation {
     init(_ poi: MapRoadPOI) {
         symbolName = poi.category.symbolName
         markerText = nil
-        roadSign = poi.category == .trafficSignals ? .trafficSignal : nil
+        roadSign = poi.category == .trafficSigns ? RoadSignSymbol(poi)
+            : poi.category == .heightLimits ? .heightLimit(poi.heightValue)
+            : poi.category == .weightLimits ? .weightLimit(poi.weightValue)
+            : poi.category == .truckRestrictions ? .noTrucks(poi.weightValue)
+            : poi.category == .trafficSignals ? .trafficSignal : nil
         isDirectionUncertain = false
         colorHex = poi.category.colorHex
         priority = 1
@@ -518,13 +521,32 @@ struct TomTomTrafficProvider: TrafficProvider {
             let points = feature.geometry.points
             guard !points.isEmpty else { return nil }
             let description = feature.properties.events?.first?.description ?? "Utrudnienie drogowe"
-            return TrafficIncident(id: feature.properties.id ?? UUID().uuidString,
+            let category = TrafficIncidentCategory(tomTomValue: feature.properties.iconCategory)
+            let providerID = feature.properties.id?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let incidentID = (providerID?.isEmpty == false ? providerID : nil)
+                ?? Self.fallbackIncidentID(category: category, points: points)
+            return TrafficIncident(id: incidentID,
                                    description: description, coordinate: points[0],
                                    delaySeconds: feature.properties.delayInSeconds,
-                                   category: TrafficIncidentCategory(tomTomValue: feature.properties.iconCategory),
+                                   category: category,
                                    severity: TrafficIncidentSeverity(tomTomValue: feature.properties.magnitudeOfDelay),
                                    geometry: points)
         }
+    }
+
+    private static func fallbackIncidentID(category: TrafficIncidentCategory,
+                                            points: [Coordinate]) -> String {
+        let endpoints = [points.first!, points.last!].sorted {
+            if $0.latitude != $1.latitude { return $0.latitude < $1.latitude }
+            return $0.longitude < $1.longitude
+        }
+        let first = endpoints[0]
+        let last = endpoints[1]
+        let firstLatitude = Int((first.latitude * 10_000).rounded())
+        let firstLongitude = Int((first.longitude * 10_000).rounded())
+        let lastLatitude = Int((last.latitude * 10_000).rounded())
+        let lastLongitude = Int((last.longitude * 10_000).rounded())
+        return "tomtom-anonymous-\(category.rawValue)-\(firstLatitude)-\(firstLongitude)-\(lastLatitude)-\(lastLongitude)"
     }
 
     private func load(_ url: URL) async throws -> Data {
@@ -602,30 +624,15 @@ struct TomTomTrafficProvider: TrafficProvider {
     }
 }
 
-/// Stored locally. A client-side API key is visible to the configured provider, not a server secret.
+/// Injected at build time from the ignored local configuration file.
+/// Client-side credentials are included in the app bundle, not in tracked sources.
 enum TrafficCredential {
-    private static let service = "NaviAstra.TomTomTraffic"
     static func read() -> String? {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                    kSecAttrService as String: service,
-                                    kSecReturnData as String: true,
-                                    kSecMatchLimit as String: kSecMatchLimitOne]
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-    @discardableResult static func save(_ key: String?) -> Bool {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service]
-        guard let key, !key.isEmpty else {
-            let status = SecItemDelete(query as CFDictionary)
-            return status == errSecSuccess || status == errSecItemNotFound
+        guard let value = Bundle.main.object(forInfoDictionaryKey: "TomTomAPIKey") as? String else {
+            return nil
         }
-        let data = Data(key.utf8)
-        let status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if status == errSecSuccess { return true }
-        guard status == errSecItemNotFound else { return false }
-        let item: [String: Any] = query.merging([kSecValueData as String: data]) { _, new in new }
-        return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
+        let key = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty, !key.contains("$(") else { return nil }
+        return key
     }
 }

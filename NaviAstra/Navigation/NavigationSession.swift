@@ -60,11 +60,18 @@ final class NavigationSession {
     var trafficGeneration = 0
     var trafficRouteSelectionGeneration = 0
     private var speedLimitGeneration = 0
+    private var speedLimitTask: Task<Void, Never>?
+    private var nearbySpeedLimitTask: Task<Void, Never>?
+    private var nearbySpeedLimitSnapshot: RoadDataSnapshot?
+    private var nearbySpeedLimitCenter: Coordinate?
+    private var lastNearbySpeedLimitFetch = Date.distantPast
     private var roadDataTask: Task<Void, Never>?
     private var roadDataGeneration = 0
     var lastTrafficFetch = Date.distantPast
     private var lastSpeedLimitFetch = Date.distantPast
     private var speedLimitObservationLocation: Coordinate?
+    private var speedLimitReading: SpeedLimitReading?
+    private var speedLimitReadingDate = Date.distantPast
     var lastTransitVehiclesFetch = Date.distantPast
     private var lastTransitProgressRefresh = Date.distantPast
     var lastTransitPlanRefresh = Date.distantPast
@@ -428,6 +435,9 @@ final class NavigationSession {
                                       transportMode: state.transportMode)
         }
         invalidateSpeedLimit()
+        if usesRoadVoiceGuidance, let location = state.location {
+            refreshSpeedLimit(for: location, force: true)
+        }
         updateProgress()
         updateLiveActivity()
     }
@@ -553,15 +563,25 @@ final class NavigationSession {
     }
     func invalidateSpeedLimit() {
         speedLimitGeneration += 1
+        speedLimitTask?.cancel()
+        speedLimitTask = nil
+        nearbySpeedLimitTask?.cancel()
+        nearbySpeedLimitTask = nil
+        nearbySpeedLimitSnapshot = nil
+        nearbySpeedLimitCenter = nil
+        lastNearbySpeedLimitFetch = .distantPast
         speedLimitRequestInFlight = false
         lastSpeedLimitFetch = .distantPast
         state.speedLimitKph = nil
         state.speedLimitSource = nil
         state.speedLimitMessage = nil
         speedLimitObservationLocation = nil
+        speedLimitReading = nil
+        speedLimitReadingDate = .distantPast
     }
     func refreshSpeedLimit(for location: NavigationLocation, force: Bool = false) {
-        if let snapshot = roadDataSnapshot {
+        refreshNearbySpeedLimits(for: location)
+        if let snapshot = activeSpeedLimitSnapshot(at: location) {
             if let result = snapshot.speedLimit(at: location) {
                 state.speedLimitKph = result.speedKph
                 state.speedLimitSource = result.source
@@ -576,33 +596,49 @@ final class NavigationSession {
                 speedLimitObservationLocation = nil
                 return
             }
+        }
+        if let observation = speedLimitObservationLocation,
+           !(state.speedLimitSource == .routingProvider && speedLimitReading?.road.isEmpty == false
+                ? routingSpeedLimitMatches(location)
+                : observation.distance(to: location.coordinate) <= 75) {
             state.speedLimitKph = nil
             state.speedLimitSource = nil
-            state.speedLimitMessage = "Limit OSM nie pasuje do bieżącej drogi; sprawdzam dane trasy."
             speedLimitObservationLocation = nil
         }
         guard !speedLimitRequestInFlight,
-              force || Date().timeIntervalSince(lastSpeedLimitFetch) >= 10 else { return }
+              force || Date().timeIntervalSince(lastSpeedLimitFetch) >= (state.speedLimitKph == nil ? 3 : 10) else { return }
         speedLimitRequestInFlight = true
         lastSpeedLimitFetch = Date()
         let generation = speedLimitGeneration
         let provider = speedLimitProvider
-        Task {
+        speedLimitTask = Task(priority: .userInitiated) {
             defer { if generation == speedLimitGeneration { speedLimitRequestInFlight = false } }
             do {
                 let value = try await provider.limit(at: location.coordinate, heading: location.course)
                 guard generation == speedLimitGeneration, state.status == .navigating || state.status == .rerouting else { return }
-                guard let currentLocation = state.location,
-                      currentLocation.coordinate.distance(to: location.coordinate) <= max(30, min(80, currentLocation.accuracy)) else {
+                guard let currentLocation = state.location else { return }
+                // OSM may have become available while locate was in flight.
+                if let snapshot = activeSpeedLimitSnapshot(at: currentLocation),
+                   snapshot.speedLimit(at: currentLocation) != nil || snapshot.shouldSuppressRoutingFallback(at: currentLocation) {
+                    refreshSpeedLimit(for: currentLocation)
+                    return
+                }
+                let onReturnedRoad = value.map { $0.road.count > 1 ? $0.matches(currentLocation) : nil } ?? nil
+                let stillNearby = currentLocation.coordinate.distance(to: location.coordinate) <= max(30, min(80, currentLocation.accuracy))
+                guard onReturnedRoad ?? stillNearby else {
                     lastSpeedLimitFetch = .distantPast
                     return
                 }
-                state.speedLimitKph = value
+                state.speedLimitKph = value?.speedKph
                 state.speedLimitSource = value == nil ? nil : .routingProvider
                 state.speedLimitMessage = value == nil ? "Brak limitu w danych drogi." : nil
-                speedLimitObservationLocation = value == nil ? nil : location.coordinate
+                speedLimitObservationLocation = value == nil ? nil : currentLocation.coordinate
+                speedLimitReading = value
+                speedLimitReadingDate = .now
             } catch {
                 guard generation == speedLimitGeneration else { return }
+                if let current = state.location, let snapshot = activeSpeedLimitSnapshot(at: current),
+                   snapshot.speedLimit(at: current) != nil || snapshot.shouldSuppressRoutingFallback(at: current) { return }
                 state.speedLimitKph = nil
                 state.speedLimitSource = nil
                 state.speedLimitMessage = "Limit niedostępny: \(error.localizedDescription)"
@@ -612,14 +648,62 @@ final class NavigationSession {
     }
 
     private func drivingSpeedLimit(at location: NavigationLocation) -> Int? {
-        if let snapshot = roadDataSnapshot {
+        if let snapshot = activeSpeedLimitSnapshot(at: location) {
             if let result = snapshot.speedLimit(at: location) { return result.speedKph }
             if snapshot.shouldSuppressRoutingFallback(at: location) { return nil }
         }
         guard let speedLimit = state.speedLimitKph,
-              let observationLocation = speedLimitObservationLocation,
-              observationLocation.distance(to: location.coordinate) <= 75 else { return nil }
+              let observationLocation = speedLimitObservationLocation else { return nil }
+        if state.speedLimitSource == .routingProvider,
+           speedLimitReading?.road.isEmpty == false {
+            return routingSpeedLimitMatches(location) ? speedLimit : nil
+        }
+        guard observationLocation.distance(to: location.coordinate) <= 75 else { return nil }
         return speedLimit
+    }
+
+    private func routingSpeedLimitMatches(_ location: NavigationLocation) -> Bool {
+        Date().timeIntervalSince(speedLimitReadingDate) <= 15 && speedLimitReading?.matches(location) == true
+    }
+
+    private func activeSpeedLimitSnapshot(at location: NavigationLocation) -> RoadDataSnapshot? {
+        if let nearby = nearbySpeedLimitSnapshot,
+           Date().timeIntervalSince(nearby.fetchedAt) < 300,
+           let center = nearbySpeedLimitCenter,
+           center.distance(to: location.coordinate) <= 1_200 {
+            // Prefer fresh local rules, including unresolved conditional limits.
+            if nearby.speedLimit(at: location) != nil || nearby.shouldSuppressRoutingFallback(at: location) {
+                return nearby
+            }
+        }
+        return roadDataSnapshot
+    }
+
+    private func refreshNearbySpeedLimits(for location: NavigationLocation) {
+        guard nearbySpeedLimitTask == nil else { return }
+        let elapsed = Date().timeIntervalSince(lastNearbySpeedLimitFetch)
+        let moved = nearbySpeedLimitCenter.map { $0.distance(to: location.coordinate) >= 600 } ?? true
+        guard elapsed >= 15,
+              nearbySpeedLimitSnapshot == nil || moved || elapsed >= 180 else { return }
+        lastNearbySpeedLimitFetch = .now
+        let generation = speedLimitGeneration
+        let provider = roadDataProvider
+        nearbySpeedLimitTask = Task(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            defer { if generation == self.speedLimitGeneration { self.nearbySpeedLimitTask = nil } }
+            do {
+                let snapshot = try await provider.loadSpeedLimits(near: location.coordinate)
+                guard !Task.isCancelled, generation == self.speedLimitGeneration,
+                      self.state.status == .navigating || self.state.status == .rerouting else { return }
+                self.nearbySpeedLimitSnapshot = snapshot
+                self.nearbySpeedLimitCenter = location.coordinate
+                if let current = self.state.location { self.refreshSpeedLimit(for: current) }
+            } catch {
+                // Locate continues independently; retry the small OSM request on a later fix.
+                guard !Task.isCancelled, generation == self.speedLimitGeneration else { return }
+                self.nearbySpeedLimitSnapshot = nil
+            }
+        }
     }
 
     func loadRoadData(for route: NavigationRoute, isRetry: Bool = false) {
@@ -649,7 +733,6 @@ final class NavigationSession {
                 guard !Task.isCancelled, generation == self.roadDataGeneration,
                       self.state.route?.id == routeID,
                       self.usesRoadVoiceGuidance else { return }
-                self.invalidateSpeedLimit()
                 self.roadDataSnapshot = snapshot
                 self.state.roadSafetyAlerts = snapshot.matchedAlerts(on: roadCoordinates)
                 self.state.roadSafetyStatus = snapshot.unavailableSources.flatMap { sources in

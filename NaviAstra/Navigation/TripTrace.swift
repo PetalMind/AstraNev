@@ -134,8 +134,26 @@ enum TripHeatmap {
 }
 
 enum TripHistoryFormat {
+    static let locale = Locale(identifier: "pl_PL")
+
+    static func date(_ date: Date) -> String {
+        date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(locale))
+    }
+
+    static func time(_ date: Date) -> String {
+        date.formatted(Date.FormatStyle(date: .omitted, time: .shortened).locale(locale))
+    }
+
+    static func journeys(_ count: Int) -> String {
+        let lastDigit = count % 10
+        let lastTwoDigits = count % 100
+        let noun = count == 1 ? "podróż"
+            : ((2...4).contains(lastDigit) && !(12...14).contains(lastTwoDigits) ? "podróże" : "podróży")
+        return "\(count) \(noun)"
+    }
+
     static func distance(_ meters: Double) -> String {
-        (meters / 1000).formatted(.number.precision(.fractionLength(1))) + " km"
+        (meters / 1000).formatted(.number.precision(.fractionLength(1)).locale(locale)) + " km"
     }
 
     static func duration(_ interval: TimeInterval) -> String {

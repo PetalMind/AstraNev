@@ -8,7 +8,7 @@ enum MapLibreCameraAnimator {
                       completionHandler: @escaping () -> Void) -> Bool {
         guard isValid(intent.target), intent.zoom.isFinite, intent.pitch.isFinite,
               intent.bearing.isFinite else { return false }
-        let validBounds = intent.bounds.filter(isValid)
+        let validBounds = intent.bounds.filter { isValid($0) }
         if !validBounds.isEmpty,
            state == .destinationPreview || state == .routeOverview || state == .arrived ||
             state.usesNavigationPerspective {

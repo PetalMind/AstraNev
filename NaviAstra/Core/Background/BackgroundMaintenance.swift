@@ -11,7 +11,7 @@ final class BackgroundMaintenance {
     private static let refreshID = "Blackmaks.NaviAstra.cache-refresh"
     private static let processingID = "Blackmaks.NaviAstra.data-maintenance"
     private static var registered = false
-    private static let logger = Logger(subsystem: "NaviAstra", category: "BackgroundMaintenance")
+    nonisolated private static let logger = Logger(subsystem: "NaviAstra", category: "BackgroundMaintenance")
 
     static func register() {
         guard !registered else { return }
@@ -57,10 +57,20 @@ final class BackgroundMaintenance {
         processing.earliestBeginDate = Date().addingTimeInterval(24 * 3_600)
         processing.requiresNetworkConnectivity = true
         processing.requiresExternalPower = true
-        do {
-            try BGTaskScheduler.shared.submit(refresh)
-            try BGTaskScheduler.shared.submit(processing)
-        } catch { logger.info("Maintenance scheduling unavailable: \(error.localizedDescription)") }
+        if #available(iOS 27.0, *) {
+            for request in [refresh, processing] as [BGTaskRequest] {
+                BGTaskScheduler.shared.submitTaskRequest(request) { error in
+                    if let error {
+                        logger.info("Maintenance scheduling unavailable: \(error.localizedDescription)")
+                    }
+                }
+            }
+        } else {
+            do {
+                try BGTaskScheduler.shared.submit(refresh)
+                try BGTaskScheduler.shared.submit(processing)
+            } catch { logger.info("Maintenance scheduling unavailable: \(error.localizedDescription)") }
+        }
     }
 #else
     static func register() {}

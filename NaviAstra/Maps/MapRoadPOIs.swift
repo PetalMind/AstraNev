@@ -1,9 +1,13 @@
 import Foundation
 
-nonisolated enum MapSafetyPOICategory: Int, CaseIterable, Identifiable, Sendable {
+nonisolated enum MapSafetyPOICategory: Int, CaseIterable, Identifiable, Codable, Sendable {
     case speedCameras
     case surveillanceCameras
     case trafficSignals
+    case heightLimits
+    case weightLimits
+    case truckRestrictions
+    case trafficSigns
 
     var id: Int { rawValue }
     var mask: Int { 1 << rawValue }
@@ -14,6 +18,10 @@ nonisolated enum MapSafetyPOICategory: Int, CaseIterable, Identifiable, Sendable
         case .speedCameras: "Fotoradary, pomiar odcinkowy i czerwone światło"
         case .surveillanceCameras: "Kamery monitoringu"
         case .trafficSignals: "Sygnalizacja świetlna"
+        case .heightLimits: "Ograniczenia wysokości (B-16)"
+        case .weightLimits: "Ograniczenia masy (B-18)"
+        case .truckRestrictions: "Zakaz wjazdu ciężarówek (B-5)"
+        case .trafficSigns: "Znaki drogowe"
         }
     }
 
@@ -22,12 +30,16 @@ nonisolated enum MapSafetyPOICategory: Int, CaseIterable, Identifiable, Sendable
         case .speedCameras: "speedometer"
         case .surveillanceCameras: "video.fill"
         case .trafficSignals: "trafficlight.fill"
+        case .heightLimits: "arrow.up.and.down"
+        case .weightLimits: "scalemass.fill"
+        case .truckRestrictions: "truck.box.fill"
+        case .trafficSigns: "signpost.right.fill"
         }
     }
 
     var colorHex: UInt32 {
         switch self {
-        case .speedCameras, .trafficSignals: NaviAstraColorPalette.warning
+        case .speedCameras, .trafficSignals, .heightLimits, .weightLimits, .truckRestrictions, .trafficSigns: NaviAstraColorPalette.warning
         case .surveillanceCameras: NaviAstraColorPalette.transitFallback
         }
     }
@@ -51,12 +63,17 @@ nonisolated enum MapRoadPOIStatus: Equatable, Sendable {
     }
 }
 
-nonisolated struct MapRoadPOI: Identifiable, Equatable, Sendable {
+nonisolated struct MapRoadPOI: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let category: MapSafetyPOICategory
     let coordinate: Coordinate
     let title: String
     let subtitle: String
+    var signCode: String? = nil
+    var signSpeedLimit: Int? = nil
+    var heightValue: String? = nil
+    var weightValue: String? = nil
+    var signSource: RoadSignSource? = nil
 
     init(id: String, category: MapSafetyPOICategory, coordinate: Coordinate,
          title: String, subtitle: String = "© OpenStreetMap contributors") {
@@ -74,13 +91,24 @@ extension RoadAlertType {
         switch self {
         case .speedCamera, .averageSpeedStart, .averageSpeedEnd, .redLightCamera:
             .speedCameras
+        case .heightLimitSign:
+            .heightLimits
+        case .weightLimitSign:
+            .weightLimits
         default:
             nil
         }
     }
 }
 
-nonisolated struct MapRoadPOIQuery: Hashable, Sendable {
+extension RoadSafetyAlert {
+    nonisolated var mapSafetyPOICategory: MapSafetyPOICategory? {
+        if type == .trafficSign, OSMWeightRestriction.isTruckSign(signCode) { return .truckRestrictions }
+        return type.mapSafetyPOICategory
+    }
+}
+
+nonisolated struct MapRoadPOIQuery: Hashable, Codable, Sendable {
     let south: Double
     let west: Double
     let north: Double
@@ -98,13 +126,15 @@ nonisolated struct MapRoadPOIQuery: Hashable, Sendable {
             && (west...east).contains(point.coordinate.longitude)
     }
 
-    var id: String {
+    var id: String { cacheID(endpoint: MapRoadPOIEndpoint.url.absoluteString) }
+
+    func cacheID(endpoint: String) -> String {
         let bounds = [south, west, north, east]
             .map { String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), arguments: [$0]) }
             .joined(separator: ",")
         let categoryIDs = categories.sorted { $0.rawValue < $1.rawValue }
             .map { String($0.rawValue) }.joined(separator: ",")
-        return "\(bounds)|\(categoryIDs)|\(MapRoadPOIEndpoint.url.absoluteString)"
+        return "\(bounds)|\(categoryIDs)|\(endpoint)"
     }
 
     var overpassQL: String {
@@ -112,6 +142,12 @@ nonisolated struct MapRoadPOIQuery: Hashable, Sendable {
             .map { String(format: "%.5f", locale: Locale(identifier: "en_US_POSIX"), arguments: [$0]) }
             .joined(separator: ",")
         var selectors: [String] = []
+        if categories.contains(.trafficSigns) {
+            for key in ["traffic_sign", "traffic_sign:forward", "traffic_sign:backward"] {
+                selectors.append("nwr[\"\(key)\"](\(bounds));")
+            }
+            selectors.append("node[\"highway\"~\"^(stop|give_way)$\"](\(bounds));")
+        }
         if categories.contains(.speedCameras) {
             selectors.append("node[\"highway\"=\"speed_camera\"](\(bounds));")
             selectors.append("node[\"enforcement\"=\"traffic_signals\"](\(bounds));")
@@ -127,6 +163,34 @@ nonisolated struct MapRoadPOIQuery: Hashable, Sendable {
             selectors.append("node[\"highway\"=\"crossing\"][\"crossing\"=\"traffic_signals\"](\(bounds));")
             selectors.append("node[\"highway\"=\"crossing\"][\"crossing:signals\"=\"yes\"](\(bounds));")
         }
+        var restrictionSelectors: [String] = []
+        if categories.contains(.heightLimits) {
+            restrictionSelectors.append("node[\"maxheight\"](\(bounds));")
+            restrictionSelectors.append("way[\"highway\"][\"maxheight\"](\(bounds));")
+            for key in ["traffic_sign", "traffic_sign:forward", "traffic_sign:backward"] {
+                restrictionSelectors.append("node[\"\(key)\"~\"(^|;)(maxheight|PL:B-16|B-16)(;|$)\"](\(bounds));")
+            }
+            restrictionSelectors.append("node[\"traffic_sign:maxheight\"](\(bounds));")
+        }
+        if categories.contains(.weightLimits) {
+            restrictionSelectors.append("node[\"maxweight\"](\(bounds));")
+            restrictionSelectors.append("way[\"highway\"][\"maxweight\"](\(bounds));")
+            restrictionSelectors.append("node[\"traffic_sign:maxweight\"](\(bounds));")
+        }
+        if categories.contains(.truckRestrictions) {
+            restrictionSelectors.append("node[\"maxweightrating:hgv\"](\(bounds));")
+            restrictionSelectors.append("way[\"highway\"][\"maxweightrating:hgv\"](\(bounds));")
+            restrictionSelectors.append("node[\"hgv\"=\"no\"](\(bounds));")
+            restrictionSelectors.append("way[\"highway\"][\"hgv\"=\"no\"](\(bounds));")
+        }
+        for key in ["traffic_sign", "traffic_sign:forward", "traffic_sign:backward"] {
+            if categories.contains(.weightLimits) {
+                restrictionSelectors.append("node[\"\(key)\"~\"(^|;)(maxweight|PL:B-18|B-18)(;|$|[[])\"](\(bounds));")
+            }
+            if categories.contains(.truckRestrictions) {
+                restrictionSelectors.append("node[\"\(key)\"~\"(^|;)(PL:B-5|B-5)(;|$|[[])\"](\(bounds));")
+            }
+        }
         var relationSelectors: [String] = []
         if categories.contains(.speedCameras) {
             relationSelectors.append("relation[\"type\"=\"enforcement\"][\"enforcement\"~\"^(maxspeed|average_speed|traffic_signals)$\"](\(bounds));")
@@ -137,12 +201,19 @@ nonisolated struct MapRoadPOIQuery: Hashable, Sendable {
         );
         out geom;
         """
+        let roadRestrictions = restrictionSelectors.isEmpty ? "" : """
+        (
+          \(restrictionSelectors.joined(separator: "\n  "))
+        );
+        out geom;
+        """
         return """
         [out:json][timeout:20];
         (
           \(selectors.joined(separator: "\n  "))
         );
         out center tags;
+        \(roadRestrictions)
         \(enforcementRelations)
         """
     }
@@ -161,6 +232,7 @@ nonisolated struct MapRoadPOIQuery: Hashable, Sendable {
         // Signalized intersections are dense in cities; fetch them only at a close map zoom.
         if latitudeDelta > 0.10 || longitudeDelta > 0.15 {
             visibleCategories.remove(.trafficSignals)
+            visibleCategories.remove(.trafficSigns)
         }
         guard !visibleCategories.isEmpty else { return nil }
 
@@ -175,7 +247,7 @@ nonisolated struct MapRoadPOIQuery: Hashable, Sendable {
     }
 }
 
-nonisolated struct MapRoadPOIResult: Sendable {
+nonisolated struct MapRoadPOIResult: Codable, Sendable {
     let points: [MapRoadPOI]
     var unavailableSources: [String] = []
 }
@@ -183,59 +255,106 @@ nonisolated struct MapRoadPOIResult: Sendable {
 actor MapRoadPOIProvider {
     static let shared = MapRoadPOIProvider()
 
-    private struct CacheEntry {
+    private struct CacheEntry: Codable {
         let query: MapRoadPOIQuery
         let endpoint: String
         let result: MapRoadPOIResult
         let fetchedAt: Date
+
+        var isFresh: Bool {
+            let age = Date().timeIntervalSince(fetchedAt)
+            // Incomplete results keep their source warning and only suppress short retry bursts.
+            let lifetime: TimeInterval = result.unavailableSources.isEmpty ? 86_400 : 60
+            return age >= 0 && age < lifetime
+        }
     }
 
     private var cache: [String: CacheEntry] = [:]
+    private var restoredCache = false
     private var inFlight: [String: Task<MapRoadPOIResult, Error>] = [:]
+    private var inFlightQueries: [String: MapRoadPOIQuery] = [:]
     private var preferredEndpoint: URL?
 
-    func points(in query: MapRoadPOIQuery) async throws -> MapRoadPOIResult {
-        let queryID = query.id
+    func cachedPoints(in query: MapRoadPOIQuery) -> MapRoadPOIResult? {
+        restoreCacheIfNeeded()
         let endpoint = MapRoadPOIEndpoint.url.absoluteString
-        if let entry = cache[queryID], Date().timeIntervalSince(entry.fetchedAt) < 30 * 60 {
-            return entry.result
+        if let entry = cache[query.id], entry.isFresh,
+           entry.endpoint == endpoint, entry.query.contains(query) {
+            return filtered(entry.result, in: query)
         }
-        // A closer view can reuse complete data already downloaded for a larger area.
+        // A closer view or fewer enabled categories reuse the already downloaded area.
         let coveringEntry = cache.values.filter {
-            Date().timeIntervalSince($0.fetchedAt) < 30 * 60
-                && $0.endpoint == endpoint
-                && $0.query.contains(query)
+            $0.isFresh && $0.endpoint == endpoint && $0.query.contains(query)
         }.min {
             ($0.query.north - $0.query.south) * ($0.query.east - $0.query.west)
                 < ($1.query.north - $1.query.south) * ($1.query.east - $1.query.west)
         }
-        if let entry = coveringEntry {
-            return MapRoadPOIResult(points: entry.result.points.filter { query.contains($0) })
+        return coveringEntry.map { filtered($0.result, in: query) }
+    }
+
+    func points(in query: MapRoadPOIQuery) async throws -> MapRoadPOIResult {
+        if let cached = cachedPoints(in: query) { return cached }
+        let queryID = query.id
+        let endpoint = MapRoadPOIEndpoint.url.absoluteString
+        // Reuse a pending wider request after zooming in instead of downloading twice.
+        if let covering = inFlightQueries.first(where: {
+            $0.value.contains(query) && $0.key.hasSuffix("|" + endpoint)
+        }), let task = inFlight[covering.key] {
+            return filtered(try await task.value, in: query)
         }
-        if let task = inFlight[queryID] { return try await task.value }
 
         let task = Task { try await self.loadCombined(query) }
         inFlight[queryID] = task
-        do {
-            let points = try await task.value
-            if points.unavailableSources.isEmpty {
-                cache[queryID] = CacheEntry(query: query, endpoint: endpoint,
-                                          result: points, fetchedAt: .now)
-            }
+        inFlightQueries[queryID] = query
+        defer {
             inFlight[queryID] = nil
-            trimCacheIfNeeded()
-            return points
-        } catch {
-            inFlight[queryID] = nil
-            throw error
+            inFlightQueries[queryID] = nil
         }
+        let points = try await task.value
+        cache[queryID] = CacheEntry(query: query, endpoint: endpoint,
+                                   result: points, fetchedAt: .now)
+        trimCacheIfNeeded()
+        if points.unavailableSources.isEmpty { persistCache() }
+        return filtered(points, in: query)
+    }
+
+    private func filtered(_ result: MapRoadPOIResult, in query: MapRoadPOIQuery) -> MapRoadPOIResult {
+        MapRoadPOIResult(points: result.points.filter { query.contains($0) },
+                         unavailableSources: result.unavailableSources)
     }
 
     private func trimCacheIfNeeded() {
+        cache = cache.filter { $0.value.isFresh }
         guard cache.count > 64 else { return }
         let oldestKeys = cache.sorted { $0.value.fetchedAt < $1.value.fetchedAt }
             .prefix(cache.count - 64).map(\.key)
         oldestKeys.forEach { cache[$0] = nil }
+    }
+
+    private var cacheURL: URL? {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("NaviAstra/MapRoadPOIs/v1.json")
+    }
+
+    private func restoreCacheIfNeeded() {
+        guard !restoredCache else { return }
+        restoredCache = true
+        guard let url = cacheURL, let data = try? Data(contentsOf: url),
+              let entries = try? JSONDecoder().decode([CacheEntry].self, from: data) else { return }
+        for entry in entries where entry.isFresh && entry.result.unavailableSources.isEmpty {
+            cache[entry.query.cacheID(endpoint: entry.endpoint)] = entry
+        }
+        trimCacheIfNeeded()
+    }
+
+    private func persistCache() {
+        guard let url = cacheURL,
+              let data = try? JSONEncoder().encode(cache.values.filter {
+                  $0.isFresh && $0.result.unavailableSources.isEmpty
+              }) else { return }
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        try? data.write(to: url, options: .atomic)
     }
 
     private func loadCombined(_ query: MapRoadPOIQuery) async throws -> MapRoadPOIResult {
@@ -375,6 +494,62 @@ actor MapRoadPOIProvider {
                 }
                 continue
             }
+            if categories.contains(.trafficSigns), let tags = element.tags,
+               let latitude = element.lat ?? element.center?.lat,
+               let longitude = element.lon ?? element.center?.lon,
+               latitude.isFinite, longitude.isFinite,
+               (-90...90).contains(latitude), (-180...180).contains(longitude) {
+                let codes = OSMTrafficSignCodes.parse(tags)
+                for (index, code) in codes.enumerated() {
+                    let id = "osm-sign-\(element.type)-\(element.id)-\(index)"
+                    let locationNote = element.type == "node" ? nil : "Lokalizacja przybliżona — znak przypisany do obiektu OSM"
+                    var point = MapRoadPOI(id: id, category: .trafficSigns,
+                        coordinate: Coordinate(latitude: latitude, longitude: longitude),
+                        title: "Znak drogowy · \(code)",
+                        subtitle: [tags["name"], locationNote, "© OpenStreetMap contributors"]
+                            .compactMap { $0 }.joined(separator: " · "))
+                    point.signCode = code
+                    point.signSource = .explicitTrafficSign
+                    point.signSpeedLimit = SpeedLimitParser.parse(tags["maxspeed"])
+                    point.heightValue = OSMHeightRestriction.parse(tags)?.value
+                    let baseCode = code.uppercased().split(separator: ":").last?
+                        .split(separator: "[").first.map(String.init)
+                    point.weightValue = OSMWeightRestriction.parse(tags).first {
+                        $0.kind == (baseCode == "B-5" ? .trucks : .actualMass)
+                    }?.value
+                    unique[id] = point
+                }
+                // An explicit sign is already represented by this independent layer.
+                if !codes.isEmpty { continue }
+            }
+            if categories.contains(.heightLimits), let tags = element.tags,
+               let restriction = OSMHeightRestriction.parse(tags),
+               let coordinate = element.type == "way" ? element.geometry?.first?.coordinate
+                    : element.lat.flatMap({ lat in element.lon.map { Coordinate(latitude: lat, longitude: $0) } }),
+               coordinate.latitude.isFinite, coordinate.longitude.isFinite,
+               (-90...90).contains(coordinate.latitude), (-180...180).contains(coordinate.longitude) {
+                let id = "osm-height-\(element.type)-\(element.id)"
+                var point = MapRoadPOI(id: id, category: .heightLimits, coordinate: coordinate,
+                                       title: "Ograniczenie wysokości",
+                                       subtitle: restriction.subtitle)
+                point.heightValue = restriction.value
+                point.signSource = restriction.source
+                unique[id] = point
+            }
+            if let tags = element.tags,
+               let coordinate = element.type == "way" ? element.geometry?.first?.coordinate
+                    : element.lat.flatMap({ lat in element.lon.map { Coordinate(latitude: lat, longitude: $0) } }),
+               coordinate.latitude.isFinite, coordinate.longitude.isFinite,
+               (-90...90).contains(coordinate.latitude), (-180...180).contains(coordinate.longitude) {
+                for restriction in OSMWeightRestriction.parse(tags) where categories.contains(restriction.category) {
+                    let id = "osm-\(restriction.idPrefix)-\(element.type)-\(element.id)"
+                    var point = MapRoadPOI(id: id, category: restriction.category, coordinate: coordinate,
+                                           title: restriction.title, subtitle: restriction.subtitle)
+                    point.weightValue = restriction.value
+                    point.signSource = restriction.source
+                    unique[id] = point
+                }
+            }
             guard let tags = element.tags,
                   let latitude = element.lat ?? element.center?.lat,
                   let longitude = element.lon ?? element.center?.lon,
@@ -400,12 +575,21 @@ actor MapRoadPOIProvider {
             if let existing = unique[knownID], existing.category.priority <= category.priority { continue }
             unique[knownID] = point
         }
-        return unique.values.sorted {
+        let points = unique.values.filter { point in
+            guard [.heightLimits, .weightLimits, .truckRestrictions].contains(point.category),
+                  point.signSource == .inferredFromRoadRestriction else { return true }
+            return !unique.values.contains { explicit in
+                explicit.category == point.category && explicit.signSource == .explicitTrafficSign
+                    && explicit.heightValue == point.heightValue && explicit.weightValue == point.weightValue
+                    && explicit.coordinate.distance(to: point.coordinate) < 20
+            }
+        }
+        return points.sorted {
             if $0.category.priority != $1.category.priority {
                 return $0.category.priority < $1.category.priority
             }
             return $0.id < $1.id
-        }.prefix(1_200).map { $0 }
+        }
     }
 
     private static func category(for tags: [String: String],
@@ -438,6 +622,10 @@ actor MapRoadPOIProvider {
                 "Kamera monitoringu"
             }
         case .trafficSignals: "Sygnalizacja świetlna"
+        case .heightLimits: "Ograniczenie wysokości"
+        case .weightLimits: "Ograniczenie masy"
+        case .truckRestrictions: "Zakaz wjazdu samochodów ciężarowych"
+        case .trafficSigns: "Znak drogowy"
         }
     }
 }
@@ -474,6 +662,7 @@ nonisolated private struct MapRoadPOIElement: Decodable {
     let lat: Double?
     let lon: Double?
     let center: Center?
+    let geometry: [Location]?
     let tags: [String: String]?
     let members: [Member]?
 
@@ -525,5 +714,171 @@ nonisolated enum OSMSafetyTags {
         tags["highway"] == "traffic_signals" ||
             (tags["highway"] == "crossing" &&
                 (tags["crossing"] == "traffic_signals" || tags["crossing:signals"] == "yes"))
+    }
+}
+
+nonisolated enum RoadSignSource: String, Codable, Sendable {
+    case explicitTrafficSign
+    case inferredFromRoadRestriction
+
+    var title: String {
+        switch self {
+        case .explicitTrafficSign: "Znak oznaczony w OSM"
+        case .inferredFromRoadRestriction: "Punkt wyznaczony z ograniczenia na drodze"
+        }
+    }
+}
+
+// Shared by viewport POIs and route signs; physical clearance is deliberately excluded.
+nonisolated struct OSMHeightRestriction {
+    let value: String?
+    let source: RoadSignSource
+
+    var subtitle: String {
+        [value.map { "Maksymalna wysokość: \($0)" } ?? "Wysokość niepodana",
+         source.title, "Źródło: OpenStreetMap · © OpenStreetMap contributors"].joined(separator: " · ")
+    }
+
+    static func parse(_ tags: [String: String]) -> Self? {
+        let codes = ["traffic_sign", "traffic_sign:forward", "traffic_sign:backward"]
+            .compactMap { tags[$0] }.flatMap { $0.split(separator: ";") }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }
+        let explicit = codes.contains { ["MAXHEIGHT", "B-16", "PL:B-16"].contains($0) }
+            || tags["traffic_sign:maxheight"] != nil
+        let value = formattedMeters(tags["traffic_sign:maxheight"]) ?? formattedMeters(tags["maxheight"])
+        guard explicit || value != nil else { return nil }
+        return Self(value: value, source: explicit ? .explicitTrafficSign : .inferredFromRoadRestriction)
+    }
+
+    static func formattedMeters(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let input = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            .replacingOccurrences(of: ",", with: ".")
+        let meters: Double
+        if let apostrophe = input.firstIndex(of: "'") {
+            let feetText = input[..<apostrophe]
+            let inchesText = input[input.index(after: apostrophe)...]
+            guard inchesText.hasSuffix("\""), let feet = Double(feetText),
+                  let inches = Double(inchesText.dropLast()), feet >= 0, (0..<12).contains(inches) else { return nil }
+            meters = feet * 0.3048 + inches * 0.0254
+        } else {
+            let digits = input.prefix { $0.isNumber || $0 == "." }
+            let unit = input.dropFirst(digits.count).trimmingCharacters(in: .whitespaces)
+            guard ["", "m", "meter", "meters", "metre", "metres"].contains(unit),
+                  let parsed = Double(digits) else { return nil }
+            meters = parsed
+        }
+        guard meters.isFinite, meters > 0 else { return nil }
+        let formatted = String(format: "%.2f", locale: Locale(identifier: "en_US_POSIX"), meters)
+            .replacingOccurrences(of: #"0+$"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\.$"#, with: "", options: .regularExpression)
+        return formatted.replacingOccurrences(of: ".", with: ",") + " m"
+    }
+}
+
+// B-18 concerns actual mass; B-5 concerns truck access / permitted gross mass.
+nonisolated struct OSMWeightRestriction {
+    enum Kind { case actualMass, trucks }
+    let kind: Kind
+    let value: String?
+    let source: RoadSignSource
+
+    var category: MapSafetyPOICategory { kind == .actualMass ? .weightLimits : .truckRestrictions }
+    var code: String { kind == .actualMass ? "B-18" : "B-5" }
+    var idPrefix: String { kind == .actualMass ? "weight" : "trucks" }
+    var title: String { kind == .actualMass ? "Ograniczenie masy" : "Zakaz wjazdu samochodów ciężarowych" }
+    var subtitle: String {
+        let detail: String
+        switch kind {
+        case .actualMass: detail = value.map { "Maksymalna masa rzeczywista: \($0)" } ?? "Limit masy niepodany"
+        case .trucks: detail = value.map { "Zakaz dla ciężarówek o DMC powyżej \($0)" }
+            ?? "Zakaz wjazdu ciężarówek · Próg DMC niepodany w OSM"
+        }
+        return "\(code) · \(detail) · \(source.title) · Źródło: OpenStreetMap · © OpenStreetMap contributors"
+    }
+
+    nonisolated static func isTruckSign(_ raw: String?) -> Bool {
+        signCodes(raw).contains { baseCode($0) == "B-5" }
+    }
+
+    nonisolated private static func signCodes(_ raw: String?) -> [String] {
+        (raw ?? "").components(separatedBy: CharacterSet(charactersIn: ";,"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }
+    }
+
+    nonisolated private static func baseCode(_ code: String) -> String {
+        let base = code.split(separator: "[").first ?? ""
+        return String(base.split(separator: ":").last ?? base)
+    }
+
+    static func parse(_ tags: [String: String]) -> [Self] {
+        let codes = ["traffic_sign", "traffic_sign:forward", "traffic_sign:backward"]
+            .flatMap { signCodes(tags[$0]) }
+        func embeddedValue(_ code: String) -> String? {
+            guard let raw = codes.first(where: { baseCode($0) == code }),
+                  let start = raw.firstIndex(of: "["), raw.hasSuffix("]") else { return nil }
+            return formattedTonnes(String(raw[raw.index(after: start)..<raw.index(before: raw.endIndex)]))
+        }
+        var result: [Self] = []
+        let explicitWeight = codes.contains { ["B-18", "MAXWEIGHT"].contains(baseCode($0)) }
+            || tags["traffic_sign:maxweight"] != nil
+        let weight = formattedTonnes(tags["traffic_sign:maxweight"])
+            ?? embeddedValue("B-18") ?? formattedTonnes(tags["maxweight"])
+        if explicitWeight || weight != nil {
+            result.append(Self(kind: .actualMass, value: weight,
+                               source: explicitWeight ? .explicitTrafficSign : .inferredFromRoadRestriction))
+        }
+        let explicitTruck = codes.contains { baseCode($0) == "B-5" }
+        let truckWeight = embeddedValue("B-5") ?? formattedTonnes(tags["maxweightrating:hgv"])
+            ?? (explicitTruck ? formattedTonnes(tags["maxweightrating"]) : nil)
+        if explicitTruck || truckWeight != nil || tags["hgv"]?.lowercased() == "no" {
+            result.append(Self(kind: .trucks, value: truckWeight,
+                               source: explicitTruck ? .explicitTrafficSign : .inferredFromRoadRestriction))
+        }
+        return result
+    }
+
+    private static func formattedTonnes(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let input = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            .replacingOccurrences(of: ",", with: ".")
+        let digits = input.prefix { $0.isNumber || $0 == "." }
+        let unit = input.dropFirst(digits.count).trimmingCharacters(in: .whitespaces)
+        guard let number = Double(digits), number.isFinite, number > 0 else { return nil }
+        let tonnes: Double
+        switch unit {
+        case "", "t", "tonne", "tonnes", "ton", "tons": tonnes = number
+        case "kg": tonnes = number / 1_000
+        default: return nil
+        }
+        let formatted = String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), tonnes)
+            .replacingOccurrences(of: #"0+$"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\.$"#, with: "", options: .regularExpression)
+        return formatted.replacingOccurrences(of: ".", with: ",") + " t"
+    }
+}
+
+// Preserve every code on a signpost, including codes without a dedicated drawing.
+nonisolated enum OSMTrafficSignCodes {
+    static func parse(_ tags: [String: String]) -> [String] {
+        var result: [String] = []
+        for key in ["traffic_sign", "traffic_sign:forward", "traffic_sign:backward"] {
+            var country: String?
+            for part in (tags[key] ?? "").components(separatedBy: CharacterSet(charactersIn: ";,")) {
+                var code = part.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !code.isEmpty, !["no", "none"].contains(code.lowercased()) else { continue }
+                if let colon = code.firstIndex(of: ":") {
+                    country = String(code[..<colon])
+                } else if let country {
+                    code = "\(country):\(code)"
+                }
+                if !result.contains(code) { result.append(code) }
+            }
+        }
+        if result.isEmpty {
+            if tags["highway"] == "stop" { result = ["stop"] }
+            if tags["highway"] == "give_way" { result = ["give_way"] }
+        }
+        return result
     }
 }

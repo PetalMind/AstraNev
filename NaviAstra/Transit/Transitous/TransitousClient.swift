@@ -1,7 +1,7 @@
 import Foundation
 import OSLog
 
-struct TransitousClientConfiguration: Sendable {
+nonisolated struct TransitousClientConfiguration: Sendable {
     private static let defaultContact = "dominikjaros99@icloud.com"
 
     var baseURL = URL(string: "https://api.transitous.org/api/")!
@@ -50,7 +50,7 @@ protocol TransitousTransport: Sendable {
     func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse)
 }
 
-struct URLSessionTransitousTransport: TransitousTransport {
+nonisolated struct URLSessionTransitousTransport: TransitousTransport {
     let session: URLSession
 
     init(session: URLSession = .shared) {

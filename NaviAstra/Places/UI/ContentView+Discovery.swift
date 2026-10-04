@@ -292,20 +292,6 @@ extension ContentView {
         return elapsed >= 0 ? "\(value) temu" : "za \(value)"
     }
 
-    func voiceSliderRow(title: String, value: Binding<Double>,
-                                range: ClosedRange<Double>, valueDescription: String) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack {
-                Text(title)
-                Spacer()
-                Text(valueDescription)
-                    .foregroundStyle(Color.naviTextSecondary)
-                    .monospacedDigit()
-            }
-            Slider(value: value, in: range)
-        }
-    }
-
     func mapControl(compact: Bool) -> some View {
         let layout = compact ? AnyLayout(HStackLayout(spacing: 10)) : AnyLayout(VStackLayout(spacing: 10))
         return HStack(alignment: .bottom) {
@@ -315,8 +301,7 @@ extension ContentView {
                     TimelineView(.periodic(from: .now, by: 5)) { context in
                         speedCard(at: context.date)
                     }
-                    navigationTrafficIncidentBanner
-                    navigationRoadDataFooter
+                    navigationRoadAlertsPanel
                 }
             }
 #endif
@@ -406,6 +391,18 @@ extension ContentView {
                 .accessibilityHint(isNavigating
                     ? "Ustawia kamerę na bieżącej pozycji i kierunku podróży"
                     : "Przełącza między mapą i przeglądem trasy")
+                if placeStore.parkedCar != nil {
+                    Button { openParkedCarDetails() } label: {
+                        circleSurface {
+                            Image(systemName: "car.side.fill")
+                                .font(.system(size: 17, weight: .semibold))
+                                .foregroundStyle(Color.accentColor)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Zaparkowany samochód")
+                    .accessibilityHint("Pokaż zapisane miejsce i trasę pieszą do auta")
+                }
             }
         }
     }

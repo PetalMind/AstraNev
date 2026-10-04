@@ -2,7 +2,7 @@ import Foundation
 
 enum TransitNavigationRouteMapper {
     static func routes(from journeys: [TransitJourney]) -> [NavigationRoute] {
-        journeys.map(route(from:))
+        journeys.map { route(from: $0) }
     }
 
     static func route(from journey: TransitJourney) -> NavigationRoute {

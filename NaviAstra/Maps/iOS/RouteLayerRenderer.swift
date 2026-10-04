@@ -580,18 +580,21 @@ final class RouteLayerRenderer {
         routeTransitionTimer?.invalidate()
         let start = Date()
         routeTransitionTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self, weak map] timer in
-            guard let self else { timer.invalidate(); return }
-            if Date().timeIntervalSince(start) >= 0.3 {
-                if removeDeparted {
-                    let departed = self.routeLines.filter { $0.kind == .departed }.map(\.polyline)
-                    map?.removeAnnotations(departed)
-                    self.routeLines.removeAll { $0.kind == .departed }
+            // scheduledTimer runs on the main run loop where it was created.
+            MainActor.assumeIsolated {
+                guard let self else { timer.invalidate(); return }
+                if Date().timeIntervalSince(start) >= 0.3 {
+                    if removeDeparted {
+                        let departed = self.routeLines.filter { $0.kind == .departed }.map(\.polyline)
+                        map?.removeAnnotations(departed)
+                        self.routeLines.removeAll { $0.kind == .departed }
+                    }
+                    map?.setNeedsDisplay()
+                    timer.invalidate()
+                    self.routeTransitionTimer = nil
+                } else {
+                    map?.setNeedsDisplay()
                 }
-                map?.setNeedsDisplay()
-                timer.invalidate()
-                self.routeTransitionTimer = nil
-            } else {
-                map?.setNeedsDisplay()
             }
         }
     }

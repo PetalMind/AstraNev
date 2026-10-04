@@ -95,7 +95,7 @@ extension ContentView {
                     Text(results.count == 1 ? (result?.destination.name ?? "Miejsce") : "Miejsca w pobliżu · \(results.count)")
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
                         .foregroundStyle(Color.naviTextPrimary)
-                        .lineLimit(1)
+                        .lineLimit(2)
                     if results.count == 1, let result {
                         Text(selectedMapPlaceCompactSummary(result))
                             .font(.system(size: 12, weight: .medium))
@@ -114,6 +114,10 @@ extension ContentView {
                     }
                 }
                 Spacer(minLength: 0)
+                Image(systemName: "chevron.up")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.naviTextSecondary)
+                    .accessibilityHidden(true)
             }
             .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
             .contentShape(Rectangle())
@@ -131,13 +135,12 @@ extension ContentView {
             return "W linii prostej · \(distance(straightDistance))"
         }
         return result.destination.address
-            ?? result.category?.replacingOccurrences(of: "_", with: " ").capitalized
+            ?? result.category.map(PlaceCategoryPresentation.title)
             ?? "Wybrane miejsce"
     }
 
     private func mapPlaceSelectionSubtitle(_ result: SearchResult) -> String {
-        let category = (result.category ?? "Miejsce")
-            .replacingOccurrences(of: "_", with: " ").capitalized
+        let category = result.category.map(PlaceCategoryPresentation.title) ?? "Miejsce"
         guard let address = result.destination.address?.trimmingCharacters(in: .whitespacesAndNewlines),
               !address.isEmpty else { return category }
         return "\(category) · \(address)"
@@ -208,7 +211,8 @@ extension ContentView {
     func selectedMapPlaceDetails(for result: SearchResult,
                                  presentation: PlaceDetailsPresentation = .full,
                                  embeddedInBottomSheet: Bool = false,
-                                 showsPrimaryAction: Bool = true) -> some View {
+                                 showsPrimaryAction: Bool = true,
+                                 onExpandDetails: (() -> Void)? = nil) -> some View {
         let details = PlaceDetailsView(
             result: result,
             isSaved: isMapPlaceSaved(result),
@@ -218,6 +222,7 @@ extension ContentView {
             presentation: presentation,
             embeddedInBottomSheet: embeddedInBottomSheet,
             showsPrimaryAction: showsPrimaryAction,
+            onExpandDetails: onExpandDetails,
             onRouteFromPlace: { setMapPlaceAsRouteOrigin(result) },
             onRemove: { removeFavorite(for: result.destination) },
             onRename: { renameFavorite(for: result.destination, to: $0) },
@@ -366,6 +371,13 @@ extension ContentView {
         }
 
         Section("Warstwy") {
+            Toggle("Znaki drogowe", isOn: $mapStore.mapRoadSignsVisible)
+            if mapStore.mapRoadSignsVisible {
+                roadPOIStatusLabel
+                Text("Zbliż mapę, aby zobaczyć znaki drogowe")
+                    .font(.caption)
+                    .foregroundStyle(Color.naviTextSecondary)
+            }
             if mapCapabilities.supportsTrafficOverlay {
                 Toggle("Ruch drogowy", isOn: $mapStore.mapTrafficVisible)
             }
@@ -397,7 +409,7 @@ extension ContentView {
                 .font(.caption)
                 .foregroundStyle(Color.naviTextSecondary)
         case .loading:
-            Label("Pobieranie ścieżek z OSM…", systemImage: "arrow.triangle.2.circlepath")
+            Label("Pobieranie ścieżek…", systemImage: "arrow.triangle.2.circlepath")
                 .font(.caption)
                 .foregroundStyle(Color.naviTextSecondary)
         case .loaded(count: 0, truncated: _):
@@ -405,12 +417,12 @@ extension ContentView {
                 .font(.caption)
                 .foregroundStyle(Color.naviTextSecondary)
         case .loaded(let count, let truncated):
-            Label(truncated ? "OpenStreetMap · ponad \(count) odc." : "OpenStreetMap · \(count) odc.",
+            Label(truncated ? "Ścieżki · ponad \(count) odc." : "Ścieżki · \(count) odc.",
                   systemImage: "bicycle")
                 .font(.caption)
                 .foregroundStyle(Color.naviTextSecondary)
         case .unavailable:
-            Label("Dane OpenStreetMap są niedostępne", systemImage: "exclamationmark.triangle")
+            Label("Dane ścieżek są niedostępne", systemImage: "exclamationmark.triangle")
                 .font(.caption)
                 .foregroundStyle(Color(naviHex: NaviAstraColorPalette.warning))
         }
@@ -426,6 +438,7 @@ extension ContentView {
                     .foregroundStyle(Color.naviTextPrimary)
             }
         }
+        .buttonStyle(.plain)
         .accessibilityLabel("Wygląd i warstwy mapy")
     }
 
@@ -435,6 +448,7 @@ extension ContentView {
         } label: {
             journeyActionLabel("Wygląd i warstwy", symbol: "square.3.layers.3d")
         }
+        .buttonStyle(.plain)
         .accessibilityLabel("Wygląd i warstwy mapy")
     }
 

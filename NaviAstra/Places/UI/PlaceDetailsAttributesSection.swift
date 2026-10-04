@@ -3,53 +3,14 @@ import SwiftUI
 
 struct PlaceDetailsAttributesSection: View {
     let details: PlaceDetails
-    var isLoading = false
     @Binding var showHours: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if details.category != nil || hasBrand || details.address?.isEmpty == false {
-                detailGroup("Miejsce") {
-                    if let category = details.category {
-                        Label(PlaceCategoryPresentation.title(category), systemImage: "tag")
-                            .font(.caption)
-                            .foregroundStyle(Color.naviTextSecondary)
-                    }
-                    if let brand = details.brand ?? details.operatorName, brand != details.name {
-                        Label(brand, systemImage: "building.2")
-                            .font(.caption)
-                    }
-                    if let address = details.address, !address.isEmpty {
-                        Label(address, systemImage: "mappin.and.ellipse")
-                            .font(.subheadline)
-                            .textSelection(.enabled)
-                    }
-                }
-            }
-
-            if let rawHours = details.openingHours, !rawHours.isEmpty,
-               details.osmParking?.openingHours == nil {
-                detailGroup("Godziny") {
-                    PlaceDetailsOpeningHoursSection(
-                        rawHours: rawHours,
-                        coordinate: details.coordinate,
-                        countryCode: details.countryCode,
-                        timeZoneIdentifier: details.timeZoneIdentifier,
-                        isExpanded: $showHours)
-                }
-            }
-
-            if !isLoading, details.openingHours == nil, details.osmParking?.openingHours == nil {
-                detailGroup("Godziny") {
-                    Label("Godziny otwarcia niedostępne", systemImage: "clock.badge.questionmark")
+            if hasBrand, let brand = details.brand ?? details.operatorName {
+                detailGroup("Operator / marka") {
+                    Label(brand, systemImage: "building.2")
                         .font(.subheadline)
-                        .foregroundStyle(Color.naviTextSecondary)
-                }
-            }
-
-            if details.phoneURL != nil || details.websiteURL != nil {
-                detailGroup("Kontakt") {
-                    PlaceDetailsContactLinksSection(details: details)
                 }
             }
 
@@ -131,6 +92,7 @@ struct PlaceDetailsAttributesSection: View {
 
 struct PlaceDetailsCompactAttributesSection: View {
     let details: PlaceDetails
+    var isLoading = false
     @Binding var showHours: Bool
 
     var body: some View {
@@ -145,19 +107,27 @@ struct PlaceDetailsCompactAttributesSection: View {
                     isExpanded: $showHours)
             }
 
+            if !isLoading, details.openingHours?.isEmpty != false,
+               details.osmParking?.openingHours?.isEmpty != false {
+                Label("Godziny otwarcia niedostępne", systemImage: "clock.badge.questionmark")
+                    .font(.caption)
+                    .foregroundStyle(Color.naviTextSecondary)
+            }
+
             if let parking = details.parking, details.osmParking == nil {
                 Label("Parking: \(parking)", systemImage: "parkingsign.circle")
                     .font(.caption)
                     .foregroundStyle(Color.naviTextSecondary)
             }
             if let parking = details.osmParking {
-                HStack(spacing: 8) {
+                HStack(alignment: .top, spacing: 8) {
                     Label("Parking · \(parking.tariff.status.title)", systemImage: "parkingsign.circle")
-                        .lineLimit(1)
+                        .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                     if let availableSpaces = parking.availableSpaces {
                         Text("\(availableSpaces) wolne")
                             .monospacedDigit()
+                            .fixedSize()
                     }
                 }
                 .font(.caption.weight(.medium))
@@ -203,76 +173,57 @@ private struct PlaceDetailsOpeningHoursSection: View {
     }
 
     private func hoursContent(at date: Date) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let status = presentation?.statusText {
-                Label(status, systemImage: status.hasPrefix("Otwarte") ? "clock.fill" : "clock")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(status.hasPrefix("Otwarte")
-                        ? Color(naviHex: NaviAstraColorPalette.success) : Color.secondary)
-            } else if let failure = presentation?.failure {
-                Label(failure.errorDescription ?? "Godziny niedostępne", systemImage: "exclamationmark.clock")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.naviTextSecondary)
-            } else if presentation?.isAvailable == true {
-                Label("Godziny niepewne", systemImage: "questionmark.circle")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.naviTextSecondary)
-            }
-            DisclosureGroup("Godziny otwarcia", isExpanded: $isExpanded) {
-                if let rows = presentation?.weeklyRows {
-                    ForEach(Array(rows.enumerated()), id: \.offset) { item in
-                        HStack {
-                            Text(item.element.day).frame(width: 52, alignment: .leading)
-                            Spacer(minLength: 8)
-                            Text(item.element.hours).multilineTextAlignment(.trailing)
-                        }
-                        .font(.subheadline)
-                        .fontWeight(isToday(item.offset, at: date) ? .semibold : .regular)
-                        .foregroundStyle(isToday(item.offset, at: date) ? Color.naviTextPrimary : Color.naviTextSecondary)
-                        .padding(.vertical, 5)
+        DisclosureGroup(isExpanded: $isExpanded) {
+            if let rows = presentation?.weeklyRows {
+                ForEach(Array(rows.enumerated()), id: \.offset) { item in
+                    HStack {
+                        Text(item.element.day).frame(width: 52, alignment: .leading)
+                        Spacer(minLength: 8)
+                        Text(item.element.hours).multilineTextAlignment(.trailing)
                     }
-                } else if let failure = presentation?.failure {
-                    Text(failure.errorDescription ?? "Godziny niedostępne")
-                        .font(.caption)
-                        .foregroundStyle(Color.naviTextSecondary)
-                    Text(rawHours)
-                        .font(.caption)
-                        .foregroundStyle(Color.naviTextSecondary)
-                        .textSelection(.enabled)
-                } else {
-                    Text(rawHours)
-                        .font(.caption)
-                        .foregroundStyle(Color.naviTextSecondary)
-                        .textSelection(.enabled)
+                    .font(.subheadline)
+                    .fontWeight(isToday(item.offset, at: date) ? .semibold : .regular)
+                    .foregroundStyle(isToday(item.offset, at: date) ? Color.naviTextPrimary : Color.naviTextSecondary)
+                    .padding(.vertical, 5)
                 }
-                Text("Godziny mogą się różnić w święta.")
-                    .font(.caption2).foregroundStyle(Color.naviTextSecondary)
+            } else if let failure = presentation?.failure {
+                Text(failure.errorDescription ?? "Godziny niedostępne")
+                    .font(.caption)
+                    .foregroundStyle(Color.naviTextSecondary)
+                Text(rawHours)
+                    .font(.caption)
+                    .foregroundStyle(Color.naviTextSecondary)
+                    .textSelection(.enabled)
+            } else {
+                Text(rawHours)
+                    .font(.caption)
+                    .foregroundStyle(Color.naviTextSecondary)
+                    .textSelection(.enabled)
             }
-            .font(.subheadline)
+            Text("Godziny mogą się różnić w święta.")
+                .font(.caption2).foregroundStyle(Color.naviTextSecondary)
+        } label: {
+            Group {
+                if let status = presentation?.statusText {
+                    Label(status, systemImage: status.hasPrefix("Otwarte") ? "clock.fill" : "clock")
+                        .foregroundStyle(status.hasPrefix("Otwarte")
+                            ? Color(naviHex: NaviAstraColorPalette.success) : Color.secondary)
+                } else if let failure = presentation?.failure {
+                    Label(failure.errorDescription ?? "Godziny niedostępne", systemImage: "exclamationmark.clock")
+                        .foregroundStyle(Color.naviTextSecondary)
+                } else if presentation?.isAvailable == true {
+                    Label("Godziny niepewne", systemImage: "questionmark.circle")
+                        .foregroundStyle(Color.naviTextSecondary)
+                } else {
+                    Label("Godziny otwarcia", systemImage: "clock")
+                        .foregroundStyle(Color.naviTextSecondary)
+                }
+            }
+            .font(.subheadline.weight(.semibold))
+            .frame(minHeight: 44, alignment: .leading)
         }
-
-    }
-}
-
-private struct PlaceDetailsContactLinksSection: View {
-    let details: PlaceDetails
-
-    var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 16) { links }
-            VStack(alignment: .leading, spacing: 12) { links }
-        }
-        .font(.subheadline.weight(.medium))
-    }
-
-    @ViewBuilder
-    private var links: some View {
-        if let phone = details.phone, let url = details.phoneURL {
-            Link(destination: url) { Label(phone, systemImage: "phone") }
-        }
-        if let website = details.websiteURL {
-            Link(destination: website) { Label("Strona", systemImage: "globe") }
-        }
+        .font(.subheadline)
+        .accessibilityHint("Rozwiń lub zwiń tygodniowe godziny otwarcia")
     }
 }
 

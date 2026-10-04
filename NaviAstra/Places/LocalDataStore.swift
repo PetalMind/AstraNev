@@ -186,6 +186,14 @@ struct ParkedCar: Identifiable, Codable, Equatable, Sendable {
     var note: String?
     var photoPath: String?
     var parkingExpiresAt: Date?
+    var gpsAccuracy: Double?
+
+    var mapTimestamp: String {
+        if Calendar.current.isDateInToday(parkedAt) {
+            return parkedAt.formatted(Date.FormatStyle(date: .omitted, time: .shortened).locale(Locale(identifier: "pl_PL")))
+        }
+        return parkedAt.formatted(.dateTime.day().month(.abbreviated).locale(Locale(identifier: "pl_PL")))
+    }
 
     var destination: Destination {
         Destination(id: id, name: "Zaparkowany samochód", coordinate: coordinate, address: address)
@@ -226,8 +234,13 @@ final class LocalDataStore {
     }
 
     @discardableResult
-    func saveParkedCar(at coordinate: Coordinate, parkedAt: Date = Date()) -> Bool {
-        let car = ParkedCar(coordinate: coordinate, parkedAt: parkedAt)
+    func saveParkedCar(at coordinate: Coordinate, parkedAt: Date = Date(), gpsAccuracy: Double? = nil) -> Bool {
+        guard coordinate.isValidParkedCarCoordinate else {
+            errorMessage = "Nie można zapisać nieprawidłowej pozycji samochodu."
+            return false
+        }
+        let accuracy = gpsAccuracy.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+        let car = ParkedCar(coordinate: coordinate, parkedAt: parkedAt, gpsAccuracy: accuracy)
         guard persist(car, file: "parked-car.json") else { return false }
         parkedCar = car
         return true
@@ -268,11 +281,16 @@ final class LocalDataStore {
         }
     }
 
-    func saveParkedCarPhoto(_ data: Data) -> String? {
+    func saveParkedCarPhoto(_ data: Data, for carID: UUID) -> String? {
+        guard var car = parkedCar, car.id == carID else { return nil }
         let fileName = "parked-car-\(UUID().uuidString).photo"
         do {
             try data.write(to: parkedCarPhotoURL(for: fileName), options: .atomic)
-            errorMessage = nil
+            car.photoPath = fileName
+            guard updateParkedCar(car) else {
+                try? FileManager.default.removeItem(at: parkedCarPhotoURL(for: fileName))
+                return nil
+            }
             return fileName
         } catch {
             errorMessage = "Nie udało się zapisać zdjęcia samochodu: \(error.localizedDescription)"
@@ -382,4 +400,11 @@ final class LocalDataStore {
 
 private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+extension Coordinate {
+    var isValidParkedCarCoordinate: Bool {
+        latitude.isFinite && longitude.isFinite &&
+            (-90...90).contains(latitude) && (-180...180).contains(longitude)
+    }
 }

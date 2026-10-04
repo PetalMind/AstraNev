@@ -169,7 +169,9 @@ final class VoiceGuidanceEngine {
         guard preferences.verbosity.includes(alert.type),
               let stage = roadAlertStage(for: distance) else { return }
         let priority: VoiceAnnouncementPriority = alert.type == .roadClosed ? .critical : .safety
-        let key = "road|\(alert.id)|stage-\(stage)"
+        let eventIdentity = voiceEventIdentity(kind: voiceEventKind(for: alert.type),
+                                               coordinate: alert.coordinate)
+        let key = "road-event|\(eventIdentity)|stage-\(stage)"
         scheduler.enqueue(
             key: key,
             text: (distancePrefix(distance, immediate: stage == 2) ?? "") + alert.title,
@@ -192,8 +194,10 @@ final class VoiceGuidanceEngine {
            delay > 0 {
             message += ". Opóźnienie około \(max(1, Int((Double(delay) / 60).rounded()))) minut."
         }
+        let eventIdentity = voiceEventIdentity(kind: voiceEventKind(for: incident.category),
+                                               coordinate: incident.coordinate)
         scheduler.enqueue(
-            key: "traffic|\(incident.id)|stage-\(stage)",
+            key: "road-event|\(eventIdentity)|stage-\(stage)",
             text: (distancePrefix(distance, immediate: stage == 2) ?? "") + message,
             priority: stage == 2 ? max(priority, .maneuverNow) : priority
         )
@@ -237,6 +241,27 @@ final class VoiceGuidanceEngine {
         let bucket = Int(distance / 50) * 50
         guard bucket > 0 else { return nil }
         return "Za \(bucket) metrów "
+    }
+
+    private func voiceEventKind(for type: RoadAlertType) -> String {
+        switch type {
+        case .roadworks: "roadWorks"
+        case .congestion: "jam"
+        default: type.rawValue
+        }
+    }
+
+    private func voiceEventKind(for category: TrafficIncidentCategory) -> String {
+        category.rawValue
+    }
+
+    private func voiceEventIdentity(kind: String, coordinate: Coordinate) -> String {
+        // Provider IDs can change between nearby and route requests. A small spatial
+        // bucket keeps one physical event on one voice key without merging events on
+        // different road sections.
+        let latitude = Int((coordinate.latitude * 10_000).rounded())
+        let longitude = Int((coordinate.longitude * 10_000).rounded())
+        return "\(kind)|\(latitude)|\(longitude)"
     }
 
     private func maneuverIdentity(_ maneuver: Maneuver, coordinate: Coordinate?) -> String {
@@ -492,7 +517,7 @@ private final class VoiceAnnouncementScheduler: NSObject, AVSpeechSynthesizerDel
 
     private func interruptCurrent(startNext: Bool) {
         guard let current else { return }
-        if !spokenKeys.contains(current.key) { pendingKeys.remove(current.key) }
+        pendingKeys.remove(current.key)
         speechGeneration &+= 1
         startWatchdogTask?.cancel()
         startWatchdogTask = nil
@@ -542,7 +567,11 @@ private final class VoiceAnnouncementScheduler: NSObject, AVSpeechSynthesizerDel
     }
 
     private func handleDidStart(identifier: ObjectIdentifier) {
-        guard currentUtteranceID == identifier else { return }
+        guard currentUtteranceID == identifier, let current else { return }
+        // Mark the key as consumed as soon as audio actually starts. If a higher
+        // priority alert interrupts this utterance, the old event must not be
+        // re-enqueued on the next GPS update and sound like a loop.
+        spokenKeys.insert(current.key)
         currentDidStart = true
         startWatchdogTask?.cancel()
         startWatchdogTask = nil

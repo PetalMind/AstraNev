@@ -4,9 +4,17 @@ import Observation
 @MainActor
 @Observable
 final class MapStore {
+    var transportPositionIconsEnabled: Bool { didSet { persist(transportPositionIconsEnabled, forKey: "transportPositionIconsEnabled") } }
+    var markerAppearance: NavigationMarkerAppearance {
+        didSet {
+            guard !isReloading, let data = try? JSONEncoder().encode(markerAppearance) else { return }
+            defaults.set(data, forKey: "navigationMarkerAppearance")
+        }
+    }
     var mapBase: String { didSet { persist(mapBase, forKey: "mapBase") } }
     var mapAppearance: String { didSet { persist(mapAppearance, forKey: "mapAppearance") } }
     var mapDimension: String { didSet { persist(mapDimension, forKey: "mapDimension") } }
+    var mapRoadSignsVisible: Bool { didSet { persist(mapRoadSignsVisible, forKey: "mapRoadSignsVisible") } }
     var mapTrafficVisible: Bool { didSet { persist(mapTrafficVisible, forKey: "mapTrafficVisible") } }
     var mapPOICategories: Int { didSet { persist(mapPOICategories, forKey: "mapPOICategories") } }
     var mapPOIVisible: Bool { didSet { persist(mapPOIVisible, forKey: "mapPOIVisible") } }
@@ -22,9 +30,26 @@ final class MapStore {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        markerAppearance = NavigationMarkerAppearance.load(from: defaults)
+        if !defaults.bool(forKey: "heightLimitPOIMigrated") {
+            let categories = defaults.object(forKey: "mapSafetyPOICategories") as? Int
+                ?? MapSafetyPOICategory.allMask
+            defaults.set(categories | MapSafetyPOICategory.heightLimits.mask,
+                         forKey: "mapSafetyPOICategories")
+            defaults.set(true, forKey: "heightLimitPOIMigrated")
+        }
+        if !defaults.bool(forKey: "weightLimitPOIMigrated") {
+            let categories = defaults.object(forKey: "mapSafetyPOICategories") as? Int
+                ?? MapSafetyPOICategory.allMask
+            defaults.set(categories | MapSafetyPOICategory.weightLimits.mask | MapSafetyPOICategory.truckRestrictions.mask,
+                         forKey: "mapSafetyPOICategories")
+            defaults.set(true, forKey: "weightLimitPOIMigrated")
+        }
+        transportPositionIconsEnabled = defaults.object(forKey: "transportPositionIconsEnabled") as? Bool ?? false
         mapBase = defaults.string(forKey: "mapBase") ?? BaseMap.standard.rawValue
         mapAppearance = defaults.string(forKey: "mapAppearance") ?? MapAppearance.auto.rawValue
         mapDimension = defaults.string(forKey: "mapDimension") ?? MapDimension.flat.rawValue
+        mapRoadSignsVisible = defaults.object(forKey: "mapRoadSignsVisible") as? Bool ?? false
         mapTrafficVisible = defaults.object(forKey: "mapTrafficVisible") as? Bool ?? true
         mapPOICategories = defaults.object(forKey: "mapPOICategories") as? Int ?? MapPOICategory.allMask
         mapPOIVisible = defaults.object(forKey: "mapPOIVisible") as? Bool ?? true
@@ -47,6 +72,9 @@ final class MapStore {
                 transit: capabilities.supportsTransitOverlay && mapTransitVisible,
                 cycling: capabilities.supportsCyclingOverlay && mapCyclingVisible),
             poiCategories: Set(MapPOICategory.allCases.filter { mapPOICategories & $0.mask != 0 }),
+            transportPositionIconsEnabled: transportPositionIconsEnabled,
+            markerAppearance: markerAppearance,
+            roadSignsVisible: mapRoadSignsVisible,
             safetyPOICategories: Set(MapSafetyPOICategory.allCases.filter {
                 mapSafetyPOICategories & $0.mask != 0
             }))
@@ -54,9 +82,12 @@ final class MapStore {
 
     func reloadFromDefaults() {
         isReloading = true
+        markerAppearance = NavigationMarkerAppearance.load(from: defaults)
+        transportPositionIconsEnabled = defaults.object(forKey: "transportPositionIconsEnabled") as? Bool ?? false
         mapBase = defaults.string(forKey: "mapBase") ?? BaseMap.standard.rawValue
         mapAppearance = defaults.string(forKey: "mapAppearance") ?? MapAppearance.auto.rawValue
         mapDimension = defaults.string(forKey: "mapDimension") ?? MapDimension.flat.rawValue
+        mapRoadSignsVisible = defaults.object(forKey: "mapRoadSignsVisible") as? Bool ?? false
         mapTrafficVisible = defaults.object(forKey: "mapTrafficVisible") as? Bool ?? true
         mapPOICategories = defaults.object(forKey: "mapPOICategories") as? Int ?? MapPOICategory.allMask
         mapPOIVisible = defaults.object(forKey: "mapPOIVisible") as? Bool ?? true
