@@ -158,7 +158,7 @@ extension ContentView {
             navigationMapPanel(in: geometry)
                 .onGeometryChange(for: CGFloat.self) {
                     max(0, geometry.frame(in: .global).maxY - $0.frame(in: .global).minY) +
-                        geometry.safeAreaInsets.bottom + 12
+                        (isNavigating ? 8 : geometry.safeAreaInsets.bottom + 12)
                 } action: { mapPanelInset = $0 }
         }
         .frame(width: min(560, max(0, geometry.size.width - (usesFullBleedNavigationPanel ? 0 : 32))))

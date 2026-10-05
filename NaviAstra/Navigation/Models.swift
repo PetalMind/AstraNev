@@ -100,6 +100,23 @@ struct NavigationRoute: Identifiable, Sendable {
     var chargingStops: [EVChargingStop] = []
     var travelSegments: [RouteTravelSegment] = []
     var information: RouteInformation?
+    var trafficSignalCount: Int? = nil
+}
+
+nonisolated enum CarRouteRanking {
+    /// Comfort cost, not invented travel time. Signal cycles and red phases are unknown.
+    static let signalPenaltySeconds = 20.0
+
+    static func ranked(_ routes: [NavigationRoute]) -> [NavigationRoute] {
+        let hasComparableSignals = routes.allSatisfy { $0.trafficSignalCount != nil }
+        return routes.enumerated().sorted { left, right in
+            let a = left.element.expectedTravelTime + (hasComparableSignals
+                ? Double(left.element.trafficSignalCount ?? 0) * signalPenaltySeconds : 0)
+            let b = right.element.expectedTravelTime + (hasComparableSignals
+                ? Double(right.element.trafficSignalCount ?? 0) * signalPenaltySeconds : 0)
+            return a == b ? left.offset < right.offset : a < b
+        }.map(\.element)
+    }
 }
 
 struct EVChargingStop: Identifiable, Sendable {

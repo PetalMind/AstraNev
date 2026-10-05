@@ -23,6 +23,8 @@ Szczegółowy opis źródeł, pobierania i interpretacji danych POI, sklepów or
 
 Szczegółowy opis algorytmu i danych używanych do wyznaczania tras komunikacją miejską i koleją znajduje się w [docs/TRANSIT_ROUTING.md](docs/TRANSIT_ROUTING.md). Ogólny opis pozostałych profili routingu znajduje się w [docs/ROUTING.md](docs/ROUTING.md).
 
+Podstawy wyznaczania tras samochodowych, preferencje kierowcy, wpływ ruchu na ETA i wybór wariantu, objazdy, planowanie EV oraz ograniczenia opisuje [docs/CAR_ROUTING.md](docs/CAR_ROUTING.md).
+
 Opis palety barw interfejsu, tras, zdarzeń oraz mapy znajduje się w [docs/COLORS.md](docs/COLORS.md).
 
 Personalizowane modele pozycji, ekran „Twój znacznik” oraz zasady kierunku i jakości GPS opisano w [docs/NAVIGATION_MARKERS.md](docs/NAVIGATION_MARKERS.md).

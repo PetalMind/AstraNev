@@ -83,6 +83,8 @@ final class NavigationStreetLabels {
         }
         visibleUpcomingID = upcoming?.id
         let turnCoordinate = upcoming.map { route.coordinates[$0.shapeIndex] }
+        let contextCoordinate = turnCoordinate ?? geometry.coordinate(
+            at: min(geometry.length, match.match.projection.alongRoute + noticeDistance * 0.6))
         let currentName = route.maneuvers.last(where: { $0.shapeIndex <= match.match.projection.segment })
             .flatMap { $0.streetName }.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         if overlay.superview !== map {
@@ -100,13 +102,13 @@ final class NavigationStreetLabels {
             overlay.isHidden = true
             return
         }
-        let focus = turnCoordinate.map { map.convert($0.cl, toPointTo: map) }
+        let focus = contextCoordinate.map { map.convert($0.cl, toPointTo: map) }
             ?? CGPoint(x: safe.midX, y: safe.midY)
         // Tile queries are bounded in frequency; only screen projection runs as the camera moves.
         let now = CACurrentMediaTime()
-        // Side streets matter only close to a turn and at urban speeds. On faster
-        // roads show the current road and the actual maneuver target only.
-        let showsContext = upcoming != nil && speed < 22 && map.zoomLevel >= 15.5 && safe.contains(focus)
+        // Name nearby side streets ahead even when the route continues straight.
+        // Never pin a persistent badge to the road underneath the navigation arrow.
+        let showsContext = speed < 22 && map.zoomLevel >= 15.5 && safe.contains(focus)
         if !showsContext { streetAnchors = [] }
         if showsContext && (lastQueryTime == 0 || now - lastQueryTime >= 0.8) {
             lastQueryTime = now
@@ -145,13 +147,14 @@ final class NavigationStreetLabels {
             var anchorNames = Set<String>()
             streetAnchors = Array(streets.compactMap { street -> (StreetAnchor, CGFloat)? in
                 guard let point = anchor(for: street, on: map, inside: safe, focus: focus),
-                      let turnCoordinate else { return nil }
+                      let contextCoordinate else { return nil }
                 let coordinate = map.convert(point, toCoordinateFrom: map)
                 let value = Coordinate(latitude: coordinate.latitude, longitude: coordinate.longitude)
-                guard value.distance(to: turnCoordinate) <= 75,
+                guard value.distance(to: contextCoordinate) <= 110,
                       let projection = geometry.project(value, within: 40),
                       projection.distanceFromRoute <= 35,
-                      projection.alongRoute >= match.match.projection.alongRoute - 10 else { return nil }
+                      projection.alongRoute >= match.match.projection.alongRoute + 15,
+                      projection.alongRoute <= match.match.projection.alongRoute + noticeDistance else { return nil }
                 return (StreetAnchor(name: street.name, coordinate: coordinate, routeDistance: projection.alongRoute),
                         hypot(point.x - focus.x, point.y - focus.y))
             }.sorted { $0.1 < $1.1 }
@@ -181,21 +184,13 @@ final class NavigationStreetLabels {
                 occupied.append(placement.frame.insetBy(dx: -12, dy: -12))
             }
         }
-        // Never use the next maneuver's name to describe the current road.
-        if let name = currentName, !name.isEmpty {
-            usedNames.insert(name.lowercased())
-            let point = map.convert(match.match.projection.coordinate.cl, toPointTo: map)
-            if let placement = place(name, at: point, current: true, safe: safe, occupied: occupied) {
-                placements.append(placement)
-                occupied.append(placement.frame.insetBy(dx: -12, dy: -12))
-            }
-        }
+        if let name = currentName { usedNames.insert(name.lowercased()) }
         let candidates = streetAnchors.compactMap { street -> (StreetAnchor, CGPoint, CGFloat)? in
             let anchor = map.convert(street.coordinate, toPointTo: map)
             let coordinate = Coordinate(latitude: street.coordinate.latitude, longitude: street.coordinate.longitude)
-            guard showsContext, let turnCoordinate,
-                  coordinate.distance(to: turnCoordinate) <= 75,
-                  street.routeDistance >= match.match.projection.alongRoute - 10,
+            guard showsContext, let contextCoordinate,
+                  coordinate.distance(to: contextCoordinate) <= 110,
+                  street.routeDistance >= match.match.projection.alongRoute + 15,
                   !usedNames.contains(street.name.lowercased()), safe.contains(anchor) else { return nil }
             return (street, anchor, hypot(anchor.x - focus.x, anchor.y - focus.y))
         }.sorted {
@@ -204,7 +199,7 @@ final class NavigationStreetLabels {
         }
         var contextCount = 0
         for (street, point, _) in candidates {
-            guard placements.count < 3, contextCount < 1 else { break }
+            guard placements.count < 3, contextCount < 2 else { break }
             guard !usedNames.contains(street.name.lowercased()),
                   let placement = place(street.name, at: point, current: false, safe: safe, occupied: occupied) else { continue }
             usedNames.insert(street.name.lowercased())
@@ -269,10 +264,8 @@ final class NavigationStreetLabels {
         let font = UIFont.systemFont(ofSize: current ? 16 : 14, weight: .semibold)
         let width = min(190, ceil((name as NSString).size(withAttributes: [.font: font]).width) + 24)
         let height: CGFloat = current ? 36 : 34
-        let centers = [CGPoint(x: anchor.x, y: anchor.y + 50),
-                       CGPoint(x: anchor.x - width / 2 - 16, y: anchor.y - 24),
-                       CGPoint(x: anchor.x + width / 2 + 16, y: anchor.y - 24),
-                       CGPoint(x: anchor.x, y: anchor.y - 50)]
+        let centers = [CGPoint(x: anchor.x - width / 2 - 20, y: anchor.y - 12),
+                       CGPoint(x: anchor.x + width / 2 + 20, y: anchor.y - 12)]
         for center in centers {
             let frame = CGRect(x: center.x - width / 2, y: center.y - height / 2, width: width, height: height)
             guard safe.contains(frame), !occupied.contains(where: { $0.intersects(frame) }) else { continue }

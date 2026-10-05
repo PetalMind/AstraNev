@@ -503,7 +503,7 @@ extension NavigationSession {
         guard generation == requestGeneration, rerouteGeneration == rerouteController.generation,
               state.routingPreferences == preferences else { throw CancellationError() }
         guard !feasible.isEmpty else { throw lastPlanningError ?? EVPlanningError.chargersUnavailable }
-        let ranked = Array(feasible.sorted { $0.expectedTravelTime < $1.expectedTravelTime }.prefix(3))
+        let ranked = Array(CarRouteRanking.ranked(feasible).prefix(3))
         if commitChargingStops {
             state.evChargingStops = ranked[0].chargingStops.map(\.destination)
             _ = await routedDestinations(state.evChargingStops, mode: .car)
@@ -695,14 +695,7 @@ extension NavigationSession {
 
     private func closureDistanceAlongRoute(for incident: TrafficIncident,
                                            on route: NavigationRoute) -> Double? {
-        if let alongRoute = incident.distanceAlongRoute { return alongRoute }
-        let geometry = incident.geometry.isEmpty ? [incident.coordinate] : incident.geometry
-        guard let projection = geometry.compactMap({
-            routeProgressTracker.projectRoadCoordinate(route: route, coordinate: $0)
-        })
-            .min(by: { $0.distanceFromRoute < $1.distanceFromRoute }),
-              projection.distanceFromRoute <= RouteTrafficMonitor.routeMatchToleranceMeters else { return nil }
-        return projection.alongRoute
+        RouteTrafficMonitor.incidentProjection(incident, geometry: RouteProgressGeometry(route))?.alongRoute
     }
 
     func clearEVChargingStops() {

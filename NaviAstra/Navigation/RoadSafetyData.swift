@@ -143,6 +143,7 @@ struct RoadSafetyAlert: Identifiable, Codable, Equatable, Sendable {
     var enforcementExit: Coordinate? = nil
     var mapPOIID: String? = nil
     var sectionOtherEnd: Coordinate? = nil
+    var signRouteContext: RoadSignRouteContext? = nil
 
     nonisolated var title: String {
         if sectionOtherEnd != nil, distanceAlongRoute == nil { return "Odcinkowy pomiar prędkości" }
@@ -163,7 +164,7 @@ struct RoadSafetyAlert: Identifiable, Codable, Equatable, Sendable {
             if OSMWeightRestriction.isTruckSign(signCode) {
                 return "Zakaz wjazdu samochodów ciężarowych" + (signValue.map { " powyżej \($0) DMC" } ?? "")
             }
-            return "Znak drogowy \(signCode)"
+            return PolishRoadSign.name(for: signCode) ?? "Znak drogowy"
         }
         if type == .trafficZoneSign, let signCode {
             let code = signCode.split(separator: ",").last
@@ -212,6 +213,85 @@ enum RoadSafetyStatus: Equatable {
     case available
     case partial(String)
     case unavailable(String)
+}
+
+nonisolated struct RoadSignRouteContext: Codable, Equatable, Sendable {
+    let road: [Coordinate]
+    let forward: Bool?
+    let travelBearing: Double?
+
+    func applies(to route: [Coordinate], at sign: Coordinate) -> Bool {
+        guard let position = MapMatcher.project(sign, onto: route), position.distanceFromRoute <= 20,
+              let roadPosition = MapMatcher.project(sign, onto: road),
+              road.indices.contains(roadPosition.segment + 1),
+              route.indices.contains(position.segment + 1) else { return false }
+        let routeA = route[position.segment], routeB = route[position.segment + 1]
+        let a = road[roadPosition.segment], b = road[roadPosition.segment + 1]
+        guard RoadGeometryAlignment.isAligned(a, b, routeA, routeB),
+              let routeOnRoad = MapMatcher.project(position.coordinate, onto: road),
+              routeOnRoad.distanceFromRoute <= 8 else { return false }
+        if let forward {
+            guard RoadGeometryAlignment.isAligned(forward ? a : b, forward ? b : a,
+                                                   routeA, routeB, directed: true) else { return false }
+        }
+        if let travelBearing {
+            let radians = travelBearing * .pi / 180
+            let end = Coordinate(latitude: sign.latitude + cos(radians) * 0.0001,
+                                 longitude: sign.longitude + sin(radians) * 0.0001 / cos(sign.latitude * .pi / 180))
+            guard RoadGeometryAlignment.isAligned(sign, end, routeA, routeB, directed: true) else { return false }
+        }
+        // A branch crossing the route must not borrow a sign from that branch.
+        let geometry = RouteProgressGeometry(coordinates: route)
+        for offset in [-12.0, 12.0] {
+            guard let point = geometry.coordinate(at: max(0, min(geometry.length, position.alongRoute + offset))),
+                  let match = MapMatcher.project(point, onto: road), match.distanceFromRoute <= 8 else { return false }
+        }
+        return true
+    }
+}
+
+nonisolated enum PolishRoadSign {
+    static func codes(_ raw: String) -> [String] {
+        raw.uppercased().split(whereSeparator: { $0 == ";" || $0 == "," }).map {
+            String($0.split(separator: ":").last ?? $0).split(separator: "[").first
+                .map { String($0).trimmingCharacters(in: .whitespaces) } ?? ""
+        }
+    }
+
+    static func name(for raw: String) -> String? {
+        let names: [String: String] = [
+            "A-1": "Niebezpieczny zakręt w prawo", "A-2": "Niebezpieczny zakręt w lewo",
+            "A-7": "Ustąp pierwszeństwa", "A-9": "Przejazd kolejowy z zaporami",
+            "A-10": "Przejazd kolejowy bez zapór", "A-11": "Nierówna droga",
+            "A-11A": "Próg zwalniający", "A-12A": "Zwężenie jezdni",
+            "A-14": "Roboty na drodze", "A-16": "Przejście dla pieszych",
+            "A-17": "Dzieci", "A-24": "Rowerzyści", "A-29": "Sygnalizacja świetlna",
+            "B-1": "Zakaz ruchu w obu kierunkach", "B-2": "Zakaz wjazdu",
+            "B-3": "Zakaz wjazdu pojazdów silnikowych", "B-5": "Zakaz wjazdu samochodów ciężarowych",
+            "B-16": "Ograniczenie wysokości", "B-18": "Ograniczenie masy",
+            "B-20": "STOP", "B-21": "Zakaz skrętu w lewo", "B-22": "Zakaz skrętu w prawo",
+            "B-23": "Zakaz zawracania", "B-25": "Zakaz wyprzedzania",
+            "B-27": "Koniec zakazu wyprzedzania", "B-33": "Ograniczenie prędkości",
+            "B-34": "Koniec ograniczenia prędkości", "B-35": "Zakaz postoju",
+            "B-36": "Zakaz zatrzymywania się", "B-42": "Koniec zakazów",
+            "B-43": "Strefa ograniczonej prędkości", "B-44": "Koniec strefy ograniczonej prędkości",
+            "C-12": "Ruch okrężny", "D-1": "Droga z pierwszeństwem",
+            "D-2": "Koniec drogi z pierwszeństwem", "D-3": "Droga jednokierunkowa",
+            "D-6": "Przejście dla pieszych", "D-7": "Droga ekspresowa", "D-9": "Autostrada",
+            "D-18": "Parking", "D-40": "Strefa zamieszkania", "D-41": "Koniec strefy zamieszkania",
+            "D-42": "Obszar zabudowany", "D-43": "Koniec obszaru zabudowanego",
+            "D-51": "Kontrola prędkości", "D-51A": "Początek odcinkowego pomiaru prędkości",
+            "D-51B": "Koniec odcinkowego pomiaru prędkości"
+        ]
+        let resolved = codes(raw).compactMap { names[$0] }
+        return resolved.isEmpty ? nil : resolved.joined(separator: " · ")
+    }
+
+    static func isNavigationRelevant(_ raw: String?) -> Bool {
+        guard let raw else { return false }
+        let relevant: Set<String> = ["B-1", "B-3", "B-21", "B-22", "B-23", "B-27", "B-42", "D-51"]
+        return codes(raw).contains { relevant.contains($0) }
+    }
 }
 
 struct OSMRoadSpeedSegment: Codable, Equatable, Sendable {
@@ -289,6 +369,11 @@ nonisolated struct RoadDataSnapshot: Codable, Sendable {
         var unique: [String: RoadSafetyAlert] = [:]
         for original in alerts {
             var alert = original
+            if alert.type.isTrafficSign || alert.id.hasPrefix("osm-sign-") {
+                guard alert.type != .trafficSign || PolishRoadSign.isNavigationRelevant(alert.signCode),
+                      let context = alert.signRouteContext,
+                      context.applies(to: route, at: alert.coordinate) else { continue }
+            }
             // OSM way direction is unrelated to the user's travel direction.
             if let end = alert.restrictionEndCoordinate,
                let startProjection = MapMatcher.project(alert.coordinate, onto: route),
@@ -502,7 +587,7 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
                 }
             }
         }
-        return "road-safety-v5-" + String(format: "%016llx", hash)
+        return "road-safety-v6-" + String(format: "%016llx", hash)
     }
 
     private static func query(route: [Coordinate]) -> String {
@@ -513,6 +598,7 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
         return """
         [out:json][timeout:25];
         (
+          \(roads);
           \(roads)[maxspeed];
           \(roads)[maxheight];
           \(roads)[maxweight];
@@ -720,7 +806,52 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
                 }
             }
         }
+        let ways = elements.filter { $0.type == "way" && $0.tags?["highway"] != nil }
+        let nodes = Dictionary(elements.filter { $0.type == "node" }.map { ($0.id, $0) },
+                               uniquingKeysWith: { first, _ in first })
+        for (id, var alert) in unique where alert.type.isTrafficSign || alert.id.hasPrefix("osm-sign-") {
+            if (id.contains("-node-") || id.hasPrefix("osm-sign-")),
+               let nodeID = Int64(id.split(separator: "-").last ?? ""), let node = nodes[nodeID] {
+                alert.signRouteContext = signContext(for: node, ways: ways)
+            } else if alert.signSource == .inferredFromRoadRestriction,
+                      let wayID = Int64(id.split(separator: "-").last ?? ""),
+                      let way = ways.first(where: { $0.id == wayID }), let points = way.geometry {
+                alert.signRouteContext = RoadSignRouteContext(road: points.map(\.coordinate),
+                                                               forward: nil, travelBearing: nil)
+            }
+            unique[id] = alert
+        }
         return Array(unique.values)
+    }
+
+    private static func signContext(for node: OverpassElement, ways: [OverpassElement]) -> RoadSignRouteContext? {
+        guard let lat = node.lat, let lon = node.lon, let tags = node.tags else { return nil }
+        let point = Coordinate(latitude: lat, longitude: lon)
+        let attached = ways.filter { $0.nodes?.contains(node.id) == true }
+        let candidates = (attached.isEmpty ? ways : attached).compactMap { way -> (OverpassElement, Double)? in
+            guard let points = way.geometry, let projection = MapMatcher.project(point, onto: points.map(\.coordinate)),
+                  projection.distanceFromRoute <= 10 else { return nil }
+            return (way, projection.distanceFromRoute)
+        }.sorted { $0.1 < $1.1 }
+        guard let selected = candidates.first,
+              candidates.count == 1 || candidates[1].1 - selected.1 > 3,
+              let points = selected.0.geometry else { return nil }
+        let rawDirection = tags["stop:direction"] ?? tags["traffic_sign:direction"] ?? tags["direction"]
+        let forward: Bool?
+        var bearing: Double?
+        if rawDirection == "forward" { forward = true }
+        else if rawDirection == "backward" { forward = false }
+        else if rawDirection == "both" { forward = nil }
+        else if tags["traffic_sign:forward"] != nil && tags["traffic_sign:backward"] == nil { forward = true }
+        else if tags["traffic_sign:backward"] != nil && tags["traffic_sign:forward"] == nil { forward = false }
+        else if let rawDirection, let value = Double(rawDirection), value.isFinite, (0..<360).contains(value) {
+            // Independent traffic signs face the approaching driver.
+            forward = nil
+            bearing = (value + 180).truncatingRemainder(dividingBy: 360)
+        } else if selected.0.tags?["oneway"] == "yes" { forward = true }
+        else if selected.0.tags?["oneway"] == "-1" { forward = false }
+        else { return nil } // Unknown approach must not warn the other driver.
+        return RoadSignRouteContext(road: points.map(\.coordinate), forward: forward, travelBearing: bearing)
     }
 
     private static func trafficSign(from tags: [String: String])
@@ -862,6 +993,7 @@ private struct OverpassElement: Decodable {
     let tags: [String: String]?
     let geometry: [OverpassPoint]?
     let members: [OverpassMember]?
+    let nodes: [Int64]?
 }
 
 private struct OverpassPoint: Decodable {

@@ -353,9 +353,8 @@ nonisolated enum RoadRouteETA {
             if traffic.incidentDataAvailable, Date().timeIntervalSince(traffic.updatedAt) <= 120 {
                 var seen = Set<String>()
                 for incident in traffic.incidents where seen.insert(incident.id).inserted {
-                    guard let projection = geometry.project(incident.coordinate),
-                          projection.distanceFromRoute <= RouteTrafficMonitor.routeMatchToleranceMeters else { continue }
-                    let position = incident.distanceAlongRoute ?? projection.alongRoute
+                    guard let projection = RouteTrafficMonitor.incidentProjection(incident, geometry: geometry) else { continue }
+                    let position = projection.alongRoute
                     guard position > start + 40 else { continue }
                     if incident.isRoadClosure { return .infinity }
                     let isMeasured = flowIntervals.contains { position >= $0.0 && position <= $0.1 }

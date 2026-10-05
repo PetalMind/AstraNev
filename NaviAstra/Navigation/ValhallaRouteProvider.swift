@@ -116,10 +116,12 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
             payload["locations"] = locations
         }
         if !avoiding.isEmpty {
-            payload["avoid_locations"] = avoiding.map { ["lat": $0.latitude, "lon": $0.longitude] }
+            payload["exclude_locations"] = avoiding.map { ["lat": $0.latitude, "lon": $0.longitude] }
         }
         if mode == .car {
-            var carOptions: [String: Any] = [:]
+            var carOptions: [String: Any] = ["shortest": false, "maneuver_penalty": 12.0,
+                                              "use_highways": preferences.avoidHighways ? 0.0 : 1.0,
+                                              "use_living_streets": 0.0, "service_penalty": 30.0]
             if preferences.avoidTolls { carOptions["use_tolls"] = 0.0 }
             if preferences.avoidHighways { carOptions["use_highways"] = 0.0 }
             if preferences.avoidFerries { carOptions["use_ferry"] = 0.0 }
@@ -201,7 +203,9 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
                                                                       costing: mode.valhallaCosting)))
         }
         guard !routes.isEmpty else { throw RoutingError.invalidResponse }
-        return routes
+        guard mode == .car else { return routes }
+        // Return ready routes immediately; auxiliary Overpass requests must not block routing.
+        return CarRouteRanking.ranked(routes)
     }
 
     func optimizedWaypointOrder(from: Coordinate, to: Coordinate, waypoints: [Destination], mode: TransportMode,
@@ -220,7 +224,9 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
             "units": "kilometers"
         ]
         if mode == .car {
-            var carOptions: [String: Any] = [:]
+            var carOptions: [String: Any] = ["shortest": false, "maneuver_penalty": 12.0,
+                                              "use_highways": preferences.avoidHighways ? 0.0 : 1.0,
+                                              "use_living_streets": 0.0, "service_penalty": 30.0]
             if preferences.avoidTolls { carOptions["use_tolls"] = 0.0 }
             if preferences.avoidHighways { carOptions["use_highways"] = 0.0 }
             if preferences.avoidFerries { carOptions["use_ferry"] = 0.0 }
@@ -481,7 +487,7 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
     private struct SignElement: Decodable { let text: String }
 }
 
-enum Polyline6 {
+nonisolated enum Polyline6 {
     static func decode(_ encoded: String) -> [Coordinate] {
         let bytes = Array(encoded.utf8)
         var index = 0, latitude = 0, longitude = 0

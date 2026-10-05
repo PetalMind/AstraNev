@@ -276,14 +276,8 @@ extension NavigationSession {
     func distanceToTrafficIncident(_ incident: TrafficIncident,
                                            on route: NavigationRoute,
                                            after traveledDistance: Double) -> Double? {
-        if let distanceAlongRoute = incident.distanceAlongRoute {
-            return distanceAlongRoute - traveledDistance
-        }
-        let geometry = incident.geometry.isEmpty ? [incident.coordinate] : incident.geometry
-        guard let projection = geometry.compactMap({
-            routeProgressTracker.projectRoadCoordinate(route: route, coordinate: $0)
-        }).min(by: { $0.distanceFromRoute < $1.distanceFromRoute }),
-              projection.distanceFromRoute <= 120 else { return nil }
+        guard let projection = RouteTrafficMonitor.incidentProjection(
+            incident, geometry: RouteProgressGeometry(route)) else { return nil }
         return projection.alongRoute - traveledDistance
     }
 

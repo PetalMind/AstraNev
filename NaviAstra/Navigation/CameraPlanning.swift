@@ -38,7 +38,7 @@ struct CameraIntent: Equatable {
     var animationDuration: TimeInterval? = nil
     /// The user is anchored separately from the route context ahead of them.
     var followCoordinate: Coordinate? = nil
-    var anchorFraction: Double = 0.66
+    var anchorFraction: Double = 0.86
 
     func fittingViewport(_ occlusion: CameraPadding, width: Double, height: Double) -> Self {
         var result = self
@@ -812,7 +812,7 @@ enum CameraPlanner {
                                 animationDuration: camera == .startingNavigation
                                     ? 0.65 : walkingProfile?.animationDuration ?? navigationAnimationDuration,
                                 followCoordinate: routeProjection?.coordinate ?? position,
-                                anchorFraction: usesWalkingCamera ? 0.58 : (cyclingProfile != nil ? 0.64 : 0.68))
+                                anchorFraction: usesWalkingCamera ? 0.58 : (cyclingProfile != nil ? 0.64 : 0.86))
         case .arrived:
             let points = [position, destination?.coordinate].compactMap { $0 }
             let bounds = points.count == 2 && points[0].distance(to: points[1]) >= 100 ? points : []

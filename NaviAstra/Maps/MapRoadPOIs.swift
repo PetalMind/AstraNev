@@ -520,7 +520,7 @@ actor MapRoadPOIProvider {
                     }
                     var point = MapRoadPOI(id: id, category: .trafficSigns,
                         coordinate: Coordinate(latitude: latitude, longitude: longitude),
-                        title: "Znak drogowy · \(code)",
+                        title: PolishRoadSign.name(for: code) ?? "Znak drogowy",
                         subtitle: [tags["name"], locationNote, condition.map { "Warunek OSM: \($0)" }, "© OpenStreetMap contributors"]
                             .compactMap { $0 }.joined(separator: " · "))
                     point.signCode = code

@@ -92,6 +92,63 @@ struct RoutingCriticalTests {
         do { try await child.value; Issue.record("Cancelled result accepted") }
         catch is CancellationError { }
     }
+    @Test func trafficDecisionsRejectAdjacentAndCrossingClosuresAcrossETAAndGuidance() {
+        let road = [Coordinate(latitude: 52, longitude: 21), Coordinate(latitude: 52.01, longitude: 21)]
+        let route = NavigationRoute(coordinates: road, distance: 1_112, expectedTravelTime: 100, maneuvers: [])
+        let geometry = RouteProgressGeometry(route)
+        let session = NavigationSession(dependencies: .live(
+            routeEndpoint: URL(string: "https://routing.invalid")!, trafficAPIKey: nil))
+        let neighboring = [Coordinate(latitude: 52.002, longitude: 21.0004),
+                           Coordinate(latitude: 52.008, longitude: 21.0004)]
+        let crossing = [Coordinate(latitude: 52.005, longitude: 20.999),
+                        Coordinate(latitude: 52.005, longitude: 21.001)]
+        let onRoad = [Coordinate(latitude: 52.002, longitude: 21), Coordinate(latitude: 52.008, longitude: 21)]
+        for (index, points) in [neighboring, crossing, [onRoad[0]], onRoad].enumerated() {
+            let incident = TrafficIncident(id: "closure-\(index)", description: "Zamknięcie",
+                coordinate: points[0], delaySeconds: nil, category: .roadClosed, severity: .major,
+                geometry: points)
+            let accepted = index == 3
+            #expect((RouteTrafficMonitor.incidentProjection(incident, geometry: geometry) != nil) == accepted)
+            #expect((session.distanceToTrafficIncident(incident, on: route, after: 0) != nil) == accepted)
+            let snapshot = TrafficSnapshot(flow: nil, incidents: [incident], updatedAt: .now,
+                                           partialError: nil, incidentDataAvailable: true)
+            #expect(RoadRouteETA.estimate(route, from: 0, traffic: snapshot).isFinite != accepted)
+            #expect(RouteTrafficMonitor.matching([incident], to: route, from: 0, through: geometry.length,
+                                                 routeGeometry: geometry).isEmpty != accepted)
+        }
+    }
+
+    @Test func roadSignDecisionsRequireTheDriversRoadAndApproach() {
+        let road = [Coordinate(latitude: 52, longitude: 21), Coordinate(latitude: 52.01, longitude: 21)]
+        let position = Coordinate(latitude: 52.005, longitude: 21)
+        let sideRoad = [Coordinate(latitude: 52.005, longitude: 20.999),
+                        Coordinate(latitude: 52.005, longitude: 21.001)]
+        let forward = RoadSignRouteContext(road: road, forward: true, travelBearing: nil)
+        let reverse = RoadSignRouteContext(road: road, forward: false, travelBearing: nil)
+        let side = RoadSignRouteContext(road: sideRoad, forward: nil, travelBearing: nil)
+        let alerts = [forward, reverse, side].enumerated().map { index, context in
+            RoadSafetyAlert(id: "stop-\(index)", type: .stopSign, coordinate: position,
+                            source: .openStreetMap, signRouteContext: context)
+        } + [RoadSafetyAlert(id: "ambiguous", type: .stopSign, coordinate: position, source: .openStreetMap)]
+        let snapshot = RoadDataSnapshot(speedSegments: [], alerts: alerts, fetchedAt: .now)
+        #expect(snapshot.matchedAlerts(on: road).map(\.id) == ["stop-0"])
+        #expect(snapshot.matchedAlerts(on: Array(road.reversed())).map(\.id) == ["stop-1"])
+    }
+
+    @Test func carSelectionBalancesTimeAndSignalsWithoutRewardingMissingData() {
+        let points = [Coordinate(latitude: 52, longitude: 21), Coordinate(latitude: 52.01, longitude: 21)]
+        let urban = NavigationRoute(coordinates: points, distance: 1_112, expectedTravelTime: 600,
+                                    maneuvers: [], trafficSignalCount: 10)
+        var mainRoad = NavigationRoute(coordinates: points, distance: 1_300, expectedTravelTime: 660,
+                                       maneuvers: [], trafficSignalCount: 1)
+        #expect(CarRouteRanking.ranked([urban, mainRoad]).first?.id == mainRoad.id)
+        mainRoad.expectedTravelTime = 1_000
+        #expect(CarRouteRanking.ranked([urban, mainRoad]).first?.id == urban.id)
+        mainRoad.expectedTravelTime = 660
+        mainRoad.trafficSignalCount = nil
+        #expect(CarRouteRanking.ranked([urban, mainRoad]).first?.id == urban.id)
+    }
+
     @Test func lateOptimizationCannotRewriteANewTrip() async throws {
         let session = NavigationSession(dependencies: .live(
             routeEndpoint: URL(string: "https://routing.invalid")!, trafficAPIKey: nil))
