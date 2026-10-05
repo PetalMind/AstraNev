@@ -129,7 +129,6 @@ extension ContentView {
         VStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 8) {
                 header
-                weatherMapNotice
 #if os(iOS)
                 journeyNavigationGuidanceOverlay
 #endif

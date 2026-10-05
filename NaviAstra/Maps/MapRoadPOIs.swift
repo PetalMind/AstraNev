@@ -74,6 +74,7 @@ nonisolated struct MapRoadPOI: Identifiable, Codable, Equatable, Sendable {
     var heightValue: String? = nil
     var weightValue: String? = nil
     var signSource: RoadSignSource? = nil
+    var condition: String? = nil
 
     init(id: String, category: MapSafetyPOICategory, coordinate: Coordinate,
          title: String, subtitle: String = "© OpenStreetMap contributors") {
@@ -168,7 +169,7 @@ nonisolated struct MapRoadPOIQuery: Hashable, Codable, Sendable {
             restrictionSelectors.append("node[\"maxheight\"](\(bounds));")
             restrictionSelectors.append("way[\"highway\"][\"maxheight\"](\(bounds));")
             for key in ["traffic_sign", "traffic_sign:forward", "traffic_sign:backward"] {
-                restrictionSelectors.append("node[\"\(key)\"~\"(^|;)(maxheight|PL:B-16|B-16)(;|$)\"](\(bounds));")
+                restrictionSelectors.append("node[\"\(key)\"~\"(^|[;,])[ ]*(maxheight|PL:B-16|B-16)(;|,|$|[[])\"](\(bounds));")
             }
             restrictionSelectors.append("node[\"traffic_sign:maxheight\"](\(bounds));")
         }
@@ -183,12 +184,22 @@ nonisolated struct MapRoadPOIQuery: Hashable, Codable, Sendable {
             restrictionSelectors.append("node[\"hgv\"=\"no\"](\(bounds));")
             restrictionSelectors.append("way[\"highway\"][\"hgv\"=\"no\"](\(bounds));")
         }
+        for (category, keys) in [
+            (MapSafetyPOICategory.heightLimits, ["maxheight:conditional"]),
+            (.weightLimits, ["maxweight:conditional"]),
+            (.truckRestrictions, ["hgv:conditional", "maxweightrating:hgv:conditional"])
+        ] where categories.contains(category) {
+            for key in keys {
+                restrictionSelectors.append("node[\"\(key)\"](\(bounds));")
+                restrictionSelectors.append("way[\"highway\"][\"\(key)\"](\(bounds));")
+            }
+        }
         for key in ["traffic_sign", "traffic_sign:forward", "traffic_sign:backward"] {
             if categories.contains(.weightLimits) {
-                restrictionSelectors.append("node[\"\(key)\"~\"(^|;)(maxweight|PL:B-18|B-18)(;|$|[[])\"](\(bounds));")
+                restrictionSelectors.append("node[\"\(key)\"~\"(^|[;,])[ ]*(maxweight|PL:B-18|B-18)(;|,|$|[[])\"](\(bounds));")
             }
             if categories.contains(.truckRestrictions) {
-                restrictionSelectors.append("node[\"\(key)\"~\"(^|;)(PL:B-5|B-5)(;|$|[[])\"](\(bounds));")
+                restrictionSelectors.append("node[\"\(key)\"~\"(^|[;,])[ ]*(PL:B-5|B-5)(;|,|$|[[])\"](\(bounds));")
             }
         }
         var relationSelectors: [String] = []
@@ -333,7 +344,7 @@ actor MapRoadPOIProvider {
 
     private var cacheURL: URL? {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("NaviAstra/MapRoadPOIs/v1.json")
+            .appendingPathComponent("NaviAstra/MapRoadPOIs/v2.json")
     }
 
     private func restoreCacheIfNeeded() {
@@ -423,12 +434,9 @@ actor MapRoadPOIProvider {
         form.queryItems = [URLQueryItem(name: "data", value: query.overpassQL)]
         request.httpBody = form.percentEncodedQuery?.data(using: .utf8)
 
-        guard await OSMCyclingRequestGate.shared.waitUntilAllowed() else {
-            throw CancellationError()
-        }
         do {
             try Task.checkCancellation()
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await OSMRequestTransport.shared.data(for: request)
             guard let http = response as? HTTPURLResponse,
                   (200...299).contains(http.statusCode) else {
                 throw MapRoadPOIError.unavailable
@@ -436,10 +444,8 @@ actor MapRoadPOIProvider {
             let decoded = try JSONDecoder().decode(MapRoadPOIResponse.self, from: data)
             guard decoded.remark == nil else { throw MapRoadPOIError.unavailable }
             try Task.checkCancellation()
-            await OSMCyclingRequestGate.shared.requestDidFinish()
             return parseElements(decoded.elements, categories: query.categories)
         } catch {
-            await OSMCyclingRequestGate.shared.requestDidFinish()
             throw error
         }
     }
@@ -503,12 +509,22 @@ actor MapRoadPOIProvider {
                 for (index, code) in codes.enumerated() {
                     let id = "osm-sign-\(element.type)-\(element.id)-\(index)"
                     let locationNote = element.type == "node" ? nil : "Lokalizacja przybliżona — znak przypisany do obiektu OSM"
+                    let signBase = code.uppercased().split(separator: ":").last?
+                        .split(separator: "[").first.map(String.init)
+                    let condition: String?
+                    switch signBase {
+                    case "B-16", "MAXHEIGHT": condition = tags["maxheight:conditional"]
+                    case "B-18", "MAXWEIGHT": condition = tags["maxweight:conditional"]
+                    case "B-5": condition = tags["hgv:conditional"] ?? tags["maxweightrating:hgv:conditional"]
+                    default: condition = nil
+                    }
                     var point = MapRoadPOI(id: id, category: .trafficSigns,
                         coordinate: Coordinate(latitude: latitude, longitude: longitude),
                         title: "Znak drogowy · \(code)",
-                        subtitle: [tags["name"], locationNote, "© OpenStreetMap contributors"]
+                        subtitle: [tags["name"], locationNote, condition.map { "Warunek OSM: \($0)" }, "© OpenStreetMap contributors"]
                             .compactMap { $0 }.joined(separator: " · "))
                     point.signCode = code
+                    point.condition = condition
                     point.signSource = .explicitTrafficSign
                     point.signSpeedLimit = SpeedLimitParser.parse(tags["maxspeed"])
                     point.heightValue = OSMHeightRestriction.parse(tags)?.value
@@ -523,16 +539,17 @@ actor MapRoadPOIProvider {
                 if !codes.isEmpty { continue }
             }
             if categories.contains(.heightLimits), let tags = element.tags,
-               let restriction = OSMHeightRestriction.parse(tags),
+               let restriction = OSMHeightRestriction.parse(tags, includeConditional: true),
                let coordinate = element.type == "way" ? element.geometry?.first?.coordinate
                     : element.lat.flatMap({ lat in element.lon.map { Coordinate(latitude: lat, longitude: $0) } }),
                coordinate.latitude.isFinite, coordinate.longitude.isFinite,
                (-90...90).contains(coordinate.latitude), (-180...180).contains(coordinate.longitude) {
                 let id = "osm-height-\(element.type)-\(element.id)"
                 var point = MapRoadPOI(id: id, category: .heightLimits, coordinate: coordinate,
-                                       title: "Ograniczenie wysokości",
+                                       title: restriction.condition == nil ? "Ograniczenie wysokości" : "Warunkowe ograniczenie wysokości",
                                        subtitle: restriction.subtitle)
                 point.heightValue = restriction.value
+                point.condition = restriction.condition
                 point.signSource = restriction.source
                 unique[id] = point
             }
@@ -541,11 +558,12 @@ actor MapRoadPOIProvider {
                     : element.lat.flatMap({ lat in element.lon.map { Coordinate(latitude: lat, longitude: $0) } }),
                coordinate.latitude.isFinite, coordinate.longitude.isFinite,
                (-90...90).contains(coordinate.latitude), (-180...180).contains(coordinate.longitude) {
-                for restriction in OSMWeightRestriction.parse(tags) where categories.contains(restriction.category) {
+                for restriction in OSMWeightRestriction.parse(tags, includeConditional: true) where categories.contains(restriction.category) {
                     let id = "osm-\(restriction.idPrefix)-\(element.type)-\(element.id)"
                     var point = MapRoadPOI(id: id, category: restriction.category, coordinate: coordinate,
                                            title: restriction.title, subtitle: restriction.subtitle)
                     point.weightValue = restriction.value
+                    point.condition = restriction.condition
                     point.signSource = restriction.source
                     unique[id] = point
                 }
@@ -581,6 +599,7 @@ actor MapRoadPOIProvider {
             return !unique.values.contains { explicit in
                 explicit.category == point.category && explicit.signSource == .explicitTrafficSign
                     && explicit.heightValue == point.heightValue && explicit.weightValue == point.weightValue
+                    && explicit.condition == point.condition
                     && explicit.coordinate.distance(to: point.coordinate) < 20
             }
         }
@@ -733,21 +752,31 @@ nonisolated enum RoadSignSource: String, Codable, Sendable {
 nonisolated struct OSMHeightRestriction {
     let value: String?
     let source: RoadSignSource
+    var condition: String? = nil
 
     var subtitle: String {
         [value.map { "Maksymalna wysokość: \($0)" } ?? "Wysokość niepodana",
-         source.title, "Źródło: OpenStreetMap · © OpenStreetMap contributors"].joined(separator: " · ")
+         condition.map { "Warunek OSM: \($0)" },
+         source.title, "Źródło: OpenStreetMap · © OpenStreetMap contributors"].compactMap { $0 }.joined(separator: " · ")
     }
 
-    static func parse(_ tags: [String: String]) -> Self? {
-        let codes = ["traffic_sign", "traffic_sign:forward", "traffic_sign:backward"]
-            .compactMap { tags[$0] }.flatMap { $0.split(separator: ";") }
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }
-        let explicit = codes.contains { ["MAXHEIGHT", "B-16", "PL:B-16"].contains($0) }
-            || tags["traffic_sign:maxheight"] != nil
-        let value = formattedMeters(tags["traffic_sign:maxheight"]) ?? formattedMeters(tags["maxheight"])
-        guard explicit || value != nil else { return nil }
-        return Self(value: value, source: explicit ? .explicitTrafficSign : .inferredFromRoadRestriction)
+    static func parse(_ tags: [String: String], includeConditional: Bool = false) -> Self? {
+        let codes = OSMTrafficSignCodes.parse(tags).map { $0.uppercased() }
+        func base(_ code: String) -> String {
+            let prefix = code.split(separator: "[").first ?? ""
+            return String(prefix.split(separator: ":").last ?? prefix)
+        }
+        let heightCode = codes.first { ["MAXHEIGHT", "B-16"].contains(base($0)) }
+        let explicit = heightCode != nil || tags["traffic_sign:maxheight"] != nil
+        let embedded: String? = heightCode.flatMap { code in
+            guard let start = code.firstIndex(of: "["), code.hasSuffix("]") else { return nil }
+            return formattedMeters(String(code[code.index(after: start)..<code.index(before: code.endIndex)]))
+        }
+        let value = formattedMeters(tags["traffic_sign:maxheight"]) ?? embedded ?? formattedMeters(tags["maxheight"])
+        let condition = includeConditional ? tags["maxheight:conditional"].flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 } : nil
+        guard explicit || value != nil || condition != nil else { return nil }
+        return Self(value: value, source: explicit ? .explicitTrafficSign : .inferredFromRoadRestriction,
+                    condition: condition)
     }
 
     static func formattedMeters(_ raw: String?) -> String? {
@@ -782,11 +811,15 @@ nonisolated struct OSMWeightRestriction {
     let kind: Kind
     let value: String?
     let source: RoadSignSource
+    var condition: String? = nil
 
     var category: MapSafetyPOICategory { kind == .actualMass ? .weightLimits : .truckRestrictions }
     var code: String { kind == .actualMass ? "B-18" : "B-5" }
     var idPrefix: String { kind == .actualMass ? "weight" : "trucks" }
-    var title: String { kind == .actualMass ? "Ograniczenie masy" : "Zakaz wjazdu samochodów ciężarowych" }
+    var title: String {
+        let title = kind == .actualMass ? "Ograniczenie masy" : "Zakaz wjazdu samochodów ciężarowych"
+        return condition == nil ? title : "Warunkowe: " + title
+    }
     var subtitle: String {
         let detail: String
         switch kind {
@@ -794,7 +827,8 @@ nonisolated struct OSMWeightRestriction {
         case .trucks: detail = value.map { "Zakaz dla ciężarówek o DMC powyżej \($0)" }
             ?? "Zakaz wjazdu ciężarówek · Próg DMC niepodany w OSM"
         }
-        return "\(code) · \(detail) · \(source.title) · Źródło: OpenStreetMap · © OpenStreetMap contributors"
+        return [code, detail, condition.map { "Warunek OSM: \($0)" }, source.title,
+                "Źródło: OpenStreetMap · © OpenStreetMap contributors"].compactMap { $0 }.joined(separator: " · ")
     }
 
     nonisolated static func isTruckSign(_ raw: String?) -> Bool {
@@ -802,7 +836,7 @@ nonisolated struct OSMWeightRestriction {
     }
 
     nonisolated private static func signCodes(_ raw: String?) -> [String] {
-        (raw ?? "").components(separatedBy: CharacterSet(charactersIn: ";,"))
+        OSMTrafficSignCodes.components(raw ?? "")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }
     }
 
@@ -811,9 +845,13 @@ nonisolated struct OSMWeightRestriction {
         return String(base.split(separator: ":").last ?? base)
     }
 
-    static func parse(_ tags: [String: String]) -> [Self] {
-        let codes = ["traffic_sign", "traffic_sign:forward", "traffic_sign:backward"]
-            .flatMap { signCodes(tags[$0]) }
+    static func parse(_ tags: [String: String], includeConditional: Bool = false) -> [Self] {
+        let codes = OSMTrafficSignCodes.parse(tags).map { $0.uppercased() }
+        func conditional(_ key: String) -> String? {
+            guard includeConditional, let value = tags[key],
+                  !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return value
+        }
         func embeddedValue(_ code: String) -> String? {
             guard let raw = codes.first(where: { baseCode($0) == code }),
                   let start = raw.firstIndex(of: "["), raw.hasSuffix("]") else { return nil }
@@ -824,16 +862,28 @@ nonisolated struct OSMWeightRestriction {
             || tags["traffic_sign:maxweight"] != nil
         let weight = formattedTonnes(tags["traffic_sign:maxweight"])
             ?? embeddedValue("B-18") ?? formattedTonnes(tags["maxweight"])
-        if explicitWeight || weight != nil {
+        let weightCondition = conditional("maxweight:conditional")
+        if explicitWeight || weight != nil || weightCondition != nil {
             result.append(Self(kind: .actualMass, value: weight,
-                               source: explicitWeight ? .explicitTrafficSign : .inferredFromRoadRestriction))
+                               source: explicitWeight ? .explicitTrafficSign : .inferredFromRoadRestriction,
+                               condition: weightCondition))
         }
         let explicitTruck = codes.contains { baseCode($0) == "B-5" }
         let truckWeight = embeddedValue("B-5") ?? formattedTonnes(tags["maxweightrating:hgv"])
             ?? (explicitTruck ? formattedTonnes(tags["maxweightrating"]) : nil)
-        if explicitTruck || truckWeight != nil || tags["hgv"]?.lowercased() == "no" {
+        let hgvCondition = conditional("hgv:conditional").flatMap { raw -> String? in
+            let hasProhibition = raw.components(separatedBy: ";").contains {
+                $0.split(separator: "@", maxSplits: 1).first?
+                    .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "no"
+            }
+            return hasProhibition || tags["hgv"]?.lowercased() == "no" ? raw : nil
+        }
+        let truckCondition = [hgvCondition, conditional("maxweightrating:hgv:conditional")]
+            .compactMap { $0 }.joined(separator: " · ")
+        if explicitTruck || truckWeight != nil || tags["hgv"]?.lowercased() == "no" || !truckCondition.isEmpty {
             result.append(Self(kind: .trucks, value: truckWeight,
-                               source: explicitTruck ? .explicitTrafficSign : .inferredFromRoadRestriction))
+                               source: explicitTruck ? .explicitTrafficSign : .inferredFromRoadRestriction,
+                               condition: truckCondition.isEmpty ? nil : truckCondition))
         }
         return result
     }
@@ -860,11 +910,27 @@ nonisolated struct OSMWeightRestriction {
 
 // Preserve every code on a signpost, including codes without a dedicated drawing.
 nonisolated enum OSMTrafficSignCodes {
+    static func components(_ raw: String) -> [String] {
+        var result: [String] = []
+        var current = ""
+        var bracketDepth = 0
+        for character in raw {
+            if character == "[" { bracketDepth += 1 }
+            if character == "]" { bracketDepth = max(0, bracketDepth - 1) }
+            if bracketDepth == 0 && (character == ";" || character == ",") {
+                result.append(current)
+                current = ""
+            } else { current.append(character) }
+        }
+        result.append(current)
+        return result
+    }
+
     static func parse(_ tags: [String: String]) -> [String] {
         var result: [String] = []
         for key in ["traffic_sign", "traffic_sign:forward", "traffic_sign:backward"] {
             var country: String?
-            for part in (tags[key] ?? "").components(separatedBy: CharacterSet(charactersIn: ";,")) {
+            for part in components(tags[key] ?? "") {
                 var code = part.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !code.isEmpty, !["no", "none"].contains(code.lowercased()) else { continue }
                 if let colon = code.firstIndex(of: ":") {

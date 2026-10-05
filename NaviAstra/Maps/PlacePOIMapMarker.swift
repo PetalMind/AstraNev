@@ -168,3 +168,26 @@ extension PlacePOIMapPalette {
     }
 }
 #endif
+
+#if os(iOS)
+extension UIImage {
+    @MainActor func shopPOIMarkerImage() -> UIImage {
+        let size = CGSize(width: 36, height: 36)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 3
+        return UIGraphicsImageRenderer(size: size, format: format).image { renderer in
+            let circle = CGRect(origin: .zero, size: size).insetBy(dx: 1.5, dy: 1.5)
+            renderer.cgContext.setFillColor(UIColor.white.cgColor)
+            renderer.cgContext.fillEllipse(in: circle)
+            renderer.cgContext.setStrokeColor(UIColor(naviHex: 0xD6DEE6).cgColor)
+            renderer.cgContext.setLineWidth(1.8)
+            renderer.cgContext.strokeEllipse(in: circle)
+            guard self.size.width > 0, self.size.height > 0 else { return }
+            let scale = 24 / max(self.size.width, self.size.height)
+            let fitted = CGSize(width: self.size.width * scale, height: self.size.height * scale)
+            draw(in: CGRect(x: (36 - fitted.width) / 2, y: (36 - fitted.height) / 2,
+                            width: fitted.width, height: fitted.height))
+        }
+    }
+}
+#endif

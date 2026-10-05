@@ -84,6 +84,7 @@ extension ContentView {
                                  icon: "info.circle.fill") {
                     settingsPage("Dane i prywatność") {
                         Section("Dostępność i dane") { settingsDisclaimer }
+                        settingsShopLogoCredits
                         Section("Ikonografia nawigacji") {
                             Link("Mapbox Directions Icons · CC0 1.0",
                                  destination: URL(string: "https://github.com/mapbox/directions-icons")!)
@@ -279,24 +280,57 @@ extension ContentView {
     }
 
     private var settingsPOISection: some View {
-        Section {
-            ForEach(MapPOICategory.allCases) { category in
-                Toggle(category.title, isOn: Binding(
-                    get: { mapStore.mapPOICategories & category.mask != 0 },
-                    set: { enabled in
-                        if enabled { mapStore.mapPOICategories |= category.mask }
-                        else { mapStore.mapPOICategories &= ~category.mask }
-                    }))
+        Group {
+            Section {
+                Toggle("Loga sklepów", isOn: $mapStore.shopLogosEnabled)
+            } header: {
+                Text("Wygląd sklepów")
+            } footer: {
+                Text("Logotypy zastępują standardowe ikony sklepów po zbliżeniu mapy. Jeśli marka lub logo są niedostępne, pozostaje ikona sklepu. Wyłączenie przywraca standardowe ikony. Źródła i licencje pobranych logotypów znajdziesz w Danych i prywatności.")
             }
-            .disabled(!mapStore.mapPOIVisible)
-        } header: {
-            Text("Kategorie miejsc na mapie")
-        } footer: {
-            if !mapStore.mapPOIVisible {
-                Text("Kategorie są nieaktywne, ponieważ miejsca na mapie są ukryte. Włącz je w sekcji Szczegóły mapy.")
+            Section {
+                ForEach(MapPOICategory.allCases) { category in
+                    Toggle(category.title, isOn: Binding(
+                        get: { mapStore.mapPOICategories & category.mask != 0 },
+                        set: { enabled in
+                            if enabled { mapStore.mapPOICategories |= category.mask }
+                            else { mapStore.mapPOICategories &= ~category.mask }
+                        }))
+                }
+                .disabled(!mapStore.mapPOIVisible)
+            } header: {
+                Text("Kategorie miejsc na mapie")
+            } footer: {
+                if !mapStore.mapPOIVisible {
+                    Text("Kategorie są nieaktywne, ponieważ miejsca na mapie są ukryte. Włącz je w sekcji Szczegóły mapy.")
+                }
+                Text("Podczas prowadzenia mapa wybiera z zaznaczonych kategorii miejsca przydatne dla danego sposobu podróży. Przy celu wyróżnia parkingi i przystanki.")
+                    .font(.footnote).foregroundStyle(Color.naviTextSecondary)
             }
-            Text("Podczas prowadzenia mapa wybiera z zaznaczonych kategorii miejsca przydatne dla danego sposobu podróży. Przy celu wyróżnia parkingi i przystanki.")
+        }
+    }
+
+    private var settingsShopLogoCredits: some View {
+        Section("Logotypy sklepów") {
+            Text("Marki są identyfikowane na podstawie OpenStreetMap, a logotypy pochodzą z Wikidata (P154) i Wikimedia Commons. Dostępność zależy od danych konkretnego sklepu. Znaki towarowe należą do ich właścicieli.")
                 .font(.footnote).foregroundStyle(Color.naviTextSecondary)
+            Link("OpenStreetMap · źródło danych", destination: URL(string: "https://www.openstreetmap.org/copyright")!)
+            Link("Wikimedia Commons", destination: URL(string: "https://commons.wikimedia.org")!)
+            if ShopPOILogoStore.shared.credits.isEmpty {
+                Text("Informacje o autorach i licencjach pojawią się po pobraniu logotypów.")
+                    .font(.footnote).foregroundStyle(Color.naviTextSecondary)
+            }
+            ForEach(ShopPOILogoStore.shared.credits) { credit in
+                VStack(alignment: .leading, spacing: 4) {
+                    Link(credit.name, destination: credit.sourcePageURL)
+                    Text(credit.attribution).font(.caption).foregroundStyle(Color.naviTextSecondary)
+                    if let licenseURL = credit.licenseURL {
+                        Link(credit.licenseName ?? "Licencja", destination: licenseURL).font(.caption)
+                    } else if let license = credit.licenseName {
+                        Text(license).font(.caption).foregroundStyle(Color.naviTextSecondary)
+                    }
+                }
+            }
         }
     }
 

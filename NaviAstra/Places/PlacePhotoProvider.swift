@@ -82,12 +82,17 @@ enum PlacePhotoResolver {
 
     static func resolveBrandLogo(for details: PlaceDetails, identity: PlaceIdentity,
                                  forceRefresh: Bool = false) async -> PlacePhoto? {
-        let key = "\(identity.cacheKey)/brand-logo/\(details.brandWikidataID ?? "")"
+        await resolveBrandLogo(wikidataID: details.brandWikidataID, forceRefresh: forceRefresh)
+    }
+
+    static func resolveBrandLogo(wikidataID: String?, forceRefresh: Bool = false) async -> PlacePhoto? {
+        guard let wikidataID, !wikidataID.isEmpty else { return nil }
+        let key = "brand-logo/\(wikidataID)"
         if !forceRefresh {
             let cached = await PlacePhotoCache.shared.lookup(key)
             if cached.found { return cached.photo }
         }
-        for fileName in await wikimediaFileNames(for: details.brandWikidataID, propertyID: "P154") {
+        for fileName in await wikimediaFileNames(for: wikidataID, propertyID: "P154") {
             if let photo = await commonsPhoto(fileName: fileName, role: .brandLogo) {
                 await PlacePhotoCache.shared.store(photo, for: key)
                 return photo
@@ -237,7 +242,8 @@ enum PlacePhotoResolver {
         let license = metadata["LicenseShortName"]?.value.map {
             plainText($0).trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        guard let license, !license.isEmpty else { return nil }
+        guard let license, !license.isEmpty,
+              role != .brandLogo || allowsImageReuse(license) else { return nil }
         let author = ["Artist", "Author", "Credit"].compactMap { key in
             metadata[key]?.value.map { plainText($0).trimmingCharacters(in: .whitespacesAndNewlines) }
         }.first { !$0.isEmpty }

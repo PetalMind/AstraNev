@@ -99,6 +99,7 @@ struct NavigationRoute: Identifiable, Sendable {
     var chargingDuration: TimeInterval = 0
     var chargingStops: [EVChargingStop] = []
     var travelSegments: [RouteTravelSegment] = []
+    var information: RouteInformation?
 }
 
 struct EVChargingStop: Identifiable, Sendable {

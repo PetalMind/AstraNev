@@ -12,7 +12,7 @@ struct NavigationLiveActivityWidget: Widget {
         ActivityConfiguration(for: NavigationActivityAttributes.self) { context in
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 12) {
-                    ManeuverIcon(type: context.state.maneuver, fallbackSymbol: context.state.symbolName, size: 34)
+                    ManeuverIcon(type: context.state.maneuver, fallbackSymbol: context.state.symbolName, size: 34, roundabout: context.state.isRerouting ? nil : context.state.roundabout)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(maneuverLabel(context)).font(.title2.bold())
                         Text(context.state.roadName.isEmpty ? context.state.instruction : context.state.roadName)
@@ -40,7 +40,7 @@ struct NavigationLiveActivityWidget: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    ManeuverIcon(type: context.state.maneuver, fallbackSymbol: context.state.symbolName, size: 30)
+                    ManeuverIcon(type: context.state.maneuver, fallbackSymbol: context.state.symbolName, size: 30, roundabout: context.state.isRerouting ? nil : context.state.roundabout)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     Text(maneuverLabel(context)).font(.headline.monospacedDigit())
@@ -61,13 +61,13 @@ struct NavigationLiveActivityWidget: Widget {
                     }
                 }
             } compactLeading: {
-                ManeuverIcon(type: context.state.maneuver, fallbackSymbol: context.state.symbolName, size: 20)
+                ManeuverIcon(type: context.state.maneuver, fallbackSymbol: context.state.symbolName, size: 20, roundabout: context.state.isRerouting ? nil : context.state.roundabout)
             } compactTrailing: {
                 Text(context.state.isRerouting ? "…" : context.state.maneuverDistance.map(distance) ?? "—")
                     .monospacedDigit()
             } minimal: {
                 ManeuverIcon(type: context.state.isRerouting ? nil : context.state.maneuver,
-                             fallbackSymbol: context.state.isRerouting ? "arrow.triangle.2.circlepath" : context.state.symbolName, size: 20)
+                             fallbackSymbol: context.state.isRerouting ? "arrow.triangle.2.circlepath" : context.state.symbolName, size: 20, roundabout: context.state.isRerouting ? nil : context.state.roundabout)
             }
         }
     }

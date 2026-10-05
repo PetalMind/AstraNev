@@ -38,6 +38,7 @@ struct MapSettings {
     var cameraMode: MapDimension
     var overlays: MapOverlays
     var poiCategories: Set<MapPOICategory> = Set(MapPOICategory.allCases)
+    var shopLogosEnabled = true
     var transportPositionIconsEnabled = false
     var markerAppearance = NavigationMarkerAppearance()
     var roadSignsVisible = false

@@ -17,6 +17,7 @@ struct ContentView: View {
     @State var mapStore: MapStore
     @State var placeStore: PlaceStore
     @State var weatherStore = WeatherStore()
+    @State var showsWeatherDetails = false
     @AppStorage("weatherEnabled") var weatherEnabled = true
     @AppStorage("weatherIntensity") var weatherIntensity = WeatherEffectIntensity.subtle.rawValue
     @AppStorage("weatherAnimations") var weatherAnimations = true

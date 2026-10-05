@@ -149,7 +149,7 @@ extension ContentView {
             }
         } label: {
             HStack(spacing: 10) {
-                ManeuverIcon(type: maneuver?.type, fallbackSymbol: maneuver?.iconName ?? fallbackSymbol, size: 25)
+                ManeuverIcon(type: maneuver?.type, fallbackSymbol: maneuver?.iconName ?? fallbackSymbol, size: 25, roundabout: maneuver?.roundabout)
                     .foregroundStyle(.white)
                     .frame(width: 44, height: 44)
                     .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -628,7 +628,7 @@ extension ContentView {
     private var journeyNextStepPreview: some View {
         if showsRoadManeuverTimeline, let next = nextRoadManeuverAfterCurrent {
             HStack(spacing: 11) {
-                ManeuverIcon(type: next.maneuver.type, fallbackSymbol: next.maneuver.iconName, size: 20)
+                ManeuverIcon(type: next.maneuver.type, fallbackSymbol: next.maneuver.iconName, size: 20, roundabout: next.maneuver.roundabout)
                     .foregroundStyle(Color.naviTextPrimary)
                     .frame(width: 32, height: 32)
                     .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
@@ -735,6 +735,8 @@ extension ContentView {
     @ViewBuilder
     private var journeyRoadManeuverTimeline: some View {
         if let route = navigationStore.state.route {
+            RouteInformationView(route: route).id(route.id)
+                .padding(.horizontal, 14)
             if route.maneuvers.isEmpty {
                 Label("Instrukcje manewrów niedostępne", systemImage: "info.circle")
                     .font(.caption)
@@ -789,7 +791,7 @@ extension ContentView {
                                        distanceToStep: Double?,
                                        isCurrent: Bool) -> some View {
         HStack(alignment: .top, spacing: 10) {
-            ManeuverIcon(type: maneuver.type, fallbackSymbol: maneuver.iconName, size: 19)
+            ManeuverIcon(type: maneuver.type, fallbackSymbol: maneuver.iconName, size: 19, roundabout: maneuver.roundabout)
                 .foregroundStyle(isCurrent ? Color.accentColor : Color.naviTextSecondary)
                 .frame(width: 32, height: 32)
                 .background(isCurrent ? Color.accentColor.opacity(0.13) : Color.primary.opacity(0.055),
@@ -819,6 +821,7 @@ extension ContentView {
                         .foregroundStyle(Color.naviTextSecondary)
                         .lineLimit(1)
                 }
+                ManeuverInformationView(maneuver: maneuver)
             }
             .padding(.top, 2)
         }

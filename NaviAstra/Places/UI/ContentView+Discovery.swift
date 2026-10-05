@@ -307,6 +307,7 @@ extension ContentView {
 #endif
             Spacer()
             layout {
+                weatherMapControl
                 if isNavigating {
 #if os(iOS)
                     if navigationStore.state.transportMode == .walking {

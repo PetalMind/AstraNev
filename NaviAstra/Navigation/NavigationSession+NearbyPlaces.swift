@@ -43,7 +43,7 @@ extension NavigationSession {
                     category, around: current, radius: searchRadius, resultLimit: resultLimit)
             } else {
                 candidates = try await OpenStreetMapNearbyPlaceProvider()
-                    .search(category, along: coordinates, radius: 1_500)
+                    .search(category, along: coordinates, radius: searchRadius, resultLimit: resultLimit)
             }
             try Task.checkCancellation()
             guard nearbySearchID == searchID else { return }

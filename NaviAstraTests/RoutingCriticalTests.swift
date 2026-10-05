@@ -5,6 +5,26 @@ import Testing
 /// Regressions in navigation decisions and EV reachability, not UI behavior.
 @MainActor
 struct RoutingCriticalTests {
+    @Test func osmRestrictionsPreserveEmbeddedValuesAndConditionalMeaning() throws {
+        let height = try #require(OSMHeightRestriction.parse(["traffic_sign": "PL:B-16[3,5];B-18[12]" ]))
+        #expect(height.value == "3,5 m")
+        #expect(height.source == .explicitTrafficSign)
+        let weight = OSMWeightRestriction.parse(["traffic_sign": "PL:B-16[3,5];B-18[12]"])
+        #expect(weight.first?.value == "12 t")
+        #expect(OSMHeightRestriction.parse(["maxheight:physical": "3.5"]) == nil)
+        // Conditional-only restrictions may appear on the map, but cannot become unconditional route alerts.
+        let tags = ["maxheight:conditional": "3.5 @ (Mo-Fr 08:00-18:00)"]
+        #expect(OSMHeightRestriction.parse(tags) == nil)
+        let conditional = try #require(OSMHeightRestriction.parse(tags, includeConditional: true))
+        #expect(conditional.value == nil)
+        #expect(conditional.condition == tags["maxheight:conditional"])
+        #expect(OSMWeightRestriction.parse(["hgv:conditional": "no @ (Su)"]).isEmpty)
+        let trucks = OSMWeightRestriction.parse(["hgv:conditional": "no @ (Su)"], includeConditional: true)
+        #expect(trucks.first?.condition == "no @ (Su)")
+        #expect(trucks.first?.value == nil)
+        #expect(OSMWeightRestriction.parse(["hgv:conditional": "yes @ (Su)"], includeConditional: true).isEmpty)
+    }
+
     @Test func remainingETAUsesSegmentTimesAndMeasuredTrafficWithoutDoubleCounting() throws {
         let coordinates = [Coordinate(latitude: 52, longitude: 21),
                            Coordinate(latitude: 52.01, longitude: 21),

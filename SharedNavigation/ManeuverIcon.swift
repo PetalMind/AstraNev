@@ -5,10 +5,16 @@ struct ManeuverIcon: View {
     var type: Int?
     var fallbackSymbol: String = "arrow.up"
     var size: CGFloat = 24
+    var roundabout: RoundaboutGuidance?
 
     var body: some View {
         Group {
-            if let assetName {
+            if type == 26 || type == 27, let roundabout,
+               let angle = roundabout.exitAngle, angle.isFinite, (0..<360).contains(angle),
+               let clockwise = roundabout.clockwise {
+                RoundaboutIcon(angle: angle, clockwise: clockwise,
+                               exitCount: roundabout.exitCount, size: size)
+            } else if let assetName {
                 Image(assetName)
                     .renderingMode(.template)
                     .resizable()

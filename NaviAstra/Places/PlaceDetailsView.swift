@@ -362,7 +362,8 @@ struct PlaceDetailsView: View {
             }
         } catch {
             guard !Task.isCancelled else { return }
-            loadError = "Nie udało się odświeżyć informacji. Pokazujemy dostępne dane; mogą być nieaktualne."
+            loadError = (error as? PlaceDetailsError)?.errorDescription
+                ?? "Nie udało się odświeżyć informacji. Pokazujemy dostępne dane; mogą być nieaktualne."
         }
     }
 

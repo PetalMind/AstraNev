@@ -682,14 +682,15 @@ extension ContentView {
 
     private func routePlanningDetails(for route: NavigationRoute, showsManeuvers: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 14) {
+            RouteInformationView(route: route).id(route.id)
             if showsManeuvers, !route.maneuvers.isEmpty {
                 VStack(alignment: .leading, spacing: 9) {
                     Text("Przebieg trasy")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(Color.naviTextPrimary)
-                    ForEach(Array(route.maneuvers.prefix(12))) { maneuver in
+                    ForEach(Array(route.maneuvers)) { maneuver in
                         HStack(alignment: .top, spacing: 9) {
-                            ManeuverIcon(type: maneuver.type, fallbackSymbol: maneuver.iconName, size: 18)
+                            ManeuverIcon(type: maneuver.type, fallbackSymbol: maneuver.iconName, size: 18, roundabout: maneuver.roundabout)
                                 .foregroundStyle(Color.accentColor)
                                 .frame(width: 20)
                             VStack(alignment: .leading, spacing: 1) {
@@ -701,6 +702,7 @@ extension ContentView {
                                         .font(.system(size: 10, weight: .medium))
                                         .foregroundStyle(Color.naviTextSecondary.opacity(0.55))
                                 }
+                                ManeuverInformationView(maneuver: maneuver)
                             }
                             Spacer(minLength: 0)
                         }

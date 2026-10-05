@@ -89,6 +89,7 @@ struct MapLibreView: NSViewRepresentable {
         coordinator.stopPuckRenderTimer()
         coordinator.stopCyclingPathUpdates()
         coordinator.stopMapRoadPOIUpdates()
+        coordinator.stopShopLogoUpdates()
     }
 
     final class Coordinator: NSObject, MKMapViewDelegate, NSGestureRecognizerDelegate {
@@ -145,6 +146,14 @@ struct MapLibreView: NSViewRepresentable {
         private var lastDimension: MapDimension?
         private var lastCameraMode: MapDimension?
         private var lastPOICategories: Set<MapPOICategory>?
+        private let shopLogoLoader = ShopPOILogoLoader()
+        private var shopViewportTask: Task<Void, Never>?
+        private var shopViewportSearch: MKLocalSearch?
+        private var shopViewportKey: String?
+        private var shopViewportResults: [SearchResult] = []
+        private var shopLogoResults: [String: SearchResult] = [:]
+        private var shopLogoPins: [String: MKPointAnnotation] = [:]
+        private var lastShopLogosEnabled: Bool?
         private var lastPOIMarkerDark: Bool?
         private var lastBuildingVisibility: Bool?
         private var placeSearch: MKLocalSearch?
@@ -175,6 +184,13 @@ struct MapLibreView: NSViewRepresentable {
             if let pin = parkedCarPin {
                 let screen = map.convert(pin.coordinate, toPointTo: map)
                 if hypot(screen.x - point.x, screen.y - point.y) < 30 { return }
+            }
+            if let entry = shopLogoPins.first(where: {
+                let screen = map.convert($0.value.coordinate, toPointTo: map)
+                return hypot(screen.x - point.x, screen.y - point.y) < 24
+            }), let result = shopLogoResults[entry.key] {
+                parent.onPlaceSelect([result])
+                return
             }
             // Search pins already have an exact identity and need no network lookup.
             if let index = searchPins.firstIndex(where: {
@@ -288,6 +304,7 @@ struct MapLibreView: NSViewRepresentable {
                 parkedCarPin = nil
                 shownParkedCarID = nil
             }
+            updateShopLogos(on: map)
             updatePOIMarkerAppearance(on: map)
 
             if lastBaseMap != parent.settings.baseMap || lastDimension != parent.settings.cameraMode {
@@ -595,10 +612,100 @@ struct MapLibreView: NSViewRepresentable {
                 (parent.settings.appearance == .auto && parent.colorScheme == .dark)
         }
 
+        func stopShopLogoUpdates() {
+            shopViewportTask?.cancel()
+            shopViewportSearch?.cancel()
+            shopLogoLoader.stop()
+        }
+
+        private func updateShopLogos(on map: MKMapView) {
+            let enabled = parent.settings.shopLogosEnabled
+            let showsStores = enabled && parent.settings.visiblePOICategories.contains(.shopping)
+                && map.region.span.longitudeDelta < 0.06
+            if !showsStores {
+                shopViewportTask?.cancel()
+                shopViewportSearch?.cancel()
+                shopViewportKey = nil
+                shopViewportResults = []
+                refreshShopLogoMarkers(on: map)
+                return
+            }
+            let region = map.region
+            let key = [region.center.latitude, region.center.longitude, region.span.latitudeDelta, region.span.longitudeDelta]
+                .map { String(Int(($0 * 1000).rounded())) }.joined(separator: ":")
+            if key != shopViewportKey {
+                shopViewportKey = key
+                shopViewportTask?.cancel()
+                shopViewportSearch?.cancel()
+                shopViewportResults = []
+                shopViewportTask = Task { [weak self, weak map] in
+                    try? await Task.sleep(for: .milliseconds(500))
+                    guard !Task.isCancelled, let self, let map else { return }
+                    let request = MKLocalPointsOfInterestRequest(coordinateRegion: region)
+                    request.pointOfInterestFilter = MKPointOfInterestFilter(including: [.store])
+                    let search = MKLocalSearch(request: request)
+                    self.shopViewportSearch = search
+                    guard let reply = try? await search.start(), !Task.isCancelled,
+                          self.shopViewportKey == key else { return }
+                    self.shopViewportResults = reply.mapItems.prefix(32).compactMap { item in
+                        guard let name = item.name else { return nil }
+                        let coordinate = item.location.coordinate
+                        return SearchResult(destination: Destination(name: name,
+                            coordinate: Coordinate(latitude: coordinate.latitude, longitude: coordinate.longitude),
+                            address: item.address?.fullAddress), street: nil, houseNumber: nil,
+                            city: item.addressRepresentations?.cityName,
+                            countryCode: item.addressRepresentations?.region?.identifier.lowercased(),
+                            isPOI: true, providerID: item.identifier?.rawValue, placeProvider: .mapKit,
+                            category: item.pointOfInterestCategory?.rawValue)
+                    }
+                    self.refreshShopLogoMarkers(on: map)
+                }
+            }
+            refreshShopLogoMarkers(on: map)
+        }
+
+        private func refreshShopLogoMarkers(on map: MKMapView) {
+            let places = shownPlaceResults.filter { $0.isPOI && PlacePOIMapMarkerKind(category: $0.category) == .shopping }
+                + shopViewportResults
+            shopLogoLoader.update(places.map(\.placeIdentity), enabled: parent.settings.shopLogosEnabled) { [weak self, weak map] in
+                guard let self, let map else { return }
+                self.syncShopLogoPins(on: map)
+                self.lastPOIMarkerDark = nil
+                self.updatePOIMarkerAppearance(on: map)
+            }
+            syncShopLogoPins(on: map)
+        }
+
+        private func syncShopLogoPins(on map: MKMapView) {
+            let searchKeys = Set(shownPlaceResults.map { $0.placeIdentity.cacheKey })
+            let desired = parent.settings.shopLogosEnabled ? shopViewportResults.filter {
+                shopLogoLoader.images[$0.placeIdentity.cacheKey] != nil && !searchKeys.contains($0.placeIdentity.cacheKey)
+            } : []
+            let keys = Set(desired.map { $0.placeIdentity.cacheKey })
+            for key in Array(shopLogoPins.keys) where !keys.contains(key) {
+                if let pin = shopLogoPins.removeValue(forKey: key) { map.removeAnnotation(pin) }
+                shopLogoResults.removeValue(forKey: key)
+            }
+            for result in desired {
+                let key = result.placeIdentity.cacheKey
+                shopLogoResults[key] = result
+                guard shopLogoPins[key] == nil else { continue }
+                let pin = MKPointAnnotation()
+                pin.coordinate = result.destination.coordinate.cl
+                pin.title = result.destination.name
+                shopLogoPins[key] = pin
+                map.addAnnotation(pin)
+            }
+        }
+
         private func updatePOIMarkerAppearance(on map: MKMapView) {
             let dark = usesDarkMapAppearance
-            guard lastPOIMarkerDark != dark else { return }
+            guard lastPOIMarkerDark != dark || lastShopLogosEnabled != parent.settings.shopLogosEnabled else { return }
             lastPOIMarkerDark = dark
+            lastShopLogosEnabled = parent.settings.shopLogosEnabled
+            for pin in shopLogoPins.values {
+                if let marker = map.view(for: pin) { stylePOIMarker(marker, annotation: pin, kind: .shopping, dark: dark) }
+            }
             for (index, pin) in searchPins.enumerated()
                 where shownPlaceResults.indices.contains(index) {
                 guard shownPlaceResults[index].isPOI,
@@ -632,7 +739,17 @@ struct MapLibreView: NSViewRepresentable {
             image.image = NSImage(systemSymbolName: kind.symbolName,
                                   accessibilityDescription: kind.accessibilityName)?
                 .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 18, weight: .semibold))
-            image.contentTintColor = color
+            let identity = searchPins.firstIndex(where: { $0 === annotation }).flatMap {
+                shownPlaceResults.indices.contains($0) ? shownPlaceResults[$0].placeIdentity : nil
+            } ?? shopLogoPins.first(where: { $0.value === annotation }).flatMap { shopLogoResults[$0.key]?.placeIdentity }
+            if kind == .shopping, parent.settings.shopLogosEnabled, let identity,
+               let logo = shopLogoLoader.images[identity.cacheKey] {
+                image.image = logo
+                marker.layer?.backgroundColor = NSColor.white.cgColor
+                image.contentTintColor = nil
+            } else {
+                image.contentTintColor = color
+            }
             image.imageScaling = .scaleProportionallyUpOrDown
             marker.addSubview(image)
             marker.canShowCallout = true
@@ -677,6 +794,11 @@ struct MapLibreView: NSViewRepresentable {
             if let vehicle = parent.transitVehicles.first(where: { transitVehiclePins[$0.id] === annotation }) {
                 mapView.deselectAnnotation(annotation, animated: false)
                 parent.onTransitVehicleSelect(vehicle)
+                return
+            }
+            if let entry = shopLogoPins.first(where: { $0.value === annotation }), let result = shopLogoResults[entry.key] {
+                mapView.deselectAnnotation(annotation, animated: false)
+                parent.onPlaceSelect([result])
                 return
             }
             if let index = searchPins.firstIndex(where: { $0 === annotation }),
@@ -786,6 +908,11 @@ struct MapLibreView: NSViewRepresentable {
                 return marker
             }
 
+            if shopLogoPins.values.contains(where: { $0 === annotation }) {
+                let marker = MKAnnotationView(annotation: annotation, reuseIdentifier: "shop-logo")
+                stylePOIMarker(marker, annotation: annotation, kind: .shopping, dark: usesDarkMapAppearance)
+                return marker
+            }
             if let index = searchPins.firstIndex(where: { $0 === annotation }) {
                 if shownPlaceResults.indices.contains(index),
                    shownPlaceResults[index].isPOI,
@@ -965,6 +1092,7 @@ struct MapLibreView: NSViewRepresentable {
             updateCyclingPaths(on: mapView)
             updateMapRoadPOIs(on: mapView)
             updateMapRoadPOIAnnotations(on: mapView)
+            updateShopLogos(on: mapView)
         }
 
         func mapViewDidFinishRenderingMap(_ mapView: MKMapView, fullyRendered: Bool) {
@@ -1033,7 +1161,7 @@ struct MapLibreView: NSViewRepresentable {
                 return
             }
             guard mapRoadPOIQueryID != query.id ||
-                    (mapRoadPOIStatus.needsRetry && (mapRoadPOIRetryAfter ?? .distantFuture) <= .now)
+                    (mapRoadPOIRetryAfter ?? .distantFuture) <= .now
             else { return }
 
             let queryChanged = mapRoadPOIQueryID != query.id
@@ -1065,14 +1193,13 @@ struct MapLibreView: NSViewRepresentable {
                         : .partial(count: result.points.count,
                                    message: "Niedostępne źródło: " + result.unavailableSources.joined(separator: ", ")))
                     self.updateMapRoadPOIAnnotations(on: map)
-                    if !result.unavailableSources.isEmpty {
-                        self.mapRoadPOIRetryAfter = Date().addingTimeInterval(60)
-                        do { try await Task.sleep(nanoseconds: 60_000_000_000) }
-                        catch { return }
-                        guard !Task.isCancelled, self.mapRoadPOIQueryID == query.id else { return }
-                        self.mapRoadPOITask = nil
-                        self.updateMapRoadPOIs(on: map)
-                    }
+                    let refreshDelay: TimeInterval = result.unavailableSources.isEmpty ? 300 : 60
+                    self.mapRoadPOIRetryAfter = Date().addingTimeInterval(refreshDelay)
+                    do { try await Task.sleep(for: .seconds(refreshDelay)) }
+                    catch { return }
+                    guard !Task.isCancelled, self.mapRoadPOIQueryID == query.id else { return }
+                    self.mapRoadPOITask = nil
+                    self.updateMapRoadPOIs(on: map)
                 } catch {
                     guard !Task.isCancelled, let self, let map,
                           self.mapRoadPOIQueryID == query.id else { return }

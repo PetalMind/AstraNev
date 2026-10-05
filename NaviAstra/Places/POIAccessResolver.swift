@@ -29,8 +29,7 @@ actor POIAccessResolver {
 
     private var cache: [String: CachedTarget] = [:]
     private var featureCache: [String: CachedFeatures] = [:]
-    private let endpoint = URL(string: UserDefaults.standard.string(forKey: "overpassServer")
-                               ?? "https://overpass-api.de/api/interpreter")!
+    private let endpoint = MapRoadPOIEndpoint.url
 
     func resolve(for destination: Destination, mode: TransportMode) async -> POINavigationTarget? {
         guard let poi = destination.poi else { return nil }
@@ -114,7 +113,7 @@ actor POIAccessResolver {
         body.queryItems = [URLQueryItem(name: "data", value: query)]
         request.httpBody = body.percentEncodedQuery?.data(using: .utf8)
         do {
-            let (data, response) = try await RoadRoutingContext.data(for: request)
+            let (data, response) = try await OSMRequestTransport.shared.data(for: request, priority: true)
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
                   let reply = try? JSONDecoder().decode(Reply.self, from: data), reply.remark == nil else {
                 return nil

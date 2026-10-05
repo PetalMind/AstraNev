@@ -1,5 +1,6 @@
 import Foundation
 import MapKit
+import OSLog
 
 enum PlaceProvider: String, Codable, Sendable {
     case openStreetMap
@@ -70,6 +71,7 @@ struct PlaceDetails: Codable, Identifiable {
     var source: PlaceDetailsSource
     var fetchedAt: Date
     var cacheGroupFetchedAt: [String: Date]? = nil
+    var openingHoursURL: String? = nil
 
     @MainActor var openingHoursInfo: PlaceOpeningHours? {
         guard let openingHours else { return nil }
@@ -170,7 +172,8 @@ struct PlaceDetails: Codable, Identifiable {
                      outdoorSeating: newer.outdoorSeating ?? outdoorSeating,
                      source: newer.source,
                      fetchedAt: newer.fetchedAt,
-                     cacheGroupFetchedAt: newer.cacheGroupFetchedAt ?? cacheGroupFetchedAt)
+                     cacheGroupFetchedAt: newer.cacheGroupFetchedAt ?? cacheGroupFetchedAt,
+                     openingHoursURL: newer.openingHoursURL ?? openingHoursURL)
     }
 
     nonisolated var needsCacheRefresh: Bool {
@@ -178,7 +181,7 @@ struct PlaceDetails: Codable, Identifiable {
         let ttl: [String: TimeInterval] = [
             "identity": 30 * 24 * 60 * 60,
             "contact": 7 * 24 * 60 * 60,
-            "hours": 12 * 60 * 60,
+            "hours": openingHours == nil ? 60 * 60 : 12 * 60 * 60,
             "access": 3 * 24 * 60 * 60
         ]
         let now = Date()
@@ -249,6 +252,7 @@ struct MapKitPlaceDetailsProvider: PlaceDetailsProvider {
 }
 
 struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
+    private let logger = Logger(subsystem: "NaviAstra", category: "PlaceDetails")
     private var endpoint: URL {
         if let configured = UserDefaults.standard.string(forKey: "overpassServer"),
            let url = URL(string: configured),
@@ -306,6 +310,11 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         if identity.provider == .openStreetMap,
            let osmType = identity.osmType, let externalID = identity.externalID {
             requestedID = OpenStreetMapObjectID("\(osmType):\(externalID)")
+        } else if let cached = await PlaceDetailsCache.shared.value(for: identity.cacheKey, allowExpired: true),
+                  cached.id.hasPrefix("osm/") {
+            let components = cached.id.split(separator: "/")
+            requestedID = components.count == 3
+                ? OpenStreetMapObjectID("\(components[1]):\(components[2])") : nil
         } else {
             requestedID = nil
         }
@@ -338,10 +347,11 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
                         guard let tags = candidate.tags,
                               let coordinate = candidate.coordinate else { return nil }
                         let distance = coordinate.distance(to: identity.coordinate)
-                        if identity.provider == .openFreeMap, let externalID = identity.externalID {
+                        if identity.provider == .openFreeMap, let externalID = identity.externalID,
+                           let tileID = Int64(externalID), tileID != Int64.min,
+                           candidate.id == tileID || candidate.id == abs(tileID) {
                             let categoryMatch = identity.category.map { Self.matchesCategory($0, tags: tags) } ?? false
-                            guard let tileID = Int64(externalID), tileID != Int64.min,
-                                  (candidate.id == tileID || candidate.id == abs(tileID)),
+                            guard !Self.hasConflictingAddress(identity.address, tags: tags),
                                   Self.matchesExactName(Self.normalized(identity.name), tags: tags) || categoryMatch,
                                   distance <= 100 else { return nil }
                             let categoryScore = categoryMatch ? 180.0 : 0
@@ -358,10 +368,21 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
                         let score = nameScore + (categoryMatch ? 180 : 0) + addressMatch - distance * 2
                         return (candidate, score)
                     }
-                    element = candidates.max { $0.score < $1.score }?.element
+                    let ranked = candidates.sorted { $0.score > $1.score }
+                    if let best = ranked.first,
+                       ranked.count == 1 || best.score - ranked[1].score >= 150 {
+                        element = best.element
+                    } else {
+                        element = nil
+                    }
                 }
-                guard let element, let tags = element.tags,
-                      let resolvedID = OpenStreetMapObjectID("\(element.type):\(element.id)") else { continue }
+                guard let element,
+                      let resolvedID = OpenStreetMapObjectID("\(element.type):\(element.id)") else {
+                    logger.notice("No confident OSM match provider=\(identity.provider.rawValue, privacy: .public) candidates=\(reply.elements.count)")
+                    continue
+                }
+                let tags = element.tags ?? [:]
+                logger.info("Resolved OSM type=\(element.type, privacy: .public) id=\(element.id) hasHours=\(tags["opening_hours"] != nil)")
                 let resolvedKey = resolvedID.cacheKey
                 let downloaded = Self.makeDetails(id: resolvedKey, fallbackName: partial.name, tags: tags)
                 await PlaceDetailsCache.shared.store(downloaded, for: Array(Set([resolvedKey, requestKey])))
@@ -369,10 +390,13 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                // Try the next public instance after a timeout, rate limit, or malformed response.
+                logger.error("Details host=\(requestEndpoint.host ?? "unknown", privacy: .public) failure=\(String(describing: error), privacy: .public)")
             }
         }
-        if receivedValidResponse { return nil }
+        if receivedValidResponse {
+            if requestedID != nil { return nil }
+            throw PlaceDetailsError.notMatched
+        }
         throw PlaceDetailsError.unavailable
     }
 
@@ -387,7 +411,7 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         body.queryItems = [URLQueryItem(name: "data", value: query)]
         request.httpBody = body.percentEncodedQuery?.data(using: .utf8)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await OSMRequestTransport.shared.data(for: request, priority: true)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw PlaceDetailsError.unavailable
         }
@@ -554,7 +578,8 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
                             outdoorSeating: outdoorSeating,
                             source: .openStreetMap,
                             fetchedAt: now,
-                            cacheGroupFetchedAt: cacheGroupFetchedAt)
+                            cacheGroupFetchedAt: cacheGroupFetchedAt,
+                            openingHoursURL: tags["opening_hours:url"])
     }
 
     private static func countryCode(from tags: [String: String]) -> String? {
@@ -583,11 +608,13 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
 enum PlaceDetailsError: LocalizedError {
     case unavailable
     case invalidResponse
+    case notMatched
 
     var errorDescription: String? {
         switch self {
         case .unavailable: "Szczegóły miejsca z OpenStreetMap są chwilowo niedostępne."
         case .invalidResponse: "Usługa szczegółów miejsca zwróciła nieprawidłowe dane."
+        case .notMatched: "Nie udało się jednoznacznie dopasować miejsca w OpenStreetMap. Zachowano dostępne informacje."
         }
     }
 }

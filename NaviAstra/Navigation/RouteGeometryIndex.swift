@@ -196,6 +196,17 @@ nonisolated struct RouteProgressGeometry: Sendable {
                           longitude: start.longitude + (end.longitude - start.longitude) * fraction)
     }
 
+    /// Preserve every bend so corridor queries do not cut across adjacent streets.
+    func corridor(from start: Double, through end: Double) -> [Coordinate] {
+        guard end > start, let first = coordinate(at: start), let last = coordinate(at: end) else { return [] }
+        var result = [first]
+        for index in coordinates.indices where cumulativeDistances[index] > start && cumulativeDistances[index] < end {
+            result.append(coordinates[index])
+        }
+        if result.last != last { result.append(last) }
+        return result
+    }
+
     func bearing(at distance: Double, lookAhead: Double) -> Double? {
         guard length > 0, lookAhead > 5 else { return nil }
         let routeDistance = distance.isFinite ? distance : 0

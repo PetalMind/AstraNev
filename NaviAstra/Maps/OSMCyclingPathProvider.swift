@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 nonisolated struct OSMCyclingPath: Identifiable, Sendable {
     let id: Int64
@@ -112,12 +113,9 @@ actor OSMCyclingPathProvider {
         form.queryItems = [URLQueryItem(name: "data", value: query.overpassQL)]
         request.httpBody = form.percentEncodedQuery?.data(using: .utf8)
 
-        guard await OSMCyclingRequestGate.shared.waitUntilAllowed() else {
-            throw CancellationError()
-        }
         do {
             try Task.checkCancellation()
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await OSMRequestTransport.shared.data(for: request)
             guard let http = response as? HTTPURLResponse,
                   (200...299).contains(http.statusCode) else {
                 throw OSMCyclingPathError.unavailable
@@ -135,10 +133,8 @@ actor OSMCyclingPathProvider {
                 guard coordinates.count > 1 else { return nil }
                 return OSMCyclingPath(id: element.id, coordinates: coordinates)
             }
-            await OSMCyclingRequestGate.shared.requestDidFinish()
             return OSMCyclingPathCollection(paths: paths, truncated: truncated)
         } catch {
-            await OSMCyclingRequestGate.shared.requestDidFinish()
             throw error
         }
     }
@@ -204,5 +200,115 @@ nonisolated private struct OverpassResponse: Decodable {
     nonisolated struct Point: Decodable {
         let lat: Double
         let lon: Double
+    }
+}
+
+
+/// Shared by every Overpass consumer; identical requests share the same download.
+actor OSMRequestTransport {
+    static let shared = OSMRequestTransport()
+    private struct PendingRequest {
+        let task: Task<(Data, URLResponse), Error>
+        var waiters: Set<UUID>
+    }
+    private var pending: [String: PendingRequest] = [:]
+    private var unavailableUntil: [String: Date] = [:]
+    private let logger = Logger(subsystem: "NaviAstra", category: "Overpass")
+
+    func data(for request: URLRequest, priority: Bool = false) async throws -> (Data, URLResponse) {
+        try Task.checkCancellation()
+        let key = (request.url?.absoluteString ?? "") + "|" + (request.httpMethod ?? "GET")
+            + "|" + (request.httpBody?.base64EncodedString() ?? "")
+        let waiter = UUID()
+        let task: Task<(Data, URLResponse), Error>
+        if var existing = pending[key] {
+            existing.waiters.insert(waiter)
+            pending[key] = existing
+            task = existing.task
+        } else {
+            task = Task { try await self.download(request, priority: priority) }
+            pending[key] = PendingRequest(task: task, waiters: [waiter])
+        }
+        defer { release(key: key, waiter: waiter) }
+        return try await withTaskCancellationHandler {
+            let value = try await task.value
+            try Task.checkCancellation()
+            return value
+        } onCancel: {
+            Task { await self.release(key: key, waiter: waiter) }
+        }
+    }
+
+    private func release(key: String, waiter: UUID) {
+        guard var entry = pending[key], entry.waiters.remove(waiter) != nil else { return }
+        if entry.waiters.isEmpty {
+            entry.task.cancel()
+            pending[key] = nil
+        } else { pending[key] = entry }
+    }
+
+    private func download(_ request: URLRequest, priority: Bool) async throws -> (Data, URLResponse) {
+        var endpoints = [request.url].compactMap { $0 }
+        if let fallback = URL(string: "https://overpass.private.coffee/api/interpreter"),
+           !endpoints.contains(fallback) { endpoints.append(fallback) }
+        var lastError: Error = URLError(.badServerResponse)
+        for endpoint in endpoints {
+            if let until = unavailableUntil[endpoint.absoluteString], until > .now { continue }
+            var candidate = request
+            candidate.url = endpoint
+            do {
+                let result = try await downloadFrom(candidate, priority: priority)
+                guard let response = result.1 as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+                if response.statusCode == 429 {
+                    let delay = Double(response.value(forHTTPHeaderField: "Retry-After") ?? "") ?? 30
+                    unavailableUntil[endpoint.absoluteString] = Date().addingTimeInterval(max(30, delay))
+                }
+                guard (200...299).contains(response.statusCode) else { throw URLError(.badServerResponse) }
+                guard let json = try JSONSerialization.jsonObject(with: result.0) as? [String: Any],
+                      json["elements"] is [Any], json["remark"] == nil else { throw URLError(.cannotParseResponse) }
+                return result
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                try Task.checkCancellation()
+                lastError = error
+                if let error = error as? URLError, error.code == .notConnectedToInternet { throw error }
+            }
+        }
+        throw lastError
+    }
+
+    private func downloadFrom(_ request: URLRequest, priority: Bool) async throws -> (Data, URLResponse) {
+        for attempt in 0...1 {
+            guard await OSMCyclingRequestGate.shared.waitUntilAllowed(priority: priority) else {
+                throw CancellationError()
+            }
+            let result: (Data, URLResponse)
+            do {
+                result = try await URLSession.shared.data(for: request)
+                await OSMCyclingRequestGate.shared.requestDidFinish()
+            } catch {
+                await OSMCyclingRequestGate.shared.requestDidFinish()
+                logger.error("Overpass host=\(request.url?.host ?? "unknown", privacy: .public) network=\(String(describing: error), privacy: .public)")
+                if attempt == 0, let error = error as? URLError,
+                   [.timedOut, .networkConnectionLost].contains(error.code) {
+                    try await Task.sleep(for: .seconds(1))
+                    continue
+                }
+                throw error
+            }
+            let status = (result.1 as? HTTPURLResponse)?.statusCode ?? 0
+            logger.info("Overpass host=\(request.url?.host ?? "unknown", privacy: .public) status=\(status) bytes=\(result.0.count)")
+            if attempt == 0, [429, 502, 503, 504].contains(status) {
+                let header = (result.1 as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After")
+                let delay = max(1, Double(header ?? "") ?? 1)
+                // Switch servers instead of repeating against an explicit long cooldown.
+                if status == 429 || delay > 5 { return result }
+                try await Task.sleep(for: .seconds(delay))
+                continue
+            }
+            return result
+        }
+        throw URLError(.badServerResponse)
     }
 }

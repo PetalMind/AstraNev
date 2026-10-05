@@ -13,3 +13,9 @@ Szerokie, półprzezroczyste pasy wokół odcinków trasy oznaczają pogodę w p
 Efekty: ciepły/chłodny ton, deszcz, śnieg, mgła oraz sporadyczny błysk burzy podczas przeglądania mapy. Tint jest umieszczony pod trasą i znacznikami. Cząstki są rysowane na jednej powierzchni Canvas (maksymalnie 72, 24 fps), z łagodniejszym efektem w okolicy pojazdu. Mgła to gradient atmosferyczny, nie fizyczne zamglenie obiektów według odległości. Efekty nie przejmują gestów.
 
 Podczas prowadzenia: deszcz 50%, śnieg 40%, mgła 30%, tint 70% zwykłej intensywności, bez błysków. Ograniczenie ruchu i tryb oszczędzania energii wyłączają cząstki i błyski. Aplikacja nie pobiera pogody w tle. Nieaktualne dane po 30 minutach nie generują efektów ani komunikatów trasy.
+
+## Kompaktowa prezentacja i ikony
+
+Pogoda jest dostępna w istniejącym zestawie przycisków mapy jako przycisk 48 × 48 punktów, zamiast dodatkowego paska pod nagłówkiem. Ikona przedstawia bieżące warunki lub najbliższe prognozowane opady/mgłę na trasie. W drugim przypadku pod ikoną pojawia się przybliżony dystans („~18 km”) albo „Tutaj”. Stuknięcie otwiera mały popover z pełnym komunikatem, aktualizacją i bieżącymi warunkami. VoiceOver odczytuje pełny komunikat niezależnie od skrótu.
+
+Ikony: Meteocons Flat, Bas Milius, paczka `@meteocons/svg-static` 0.1.0, commit `1d821149b94a08f23c85e5042e8a61a3fcd82cf7`, https://github.com/basmilius/meteocons. Wybrane oryginalne statyczne SVG są dołączone lokalnie w `WeatherIcons.xcassets`, bez zależności od pobierania obrazów podczas działania aplikacji. Licencja MIT: `docs/METEOCONS_LICENSE.txt`; pełny tekst jest dostępny również w ustawieniach pogody.

@@ -360,7 +360,12 @@ extension NavigationSession {
                                      transferCount: journey.transferCount,
                                      realtimeFreshness: journey.realtimeFreshness,
                                      frequencyEstimateHeadwaySeconds: journey.frequencyEstimateHeadwaySeconds),
-                    travelSegments: carRoute.travelSegments
+                    travelSegments: carRoute.travelSegments,
+                    information: carRoute.information.map {
+                        var information = $0
+                        information.scopeDescription = "Odcinek samochodowy P+R"
+                        return information
+                    }
                 ))
             }
         }

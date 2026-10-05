@@ -14,6 +14,7 @@ struct NavigationActivityAttributes: ActivityAttributes {
         var arrivalTime: Date
         var routeProgress: Double
         var isRerouting: Bool
+        var roundabout: RoundaboutGuidance?
         var gpsSignalLost: Bool
     }
     var destinationName: String

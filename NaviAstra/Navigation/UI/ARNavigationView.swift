@@ -177,7 +177,7 @@ struct ARNavigationView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 14) {
                 ManeuverIcon(type: currentProgress?.nextManeuver?.type,
-                             fallbackSymbol: currentProgress?.nextManeuver?.iconName ?? "figure.walk", size: 34)
+                             fallbackSymbol: currentProgress?.nextManeuver?.iconName ?? "figure.walk", size: 34, roundabout: currentProgress?.nextManeuver?.roundabout)
                     .foregroundStyle(.white)
                     .frame(width: 56, height: 56)
                     .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16))

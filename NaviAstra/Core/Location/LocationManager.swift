@@ -10,10 +10,8 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
     var onFailure: ((Error) -> Void)?
     private var locationWaiters: [UUID: CheckedContinuation<CLLocation?, Never>] = [:]
     private var appliedPolicy: LocationPolicy?
+    private var appIsForeground = true
     private var headingUpdatesEnabled = false
-#if os(iOS)
-    private var backgroundActivitySession: CLBackgroundActivitySession?
-#endif
 
     override init() {
         super.init()
@@ -25,9 +23,10 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
         manager.requestWhenInUseAuthorization()
     }
 
-    func apply(_ policy: LocationPolicy) {
-        let changed = appliedPolicy != policy
+    func apply(_ policy: LocationPolicy, appIsForeground: Bool) {
+        let changed = appliedPolicy != policy || self.appIsForeground != appIsForeground
         appliedPolicy = policy
+        self.appIsForeground = appIsForeground
 
         guard changed else {
             applyBackgroundLocationSettings(manager.authorizationStatus)
@@ -160,29 +159,25 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
 
     func stopBackgroundNavigationUpdates() {
 #if os(iOS)
-        backgroundActivitySession?.invalidate()
-        backgroundActivitySession = nil
         manager.allowsBackgroundLocationUpdates = false
+        manager.showsBackgroundLocationIndicator = false
         manager.pausesLocationUpdatesAutomatically = true
 #endif
     }
 
     private func applyBackgroundLocationSettings(_ authorization: CLAuthorizationStatus) {
 #if os(iOS)
-        let wantsBackgroundUpdates = appliedPolicy?.allowsBackgroundUpdates == true
+        let wantsBackgroundUpdates = appliedPolicy?.demand == .continuous
+            && appliedPolicy?.allowsBackgroundUpdates == true
         let isAuthorized = authorization == .authorizedAlways || authorization == .authorizedWhenInUse
-        let enabled = wantsBackgroundUpdates && isAuthorized && backgroundLocationModeEnabled
-        manager.allowsBackgroundLocationUpdates = enabled
-        manager.showsBackgroundLocationIndicator = enabled
-        manager.pausesLocationUpdatesAutomatically = !enabled
-        if enabled {
-            if backgroundActivitySession == nil {
-                backgroundActivitySession = CLBackgroundActivitySession()
-            }
-        } else {
-            backgroundActivitySession?.invalidate()
-            backgroundActivitySession = nil
-        }
+        let enabled = !appIsForeground && wantsBackgroundUpdates
+            && isAuthorized && backgroundLocationModeEnabled
+        guard enabled else { stopBackgroundNavigationUpdates(); return }
+        // Enable background delivery only as the app leaves the foreground.
+        // When In Use authorization supplies its required system indicator automatically.
+        manager.allowsBackgroundLocationUpdates = true
+        manager.showsBackgroundLocationIndicator = false
+        manager.pausesLocationUpdatesAutomatically = false
 #endif
     }
 
@@ -213,7 +208,7 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
     private func reapplyCurrentPolicy() {
         guard let appliedPolicy else { return }
         self.appliedPolicy = nil
-        apply(appliedPolicy)
+        apply(appliedPolicy, appIsForeground: appIsForeground)
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {

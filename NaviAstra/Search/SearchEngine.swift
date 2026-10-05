@@ -282,7 +282,7 @@ struct SearchEngine {
 }
 
 struct POISearchProvider {
-    var endpoint = URL(string: UserDefaults.standard.string(forKey: "overpassServer") ?? "https://overpass-api.de/api/interpreter")!
+    var endpoint = MapRoadPOIEndpoint.url
 
     func search(_ intent: ClassifiedQuery, near center: Coordinate, route: [Coordinate]) async throws -> [SearchResult] {
         var results: [SearchResult] = []
@@ -315,7 +315,7 @@ struct POISearchProvider {
             var body = URLComponents()
             body.queryItems = [URLQueryItem(name: "data", value: query)]
             request.httpBody = body.percentEncodedQuery?.data(using: .utf8)
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await OSMRequestTransport.shared.data(for: request, priority: true)
             guard let http = response as? HTTPURLResponse else { throw SearchError.unavailable }
             guard (200...299).contains(http.statusCode) else { throw SearchError.httpStatus(http.statusCode) }
             let decoded = try JSONDecoder().decode(Reply.self, from: data)

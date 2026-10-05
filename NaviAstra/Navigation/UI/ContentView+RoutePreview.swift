@@ -18,7 +18,7 @@ extension ContentView {
                 ManeuverIcon(type: maneuver?.type,
                              fallbackSymbol: maneuver?.iconName
                                 ?? (navigationStore.state.transportMode == .parkRide ? "parkingsign.circle.fill" : "arrow.up"),
-                             size: 36)
+                             size: 36, roundabout: maneuver?.roundabout)
                     .foregroundStyle(.white)
                     .frame(width: 60, height: 60)
                     .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
@@ -61,10 +61,12 @@ extension ContentView {
                 }
             }
 
+            if let maneuver { ManeuverInformationView(maneuver: maneuver) }
+
             if let maneuver = navigationStore.state.progress?.nextManeuver,
                let exitNumber = maneuver.exitNumber {
                 HStack(spacing: 6) {
-                    ManeuverIcon(type: maneuver.type, fallbackSymbol: maneuver.iconName, size: 16)
+                    ManeuverIcon(type: maneuver.type, fallbackSymbol: maneuver.iconName, size: 16, roundabout: maneuver.roundabout)
                     Text("Zjazd \(exitNumber)")
                     if let road = maneuver.exitRoad { Text("· \(road)") }
                     if let toward = maneuver.exitToward { Text("· kierunek \(toward)") }

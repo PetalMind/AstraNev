@@ -352,7 +352,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = NaviAstraMac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 39;
+				CURRENT_PROJECT_VERSION = 47;
 				DEVELOPMENT_TEAM = 6V7PKF27ZR;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -366,7 +366,7 @@
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Mikrofon służy do zamiany mowy na tekst wyszukiwanej frazy.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Rozpoznawanie mowy zamienia wypowiedzianą frazę na tekst wyszukiwania.";
 				MACOSX_DEPLOYMENT_TARGET = 26.6;
-				MARKETING_VERSION = 1.1.37;
+				MARKETING_VERSION = 1.1.45;
 				PRODUCT_BUNDLE_IDENTIFIER = Blackmaks.NaviAstras.pl.mac;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
@@ -384,7 +384,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = NaviAstraMac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 39;
+				CURRENT_PROJECT_VERSION = 47;
 				DEVELOPMENT_TEAM = 6V7PKF27ZR;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -398,7 +398,7 @@
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Mikrofon służy do zamiany mowy na tekst wyszukiwanej frazy.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Rozpoznawanie mowy zamienia wypowiedzianą frazę na tekst wyszukiwania.";
 				MACOSX_DEPLOYMENT_TARGET = 26.6;
-				MARKETING_VERSION = 1.1.37;
+				MARKETING_VERSION = 1.1.45;
 				PRODUCT_BUNDLE_IDENTIFIER = Blackmaks.NaviAstras.pl.mac;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
@@ -531,7 +531,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 39;
+				CURRENT_PROJECT_VERSION = 47;
 				DEVELOPMENT_TEAM = 6V7PKF27ZR;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -563,7 +563,7 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 1.1.37;
+				MARKETING_VERSION = 1.1.45;
 				PRODUCT_BUNDLE_IDENTIFIER = Blackmaks.NaviAstras.pl;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -587,7 +587,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 39;
+				CURRENT_PROJECT_VERSION = 47;
 				DEVELOPMENT_TEAM = 6V7PKF27ZR;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -619,7 +619,7 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 1.1.37;
+				MARKETING_VERSION = 1.1.45;
 				PRODUCT_BUNDLE_IDENTIFIER = Blackmaks.NaviAstras.pl;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -641,12 +641,12 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 39;
+				CURRENT_PROJECT_VERSION = 47;
 				DEVELOPMENT_TEAM = 9WUX6TU729;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 1.1.37;
+				MARKETING_VERSION = 1.1.45;
 				PRODUCT_BUNDLE_IDENTIFIER = STDMSolution.NaviAstraTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -667,12 +667,12 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 39;
+				CURRENT_PROJECT_VERSION = 47;
 				DEVELOPMENT_TEAM = 6V7PKF27ZR;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 1.1.37;
+				MARKETING_VERSION = 1.1.45;
 				PRODUCT_BUNDLE_IDENTIFIER = STDMSolution.NaviAstraTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -692,12 +692,12 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 39;
+				CURRENT_PROJECT_VERSION = 47;
 				DEVELOPMENT_TEAM = 9WUX6TU729;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 1.1.37;
+				MARKETING_VERSION = 1.1.45;
 				PRODUCT_BUNDLE_IDENTIFIER = STDMSolution.NaviAstraUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -717,12 +717,12 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 39;
+				CURRENT_PROJECT_VERSION = 47;
 				DEVELOPMENT_TEAM = 9WUX6TU729;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 1.1.37;
+				MARKETING_VERSION = 1.1.45;
 				PRODUCT_BUNDLE_IDENTIFIER = STDMSolution.NaviAstraUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
@@ -743,7 +743,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 39;
+				CURRENT_PROJECT_VERSION = 47;
 				DEVELOPMENT_TEAM = 6V7PKF27ZR;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Config/NaviAstraWidgets-Info.plist";
@@ -754,7 +754,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.1.37;
+				MARKETING_VERSION = 1.1.45;
 				PRODUCT_BUNDLE_IDENTIFIER = Blackmaks.NaviAstras.pl.NavigationWidgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -770,7 +770,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 39;
+				CURRENT_PROJECT_VERSION = 47;
 				DEVELOPMENT_TEAM = 6V7PKF27ZR;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Config/NaviAstraWidgets-Info.plist";
@@ -781,7 +781,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.1.37;
+				MARKETING_VERSION = 1.1.45;
 				PRODUCT_BUNDLE_IDENTIFIER = Blackmaks.NaviAstras.pl.NavigationWidgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;

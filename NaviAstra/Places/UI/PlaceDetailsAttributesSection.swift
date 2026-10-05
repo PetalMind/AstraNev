@@ -107,6 +107,11 @@ struct PlaceDetailsCompactAttributesSection: View {
                     isExpanded: $showHours)
             }
 
+            if let rawURL = details.openingHoursURL,
+               let url = URL(string: rawURL), ["https", "http"].contains(url.scheme?.lowercased() ?? "") {
+                Link("Godziny na stronie miejsca", destination: url)
+                    .font(.subheadline)
+            }
             if !isLoading, details.openingHours?.isEmpty != false,
                details.osmParking?.openingHours?.isEmpty != false {
                 Label("Godziny otwarcia niedostępne", systemImage: "clock.badge.questionmark")
@@ -209,7 +214,12 @@ private struct PlaceDetailsOpeningHoursSection: View {
                         .foregroundStyle(status.hasPrefix("Otwarte")
                             ? Color(naviHex: NaviAstraColorPalette.success) : Color.secondary)
                 } else if let failure = presentation?.failure {
-                    Label(failure.errorDescription ?? "Godziny niedostępne", systemImage: "exclamationmark.clock")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Label("Godziny podane · status nieznany", systemImage: "clock")
+                        Text(rawHours).font(.caption).foregroundStyle(Color.naviTextSecondary)
+                        Text(failure.errorDescription ?? "Nie udało się obliczyć statusu otwarcia")
+                            .font(.caption2).foregroundStyle(Color.naviTextSecondary)
+                    }
                         .foregroundStyle(Color.naviTextSecondary)
                 } else if presentation?.isAvailable == true {
                     Label("Godziny niepewne", systemImage: "questionmark.circle")

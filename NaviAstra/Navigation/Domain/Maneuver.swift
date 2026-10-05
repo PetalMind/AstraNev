@@ -105,16 +105,29 @@ struct Maneuver: Identifiable, Sendable {
     var exitNumber: String?
     var exitRoad: String?
     var exitToward: String?
+    var roundabout: RoundaboutGuidance?
+    var information: ManeuverInformation?
 
     var kind: ManeuverKind { ManeuverKind(rawValue: type) ?? .none }
     var iconName: String { kind.symbolName }
-    var displayInstruction: String { kind.instructionTitle ?? instruction }
+    var displayInstruction: String {
+        if kind.isRoundabout {
+            if let count = roundabout?.exitCount, count > 0 {
+                return kind == .roundaboutEnter
+                    ? "Na rondzie wybierz zjazd numer \(count)"
+                    : "Zjedź z ronda zjazdem numer \(count)"
+            }
+            return instruction
+        }
+        return kind.instructionTitle ?? instruction
+    }
     var streetName: String? { streetNames.first(where: { !$0.isEmpty }) }
     var streetLine: String? {
         guard kind.instructionTitle != nil, let streetName else { return nil }
         return "w \(streetName)"
     }
     var spokenInstruction: String {
+        if let text = information?.verbalBefore, !text.isEmpty { return text }
         guard let streetLine else { return displayInstruction }
         return "\(displayInstruction) \(streetLine)"
     }

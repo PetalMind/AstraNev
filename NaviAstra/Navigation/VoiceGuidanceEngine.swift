@@ -150,9 +150,12 @@ final class VoiceGuidanceEngine {
 
         let distancePrefix = distancePrefix(distance, immediate: stage == 2)
         let key = "maneuver|\(maneuverIdentity(maneuver, coordinate: coordinate))|stage-\(stage)"
+        let providerText = stage == 0 ? maneuver.information?.verbalAlert
+            : (stage == 2 ? maneuver.information?.verbalSuccinct : maneuver.information?.verbalBefore)
+        let instruction = providerText.flatMap { $0.isEmpty ? nil : $0 } ?? maneuver.spokenInstruction
         scheduler.enqueue(
             key: key,
-            text: (distancePrefix ?? "") + maneuver.spokenInstruction,
+            text: (distancePrefix ?? "") + instruction,
             priority: stage == 2 ? .maneuverNow : .navigation
         )
     }

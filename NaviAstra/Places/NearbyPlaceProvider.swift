@@ -115,7 +115,7 @@ enum NearbyPlaceError: LocalizedError {
 }
 
 struct OpenStreetMapNearbyPlaceProvider {
-    private let endpoint = URL(string: UserDefaults.standard.string(forKey: "overpassServer") ?? "https://overpass-api.de/api/interpreter")!
+    private let endpoint = MapRoadPOIEndpoint.url
 
     func search(_ category: NearbyPlaceCategory, along route: [Coordinate], radius: Double = 900,
                 resultLimit: Int = 25) async throws -> [NearbyPlaceCandidate] {
@@ -149,7 +149,7 @@ struct OpenStreetMapNearbyPlaceProvider {
         request.httpBody = components.percentEncodedQuery?.data(using: .utf8)
         let data: Data
         do {
-            let (responseData, response) = try await RoadRoutingContext.data(for: request)
+            let (responseData, response) = try await OSMRequestTransport.shared.data(for: request, priority: true)
             guard let http = response as? HTTPURLResponse else { throw NearbyPlaceError.invalidResponse }
             guard (200...299).contains(http.statusCode) else { throw NearbyPlaceError.unavailable }
             data = responseData
@@ -216,6 +216,8 @@ struct OpenStreetMapNearbyPlaceProvider {
             for candidate in found.sorted(by: { $0.distanceFromRoute < $1.distanceFromRoute }) {
                 guard !nearby.contains(where: {
                     $0.destination.coordinate.distance(to: candidate.destination.coordinate) < 15
+                        && $0.destination.name.caseInsensitiveCompare(candidate.destination.name) == .orderedSame
+                        && $0.osmCategory == candidate.osmCategory
                 }) else { continue }
                 nearby.append(candidate)
                 if nearby.count >= max(1, min(resultLimit, 1_000)) { break }

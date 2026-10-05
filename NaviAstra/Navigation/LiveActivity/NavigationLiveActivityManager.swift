@@ -104,6 +104,7 @@ extension NavigationSession {
                 arrivalTime: state.estimatedArrival ?? Date().addingTimeInterval(progress.remainingTime),
                 routeProgress: min(1, max(0, progress.traveledDistance / max(1, progress.traveledDistance + progress.remainingDistance))),
                 isRerouting: state.status == .rerouting,
+                roundabout: maneuver?.roundabout,
                 gpsSignalLost: state.gpsQuality == .noSignal || state.weakGPS),
             canStart: appIsForeground)
 #endif

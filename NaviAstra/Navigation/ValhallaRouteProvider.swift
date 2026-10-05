@@ -105,7 +105,9 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
             "units": "kilometers",
             "directions_options": ["language": "pl-PL"],
             "alternates": through.isEmpty ? 2 : 0,
-            "turn_lanes": true
+            "turn_lanes": true,
+            "roundabout_exits": true,
+            "admin_crossings": true
         ]
         if let heading = RoadRoutingContext.heading {
             var locations = payload["locations"] as! [[String: Double]]
@@ -155,23 +157,48 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
                         endDistance: legStart + cumulative[endIndex], duration: time))
                 }
                 legStart += cumulative.last ?? 0
-                maneuvers += leg.maneuvers.map {
-                    Maneuver(shapeIndex: min(coordinates.count - 1, offset + $0.beginShapeIndex),
-                             instruction: $0.instruction, type: $0.type,
-                             streetNames: $0.streetNames,
-                             lanes: $0.lanes.enumerated().map { index, lane in
+                var roundabouts: [Int: RoundaboutGuidance] = [:]
+                for index in leg.maneuvers.indices where leg.maneuvers[index].type == 26 {
+                    let next = index + 1
+                    guard leg.maneuvers.indices.contains(next), leg.maneuvers[next].type == 27 else { continue }
+                    let entry = leg.maneuvers[index]
+                    let exit = leg.maneuvers[next]
+                    let guidance = RoundaboutGeometry.guidance(
+                        coordinates: legCoordinates, entry: entry.beginShapeIndex,
+                        exit: exit.beginShapeIndex, exitEnd: exit.endShapeIndex ?? exit.beginShapeIndex,
+                        incomingBearing: entry.bearingBefore, outgoingBearing: exit.bearingAfter,
+                        exitCount: entry.roundaboutExitCount ?? exit.roundaboutExitCount)
+                    roundabouts[index] = guidance
+                    roundabouts[next] = guidance
+                }
+                maneuvers += leg.maneuvers.enumerated().map { index, turn in
+                    Maneuver(shapeIndex: min(coordinates.count - 1, offset + turn.beginShapeIndex),
+                             instruction: turn.instruction, type: turn.type,
+                             streetNames: turn.streetNames,
+                             lanes: turn.lanes.enumerated().map { index, lane in
                                  lane.guidance(id: index)
                              },
-                             exitNumber: $0.sign?.exitNumber,
-                             exitRoad: $0.sign?.exitRoad,
-                             exitToward: $0.sign?.exitToward)
+                             exitNumber: turn.sign?.exitNumber,
+                             exitRoad: turn.sign?.exitRoad,
+                             exitToward: turn.sign?.exitToward,
+                             roundabout: roundabouts[index] ?? (turn.type == 26 || turn.type == 27
+                                ? RoundaboutGuidance(exitCount: turn.roundaboutExitCount.flatMap { $0 > 0 ? $0 : nil }) : nil),
+                             information: turn.information)
                 }
             }
             guard coordinates.count > 1, trip.summary.length.isFinite, trip.summary.length > 0,
                   trip.summary.time.isFinite, trip.summary.time >= 0 else { return nil }
             return NavigationRoute(coordinates: coordinates, distance: trip.summary.length * 1000,
                                    expectedTravelTime: trip.summary.time, maneuvers: maneuvers, journey: nil,
-                                   travelSegments: travelSegments)
+                                   travelSegments: travelSegments,
+                                   information: RouteInformation(toll: trip.summary.hasToll,
+                                       highway: trip.summary.hasHighway, ferry: trip.summary.hasFerry,
+                                       timeRestrictions: trip.summary.hasTimeRestrictions,
+                                       warnings: trip.warnings?.compactMap(\.description) ?? [],
+                                       countries: Array(Set(legs.flatMap { $0.admins?.compactMap(\.countryText) ?? [] })).sorted(),
+                                       destinationSide: trip.locations?.last?.sideOfStreet,
+                                       source: RouteInformationSource(endpoint: endpoint, shapes: legs.map(\.shape),
+                                                                      costing: mode.valhallaCosting)))
         }
         guard !routes.isEmpty else { throw RoutingError.invalidResponse }
         return routes
@@ -252,9 +279,35 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
         let shape: String?
     }
     private struct Alternate: Decodable { let trip: Trip }
-    private struct Trip: Decodable { let summary: Summary; let legs: [Leg] }
-    private struct Summary: Decodable { let length: Double; let time: Double }
-    private struct Leg: Decodable { let shape: String; let maneuvers: [Turn] }
+    private struct Trip: Decodable {
+        let summary: Summary
+        let legs: [Leg]
+        let warnings: [RouteWarning]?
+        let locations: [RouteLocation]?
+    }
+    private struct RouteWarning: Decodable { let description: String? }
+    private struct RouteLocation: Decodable {
+        let sideOfStreet: String?
+        enum CodingKeys: String, CodingKey { case sideOfStreet = "side_of_street" }
+    }
+    private struct Admin: Decodable {
+        let countryText: String?
+        enum CodingKeys: String, CodingKey { case countryText = "country_text" }
+    }
+    private struct Summary: Decodable {
+        let length: Double
+        let time: Double
+        let hasToll: Bool?
+        let hasHighway: Bool?
+        let hasFerry: Bool?
+        let hasTimeRestrictions: Bool?
+        enum CodingKeys: String, CodingKey {
+            case length, time
+            case hasToll = "has_toll", hasHighway = "has_highway", hasFerry = "has_ferry"
+            case hasTimeRestrictions = "has_time_restrictions"
+        }
+    }
+    private struct Leg: Decodable { let shape: String; let maneuvers: [Turn]; let admins: [Admin]? }
     private struct Turn: Decodable {
         let type: Int
         let instruction: String
@@ -264,9 +317,19 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
         let beginShapeIndex: Int
         let lanes: [Lane]
         let sign: Sign?
+        let roundaboutExitCount: Int?
+        let bearingBefore: Double?
+        let bearingAfter: Double?
+        let information: ManeuverInformation
 
         enum CodingKeys: String, CodingKey {
             case type, instruction, lanes, streetNames = "street_names", turnLanes = "turn_lanes", sign
+            case length, toll, highway, rough, gate, ferry
+            case hasTimeRestrictions = "has_time_restrictions", beginStreetNames = "begin_street_names"
+            case verbalAlert = "verbal_transition_alert_instruction", verbalBefore = "verbal_pre_transition_instruction"
+            case verbalAfter = "verbal_post_transition_instruction", verbalSuccinct = "verbal_succinct_transition_instruction"
+            case roundaboutExitCount = "roundabout_exit_count"
+            case bearingBefore = "bearing_before", bearingAfter = "bearing_after"
             case beginShapeIndex = "begin_shape_index", endShapeIndex = "end_shape_index", time
         }
         init(from decoder: Decoder) throws {
@@ -280,6 +343,26 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
             lanes = (try? container.decode([Lane].self, forKey: .lanes))
                 ?? (try? container.decode([Lane].self, forKey: .turnLanes)) ?? []
             sign = try? container.decode(Sign.self, forKey: .sign)
+            roundaboutExitCount = try? container.decode(Int.self, forKey: .roundaboutExitCount)
+            bearingBefore = try? container.decode(Double.self, forKey: .bearingBefore)
+            bearingAfter = try? container.decode(Double.self, forKey: .bearingAfter)
+            let length = try? container.decode(Double.self, forKey: .length)
+            information = ManeuverInformation(
+                distanceMeters: length.flatMap { $0.isFinite && $0 >= 0 ? $0 * 1000 : nil },
+                duration: time.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil },
+                beginStreetNames: (try? container.decode([String].self, forKey: .beginStreetNames)) ?? [],
+                exitNumbers: sign?.exitNumbers ?? [], exitRoads: sign?.exitRoads ?? [],
+                exitDirections: sign?.exitDirections ?? [], exitNames: sign?.exitNames ?? [],
+                toll: try? container.decode(Bool.self, forKey: .toll),
+                highway: try? container.decode(Bool.self, forKey: .highway),
+                rough: try? container.decode(Bool.self, forKey: .rough),
+                gate: try? container.decode(Bool.self, forKey: .gate),
+                ferry: try? container.decode(Bool.self, forKey: .ferry),
+                timeRestrictions: try? container.decode(Bool.self, forKey: .hasTimeRestrictions),
+                verbalAlert: try? container.decode(String.self, forKey: .verbalAlert),
+                verbalBefore: try? container.decode(String.self, forKey: .verbalBefore),
+                verbalAfter: try? container.decode(String.self, forKey: .verbalAfter),
+                verbalSuccinct: try? container.decode(String.self, forKey: .verbalSuccinct))
         }
     }
     private struct Lane: Decodable {
@@ -374,16 +457,25 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
         let exitNumber: String?
         let exitRoad: String?
         let exitToward: String?
+        let exitNumbers: [String]
+        let exitRoads: [String]
+        let exitDirections: [String]
+        let exitNames: [String]
         enum CodingKeys: String, CodingKey {
+            case exitNameElements = "exit_name_elements"
             case exitNumberElements = "exit_number_elements"
             case exitBranchElements = "exit_branch_elements"
             case exitTowardElements = "exit_toward_elements"
         }
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            exitNumber = try? container.decode([SignElement].self, forKey: .exitNumberElements).first?.text
-            exitRoad = try? container.decode([SignElement].self, forKey: .exitBranchElements).first?.text
-            exitToward = try? container.decode([SignElement].self, forKey: .exitTowardElements).first?.text
+            exitNumbers = (try? container.decode([SignElement].self, forKey: .exitNumberElements).map(\.text)) ?? []
+            exitRoads = (try? container.decode([SignElement].self, forKey: .exitBranchElements).map(\.text)) ?? []
+            exitDirections = (try? container.decode([SignElement].self, forKey: .exitTowardElements).map(\.text)) ?? []
+            exitNames = (try? container.decode([SignElement].self, forKey: .exitNameElements).map(\.text)) ?? []
+            exitNumber = exitNumbers.first
+            exitRoad = exitRoads.first
+            exitToward = exitDirections.first
         }
     }
     private struct SignElement: Decodable { let text: String }

@@ -402,6 +402,10 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
         let cacheKey = "speed-corridor-v1-" + Self.cacheKey([coordinate] + corridor)
         let cached = await RoadDataLocalCache.shared.snapshot(for: cacheKey)
         if let cached, Date().timeIntervalSince(cached.fetchedAt) < 300 { return cached }
+        // The last corridor remains useful offline even when GPS or speed changes
+        // the exact request key. Its roads still have to match the current fix.
+        let latestCache = await RoadDataLocalCache.shared.snapshot(for: "speed-limits-latest-v1")
+        let offlineCache = cached ?? latestCache
         let corridorCenters = Self.sampled(corridor, maxStep: 150).map {
             String(format: "%.5f,%.5f", locale: Locale(identifier: "en_US_POSIX"),
                    arguments: [$0.latitude, $0.longitude])
@@ -425,13 +429,14 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
                 let snapshot = RoadDataSnapshot(speedSegments: Self.speedSegments(from: decoded.elements),
                                                 alerts: [], fetchedAt: .now)
                 await RoadDataLocalCache.shared.store(snapshot, for: cacheKey)
+                await RoadDataLocalCache.shared.store(snapshot, for: "speed-limits-latest-v1")
                 return snapshot
             } catch {
                 try Task.checkCancellation()
                 lastError = error
             }
         }
-        if let cached { return cached }
+        if let offlineCache { return offlineCache }
         throw lastError
     }
 
@@ -470,10 +475,9 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("NaviAstra/1.0 (OpenStreetMap road-safety data)", forHTTPHeaderField: "User-Agent")
         request.httpBody = components.percentEncodedQuery?.data(using: .utf8)
-        guard await OSMCyclingRequestGate.shared.waitUntilAllowed(priority: priority) else { throw CancellationError() }
         do {
             try Task.checkCancellation()
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await OSMRequestTransport.shared.data(for: request, priority: priority)
             guard let http = response as? HTTPURLResponse else { throw RoadDataError.invalidResponse }
             guard (200...299).contains(http.statusCode) else { throw RoadDataError.server(http.statusCode) }
             let decoded: OverpassResponse
@@ -481,10 +485,8 @@ struct OpenStreetMapRoadDataProvider: RoadDataProvider {
             catch { throw RoadDataError.invalidResponse }
             guard decoded.remark == nil else { throw RoadDataError.unavailable }
             try Task.checkCancellation()
-            await OSMCyclingRequestGate.shared.requestDidFinish()
             return decoded
         } catch {
-            await OSMCyclingRequestGate.shared.requestDidFinish()
             try Task.checkCancellation()
             throw error
         }
