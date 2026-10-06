@@ -259,12 +259,25 @@ private struct TripHistoryRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
+                #if os(iOS)
+                if trip.trace.contains(where: { !$0.startsSegment }) {
+                    TripMapThumbnail(trip: trip)
+                } else {
                 Image(systemName: trip.transportMode?.symbol ?? "point.topleft.down.to.point.bottomright.curvepath")
                     .font(.headline)
                     .foregroundStyle(Color.accentColor)
                     .frame(width: 40, height: 40)
                     .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
                     .accessibilityHidden(true)
+                }
+                #else
+                Image(systemName: trip.transportMode?.symbol ?? "point.topleft.down.to.point.bottomright.curvepath")
+                    .font(.headline)
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 40, height: 40)
+                    .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+                    .accessibilityHidden(true)
+                #endif
                 VStack(alignment: .leading, spacing: 4) {
                     Text(trip.destination.name)
                         .font(.headline).foregroundStyle(Color.naviTextPrimary)
@@ -480,6 +493,16 @@ struct TripHistoryDetail: View {
                     } else {
                         traceMap
                         playbackControls
+                        if trip.transportMode != .transit && trip.transportMode != .parkRide {
+                            NavigationLink("Analizuj ślad i dopasuj do dróg") {
+                                ValhallaTraceView(endpoint: URL(string: UserDefaults.standard.string(forKey: "routingServer")
+                                    ?? "https://valhalla1.openstreetmap.de") ?? URL(string: "https://valhalla1.openstreetmap.de")!,
+                                    preferences: (UserDefaults.standard.data(forKey: "routingPreferences")
+                                        .flatMap { try? JSONDecoder().decode(RoutingPreferences.self, from: $0) }) ?? RoutingPreferences(),
+                                    initialTrace: trip.valhallaTraceSegments,
+                                    initialMode: trip.transportMode ?? .car)
+                            }
+                        }
                     }
                 }
                 if !speedSamples.isEmpty {

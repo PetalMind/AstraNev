@@ -30,6 +30,8 @@ struct RouteInformationView: View {
 
     private func summary(_ information: RouteInformation) -> some View {
         VStack(alignment: .leading, spacing: 6) {
+            if let departure = information.departureLocalTime { row("Wyjazd (czas lokalny)", departure.replacingOccurrences(of: "T", with: " ")) }
+            if let arrival = information.arrivalLocalTime { row("Przyjazd (czas lokalny)", arrival.replacingOccurrences(of: "T", with: " ")) }
             row("Odcinki płatne", flag(information.toll))
             row("Autostrady", flag(information.highway))
             row("Promy", flag(information.ferry))

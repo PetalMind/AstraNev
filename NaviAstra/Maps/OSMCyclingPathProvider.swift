@@ -215,10 +215,12 @@ actor OSMRequestTransport {
     private var unavailableUntil: [String: Date] = [:]
     private let logger = Logger(subsystem: "NaviAstra", category: "Overpass")
 
-    func data(for request: URLRequest, priority: Bool = false) async throws -> (Data, URLResponse) {
+    func data(for request: URLRequest, priority: Bool = false,
+              maximumDuration: TimeInterval? = nil) async throws -> (Data, URLResponse) {
         try Task.checkCancellation()
         let key = (request.url?.absoluteString ?? "") + "|" + (request.httpMethod ?? "GET")
             + "|" + (request.httpBody?.base64EncodedString() ?? "")
+            + "|" + (maximumDuration.map { String($0) } ?? "unbounded")
         let waiter = UUID()
         let task: Task<(Data, URLResponse), Error>
         if var existing = pending[key] {
@@ -226,7 +228,9 @@ actor OSMRequestTransport {
             pending[key] = existing
             task = existing.task
         } else {
-            task = Task { try await self.download(request, priority: priority) }
+            task = Task {
+                try await self.download(request, priority: priority, maximumDuration: maximumDuration)
+            }
             pending[key] = PendingRequest(task: task, waiters: [waiter])
         }
         defer { release(key: key, waiter: waiter) }
@@ -245,6 +249,21 @@ actor OSMRequestTransport {
             entry.task.cancel()
             pending[key] = nil
         } else { pending[key] = entry }
+    }
+
+    private func download(_ request: URLRequest, priority: Bool,
+                          maximumDuration: TimeInterval?) async throws -> (Data, URLResponse) {
+        guard let maximumDuration else { return try await download(request, priority: priority) }
+        return try await withThrowingTaskGroup(of: (Data, URLResponse).self) { group in
+            group.addTask { try await self.download(request, priority: priority) }
+            group.addTask {
+                try await Task.sleep(for: .seconds(maximumDuration))
+                throw URLError(.timedOut)
+            }
+            defer { group.cancelAll() }
+            guard let result = try await group.next() else { throw CancellationError() }
+            return result
+        }
     }
 
     private func download(_ request: URLRequest, priority: Bool) async throws -> (Data, URLResponse) {

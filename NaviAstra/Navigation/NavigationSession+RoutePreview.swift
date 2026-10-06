@@ -97,7 +97,11 @@ extension NavigationSession {
                                                             departingAt: departure,
                                                             cancellationToken: transitCancellationToken)
             } else {
-                routes = try await calculateRoutes(from: origin, to: routeDestination)
+                let time = try await ValhallaPlanningTime.resolved(mode: requestedJourneyTimeMode,
+                    date: requestedJourneyTime, coordinate: requestedJourneyTimeMode == .arriveBy ? routeDestination : origin)
+                routes = try await RoadRoutingContext.$planningTime.withValue(time) {
+                    try await calculateRoutes(from: origin, to: routeDestination)
+                }
             }
             guard generation == requestGeneration else { return }
             guard let firstRoute = routes.first else { throw RoutingError.invalidResponse }

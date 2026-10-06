@@ -18,7 +18,7 @@ actor POIAccessResolver {
     static let shared = POIAccessResolver()
 
     private struct CachedTarget {
-        var value: POINavigationTarget
+        var value: POINavigationTarget?
         var expiresAt: Date
     }
 
@@ -30,6 +30,14 @@ actor POIAccessResolver {
     private var cache: [String: CachedTarget] = [:]
     private var featureCache: [String: CachedFeatures] = [:]
     private let endpoint = MapRoadPOIEndpoint.url
+
+    func cachedTarget(for destination: Destination, mode: TransportMode) -> POINavigationTarget? {
+        guard let poi = destination.poi else { return nil }
+        let resolvedMode: TransportMode = mode == .transit || mode == .parkRide ? .walking : mode
+        let key = cacheKey(destination, poi: poi, mode: resolvedMode)
+        guard let cached = cache[key], cached.expiresAt > Date() else { return nil }
+        return cached.value
+    }
 
     func resolve(for destination: Destination, mode: TransportMode) async -> POINavigationTarget? {
         guard let poi = destination.poi else { return nil }
@@ -43,13 +51,18 @@ actor POIAccessResolver {
         if let cached = cache[key], cached.expiresAt > Date() { return cached.value }
         let featuresKey = cacheKey(destination, poi: poi, mode: .walking)
         guard let features = await fetchFeatures(near: destination.coordinate, poi: poi,
-                                                 cacheKey: featuresKey) else { return nil }
+                                                 cacheKey: featuresKey) else {
+            if !Task.isCancelled, RoadRoutingContext.cancellationToken?.isCancelled != true {
+                cache[key] = CachedTarget(value: nil, expiresAt: Date().addingTimeInterval(30))
+            }
+            return nil
+        }
+        guard !Task.isCancelled, RoadRoutingContext.cancellationToken?.isCancelled != true else { return nil }
         let target = resolvedMode == .car
             ? carTarget(for: destination, poi: poi, features: features)
             : activeEntranceTarget(for: destination, poi: poi, mode: resolvedMode, features: features)
-        if let target {
-            cache[key] = CachedTarget(value: target, expiresAt: Date().addingTimeInterval(6 * 60 * 60))
-        }
+        cache[key] = CachedTarget(value: target, expiresAt: Date().addingTimeInterval(
+            target == nil ? 60 : 6 * 60 * 60))
         return target
     }
 
@@ -89,6 +102,12 @@ actor POIAccessResolver {
     private func fetchFeatures(near center: Coordinate, poi: POIMetadata,
                                cacheKey: String) async -> [Feature]? {
         if let cached = featureCache[cacheKey], cached.expiresAt > Date() { return cached.values }
+        #if os(iOS)
+        let offline = await MainActor.run {
+            OfflineRoutingStore.shared.preferOffline || OfflineRoutingStore.shared.networkUnavailable
+        }
+        if offline { return nil }
+        #endif
         let radius = 250
         var selectors: [String] = []
         if let objectID = OpenStreetMapObjectID(poi.osmID) {
@@ -113,7 +132,16 @@ actor POIAccessResolver {
         body.queryItems = [URLQueryItem(name: "data", value: query)]
         request.httpBody = body.percentEncodedQuery?.data(using: .utf8)
         do {
-            let (data, response) = try await OSMRequestTransport.shared.data(for: request, priority: true)
+            // Bound queueing, retries and failover together; access lookup is optional.
+            let task = Task {
+                try await OSMRequestTransport.shared.data(for: request, priority: true, maximumDuration: 3)
+            }
+            let token = RoadRoutingContext.cancellationToken
+            let handler = token?.addCancellationHandler { task.cancel() }
+            defer { if let handler { token?.removeCancellationHandler(handler) } }
+            let (data, response) = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: { task.cancel() }
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
                   let reply = try? JSONDecoder().decode(Reply.self, from: data), reply.remark == nil else {
                 return nil

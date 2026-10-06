@@ -93,6 +93,12 @@ struct SearchEngine {
         }
         let searchCenter = center
         let routeOrigin = context.origin ?? searchCenter
+        // Publish provider replies before waiting for other sources or route estimates.
+        let publishCandidates: ([SearchResult]) -> Void = { candidates in
+            onUpdate(Array(SearchDeduplicator.mergeAndRank(
+                candidates, intent: intent, context: context,
+                searchCenter: searchCenter, routeOrigin: routeOrigin).prefix(8)))
+        }
         var candidates: [SearchResult]
         if let coordinate = intent.coordinate {
             candidates = [SearchResult(
@@ -101,7 +107,7 @@ struct SearchEngine {
         } else if intent.intent == .address {
             candidates = try await AddressSearchProvider().search(intent.text, near: searchCenter,
                                                                   includeUUGFallback: includeUUGFallback,
-                                                                  onUpdate: { _ in })
+                                                                  onUpdate: publishCandidates)
         } else {
             let photonTag = intent.intent == .category ? intent.photonTag : nil
             var requests: [SearchProviderBatch.Request] = []
@@ -124,7 +130,7 @@ struct SearchEngine {
                 })
             }
             do {
-                candidates = try await SearchProviderBatch.search(requests, onUpdate: { _ in })
+                candidates = try await SearchProviderBatch.search(requests, onUpdate: publishCandidates)
             } catch {
                 try Task.checkCancellation()
                 guard includeUUGFallback, intent.intent == .place else { throw error }
@@ -143,6 +149,7 @@ struct SearchEngine {
         var results = Array(SearchDeduplicator.mergeAndRank(
             candidates, intent: intent, context: context,
             searchCenter: searchCenter, routeOrigin: routeOrigin).prefix(candidateLimit))
+        onUpdate(Array(results.prefix(8)))
         if let origin = routeOrigin, !results.isEmpty {
             if context.mode == .transit || context.mode == .parkRide {
                 for index in results.indices {
@@ -165,26 +172,14 @@ struct SearchEngine {
                     onUpdate(Array(results.prefix(8)))
                 }
             } else {
-                let poiIndexes = results.indices.filter { results[$0].isPOI }
-                let poiDestinations = poiIndexes.map { results[$0].navigationDestination }
-                let resolvedPOIs = await POIAccessResolver.shared.resolveMany(for: poiDestinations, mode: context.mode)
-                try Task.checkCancellation()
-                var poiCoordinates: [Int: Coordinate] = [:]
-                for (offset, index) in poiIndexes.enumerated() {
-                    if let target = resolvedPOIs[offset] {
-                        poiCoordinates[index] = target.coordinate
-                    } else {
-                        // Valhalla snaps the POI pin to its routable road point when OSM has no
-                        // explicit entrance or parking access point available.
-                        poiCoordinates[index] = results[index].destination.coordinate
-                    }
-                }
-                let routedTargets: [(index: Int, coordinate: Coordinate)] = results.indices.compactMap { index in
-                    if results[index].isPOI {
-                        guard let coordinate = poiCoordinates[index] else { return nil }
-                        return (index, coordinate)
-                    }
-                    return (index, results[index].destination.coordinate)
+                // List estimates use known access points only. Fetch entrances/parking when
+                // a destination is selected, instead of serializing Overpass for every row.
+                var routedTargets: [(index: Int, coordinate: Coordinate)] = []
+                for index in results.indices {
+                    try Task.checkCancellation()
+                    let destination = results[index].navigationDestination
+                    let target = await POIAccessResolver.shared.cachedTarget(for: destination, mode: context.mode)
+                    routedTargets.append((index, target?.coordinate ?? destination.coordinate))
                 }
                 if !routedTargets.isEmpty {
                     let coordinates = routedTargets.map { $0.coordinate }
@@ -209,24 +204,13 @@ struct SearchEngine {
                             results[target.index].travelDistance = distance * 1_000
                             results[target.index].travelEstimateStatus = .notRequested
                         } else {
-                            do {
-                                if let route = try await matrix.calculateRoutes(
-                                    from: origin, to: target.coordinate, through: [], mode: context.mode,
-                                    preferences: context.preferences, avoiding: []).first {
-                                    results[target.index].travelTime = route.expectedTravelTime
-                                    results[target.index].travelDistance = route.distance
-                                    results[target.index].travelEstimateStatus = .notRequested
-                                } else {
-                                    results[target.index].travelEstimateStatus = .unavailable
-                                }
-                            } catch {
-                                try Task.checkCancellation()
-                                results[target.index].travelEstimateStatus = .unavailable
-                            }
+                            // A failed matrix must not fan out into up to eight sequential
+                            // full route requests to the same unavailable service.
+                            results[target.index].travelEstimateStatus = .unavailable
                         }
                         onUpdate(Array(results.prefix(8)))
                     }
-                    if intent.alongRoute, let routeTarget = context.routeTarget {
+                    if intent.alongRoute, rows != nil, let routeTarget = context.routeTarget {
                         // Compare the same routing model on both sides; never subtract a stale live ETA.
                         let onward = try await matrix.searchMatrix(sources: [origin] + coordinates,
                                                                     targets: [routeTarget], mode: context.mode,
@@ -377,6 +361,7 @@ extension ValhallaRouteProvider {
         request.httpMethod = "POST"
         request.timeoutInterval = 12
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("NaviAstra", forHTTPHeaderField: "X-Client-Id")
         var payload: [String: Any] = ["sources": sources.map { ["lat": $0.latitude, "lon": $0.longitude] },
                                       "targets": targets.map { ["lat": $0.latitude, "lon": $0.longitude] },
                                       "costing": mode.valhallaCosting, "units": "kilometers", "verbose": true]
@@ -388,10 +373,11 @@ extension ValhallaRouteProvider {
             if preferences.avoidUnpaved { options["exclude_unpaved"] = true }
             payload["costing_options"] = ["auto": options]
         }
+        try preferences.applyValhallaOptions(to: &payload, mode: mode)
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
         try await ValhallaRequestGate.shared.waitUntilAllowed(for: endpoint)
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { throw RoutingError.invalidResponse }
+        try ValhallaServices.validate(data: data, response: response)
         let rows = try JSONDecoder().decode(MatrixReply.self, from: data).sources_to_targets
         guard rows.count == sources.count, rows.allSatisfy({ $0.count == targets.count }) else { throw RoutingError.invalidResponse }
         return rows

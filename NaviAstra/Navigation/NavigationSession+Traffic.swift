@@ -9,6 +9,8 @@ extension NavigationSession {
     }
 
     func refreshTraffic(force: Bool = false, forceRouteRefresh: Bool = true) {
+        // Current traffic cannot describe a route planned for another departure/arrival time.
+        guard state.status != .routePreview || state.journeyTimeMode == .now else { return }
         let energyPolicy = energyPolicyEngine.currentPolicy
         let isOnDemandMapRequest = force && energyPolicy.mode == .mapBrowsing
         guard energyPolicy.trafficRefreshInterval != nil || isOnDemandMapRequest else { return }
@@ -209,6 +211,7 @@ extension NavigationSession {
                                             currentRoute: NavigationRoute,
                                             location: Coordinate) {
         guard state.transportMode == .car, state.status == .navigating,
+              !state.routingPreferences.advanced.shortest,
               state.route?.id == currentRoute.id else { return }
         let routes = state.routeOptions.isEmpty ? [currentRoute] : state.routeOptions
         guard routes.count > 1 else { return }

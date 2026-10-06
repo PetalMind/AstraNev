@@ -216,9 +216,13 @@ extension ContentView {
                         routePlanningTransportSelector
                         routePlanningCompactEndpoints
 
-                        if navigationStore.state.transportMode == .transit || navigationStore.state.transportMode == .parkRide {
-                            journeyTimeControl
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                        journeyTimeControl
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button("Profile i preferencje trasy", systemImage: "slider.horizontal.3") {
+                            appRouter.present(.routeSettings)
+                        }
+                        Button("Zasięg, ślady GPS i obszary omijane", systemImage: "map") {
+                            appRouter.present(.routingTools)
                         }
 
                         if let route = navigationStore.state.route {
@@ -577,7 +581,13 @@ extension ContentView {
     }
 
     private func routePlanningArrivalTime(_ route: NavigationRoute) -> String {
-        let arrival = route.journey?.arrival ?? Date().addingTimeInterval(max(0, route.expectedTravelTime))
+        if let local = route.information?.arrivalLocalTime, local.count >= 16 {
+            return String(local.suffix(5))
+        }
+        let departure = navigationStore.state.journeyTimeMode == .departAt
+            ? navigationStore.state.journeyTargetTime : Date()
+        let arrival = route.journey?.arrival ?? (navigationStore.state.journeyTimeMode == .arriveBy
+            ? navigationStore.state.journeyTargetTime : departure.addingTimeInterval(max(0, route.expectedTravelTime)))
         return arrival.formatted(date: .omitted, time: .shortened)
     }
 

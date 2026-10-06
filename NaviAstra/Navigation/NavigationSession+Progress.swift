@@ -140,7 +140,13 @@ extension NavigationSession {
                                        distanceToNextManeuver: max(0, maneuverDistance), nextManeuver: next,
                                        geometryProgress: geometryProgress,
                                        geometryRouteID: route.id)
-        state.estimatedArrival = Date().addingTimeInterval(max(0, remainingTime))
+        if state.status == .routePreview, state.journeyTimeMode == .arriveBy {
+            state.estimatedArrival = state.journeyTargetTime
+        } else if state.status == .routePreview, state.journeyTimeMode == .departAt {
+            state.estimatedArrival = state.journeyTargetTime.addingTimeInterval(route.expectedTravelTime)
+        } else {
+            state.estimatedArrival = Date().addingTimeInterval(max(0, remainingTime))
+        }
         guard state.status == .navigating || state.status == .rerouting else { return }
         guard abs(location.timestamp.timeIntervalSinceNow) <= 10 else {
             arrivalDetector.reset()

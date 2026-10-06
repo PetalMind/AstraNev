@@ -5,6 +5,7 @@ enum AppSheetDestination: String, Identifiable {
     case originPicker
     case settings
     case routeSettings
+    case routingTools
     case favorites
     case history
     case trafficDetails

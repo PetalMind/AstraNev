@@ -297,9 +297,7 @@ final class NavigationSession {
     func selectTransportMode(_ mode: TransportMode) async {
         guard state.status != .navigating && state.status != .rerouting else { return }
         state.transportMode = mode
-        if mode != .transit && mode != .parkRide {
-            state.journeyTimeMode = .now
-        } else if mode == .parkRide && state.journeyTimeMode == .arriveBy {
+        if mode == .parkRide && state.journeyTimeMode == .arriveBy {
             state.journeyTimeMode = .now
         }
         if mode != .transit { state.transitPlanningPhase = nil }
@@ -316,15 +314,13 @@ final class NavigationSession {
     func applyConfiguredDefaultTransportMode() {
         let mode = TransportMode.configuredDefault
         state.transportMode = mode
-        if mode != .transit && mode != .parkRide {
-            state.journeyTimeMode = .now
-        } else if mode == .parkRide && state.journeyTimeMode == .arriveBy {
+        if mode == .parkRide && state.journeyTimeMode == .arriveBy {
             state.journeyTimeMode = .now
         }
     }
 
     func setJourneyTimeMode(_ mode: JourneyTimeMode) {
-        guard mode != .arriveBy || state.transportMode == .transit else { return }
+        guard mode != .arriveBy || state.transportMode != .parkRide else { return }
         state.journeyTimeMode = mode
         let now = Date()
         if mode == .now {
@@ -380,6 +376,15 @@ final class NavigationSession {
         guard state.status == .routePreview,
               let route = state.route,
               (!usesJourneyVoiceGuidance || route.journey != nil) else { return }
+        if !usesJourneyVoiceGuidance, state.journeyTimeMode != .now, let destination = state.destination {
+            state.journeyTimeMode = .now
+            Task {
+                await preview(destination)
+                guard state.status == .routePreview, state.destination?.id == destination.id else { return }
+                begin()
+            }
+            return
+        }
         arrivalDetector.reset()
         state.arrivalLocation = nil
         rerouteController.beginNavigation()

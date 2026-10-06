@@ -27,6 +27,12 @@ final class TransitStopLayerRenderer {
     private var stopsByID: [String: TransitStop] = [:]
     private var markerPresentations: [String: TransitStopMapPresentation] = [:]
     private var lastRenderKey: TransitStopRenderKey?
+    private var lastStops: [TransitStop] = []
+    private var lastDark = false
+    private var lastVoiceOver = false
+    private var spriteNames: Set<String> = []
+    private let sourceID = "naviastra-transit-stops-source"
+    private let layerIDs: Set<String> = ["naviastra-transit-stops", "naviastra-transit-clusters", "naviastra-transit-cluster-count"]
 
     var annotations: [MLNPointAnnotation] { Array(pins.values) }
 
@@ -55,8 +61,14 @@ final class TransitStopLayerRenderer {
                                              userCoordinate: context.userCoordinate,
                                              routeEndpointCoordinates: context.routeEndpointCoordinates,
                                              visibleRadius: visibleRadius)
-        guard lastRenderKey != renderKey else { return }
+        let dark = map.traitCollection.userInterfaceStyle == .dark
+        let voiceOver = UIAccessibility.isVoiceOverRunning
+        guard lastRenderKey != renderKey || lastStops != stops || lastDark != dark || lastVoiceOver != voiceOver
+                || map.style?.source(withIdentifier: sourceID) == nil else { return }
         lastRenderKey = renderKey
+        lastStops = stops
+        lastDark = dark
+        lastVoiceOver = voiceOver
 
         let visibility = TransitStopMapVisibilityPolicy(zoom: zoom,
                                                         transportMode: context.transportMode,
@@ -100,7 +112,19 @@ final class TransitStopLayerRenderer {
         let visibleStops = groupedStops.map(\.0)
         let stopsByID = Dictionary(visibleStops.map { ($0.id, $0) },
                                    uniquingKeysWith: { first, _ in first })
-        let removedIDs = pins.keys.filter { stopsByID[$0] == nil }
+        var layeredFeatures: [MLNPointFeature] = []
+        var annotationIDs: Set<String> = []
+        // Keep important route stops and VoiceOver elements as accessible native views.
+        for stop in stopsByID.values {
+            let members = Set(stop.detailStopIDs)
+            if voiceOver || (context.selectedStopID.map(members.contains) ?? false)
+                || (context.activeStopID.map(members.contains) ?? false)
+                || (context.alightingStopID.map(members.contains) ?? false)
+                || groupDecisionsByID[stop.id]?.isOnRoute == true {
+                annotationIDs.insert(stop.id)
+            }
+        }
+        let removedIDs = pins.keys.filter { !annotationIDs.contains($0) }
         let removedPins = removedIDs.compactMap { pins.removeValue(forKey: $0) }
         removedIDs.forEach { self.stopsByID.removeValue(forKey: $0) }
         removedIDs.forEach { markerPresentations.removeValue(forKey: $0) }
@@ -116,6 +140,15 @@ final class TransitStopLayerRenderer {
                                                     alighting: context.alightingStopID.map(memberIDs.contains) ?? false,
                                                     onRoute: decision?.isOnRoute ?? false,
                                                     opacity: decision?.opacity ?? 1)
+            if !annotationIDs.contains(stop.id) {
+                markerPresentations[stop.id] = presentation
+                let feature = MLNPointFeature()
+                feature.coordinate = stop.coordinate.cl
+                feature.attributes = ["stopID": stop.id, "name": presentation.name ?? "",
+                    "sprite": spriteName(for: presentation, on: map), "opacity": presentation.opacity]
+                layeredFeatures.append(feature)
+                continue
+            }
             if let pin = pins[stop.id] {
                 if pin.coordinate.latitude != stop.coordinate.latitude || pin.coordinate.longitude != stop.coordinate.longitude {
                     pin.coordinate = stop.coordinate.cl
@@ -137,6 +170,105 @@ final class TransitStopLayerRenderer {
             }
             markerPresentations[stop.id] = presentation
         }
+        self.stopsByID = stopsByID
+        updateLayers(features: layeredFeatures, on: map)
+    }
+
+    /// Returns true when a layer handled the tap, including expansion of a cluster.
+    func handleTap(at point: CGPoint, on map: MLNMapView,
+                   onExpandCluster: () -> Void, onSelect: (TransitStop) -> Void) -> Bool {
+        let rect = CGRect(origin: point, size: .zero).insetBy(dx: -18, dy: -18)
+        let features = map.visibleFeatures(in: rect, styleLayerIdentifiers: layerIDs)
+        // Prefer an actual stop over a cluster whose icon merely overlaps the touch area.
+        if let stop = features.compactMap({ feature -> TransitStop? in
+            guard let id = feature.attributes["stopID"] as? String else { return nil }
+            return stopsByID[id]
+        }).min(by: { lhs, rhs in
+            let a = map.convert(lhs.coordinate.cl, toPointTo: map)
+            let b = map.convert(rhs.coordinate.cl, toPointTo: map)
+            return hypot(a.x - point.x, a.y - point.y) < hypot(b.x - point.x, b.y - point.y)
+        }) {
+            onSelect(stop)
+            return true
+        }
+        if let cluster = features.compactMap({ $0 as? MLNPointFeatureCluster }).first,
+           let source = map.style?.source(withIdentifier: sourceID) as? MLNShapeSource {
+            onExpandCluster()
+            map.setCenter(cluster.coordinate, zoomLevel: min(18, source.zoomLevel(forExpanding: cluster) + 0.1), animated: true)
+            return true
+        }
+        return false
+    }
+
+    private func spriteName(for presentation: TransitStopMapPresentation, on map: MLNMapView) -> String {
+        let modes = presentation.modes.map(\.rawValue).joined(separator: "-")
+        let name = "naviastra-transit-icon-\(modes)-\(Int(presentation.markerSize))-\(lastDark)"
+        guard let style = map.style else { return name }
+        // A newly loaded style has no source or sprites, even if the SDK wrapper is reused.
+        if style.image(forName: name) == nil {
+            let plain = TransitStopMapPresentation(modes: presentation.modes, name: nil,
+                markerSize: presentation.markerSize, isSelected: false, isActive: false,
+                isAlighting: false, isOnRoute: false, opacity: 1, showsAlightingBadge: false)
+            let marker = MLNAnnotationView(reuseIdentifier: nil)
+            marker.overrideUserInterfaceStyle = lastDark ? .dark : .light
+            self.style(marker, presentation: plain)
+            let size = CGSize(width: marker.bounds.width + 8, height: marker.bounds.height + 8)
+            let image = UIGraphicsImageRenderer(size: size).image { context in
+                context.cgContext.translateBy(x: 4, y: 4)
+                marker.layer.render(in: context.cgContext)
+            }
+            style.setImage(image, forName: name)
+            spriteNames.insert(name)
+        }
+        return name
+    }
+
+    private func updateLayers(features: [MLNPointFeature], on map: MLNMapView) {
+        guard let style = map.style else { return }
+        let source: MLNShapeSource
+        if let existing = style.source(withIdentifier: sourceID) as? MLNShapeSource { source = existing }
+        else {
+            source = MLNShapeSource(identifier: sourceID, shape: nil,
+                options: [.clustered: true, .clusterRadius: 44, .maximumZoomLevelForClustering: 14])
+            style.addSource(source)
+        }
+        source.shape = MLNShapeCollectionFeature(shapes: features)
+        if style.layer(withIdentifier: "naviastra-transit-stops") == nil {
+            let symbols = MLNSymbolStyleLayer(identifier: "naviastra-transit-stops", source: source)
+            symbols.predicate = NSPredicate(format: "cluster != YES")
+            symbols.iconImageName = NSExpression(forKeyPath: "sprite")
+            symbols.iconOpacity = NSExpression(forKeyPath: "opacity")
+            symbols.iconAllowsOverlap = NSExpression(forConstantValue: true)
+            symbols.text = NSExpression(forKeyPath: "name")
+            symbols.textOpacity = NSExpression(forKeyPath: "opacity")
+            symbols.textFontSize = NSExpression(forConstantValue: 10)
+            symbols.textOffset = NSExpression(forConstantValue: [0, 1.8])
+            symbols.textAnchor = NSExpression(forConstantValue: "top")
+            style.addLayer(symbols)
+            let clusters = MLNCircleStyleLayer(identifier: "naviastra-transit-clusters", source: source)
+            clusters.predicate = NSPredicate(format: "cluster == YES")
+            clusters.circleRadius = NSExpression(forConstantValue: 18)
+            clusters.circleColor = NSExpression(forConstantValue: UIColor(naviHex: NaviAstraColorPalette.transitFallback))
+            clusters.circleStrokeColor = NSExpression(forConstantValue: UIColor.white)
+            clusters.circleStrokeWidth = NSExpression(forConstantValue: 2)
+            style.addLayer(clusters)
+            let count = MLNSymbolStyleLayer(identifier: "naviastra-transit-cluster-count", source: source)
+            count.predicate = NSPredicate(format: "cluster == YES")
+            count.text = NSExpression(mglJSONObject: ["to-string", ["get", "point_count"]])
+            count.textFontSize = NSExpression(forConstantValue: 12)
+            count.textColor = NSExpression(forConstantValue: UIColor.white)
+            count.textAllowsOverlap = NSExpression(forConstantValue: true)
+            style.addLayer(count)
+        }
+        if let symbols = style.layer(withIdentifier: "naviastra-transit-stops") as? MLNSymbolStyleLayer {
+            symbols.textColor = NSExpression(forConstantValue: lastDark ? UIColor.white : UIColor.black)
+            symbols.textHaloColor = NSExpression(forConstantValue: lastDark ? UIColor.black : UIColor.white)
+            symbols.textHaloWidth = NSExpression(forConstantValue: 1.5)
+        }
+        // Bound sprite lifetime to variants still present in the source.
+        let used = Set(features.compactMap { $0.attributes["sprite"] as? String })
+        for name in spriteNames.subtracting(used) { style.removeImage(forName: name) }
+        spriteNames = used
     }
 
     func stop(for annotation: MLNAnnotation) -> TransitStop? {

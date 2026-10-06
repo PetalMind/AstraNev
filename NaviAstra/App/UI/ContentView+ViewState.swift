@@ -90,6 +90,16 @@ extension ContentView {
             settingsSheet
         case .routeSettings:
             routeSettingsSheet
+        case .routingTools:
+            NavigationStack {
+                ValhallaToolsView(endpoint: URL(string: serverAddress),
+                    origin: routeOriginPoint?.coordinate ?? navigationStore.state.location?.coordinate,
+                    navigation: navigationStore, trips: placeStore.trips)
+                    .toolbar { ToolbarItem(placement: .cancellationAction) {
+                        Button("Zamknij") { appRouter.dismiss(.routingTools) }
+                    } }
+            }
+            .presentationDetents([.large])
         case .favorites:
             favoritesSheet
         case .history:

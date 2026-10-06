@@ -8,6 +8,8 @@ nonisolated struct RouteInformation: Sendable {
     var warnings: [String] = []
     var countries: [String] = []
     var destinationSide: String?
+    var departureLocalTime: String?
+    var arrivalLocalTime: String?
     var scopeDescription: String?
     var source: RouteInformationSource?
 }
@@ -16,6 +18,7 @@ nonisolated struct RouteInformationSource: Sendable {
     var endpoint: URL
     var shapes: [String]
     var costing: String
+    var planningTime: ValhallaPlanningTime?
 }
 
 nonisolated struct ManeuverInformation: Sendable {

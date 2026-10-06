@@ -918,7 +918,7 @@ extension ContentView {
                 currentMode: navigationStore.state.journeyTimeMode,
                 currentTime: navigationStore.state.journeyTargetTime,
                 availableModes: availableJourneyTimeModes,
-                actionTitle: navigationStore.state.route == nil ? "Szukaj połączeń" : "Przelicz połączenia",
+                actionTitle: navigationStore.state.route == nil ? "Wyznacz trasę" : "Przelicz trasę",
                 isDisabled: isJourneyTimeControlDisabled
             ) { mode, time in
                 navigationStore.setJourneyTimeMode(mode)
@@ -934,13 +934,13 @@ extension ContentView {
     }
 
     var availableJourneyTimeModes: [JourneyTimeMode] {
-        navigationStore.state.transportMode == .transit
-            ? [.now, .departAt, .arriveBy]
-            : [.now, .departAt]
+        navigationStore.state.transportMode == .parkRide
+            ? [.now, .departAt] : [.now, .departAt, .arriveBy]
     }
 
     var isJourneyTimeControlDisabled: Bool {
-        navigationStore.state.status != .routePreview
+        navigationStore.state.destination == nil ||
+            (navigationStore.state.status != .routePreview && navigationStore.state.status != .error)
     }
 
     var journeyTimeModeLabel: String {
@@ -960,7 +960,8 @@ extension ContentView {
     }
 
     var journeyTimeSummary: String {
-        guard navigationStore.state.journeyTimeMode != .now else { return "Najbliższe dostępne połączenia" }
+        guard navigationStore.state.journeyTimeMode != .now else { return navigationStore.state.transportMode == .transit || navigationStore.state.transportMode == .parkRide
+            ? "Najbliższe dostępne połączenia" : "Wyjazd teraz" }
         let polishDateTimeFormat = Date.FormatStyle(
             date: .abbreviated,
             time: .shortened,

@@ -116,6 +116,12 @@ extension NavigationSession {
     private func calculateRoutesForCurrentPlan(from: Coordinate, to: Coordinate, through: [Coordinate]?,
                                               commitEVStops: Bool) async throws -> [NavigationRoute] {
         try RoadRoutingContext.checkCancellation()
+        #if os(iOS)
+        if state.transportMode == .car, state.routingPreferences.evPlanningEnabled,
+           OfflineRoutingStore.shared.preferOffline || OfflineRoutingStore.shared.networkUnavailable {
+            throw ValhallaFeatureError.message("Automatyczny dobór ładowarek wymaga internetu. Dla trasy offline wyłącz planowanie ładowania i dodaj potrzebne postoje ręcznie.")
+        }
+        #endif
         if state.transportMode == .transit {
             return try await transitProvider.calculateRoutes(from: from, to: to,
                                                             departingAt: Date())

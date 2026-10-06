@@ -21,6 +21,18 @@ struct IncidentLineRenderItem: Equatable {
     let isRoadClosure: Bool
 }
 
+private struct AlternativeRouteRenderItem: Equatable {
+    let id: UUID
+    let coordinates: [Coordinate]
+}
+
+private struct RouteTrafficRenderItem: Equatable {
+    let id: String
+    let coordinates: [Coordinate]
+    let colorHex: UInt32
+    let dashed: Bool
+}
+
 struct StyledLine {
     let polyline: MLNPolyline
     let coordinates: [Coordinate]
@@ -61,12 +73,14 @@ final class RouteLayerRenderer {
     private var revealGeometry: RouteRevealGeometry?
     private var revealRouteID: UUID?
     private var activeRouteStyleKey = ""
+    private var alternativeRenderItems: [AlternativeRouteRenderItem] = []
+    private var alternativeStyleKey = ""
     private var shownRouteIDs: [UUID]?
     private var shownActiveTargetID: UUID?
     private var shownRevealStep = 1_000
     private var activeGeometryProgressRouteID: UUID?
     private var activeGeometryProgressStep: Int?
-    private var shownRouteTrafficSegmentKeys: [String] = []
+    private var routeTrafficRenderItems: [RouteTrafficRenderItem] = []
     private var routeTransitionTimer: Timer?
     private var context: RouteLayerRenderContext!
     private var parent: RouteLayerRenderContext { context }
@@ -91,22 +105,11 @@ final class RouteLayerRenderer {
             routeLines.removeAll()
             activeGeometryProgressRouteID = nil
             activeGeometryProgressStep = nil
-            shownRouteTrafficSegmentKeys = []
+            routeTrafficRenderItems = []
             activeRouteSource?.shape = nil
             completedRouteSource?.shape = nil
             revealGeometry = nil
             revealRouteID = nil
-            for route in parent.state.alternatives {
-                let previousKind: RouteLineKind = route.id == oldActiveID ? .active : .alternative
-                let from = animateSelection ? previousStyle(for: route.id, kind: previousKind, in: previousLines) : nil
-                let dashPeriod = max(300, route.distance / 40)
-                let dashes = RouteMapGeometry.dashedSegments(route.coordinates,
-                                                             dashLength: max(180, dashPeriod * 0.6),
-                                                             gapLength: max(120, dashPeriod * 0.4))
-                for path in dashes {
-                    addLine(path, kind: .alternative, routeID: route.id, transitionFrom: from, to: map)
-                }
-            }
             if animateReroute, let previousActive {
                 let dark = parent.colorScheme == .dark
                 let fadedBlue = LineStyle(hex: activeRouteColor(dark: dark), opacity: 0.3, width: 11)
@@ -131,6 +134,7 @@ final class RouteLayerRenderer {
         }
 
         updateActiveRouteGeometryProgress(on: map)
+        updateAlternativeRouteLayers(on: map)
         updatePlanningETAMarkers(on: map)
     }
 
@@ -209,6 +213,52 @@ final class RouteLayerRenderer {
         }
     }
 
+    private func updateAlternativeRouteLayers(on map: MLNMapView) {
+        guard let style = map.style else { return }
+        let sourceID = "naviastra-alternative-route-source"
+        let source: MLNShapeSource
+        if let existing = style.source(withIdentifier: sourceID) as? MLNShapeSource { source = existing }
+        else {
+            source = MLNShapeSource(identifier: sourceID, shape: nil, options: nil)
+            style.addSource(source)
+        }
+        let routes = parent.state.alternatives
+        let items = routes.map { AlternativeRouteRenderItem(id: $0.id, coordinates: $0.coordinates) }
+        if items != alternativeRenderItems || source.shape == nil {
+            let features = routes.filter { $0.coordinates.count > 1 }.map { route in
+                var points = route.coordinates.map(\.cl)
+                let feature = MLNPolylineFeature(coordinates: &points, count: UInt(points.count))
+                feature.attributes = ["routeID": route.id.uuidString]
+                return feature
+            }
+            source.shape = MLNShapeCollectionFeature(shapes: features)
+            alternativeRenderItems = items
+        }
+        let id = "naviastra-alternative-route-line"
+        let layer: MLNLineStyleLayer
+        if let existing = style.layer(withIdentifier: id) as? MLNLineStyleLayer { layer = existing }
+        else {
+            layer = MLNLineStyleLayer(identifier: id, source: source)
+            alternativeStyleKey = ""
+            layer.lineCap = NSExpression(forConstantValue: "round")
+            layer.lineJoin = NSExpression(forConstantValue: "round")
+            layer.lineDashPattern = NSExpression(forConstantValue: [5, 3])
+            layer.lineColorTransition = MLNTransitionMake(0.3, 0)
+            layer.lineOpacityTransition = MLNTransitionMake(0.3, 0)
+            if let active = style.layer(withIdentifier: "naviastra-active-route-casing") {
+                style.insertLayer(layer, below: active)
+            } else { style.addLayer(layer) }
+        }
+        let presentation = lineStyle(for: .alternative)
+        let styleKey = "\(presentation.hex):\(presentation.opacity):\(presentation.width)"
+        if alternativeStyleKey != styleKey {
+            layer.lineColor = NSExpression(forConstantValue: color(hex: presentation.hex, opacity: 1))
+            layer.lineOpacity = NSExpression(forConstantValue: presentation.opacity)
+            layer.lineWidth = NSExpression(forConstantValue: presentation.width)
+            alternativeStyleKey = styleKey
+        }
+    }
+
     func routeID(near point: CGPoint, on map: MLNMapView) -> UUID? {
         guard parent.state.status == .routePreview else { return nil }
         var routes = parent.state.routeOptions
@@ -216,6 +266,13 @@ final class RouteLayerRenderer {
             routes.append(selected)
         }
 
+        let touchRect = CGRect(origin: point, size: .zero).insetBy(dx: -22, dy: -22)
+        let hits = map.visibleFeatures(in: touchRect,
+            styleLayerIdentifiers: ["naviastra-alternative-route-line", "naviastra-active-route-line"])
+        let hitIDs = Set(hits.compactMap { ($0.attributes["routeID"] as? String).flatMap(UUID.init(uuidString:)) })
+        if !hitIDs.isEmpty {
+            routes = routes.filter { hitIDs.contains($0.id) || $0.id == parent.state.route?.id }
+        }
         var closestRouteID: UUID?
         var closestDistance = CGFloat.greatestFiniteMagnitude
         let selectedID = parent.state.route?.id
@@ -257,6 +314,7 @@ final class RouteLayerRenderer {
     func refreshStyle(on map: MLNMapView, context: RouteLayerRenderContext) {
         self.context = context
         updateActiveRouteStyle(on: map)
+        updateAlternativeRouteLayers(on: map)
     }
 
     func didLoadStyle(on map: MLNMapView, context: RouteLayerRenderContext) {
@@ -264,9 +322,13 @@ final class RouteLayerRenderer {
         activeRouteSource = nil
         completedRouteSource = nil
         activeRouteStyleKey = ""
+        alternativeRenderItems = []
+        alternativeStyleKey = ""
         activeGeometryProgressRouteID = nil
         activeGeometryProgressStep = nil
         if let route = parent.state.route { updateActiveRouteShape(route, on: map) }
+        updateRouteTrafficLines(on: map)
+        updateAlternativeRouteLayers(on: map)
     }
 
     func presentation(for polyline: MLNPolyline, context: RouteLayerRenderContext) -> LineStyle? {
@@ -660,32 +722,45 @@ final class RouteLayerRenderer {
     }
 
     private func updateRouteTrafficLines(on map: MLNMapView) {
+        guard let style = map.style else { return }
         let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
         let routeID = parent.state.route?.id
         let segments = parent.settings.overlays.traffic && parent.state.transportMode == .car && isNavigating
             ? (parent.state.traffic?.routeFlowSegments ?? []).filter { $0.routeID == routeID }
             : []
-        let segmentKeys = segments.map { "\($0.id):\($0.colorHex):\($0.isRoadClosure)" }
-        guard segmentKeys != shownRouteTrafficSegmentKeys else { return }
-        let previousLines = routeLines.filter { line in
-            if case .routeTraffic = line.kind { return true }
-            return false
+        let sourceID = "naviastra-route-traffic-source"
+        let source: MLNShapeSource
+        if let existing = style.source(withIdentifier: sourceID) as? MLNShapeSource { source = existing }
+        else {
+            source = MLNShapeSource(identifier: sourceID, shape: nil, options: nil)
+            style.addSource(source)
         }
-        map.removeAnnotations(previousLines.map(\.polyline))
-        routeLines.removeAll { line in
-            if case .routeTraffic = line.kind { return true }
-            return false
-        }
-        shownRouteTrafficSegmentKeys = segmentKeys
-        guard let routeID else { return }
-        for segment in segments {
-            let isSevereJam = segment.colorHex == RouteColorPalette.trafficHeavy
-            let paths = segment.isRoadClosure || isSevereJam
-                ? RouteMapGeometry.dashedSegments(segment.coordinates, dashLength: 42, gapLength: 28)
-                : [segment.coordinates]
-            for path in paths {
-                addLine(path, kind: .routeTraffic(color: segment.colorHex), routeID: routeID, to: map)
+        // Compare coordinates as well as IDs, without allocating geometry strings every update.
+        let items = segments.map { RouteTrafficRenderItem(id: $0.id, coordinates: $0.coordinates,
+            colorHex: $0.colorHex, dashed: $0.isRoadClosure || $0.colorHex == RouteColorPalette.trafficHeavy) }
+        if items != routeTrafficRenderItems || source.shape == nil {
+            let features: [MLNPolylineFeature] = items.filter { $0.coordinates.count > 1 }.map { item in
+                var points = item.coordinates.map(\.cl)
+                let feature = MLNPolylineFeature(coordinates: &points, count: UInt(points.count))
+                feature.attributes = ["color": String(format: "#%06X", item.colorHex),
+                                      "width": trafficLineWidth(for: item.colorHex), "dashed": item.dashed]
+                return feature
             }
+            source.shape = MLNShapeCollectionFeature(shapes: features)
+            routeTrafficRenderItems = items
+        }
+        for dashed in [false, true] {
+            let id = "naviastra-route-traffic-\(dashed ? "dashed" : "solid")"
+            guard style.layer(withIdentifier: id) == nil else { continue }
+            let layer = MLNLineStyleLayer(identifier: id, source: source)
+            layer.predicate = NSPredicate(format: "dashed == %@", NSNumber(value: dashed))
+            layer.lineColor = NSExpression(mglJSONObject: ["to-color", ["get", "color"]])
+            layer.lineWidth = NSExpression(forKeyPath: "width")
+            layer.lineOpacity = NSExpression(forConstantValue: 0.98)
+            layer.lineCap = NSExpression(forConstantValue: "round")
+            layer.lineJoin = NSExpression(forConstantValue: "round")
+            if dashed { layer.lineDashPattern = NSExpression(forConstantValue: [2, 1.4]) }
+            style.addLayer(layer)
         }
     }
 

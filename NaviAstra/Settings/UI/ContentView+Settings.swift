@@ -36,6 +36,11 @@ extension ContentView {
     private var settingsForm: some View {
         Form {
             Section("Nawigacja") {
+                NavigationLink("Zasięg, ślady GPS i obszary omijane") {
+                    ValhallaToolsView(endpoint: URL(string: serverAddress),
+                        origin: navigationStore.state.location?.coordinate,
+                        navigation: navigationStore, trips: placeStore.trips)
+                }
                 settingsCategory("Historia przejazdów", subtitle: "Ukończone trasy i oceny prowadzenia",
                                  icon: "clock.arrow.circlepath") {
                     settingsTripHistoryPage
@@ -63,6 +68,15 @@ extension ContentView {
                                  icon: "map.fill") {
                     settingsMapPage
                 }
+                #if os(iOS)
+                settingsCategory("Mapy offline", subtitle: "Pobieranie i zarządzanie obszarami",
+                                 icon: "arrow.down.circle.fill") {
+                    OfflineMapsView(location: navigationStore.state.location?.coordinate,
+                                    destination: navigationStore.state.destination,
+                                    savedPlaces: placeStore.places,
+                                    route: navigationStore.state.route?.coordinates ?? [])
+                }
+                #endif
             }
             Section("Usługi nawigacyjne") {
                 settingsCategory("Ruch drogowy",
@@ -543,14 +557,28 @@ extension ContentView {
     }
 
     private var settingsDisclaimer: some View {
-        Text("Mapa, wyszukiwanie, routing, limity i ruch na żywo wymagają internetu. TomTom może zmienić ETA i wybór spośród wariantów Valhalli; limity są informacyjne. Trasy i GPS są zapisywane tylko w lokalnej historii podróży. Tryb offline nie jest dostępny.")
-            .font(.footnote)
+        #if os(iOS)
+        let text = "Pobrane obszary mapy można przeglądać bez internetu. Wyszukiwanie, wyznaczanie nowych tras, limity i ruch na żywo wymagają połączenia. TomTom może zmienić ETA i wybór spośród wariantów Valhalli; limity są informacyjne. Trasy i GPS są zapisywane tylko w lokalnej historii podróży."
+        #else
+        let text = "Mapa, wyszukiwanie, routing, limity i ruch na żywo wymagają internetu. TomTom może zmienić ETA i wybór spośród wariantów Valhalli; limity są informacyjne. Trasy i GPS są zapisywane tylko w lokalnej historii podróży. Tryb offline nie jest dostępny."
+        #endif
+        return Text(text).font(.footnote)
     }
 
     var routeSettingsSheet: some View {
         let mode = navigationStore.state.transportMode
         return NavigationStack {
             Form {
+                Section {
+                    NavigationLink("Profile, dostępność i preferencje") {
+                        ValhallaPreferencesView(navigation: navigationStore)
+                    }
+                    NavigationLink("Zasięg, ślady GPS i obszary omijane") {
+                        ValhallaToolsView(endpoint: URL(string: serverAddress),
+                            origin: routeOriginPoint?.coordinate ?? navigationStore.state.location?.coordinate,
+                            navigation: navigationStore, trips: placeStore.trips)
+                    }
+                }
                 if supportsActiveTripRoadPreferences {
                     Section(mode == .parkRide ? "Odcinek samochodowy" : "Preferencje trasy") {
                         Toggle("Unikaj dróg płatnych", isOn: routePreferenceBinding(\.avoidTolls))
@@ -582,12 +610,13 @@ extension ContentView {
                 }
 
                 Section {
-                    Text("Zmiany zapisują się automatycznie i zostaną użyte przy kolejnym przeliczeniu odcinka samochodowego.")
+                    Text("Zmiany zapisują się automatycznie. W podglądzie przeliczają trasę, a podczas nawigacji zostaną użyte przy kolejnym przeliczeniu.")
                         .font(.footnote)
                         .foregroundStyle(Color.naviTextSecondary)
                 }
             }
             .navigationTitle("Ustawienia trasy")
+            .onAppear { routePlanningStore.loadPreferences(from: navigationStore) }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Zamknij") { appRouter.dismiss(.routeSettings) }

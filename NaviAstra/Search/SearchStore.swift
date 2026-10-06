@@ -96,7 +96,7 @@ final class SearchStore {
         }
         let routeTarget: Coordinate?
         if let waypoint = state.waypoints.first {
-            if waypoint.poi != nil {
+            if alongRoute, waypoint.poi != nil {
                 routeTarget = await POIAccessResolver.shared.resolve(for: waypoint,
                                                                       mode: state.transportMode)?.coordinate
                     ?? waypoint.coordinate

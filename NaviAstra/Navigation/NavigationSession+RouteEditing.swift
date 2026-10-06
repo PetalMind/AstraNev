@@ -260,9 +260,15 @@ extension NavigationSession {
         do {
             let target = destinationRouteCoordinate(for: destination)
             let routedWaypoints = await routedDestinations(state.waypoints, mode: state.transportMode)
-            let order = try await provider.optimizedWaypointOrder(from: origin, to: target,
-                                                                 waypoints: routedWaypoints, mode: mode,
-                                                                 preferences: preferences)
+            guard state.journeyTimeMode != .arriveBy else {
+                throw ValhallaFeatureError.message("Serwer nie obsługuje optymalizacji przystanków według godziny przyjazdu. Wybierz godzinę wyjazdu lub zmień kolejność ręcznie.")
+            }
+            let time = try await ValhallaPlanningTime.resolved(mode: state.journeyTimeMode,
+                date: state.journeyTargetTime, coordinate: origin)
+            let order = try await RoadRoutingContext.$planningTime.withValue(time) {
+                try await provider.optimizedWaypointOrder(from: origin, to: target,
+                    waypoints: routedWaypoints, mode: mode, preferences: preferences)
+            }
             try RoadRoutingContext.checkCancellation()
             guard generation == requestGeneration, state.destination?.id == destination.id,
                   state.waypoints == waypoints, state.transportMode == mode,

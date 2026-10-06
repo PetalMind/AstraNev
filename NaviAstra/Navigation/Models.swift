@@ -185,6 +185,7 @@ enum JourneyTimeMode: String, CaseIterable, Identifiable {
 }
 
 struct RoutingPreferences: Codable, Equatable {
+    var advanced = ValhallaRoutingOptions()
     var avoidTolls = false
     var avoidHighways = false
     var avoidFerries = false
@@ -203,6 +204,7 @@ struct RoutingPreferences: Codable, Equatable {
     init() {}
 
     private enum CodingKeys: String, CodingKey {
+        case advanced
         case avoidTolls, avoidHighways, avoidFerries, avoidUnpaved
         case evPlanningEnabled, evRangeKilometers, evBatteryPercent
         case evConsumptionKWhPer100Km, evMaximumChargingPowerKW, evConnectorTypes
@@ -210,6 +212,7 @@ struct RoutingPreferences: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        advanced = try values.decodeIfPresent(ValhallaRoutingOptions.self, forKey: .advanced) ?? ValhallaRoutingOptions()
         avoidTolls = try values.decodeIfPresent(Bool.self, forKey: .avoidTolls) ?? false
         avoidHighways = try values.decodeIfPresent(Bool.self, forKey: .avoidHighways) ?? false
         avoidFerries = try values.decodeIfPresent(Bool.self, forKey: .avoidFerries) ?? false
@@ -288,6 +291,7 @@ nonisolated struct RouteTravelSegment: Sendable {
 nonisolated enum RoadRoutingContext {
     @TaskLocal static var cancellationToken: TransitPlanningCancellationToken?
     @TaskLocal static var heading: Double?
+    @TaskLocal static var planningTime: ValhallaPlanningTime?
 
     static func checkCancellation() throws {
         try Task.checkCancellation()

@@ -3,12 +3,12 @@ import CoreFoundation
 
 actor ValhallaRouteInformationProvider {
     static let shared = ValhallaRouteInformationProvider()
-    private var cache: [String: DetailedRouteInformation] = [:]
+    private var cache: [String: (date: Date, details: DetailedRouteInformation)] = [:]
 
     func load(_ source: RouteInformationSource) async throws -> DetailedRouteInformation {
         guard source.endpoint.scheme == "https" else { throw RoutingError.invalidEndpoint }
-        let key = source.endpoint.absoluteString + source.costing + source.shapes.joined(separator: "|")
-        if let cached = cache[key] { return cached }
+        let key = source.endpoint.absoluteString + source.costing + String(describing: source.planningTime) + source.shapes.joined(separator: "|")
+        if let cached = cache[key], Date().timeIntervalSince(cached.date) < 60 { return cached.details }
         var details = DetailedRouteInformation(totalLegs: source.shapes.count)
         var offset = 0.0
         for shape in source.shapes {
@@ -52,7 +52,7 @@ actor ValhallaRouteInformationProvider {
         details.notices = Array(Set(details.notices)).sorted()
         if details.completedLegs == details.totalLegs {
             if cache.count >= 8 { cache.removeAll() }
-            cache[key] = details
+            cache[key] = (Date(), details)
         }
         return details
     }
@@ -62,23 +62,32 @@ actor ValhallaRouteInformationProvider {
         request.httpMethod = "POST"
         request.timeoutInterval = 20
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("NaviAstra", forHTTPHeaderField: "X-Client-Id")
         let keys = ["edge.names", "edge.length", "edge.road_class", "edge.use", "edge.toll", "edge.unpaved",
                     "edge.tunnel", "edge.bridge", "edge.roundabout", "edge.drive_on_right", "edge.surface",
                     "edge.sign.exit_number", "edge.sign.exit_branch", "edge.sign.exit_toward", "edge.sign.exit_name",
                     "edge.mean_elevation", "edge.max_upward_grade", "edge.max_downward_grade", "edge.lane_count",
                     "edge.cycle_lane", "edge.bicycle_network", "edge.sac_scale", "edge.shoulder", "edge.sidewalk",
                     "edge.speed_limit", "edge.truck_speed", "edge.truck_route", "edge.country_crossing",
-                    "edge.traffic_signal", "edge.hov_type", "node.time_zone", "admin.country_text", "admin.state_text"]
+                    "edge.traffic_signal", "edge.hov_type", "node.time_zone", "admin.country_text", "admin.state_text",
+                    "edge.way_id", "edge.id", "edge.traversability", "edge.begin_heading", "edge.end_heading",
+                    "edge.begin_shape_index", "edge.end_shape_index", "edge.speed", "edge.speeds_non_faded",
+                    "edge.begin_osm_node_id", "edge.end_osm_node_id", "node.elapsed_time", "node.type",
+                    "node.intersecting_edge.begin_heading", "node.intersecting_edge.driveability",
+                    "node.intersecting_edge.cyclability", "node.intersecting_edge.walkability",
+                    "node.intersecting_edge.road_class", "node.intersecting_edge.lane_count",
+                    "shape_attributes.time", "shape_attributes.length", "shape_attributes.speed",
+                    "shape_attributes.closure", "shape_attributes.congestion", "osm_changeset"]
         var payload: [String: Any] = ["encoded_polyline": shape, "shape_match": "edge_walk",
                                     "costing": source.costing, "units": "kilometers",
                                     "filters": ["action": "include", "attributes": keys]]
         if elevation { payload["elevation_interval"] = 30 }
+        payload["date_time"] = (source.planningTime ?? ValhallaPlanningTime(type: 0)).payload
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
         try await ValhallaRequestGate.shared.waitUntilAllowed(for: source.endpoint)
         try Task.checkCancellation()
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw RoutingError.invalidResponse }
-        guard (200...299).contains(http.statusCode) else { throw RoutingError.server(http.statusCode) }
+        try ValhallaServices.validate(data: data, response: response)
         return data
     }
 
@@ -88,12 +97,13 @@ actor ValhallaRouteInformationProvider {
               !edges.isEmpty else { throw RoutingError.invalidResponse }
         var result = DetailedRouteInformation()
         var distance = offset
+        let shapeAttributes = root["shape_attributes"] as? [String: Any]
         for edge in edges {
             guard let length = number(edge["length"]), length >= 0, length <= 50000 else { throw RoutingError.invalidResponse }
             let meters = length * 1000
             result.sections.append(RouteRoadSection(id: firstID + result.sections.count,
                 startMeters: distance, lengthMeters: meters, names: edge["names"] as? [String] ?? [],
-                attributes: attributes(edge)))
+                attributes: attributes(edge) + shapeItems(edge, shape: shapeAttributes)))
             distance += meters
         }
         if let samples = root["elevation"] as? [Any], let interval = number(root["elevation_interval"]), interval > 0 {
@@ -105,7 +115,43 @@ actor ValhallaRouteInformationProvider {
         }
         result.countries = (root["admins"] as? [[String: Any]] ?? []).compactMap { $0["country_text"] as? String }
         result.regions = (root["admins"] as? [[String: Any]] ?? []).compactMap { $0["state_text"] as? String }
-        result.notices = (root["warnings"] as? [[String: Any]] ?? []).compactMap { $0["description"] as? String }
+        if let changeset = root["osm_changeset"] as? NSNumber {
+            result.notices.append("Identyfikator zbioru danych OSM: " + changeset.stringValue)
+        }
+        result.notices += (root["warnings"] as? [[String: Any]] ?? []).compactMap { $0["description"] as? String }
+        return result
+    }
+
+
+    nonisolated private static func shapeItems(_ edge: [String: Any], shape: [String: Any]?) -> [RouteInformationItem] {
+        guard let shape, let begin = number(edge["begin_shape_index"]), let end = number(edge["end_shape_index"]),
+              begin >= 0, end > begin, end < 1_000_000 else { return [] }
+        let start = Int(begin), finish = Int(end)
+        var result: [RouteInformationItem] = []
+        if let speeds = shape["speed"] as? [Double], speeds.count >= finish {
+            let values = speeds[start..<finish].filter { $0.isFinite && $0 >= 0 }
+            if let low = values.min(), let high = values.max() {
+                result.append(RouteInformationItem(title: "Prędkości fragmentów wg modelu", value: "\(Int(low.rounded()))–\(Int(high.rounded())) km/h"))
+            }
+        }
+        if let times = shape["time"] as? [Double], times.count >= finish {
+            let values = times[start..<finish]
+            if values.allSatisfy({ $0.isFinite && $0 >= 0 }) {
+                result.append(RouteInformationItem(title: "Czas fragmentu wg modelu", value: "\(Int(values.reduce(0, +).rounded())) s"))
+            }
+        }
+        if let closures = (shape["closure"] ?? shape["closures"]) as? [[String: Any]], closures.contains(where: {
+            guard let from = number($0["begin_shape_index"]), let to = number($0["end_shape_index"]) else { return false }
+            return from < end && to > begin
+        }) { result.append(RouteInformationItem(title: "Zamknięcie zgłoszone przez serwer", value: "Tak")) }
+        let flows = edge["speeds_non_faded"] as? [String: Any]
+        // Servers may emit an all-zero congestion array without any traffic data.
+        if flows?["current_flow"] != nil, let congestions = shape["congestion"] as? [Double], congestions.count >= finish {
+            let values = congestions[start..<finish].filter { $0.isFinite && $0 >= 0 && $0 <= 100 }
+            if let maxValue = values.max() {
+                result.append(RouteInformationItem(title: "Natężenie wg serwera (0–100)", value: String(format: "%.0f", maxValue)))
+            }
+        }
         return result
     }
 
@@ -122,6 +168,37 @@ actor ValhallaRouteInformationProvider {
         func translated(_ key: String, _ options: [String: String]) -> String? {
             guard let value = edge[key] as? String else { return nil }
             return options[value] // Unknown future enum values aren't invented as user facts.
+        }
+        if let wayID = edge["way_id"] as? NSNumber { add("Droga OSM", wayID.stringValue) }
+        if let edgeID = edge["id"] as? NSNumber { add("Odcinek grafu", edgeID.stringValue) }
+        add("Przejezdność", translated("traversability", ["forward":"Zgodnie z kierunkiem odcinka", "backward":"Przeciwnie do kierunku odcinka", "both":"W obu kierunkach"]))
+        for (key, title) in [("begin_heading", "Kierunek początku"), ("end_heading", "Kierunek końca")] {
+            if let value = number(edge[key]), (0..<360).contains(value) { add(title, "\(Int(value.rounded()))°") }
+        }
+        if let speed = number(edge["speed"]), speed > 0 { add("Prędkość modelu routingu", "\(Int(speed.rounded())) km/h") }
+        if let flows = edge["speeds_non_faded"] as? [String: Any] {
+            for (key, title) in [("current_flow", "Prędkość bieżącego ruchu"), ("predicted_flow", "Prędkość przewidywana"),
+                                 ("free_flow", "Prędkość swobodnego ruchu")] {
+                if let speed = number(flows[key]), speed >= 0 { add(title, "\(Int(speed.rounded())) km/h") }
+            }
+        }
+        if let node = edge["end_node"] as? [String: Any] {
+            if let elapsed = number(node["elapsed_time"]) { add("Czas od startu wg modelu", "\(Int(elapsed.rounded())) s") }
+            if let nodeID = node["node_id"] as? NSNumber { add("Węzeł OSM na końcu", nodeID.stringValue) }
+            if let intersections = node["intersecting_edges"] as? [[String: Any]], !intersections.isEmpty {
+                add("Odnogi skrzyżowania", "\(intersections.count)")
+                for (index, intersection) in intersections.enumerated() {
+                    var parts: [String] = []
+                    if let heading = number(intersection["begin_heading"]) { parts.append("\(Int(heading.rounded()))°") }
+                    for (key, label) in [("driveability","auto"),("cyclability","rower"),("walkability","pieszo")] {
+                        if let value = intersection[key] as? String,
+                           let direction = ["forward":"w kierunku odnogi", "backward":"z kierunku odnogi", "both":"oba kierunki", "none":"brak dostępu"][value] {
+                            parts.append("\(label): \(direction)")
+                        }
+                    }
+                    add("Odnoga \(index + 1)", parts.joined(separator: " · "))
+                }
+            }
         }
         add("Nawierzchnia", translated("surface", ["paved_smooth":"Utwardzona gładka", "paved":"Utwardzona",
             "paved_rough":"Utwardzona nierówna", "compacted":"Ubita", "dirt":"Gruntowa", "gravel":"Żwirowa",

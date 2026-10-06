@@ -373,7 +373,7 @@ struct PhotonSearchProvider: SearchProvider {
     func search(_ query: String, near: Coordinate?, addressesOnly: Bool,
                 osmTag: String? = nil) async throws -> [SearchResult] {
         var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
-        var items = [URLQueryItem(name: "q", value: query), URLQueryItem(name: "limit", value: "20"), URLQueryItem(name: "lang", value: "pl"),
+        var items = [URLQueryItem(name: "q", value: query), URLQueryItem(name: "limit", value: "20"), URLQueryItem(name: "lang", value: "default"),
                      // Keep separate branches sharing a name/postcode. Dedupe by identity downstream.
                      URLQueryItem(name: "dedupe", value: "0")]
         if let osmTag { items.append(URLQueryItem(name: "osm_tag", value: osmTag)) }

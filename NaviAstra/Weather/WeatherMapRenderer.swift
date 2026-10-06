@@ -17,23 +17,26 @@ import UIKit
         tint.backgroundColor = NSExpression(forConstantValue: color(configuration.tintHex))
         tint.backgroundOpacity = NSExpression(forConstantValue: configuration.tintOpacity)
         let sourceID = "naviastra-weather-route-source"
-        guard samples != lastSamples || (style.source(withIdentifier: sourceID) == nil && !samples.isEmpty) else { return }
-        lastSamples = samples
-        for layer in style.layers where layer.identifier.hasPrefix("naviastra-weather-segment-") { style.removeLayer(layer) }
-        if let source = style.source(withIdentifier: sourceID) { style.removeSource(source) }
-        guard !samples.isEmpty else { return }
-        let features: [MLNPolylineFeature] = samples.map { sample in
+        let layerID = "naviastra-weather-route"
+        guard samples != lastSamples || style.source(withIdentifier: sourceID) == nil
+                || style.layer(withIdentifier: layerID) == nil else { return }
+        let source: MLNShapeSource
+        if let existing = style.source(withIdentifier: sourceID) as? MLNShapeSource { source = existing }
+        else {
+            source = MLNShapeSource(identifier: sourceID, shape: nil, options: nil)
+            style.addSource(source)
+        }
+        let features: [MLNPolylineFeature] = samples.filter { $0.coordinates.count > 1 }.map { sample in
             var coordinates = sample.coordinates.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
             let feature = MLNPolylineFeature(coordinates: &coordinates, count: UInt(coordinates.count))
-            feature.attributes = ["sample": sample.index]
+            feature.attributes = ["color": String(format: "#%06X", sample.weather.condition.colorHex)]
             return feature
         }
-        let source = MLNShapeSource(identifier: sourceID, features: features, options: nil)
-        style.addSource(source)
-        for sample in samples {
-            let layer = MLNLineStyleLayer(identifier: "naviastra-weather-segment-\(sample.index)", source: source)
-            layer.predicate = NSPredicate(format: "sample == %d", sample.index)
-            layer.lineColor = NSExpression(forConstantValue: color(sample.weather.condition.colorHex))
+        source.shape = MLNShapeCollectionFeature(shapes: features)
+        lastSamples = samples
+        if style.layer(withIdentifier: layerID) == nil {
+            let layer = MLNLineStyleLayer(identifier: layerID, source: source)
+            layer.lineColor = NSExpression(mglJSONObject: ["to-color", ["get", "color"]])
             layer.lineOpacity = NSExpression(forConstantValue: 0.20)
             layer.lineWidth = NSExpression(forConstantValue: 26)
             layer.lineBlur = NSExpression(forConstantValue: 5)

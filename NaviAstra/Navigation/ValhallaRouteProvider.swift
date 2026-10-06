@@ -57,6 +57,7 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
         request.httpMethod = "POST"
         request.timeoutInterval = 15
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("NaviAstra", forHTTPHeaderField: "X-Client-Id")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "sources": [["lat": source.latitude, "lon": source.longitude]],
             "targets": targets.map { ["lat": $0.latitude, "lon": $0.longitude] },
@@ -67,8 +68,7 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
         ])
         try await ValhallaRequestGate.shared.waitUntilAllowed(for: endpoint)
         let (data, response) = try await RoadRoutingContext.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw RoutingError.invalidResponse }
-        guard (200...299).contains(http.statusCode) else { throw RoutingError.server(http.statusCode) }
+        try ValhallaServices.validate(data: data, response: response)
         let result = try JSONDecoder().decode(MatrixResponse.self, from: data)
         let matrix = result.sourcesToTargets
         guard let durations = matrix.durations.first, durations.count == targets.count,
@@ -99,9 +99,10 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
         request.httpMethod = "POST"
         request.timeoutInterval = 15
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("NaviAstra", forHTTPHeaderField: "X-Client-Id")
         var payload: [String: Any] = [
             "locations": ([from] + through + [to]).map { ["lat": $0.latitude, "lon": $0.longitude] },
-            "costing": mode.valhallaCosting,
+            "costing": preferences.advanced.costing(for: mode),
             "units": "kilometers",
             "directions_options": ["language": "pl-PL"],
             "alternates": through.isEmpty ? 2 : 0,
@@ -128,11 +129,49 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
             if preferences.avoidUnpaved { carOptions["exclude_unpaved"] = true }
             if !carOptions.isEmpty { payload["costing_options"] = ["auto": carOptions] }
         }
+        try preferences.applyValhallaOptions(to: &payload, mode: mode)
+        if through.isEmpty, (RoadRoutingContext.planningTime?.type ?? 0) == 0 {
+            // Time-dependent A* returns only one path. For departure now, use
+            // bidirectional A* to obtain alternatives while retaining date_time
+            // for time-aware access checks and ETA calculation. Keep scheduled
+            // departures/arrivals on their time-dependent algorithms.
+            payload["prioritize_bidirectional"] = true
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-        try await ValhallaRequestGate.shared.waitUntilAllowed(for: endpoint)
-        let (data, response) = try await RoadRoutingContext.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw RoutingError.invalidResponse }
-        guard (200...299).contains(http.statusCode) else { throw RoutingError.server(http.statusCode) }
+        let (data, offline) = try await routeData(for: request, mode: mode)
+        try RoadRoutingContext.checkCancellation()
+        let routes = try decodeRoutes(data, mode: mode, costing: preferences.advanced.costing(for: mode), offline: offline)
+        return preferences.advanced.shortest ? routes.sorted { $0.distance < $1.distance } : routes
+    }
+
+    private func routeData(for request: URLRequest, mode: TransportMode) async throws -> (Data, Bool) {
+        #if os(iOS)
+        let store = OfflineRoutingStore.shared
+        if store.preferOffline || store.networkUnavailable {
+            guard let body = request.httpBody else { throw RoutingError.invalidResponse }
+            return (try await OfflineRoutingEngine.shared.route(request: body, pack: store.activePack, mode: mode), true)
+        }
+        #endif
+        do {
+            try await ValhallaRequestGate.shared.waitUntilAllowed(for: endpoint)
+            let (data, response) = try await RoadRoutingContext.data(for: request)
+            try ValhallaServices.validate(data: data, response: response)
+            return (data, false)
+        } catch {
+            #if os(iOS)
+            let connectionErrors: [URLError.Code] = [.notConnectedToInternet, .networkConnectionLost,
+                .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed, .timedOut]
+            if let failure = error as? URLError, connectionErrors.contains(failure.code) {
+                try RoadRoutingContext.checkCancellation()
+                guard let body = request.httpBody else { throw RoutingError.invalidResponse }
+                return (try await OfflineRoutingEngine.shared.route(request: body, pack: store.activePack, mode: mode), true)
+            }
+            #endif
+            throw error
+        }
+    }
+
+    func decodeRoutes(_ data: Data, mode: TransportMode, costing: String, offline: Bool = false) throws -> [NavigationRoute] {
         let result = try JSONDecoder().decode(Response.self, from: data)
         let trips = [result.trip] + (result.alternates ?? []).map(\.trip)
         let routes = trips.compactMap { trip -> NavigationRoute? in
@@ -199,11 +238,13 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
                                        warnings: trip.warnings?.compactMap(\.description) ?? [],
                                        countries: Array(Set(legs.flatMap { $0.admins?.compactMap(\.countryText) ?? [] })).sorted(),
                                        destinationSide: trip.locations?.last?.sideOfStreet,
-                                       source: RouteInformationSource(endpoint: endpoint, shapes: legs.map(\.shape),
-                                                                      costing: mode.valhallaCosting)))
+                                       departureLocalTime: trip.locations?.first?.dateTime,
+                                       arrivalLocalTime: trip.locations?.last?.dateTime,
+                                       source: offline ? nil : RouteInformationSource(endpoint: endpoint, shapes: legs.map(\.shape),
+                                                                      costing: costing, planningTime: RoadRoutingContext.planningTime)))
         }
         guard !routes.isEmpty else { throw RoutingError.invalidResponse }
-        guard mode == .car else { return routes }
+        guard mode == .car, costing == "auto" else { return routes }
         // Return ready routes immediately; auxiliary Overpass requests must not block routing.
         return CarRouteRanking.ranked(routes)
     }
@@ -216,11 +257,12 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
         request.httpMethod = "POST"
         request.timeoutInterval = 25
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("NaviAstra", forHTTPHeaderField: "X-Client-Id")
         var payload: [String: Any] = [
             "locations": ([from] + waypoints.map(\.coordinate) + [to]).map {
                 ["lat": $0.latitude, "lon": $0.longitude]
             },
-            "costing": mode.valhallaCosting,
+            "costing": preferences.advanced.costing(for: mode),
             "units": "kilometers"
         ]
         if mode == .car {
@@ -233,16 +275,17 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
             if preferences.avoidUnpaved { carOptions["exclude_unpaved"] = true }
             if !carOptions.isEmpty { payload["costing_options"] = ["auto": carOptions] }
         }
+        try preferences.applyValhallaOptions(to: &payload, mode: mode)
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
         try await ValhallaRequestGate.shared.waitUntilAllowed(for: endpoint)
         let (data, response) = try await RoadRoutingContext.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw RoutingError.invalidResponse }
-        guard (200...299).contains(http.statusCode) else { throw RoutingError.server(http.statusCode) }
+        try ValhallaServices.validate(data: data, response: response)
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw RoutingError.invalidResponse
         }
         let optimized = object["optimized_route"] as? [String: Any] ?? object
-        guard let locations = (optimized["locations"] as? [[String: Any]]) ??
+        guard let locations = ((object["trip"] as? [String: Any])?["locations"] as? [[String: Any]]) ??
+                (optimized["locations"] as? [[String: Any]]) ??
                 (object["locations"] as? [[String: Any]]) else { throw RoutingError.invalidResponse }
         let indexes = locations.compactMap { $0["original_index"] as? Int }
         let ordered = indexes.filter { $0 > 0 && $0 <= waypoints.count }.map { $0 - 1 }
@@ -294,7 +337,8 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
     private struct RouteWarning: Decodable { let description: String? }
     private struct RouteLocation: Decodable {
         let sideOfStreet: String?
-        enum CodingKeys: String, CodingKey { case sideOfStreet = "side_of_street" }
+        let dateTime: String?
+        enum CodingKeys: String, CodingKey { case sideOfStreet = "side_of_street", dateTime = "date_time" }
     }
     private struct Admin: Decodable {
         let countryText: String?

@@ -1,6 +1,7 @@
 #if os(iOS)
 import Foundation
 import MapLibre
+import OSLog
 import QuartzCore
 import SwiftUI
 import UIKit
@@ -196,7 +197,7 @@ struct MapLibreView: UIViewRepresentable {
     @Environment(\.colorScheme) private var colorScheme
 
     // One layer graph keeps the camera and annotations intact during day/night transitions.
-    private var styleURL: URL { URL(string: "https://tiles.openfreemap.org/styles/liberty")! }
+    private var styleURL: URL { MapResourceConfiguration.url }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -246,9 +247,13 @@ struct MapLibreView: UIViewRepresentable {
         coordinator.stopMapRoadPOIUpdates()
         coordinator.stopShopLogoUpdates()
         coordinator.stopDeferredAnnotationUpdates()
+        NotificationCenter.default.removeObserver(coordinator,
+            name: UIAccessibility.voiceOverStatusDidChangeNotification, object: nil)
     }
 
     final class Coordinator: NSObject, MLNMapViewDelegate, UIGestureRecognizerDelegate {
+        private let mapLogger = Logger(subsystem: "NaviAstra", category: "MapLibre")
+        private var lastRenderingLogAt = Date.distantPast
         var parent: MapLibreView
         weak var map: MLNMapView?
         private var trafficLines: [StyledLine] = []
@@ -329,6 +334,14 @@ struct MapLibreView: UIViewRepresentable {
         init(_ parent: MapLibreView) {
             self.parent = parent
             lastStyleURL = parent.styleURL
+            super.init()
+            NotificationCenter.default.addObserver(self, selector: #selector(voiceOverStatusChanged),
+                name: UIAccessibility.voiceOverStatusDidChangeNotification, object: nil)
+        }
+
+        @objc private func voiceOverStatusChanged() {
+            guard let map else { return }
+            updateTransitStopPins(on: map)
         }
 
         func startBuildingLightingUpdates() {
@@ -437,6 +450,11 @@ struct MapLibreView: UIViewRepresentable {
                 let location = CLLocation(latitude: annotation.coordinate.latitude, longitude: annotation.coordinate.longitude)
                 return location.distance(from: tappedLocation) < 25
             }) else { return }
+            if transitStopRenderer.handleTap(at: point, on: map, onExpandCluster: {
+                parent.onMapPan()
+                parent.state.cameraState = .freeLook
+                parent.state.cameraIntent = nil
+            }, onSelect: parent.onTransitStopSelect) { return }
             if let routeID = routeLayerRenderer.routeID(near: point, on: map) {
                 parent.onRouteSelect(routeID)
                 return
@@ -541,7 +559,28 @@ struct MapLibreView: UIViewRepresentable {
             updatePositionMarker(bearing: puckEngine.frame()?.bearing)
         }
 
+        func mapViewDidFailLoadingMap(_ mapView: MLNMapView, withError error: Error) {
+            // Error descriptions can contain resource URLs; keep them private in system logs.
+            mapLogger.error("Map loading failed: \(error.localizedDescription, privacy: .private)")
+        }
+
+        func mapViewRendererDidError(_ mapView: MLNMapView) {
+            mapLogger.error("Map renderer reported an error")
+        }
+
+        func mapViewDidFinishRenderingFrame(_ mapView: MLNMapView, fullyRendered: Bool,
+                                           renderingStats: MLNRenderingStats) {
+            mapViewDidFinishRenderingFrame(mapView, fullyRendered: fullyRendered)
+            // Avoid doing work on every frame or logging user coordinates.
+            #if DEBUG
+            guard Date().timeIntervalSince(lastRenderingLogAt) >= 10 else { return }
+            lastRenderingLogAt = Date()
+            mapLogger.debug("Frame: draw calls=\(renderingStats.numDrawCalls), textures=\(renderingStats.numActiveTextures), texture bytes=\(renderingStats.memTextures), buffer bytes=\(renderingStats.memBuffers)")
+            #endif
+        }
+
         func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
+            mapLogger.info("Map style loaded: \(style.layers.count) layers, \(style.sources.count) sources")
             navigationStyle.reset()
             buildingGlowNeedsUpdate = true
             buildingGlowKey = ""
