@@ -1778,6 +1778,16 @@ extension ContentView {
                 }
             }
 
+            if let trip = navigationStore.state.lastTrip, trip.transportMode == .car,
+               let estimate = energyStore.estimate(for: trip, trips: placeStore.trips) {
+                EnergyCostLabel(estimate: estimate)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .modifier(NavigationGlassSurface(radius: 19))
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+            }
+
             arrivalDrivingScoreSummary
 
             arrivalParkedCarPrompt

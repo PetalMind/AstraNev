@@ -124,9 +124,13 @@ extension NavigationSession {
                                                          through: endDistance, queries: flowQueries,
                                                          samples: flowSamples, geometry: geometry)
                     : []
-                return (matchedIncidents, segments)
+                let colors = shouldFetchFlow
+                    ? RouteTrafficMonitor.displaySegments(on: route, from: startDistance,
+                        through: endDistance, queries: flowQueries, samples: flowSamples, geometry: geometry)
+                    : []
+                return (matchedIncidents, segments, colors)
             }
-            let (matchedIncidents, routeFlowSegments) = await processingTask.value
+            let (matchedIncidents, routeFlowSegments, routeColorSegments) = await processingTask.value
             guard generation == self.trafficGeneration,
                   self.state.route?.id == routeID else { return }
 
@@ -138,7 +142,8 @@ extension NavigationSession {
                 self.routeFlowRouteID = routeID
                 self.lastRouteFlowFetch = Date()
                 self.routeTrafficFlowSegments = routeFlowSegments
-                self.routeTrafficFlowUpdatedAt = self.routeTrafficFlowSegments.isEmpty ? nil : Date()
+                self.routeTrafficColorSegments = routeColorSegments
+                self.routeTrafficFlowUpdatedAt = routeFlowSegments.isEmpty && routeColorSegments.isEmpty ? nil : Date()
             }
 
             self.publishTrafficSnapshot()
@@ -198,13 +203,29 @@ extension NavigationSession {
         }
         let routeUpdatedAt = routeDataIsFresh ? (routeTrafficUpdatedAt ?? .distantPast) : .distantPast
         let flowUpdatedAt = routeFlowDataIsFresh ? (routeTrafficFlowUpdatedAt ?? .distantPast) : .distantPast
+        var colors = routeFlowDataIsFresh ? routeTrafficColorSegments : []
+        // Publish a nearby measured road before the full route corridor completes.
+        if let route = state.route, let flow = nearby?.flow,
+           Date().timeIntervalSince(flow.updatedAt) <= 180,
+           let location = state.location?.coordinate {
+            let geometry = RouteProgressGeometry(route)
+            if let projection = geometry.project(location), projection.distanceFromRoute <= 30 {
+                let distance = projection.alongRoute
+                let query = RouteTrafficFlowQuery(distanceAlongRoute: distance, coordinate: projection.coordinate)
+                let sample = RouteTrafficFlowSample(distanceAlongRoute: distance, flow: flow)
+                colors += RouteTrafficMonitor.displaySegments(on: route,
+                    from: max(0, distance - 1_000), through: min(geometry.length, distance + 1_000),
+                    queries: [query], samples: [sample], geometry: geometry)
+            }
+        }
         state.traffic = TrafficSnapshot(
             flow: nearby?.flow,
             incidents: Array(incidentsByID.values),
             routeFlowSegments: routeFlowDataIsFresh ? routeTrafficFlowSegments : [],
             updatedAt: max(nearby?.updatedAt ?? .distantPast, max(routeUpdatedAt, flowUpdatedAt)),
             partialError: nearby?.partialError,
-            incidentDataAvailable: (nearby?.incidentDataAvailable ?? false) || routeDataIsFresh)
+            incidentDataAvailable: (nearby?.incidentDataAvailable ?? false) || routeDataIsFresh,
+            routeColorSegments: colors)
     }
 
     private func selectTrafficAdjustedRoute(from snapshot: TrafficSnapshot,
@@ -286,6 +307,7 @@ extension NavigationSession {
                 self.routeTrafficDataAvailable = true
                 self.routeTrafficUpdatedAt = selectedTraffic.updatedAt
                 self.routeTrafficFlowSegments = selectedTraffic.routeFlowSegments
+                self.routeTrafficColorSegments = selectedTraffic.routeFlowSegments
                 self.routeTrafficFlowUpdatedAt = selectedTraffic.updatedAt
                 self.routeFlowRouteID = best.route.id
                 self.lastRouteFlowFetch = selectedTraffic.updatedAt

@@ -37,9 +37,9 @@ import UIKit
         if style.layer(withIdentifier: layerID) == nil {
             let layer = MLNLineStyleLayer(identifier: layerID, source: source)
             layer.lineColor = NSExpression(mglJSONObject: ["to-color", ["get", "color"]])
-            layer.lineOpacity = NSExpression(forConstantValue: 0.20)
-            layer.lineWidth = NSExpression(forConstantValue: 26)
-            layer.lineBlur = NSExpression(forConstantValue: 5)
+            layer.lineOpacity = NSExpression(forConstantValue: 0.16)
+            layer.lineWidth = NSExpression(forConstantValue: 18)
+            layer.lineBlur = NSExpression(forConstantValue: 4)
             layer.lineCap = NSExpression(forConstantValue: "round")
             insert(layer, into: style)
         }
@@ -102,8 +102,8 @@ private final class WeatherTintRenderer: MKOverlayRenderer {
         }
         guard let item = lines.first(where: { $0.0 === overlay }) else { return nil }
         let renderer = MKPolylineRenderer(polyline: item.0)
-        renderer.strokeColor = color(item.1, alpha: 0.20)
-        renderer.lineWidth = 26; renderer.lineCap = .round; renderer.lineJoin = .round
+        renderer.strokeColor = color(item.1, alpha: 0.16)
+        renderer.lineWidth = 18; renderer.lineCap = .round; renderer.lineJoin = .round
         return renderer
     }
     private func color(_ hex: UInt32, alpha: Double) -> NSColor {

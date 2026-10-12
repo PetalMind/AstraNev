@@ -101,6 +101,7 @@ struct SavedPlace: Identifiable, Codable {
 }
 
 struct TripRecord: Identifiable, Codable {
+    var vehicleID: UUID? = nil
     var id = UUID()
     var destination: Destination
     var waypoints: [Destination] = []
@@ -126,14 +127,15 @@ struct TripRecord: Identifiable, Codable {
     enum CodingKeys: String, CodingKey {
         case id, destination, waypoints, startedAt, endedAt, distanceMeters, movingSeconds
         case rerouteCount, arrived, originalExpectedTravelTime, drivingScore
-        case transportMode, trace, maximumSpeedKph
+        case transportMode, trace, maximumSpeedKph, vehicleID
     }
 
     init(id: UUID = UUID(), destination: Destination, waypoints: [Destination] = [], startedAt: Date,
          endedAt: Date, distanceMeters: Double, movingSeconds: TimeInterval, rerouteCount: Int,
          arrived: Bool, originalExpectedTravelTime: TimeInterval? = nil,
          drivingScore: DrivingScore? = nil, transportMode: TransportMode? = nil,
-         trace: [TripTracePoint] = [], maximumSpeedKph: Double? = nil) {
+         trace: [TripTracePoint] = [], maximumSpeedKph: Double? = nil, vehicleID: UUID? = nil) {
+        self.vehicleID = vehicleID
         self.id = id
         self.destination = destination
         self.waypoints = waypoints
@@ -166,6 +168,7 @@ struct TripRecord: Identifiable, Codable {
         transportMode = try values.decodeIfPresent(TransportMode.self, forKey: .transportMode)
         trace = try values.decodeIfPresent([TripTracePoint].self, forKey: .trace) ?? []
         maximumSpeedKph = try values.decodeIfPresent(Double.self, forKey: .maximumSpeedKph)
+        vehicleID = try values.decodeIfPresent(UUID.self, forKey: .vehicleID)
     }
 }
 
@@ -298,9 +301,12 @@ final class LocalDataStore {
         }
     }
 
-    func parkedCarPhotoData(for car: ParkedCar) -> Data? {
+    func parkedCarPhotoData(for car: ParkedCar) async -> Data? {
         guard let photoPath = car.photoPath else { return nil }
-        return try? Data(contentsOf: parkedCarPhotoURL(for: photoPath))
+        let url = parkedCarPhotoURL(for: photoPath)
+        return await Task.detached(priority: .utility) {
+            try? Data(contentsOf: url)
+        }.value
     }
 
     private func parkedCarPhotoURL(for fileName: String) -> URL {
@@ -362,6 +368,16 @@ final class LocalDataStore {
         let updated = places.filter { $0.id != id }
         if persist(updated, file: "places.json") { places = updated }
     }
+    @discardableResult
+    func assignVehicle(_ vehicleID: UUID?, to tripID: UUID) -> Bool {
+        var updated = trips
+        guard let index = updated.firstIndex(where: { $0.id == tripID }), updated[index].transportMode == .car else { return false }
+        updated[index].vehicleID = vehicleID
+        guard persist(updated, file: "trips.json") else { return false }
+        trips = updated
+        return true
+    }
+
     func addTrip(_ trip: TripRecord) {
         var updated = trips
         updated.insert(trip, at: 0)

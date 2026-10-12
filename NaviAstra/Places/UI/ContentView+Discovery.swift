@@ -68,6 +68,20 @@ extension ContentView {
                 }
                 .accessibilityLabel("Miejsca w pobliżu")
 
+                Button { appRouter.present(.energy) } label: {
+                    HStack {
+                        Label("Paliwo i koszty jazdy", systemImage: "fuelpump.fill")
+                        Spacer()
+                        Text(energyStore.selectedVehicle?.name ?? "Dodaj pojazd")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Image(systemName: "chevron.right").font(.caption)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, minHeight: 48)
+                    .modifier(NavigationGlassSurface(radius: 14))
+                }
+                .buttonStyle(.plain)
+
                 HStack(alignment: .firstTextBaseline) {
                     Text("Ostatnie miejsca")
                         .font(.headline.weight(.semibold))

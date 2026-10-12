@@ -127,6 +127,13 @@ struct Maneuver: Identifiable, Sendable {
         return "w \(streetName)"
     }
     var spokenInstruction: String {
+        if kind == .roundaboutEnter {
+            if let count = roundabout?.exitCount, count > 0 {
+                return "Na rondzie wybierz zjazd numer \(count)."
+            }
+            return "Wjedź na rondo."
+        }
+        if kind == .roundaboutExit { return "Zjedź z ronda." }
         if let text = information?.verbalBefore, !text.isEmpty { return text }
         guard let streetLine else { return displayInstruction }
         return "\(displayInstruction) \(streetLine)"

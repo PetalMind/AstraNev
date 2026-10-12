@@ -38,3 +38,37 @@ To adapter do obecnego źródła strony, bez gwarancji stabilności zewnętrzneg
 Zmiana domeny API, klucza publicznego lub schematu wymaga aktualizacji providera.
 Odczyt publicznego endpointu i katalogu potwierdzono na żywo; nie uruchamiano
 aplikacji w symulatorze ani na urządzeniu.
+
+## Szybkie dodawanie tankowania podczas postoju
+
+W aktywnej aplikacji mapa sprawdza pozycję użytkownika dla wybranego pojazdu
+spalinowego lub PHEV, w trybie samochodu. Katalog jest wspólny z cenami POI;
+przesuwanie mapy nie wpływa na rozpoznanie stacji. Pozycja musi mieć wiek do 30 s
+oraz dokładność do 30 m. Postój wymaga prędkości do 1,5 m/s i co najmniej 15 s
+kolejnych pomiarów przy stacji w promieniu 70 m. Nieznana prędkość może być
+zastąpiona przemieszczeniem między świeżymi pomiarami. Ruch wykryty między
+pomiarami także blokuje sugestię. Po rozpoznaniu stosujemy promień wyjścia 120 m.
+
+Ikonka przy nagłówku mapy otwiera formularz z nazwą i lokalizacją stacji oraz
+wybranym pojazdem i paliwem. Kilka pasujących stacji wymaga wyboru użytkownika.
+Stacje z kolizją numerów OSM są pomijane, ponieważ źródło cen używa numeru bez typu.
+Dzisiejsza cena (według dnia w Europe/Warsaw, bez dat przyszłych) uzupełnia puste
+pole. Starsza lub niedatowana cena wymaga użycia przycisku „Użyj tej ceny”.
+Odświeżenie nie nadpisuje ręcznie wpisanej ceny. Stacja oznaczona jako zamknięta,
+brak ceny i błąd pobierania pozostawiają ręczne wprowadzenie danych. Źródło nie
+ma cen ładowania EV. Zapis wymaga potwierdzenia użytkownika.
+
+Podczas nawigacji wykorzystywany jest świeży GPS nawigacji. Poza nią aplikacja
+wykonuje pojedyncze dokładniejsze odczyty co około 60 s, a w pobliżu stacji co
+około 20 s. Dodatkowe odczyty ustają w tle i podczas otwarcia formularzy/paneli.
+Po zapisie sugestia jest wyciszona do opuszczenia okolicy stacji.
+
+Ukończony przejazd przecinający datę tankowania może zasilić oba okresy paliwowe.
+Dzielimy tylko ciągłe, zaakceptowane odcinki śladu GPS według czasu; odcinki
+między próbkami dzielimy proporcjonalnie do czasu. Luki, skoki pozycji i przerwane
+przejazdy nie są doliczane. Cały przejazd mieszczący się w okresie nadal używa
+zapisanego dystansu. Przebieg licznika zachowuje pierwszeństwo.
+
+### Wskazanie stacji na mapie
+
+W szczegółach stacji paliw na mapie przycisk „Dodaj tankowanie” otwiera formularz dla tego konkretnego miejsca. Nazwa, współrzędne i identyfikator stacji pochodzą z wybranego POI, niezależnie od bieżącej pozycji GPS. Cena podlega tym samym regułom daty raportu i ręcznej edycji co przy automatycznym rozpoznaniu postoju. Bez pojazdu spalinowego lub hybrydowego można dodać go w tym samym oknie, zachowując stację. Na macOS formularz otwiera się po zamknięciu szczegółów miejsca.

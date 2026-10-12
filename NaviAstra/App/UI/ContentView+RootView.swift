@@ -128,7 +128,11 @@ extension ContentView {
     private func mapControlStack(in geometry: GeometryProxy) -> some View {
         VStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 8) {
-                header
+                HStack(alignment: .top, spacing: 10) {
+                    header
+                    fuelStopMapControl
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
 #if os(iOS)
                 journeyNavigationGuidanceOverlay
 #endif
@@ -389,6 +393,11 @@ extension ContentView {
     }
 
     private func handleSelectedMapPlacesSheetDismissal() {
+        if openFuelEntryAfterPlaceDismiss {
+            openFuelEntryAfterPlaceDismiss = false
+            showsFuelStopEntry = true
+            return
+        }
         guard openDestinationSearchAfterPlaceDismiss else { return }
         openDestinationSearchAfterPlaceDismiss = false
         presentSearch()
@@ -512,6 +521,11 @@ extension ContentView {
 
     private var rootContentWithPrimarySheets: some View {
         rootPresentationContent
+            .sheet(isPresented: $showsFuelStopEntry) {
+                FuelStopQuickSheet(store: energyStore, stations: fuelStopEntryCandidates) {
+                    fuelStopStore.saved(stationIDs: Set(fuelStopEntryCandidates.map(\.id)))
+                }
+            }
             .sheet(item: appSheetBinding, onDismiss: handleAppSheetDismissal) { destination in
                 appSheet(destination)
             }
@@ -528,9 +542,7 @@ extension ContentView {
     private var rootContentWithPlaceSheets: some View {
         rootContentWithPrimarySheets
             .sheet(item: $selectedParkedCar) { car in
-                TimelineView(.periodic(from: .now, by: 5)) { _ in
-                    parkedCarDetailsSheet(for: car)
-                }
+                parkedCarDetailsSheet(for: car)
             }
             .sheet(isPresented: selectedMapPlacesSheetBinding,
                    onDismiss: handleSelectedMapPlacesSheetDismissal) {
@@ -583,6 +595,7 @@ extension ContentView {
 
     var body: some View {
         rootContentWithStateObservers
+            .task(id: fuelStopMonitoringKey) { await monitorFuelStops() }
             .foregroundStyle(Color.naviTextPrimary)
             .overlay(alignment: .top) {
                 FavoriteFeedbackOverlay(feedback: $favoriteFeedback)
@@ -636,14 +649,13 @@ extension ContentView {
 
     private func parkedCarDetailsSheet(for car: ParkedCar) -> some View {
         let car = placeStore.parkedCar.flatMap { $0.id == car.id ? $0 : nil } ?? car
-        let initialPhotoData = placeStore.parkedCarPhotoData(for: car)
         let sheet = ParkedCarDetailsSheet(
             car: car,
             onEstimateRoute: {
                 guard !isNavigating, placeStore.parkedCar?.id == car.id else { return nil }
                 return try await navigationStore.estimatedWalkingRoute(to: car.destination)
             },
-            initialPhotoData: initialPhotoData,
+            onLoadPhoto: { await placeStore.parkedCarPhotoData(for: car) },
             startsEditing: parkedCarStartsInEditMode,
             canGuide: freshParkedCarLocation != nil && !isNavigating,
             guideUnavailableReason: isNavigating ? "Zakończ bieżącą nawigację, aby wrócić do auta." : "Czekam na aktualną pozycję GPS.",

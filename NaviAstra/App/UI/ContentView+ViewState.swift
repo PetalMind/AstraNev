@@ -102,6 +102,13 @@ extension ContentView {
             .presentationDetents([.large])
         case .favorites:
             favoritesSheet
+        case .energy:
+            NavigationStack {
+                EnergyDashboard(store: energyStore, places: placeStore, coordinate: navigationStore.state.location?.coordinate)
+                    .toolbar { ToolbarItem(placement: .cancellationAction) {
+                        Button("Zamknij") { appRouter.dismiss(.energy) }
+                    } }
+            }
         case .history:
             historySheet
         case .trafficDetails:

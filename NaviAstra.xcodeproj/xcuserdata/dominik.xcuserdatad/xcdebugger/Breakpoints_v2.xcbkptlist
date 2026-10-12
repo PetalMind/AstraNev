@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Bucket
+   uuid = "8A52A185-6984-4D8F-A92A-4653DE685CCE"
+   type = "1"
+   version = "2.0">
+   <Breakpoints>
+      <BreakpointProxy
+         BreakpointExtensionID = "Xcode.Breakpoint.FileBreakpoint">
+         <BreakpointContent
+            uuid = "463FA932-A663-4D7B-B7C6-F32200B522DE"
+            shouldBeEnabled = "Yes"
+            ignoreCount = "0"
+            continueAfterRunningActions = "No"
+            filePath = "NaviAstra/Maps/iOS/OfflineAreaMap.swift"
+            startingColumnNumber = "9223372036854775807"
+            endingColumnNumber = "9223372036854775807"
+            startingLineNumber = "60"
+            endingLineNumber = "60"
+            landmarkName = "Coordinator"
+            landmarkType = "3">
+            <Locations>
+               <Location
+                  uuid = "463FA932-A663-4D7B-B7C6-F32200B522DE - 36264f159e320f5f"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "NaviAstra.OfflineAreaMap.Coordinator.lastSelection.getter : Swift.Optional&lt;NaviAstra.OfflineMapBounds&gt;"
+                  moduleName = "NaviAstra.debug.dylib"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Volumes/Zewnetrzny/Projekty%20programowanie/Github/NaviAstra/NaviAstra/Maps/iOS/OfflineAreaMap.swift"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "60"
+                  endingLineNumber = "60">
+               </Location>
+               <Location
+                  uuid = "463FA932-A663-4D7B-B7C6-F32200B522DE - e3ab17b788753853"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "NaviAstra.OfflineAreaMap.Coordinator.lastSelection.setter : Swift.Optional&lt;NaviAstra.OfflineMapBounds&gt;"
+                  moduleName = "NaviAstra.debug.dylib"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Volumes/Zewnetrzny/Projekty%20programowanie/Github/NaviAstra/NaviAstra/Maps/iOS/OfflineAreaMap.swift"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "60"
+                  endingLineNumber = "60">
+               </Location>
+               <Location
+                  uuid = "463FA932-A663-4D7B-B7C6-F32200B522DE - 151d09973e9287de"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "NaviAstra.OfflineAreaMap.Coordinator.init(NaviAstra.OfflineAreaMap) -&gt; NaviAstra.OfflineAreaMap.Coordinator"
+                  moduleName = "NaviAstra.debug.dylib"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Volumes/Zewnetrzny/Projekty%20programowanie/Github/NaviAstra/NaviAstra/Maps/iOS/OfflineAreaMap.swift"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "60"
+                  endingLineNumber = "60">
+               </Location>
+            </Locations>
+         </BreakpointContent>
+      </BreakpointProxy>
+   </Breakpoints>
+</Bucket>

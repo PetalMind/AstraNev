@@ -2,6 +2,7 @@ import Foundation
 
 @MainActor
 struct AppDependencies {
+    let energyStore: EnergyStore
     let router: AppRouter
     let navigationStore: NavigationStore
     let placeStore: PlaceStore
@@ -22,10 +23,13 @@ struct AppDependencies {
             transitProvider: transitProvider,
             transitDataProvider: transitDataProvider)
         let placeStore = PlaceStore()
+        let energyStore = EnergyStore()
         let session = NavigationSession(dependencies: navigationDependencies)
+        session.selectedVehicleID = { [weak energyStore] in energyStore?.selectedVehicle?.id }
         session.onTripFinished = { [weak placeStore] trip in placeStore?.addTrip(trip) }
         let navigationStore = NavigationStore(session: session)
         return AppDependencies(
+            energyStore: energyStore,
             router: AppRouter(),
             navigationStore: navigationStore,
             placeStore: placeStore,

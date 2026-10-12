@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import ImageIO
 #if os(iOS)
 import UIKit
 #else
@@ -31,7 +32,7 @@ struct ParkedCarDetailsSheet: View {
     @State private var parkingExpiry: Date
     @State private var showingRemovalConfirmation = false
     @State private var photoSelection: PhotosPickerItem?
-    @State private var photoData: Data?
+    @State private var photoImage: Image?
     @State private var displayedCar: ParkedCar
     @State private var errorMessage: String?
     @State private var isLoadingPhoto = false
@@ -47,9 +48,10 @@ struct ParkedCarDetailsSheet: View {
     let onGuide: () -> Void
     let onUpdate: (ParkedCar) -> Bool
     let onSavePhoto: (Data) -> String?
+    let onLoadPhoto: () async -> Data?
     let onRemove: () -> Bool
 
-    init(car: ParkedCar, onEstimateRoute: @escaping () async throws -> SearchRouteEstimate?, initialPhotoData: Data? = nil,
+    init(car: ParkedCar, onEstimateRoute: @escaping () async throws -> SearchRouteEstimate?, onLoadPhoto: @escaping () async -> Data?,
          startsEditing: Bool = false, canGuide: Bool, guideUnavailableReason: String,
          onShowMap: @escaping () -> Void, onGuide: @escaping () -> Void,
          onUpdate: @escaping (ParkedCar) -> Bool, onSavePhoto: @escaping (Data) -> String?,
@@ -62,6 +64,7 @@ struct ParkedCarDetailsSheet: View {
         self.onGuide = onGuide
         self.onUpdate = onUpdate
         self.onSavePhoto = onSavePhoto
+        self.onLoadPhoto = onLoadPhoto
         self.onRemove = onRemove
 #if os(iOS)
         _selectedDetent = State(initialValue: startsEditing ? .large : .medium)
@@ -73,7 +76,6 @@ struct ParkedCarDetailsSheet: View {
         _note = State(initialValue: car.note ?? "")
         _hasParkingExpiry = State(initialValue: car.parkingExpiresAt != nil)
         _parkingExpiry = State(initialValue: car.parkingExpiresAt ?? Date().addingTimeInterval(7_200))
-        _photoData = State(initialValue: initialPhotoData)
         _displayedCar = State(initialValue: car)
     }
 
@@ -109,16 +111,7 @@ struct ParkedCarDetailsSheet: View {
                     }
                 }
             }
-            .confirmationDialog("Usunąć zapisane miejsce samochodu?", isPresented: $showingRemovalConfirmation,
-                                titleVisibility: .visible) {
-                Button("Usuń miejsce parkowania", role: .destructive) {
-                    if !onRemove() { errorMessage = "Nie udało się usunąć miejsca. Spróbuj ponownie." }
-                }
-                Button("Anuluj", role: .cancel) { }
-            } message: {
-                Text("Tej czynności nie można cofnąć.")
-            }
-            .alert("Nie udało się zapisać zmian", isPresented: Binding(
+            .alert("Nie udało się wykonać czynności", isPresented: Binding(
                 get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } }
             )) {
                 Button("OK", role: .cancel) { errorMessage = nil }
@@ -133,6 +126,10 @@ struct ParkedCarDetailsSheet: View {
             .task(id: ParkedCarRouteRequest(destination: car.coordinate, canGuide: canGuide)) {
                 walkingEstimate = nil
                 estimateUpdatedAt = nil
+                guard canGuide else {
+                    isEstimatingRoute = false
+                    return
+                }
                 while !Task.isCancelled {
                     isEstimatingRoute = true
                     do {
@@ -150,6 +147,16 @@ struct ParkedCarDetailsSheet: View {
                     catch { return }
                 }
             }
+            .task(id: displayedCar.photoPath) {
+                guard displayedCar.photoPath != nil else {
+                    photoImage = nil
+                    return
+                }
+                guard let data = await onLoadPhoto(), !Task.isCancelled else { return }
+                let thumbnail = await Self.photoThumbnail(from: data)
+                guard !Task.isCancelled else { return }
+                photoImage = thumbnail.map(Self.image(from:))
+            }
             .task(id: photoSelection) {
                 guard let selection = photoSelection else { return }
                 isLoadingPhoto = true
@@ -160,12 +167,9 @@ struct ParkedCarDetailsSheet: View {
                         return
                     }
                     guard !Task.isCancelled, photoSelection == selection else { return }
-#if os(iOS)
-                    let isImage = UIImage(data: data) != nil
-#else
-                    let isImage = NSImage(data: data) != nil
-#endif
-                    guard isImage else {
+                    let thumbnail = await Self.photoThumbnail(from: data)
+                    guard !Task.isCancelled, photoSelection == selection else { return }
+                    guard let thumbnail else {
                         errorMessage = "Wybrany plik nie jest obsługiwanym zdjęciem."
                         return
                     }
@@ -173,7 +177,7 @@ struct ParkedCarDetailsSheet: View {
                         errorMessage = "Nie udało się zapisać zdjęcia. Spróbuj ponownie."
                         return
                     }
-                    photoData = data
+                    photoImage = Self.image(from: thumbnail)
                     displayedCar.photoPath = photoPath
                 } catch {
                     if !Task.isCancelled { errorMessage = "Nie udało się wczytać zdjęcia. Spróbuj ponownie." }
@@ -266,17 +270,12 @@ struct ParkedCarDetailsSheet: View {
                         .accessibilityLabel("Zdjęcie miejsca parkowania")
                 }
                 PhotosPicker(selection: $photoSelection, matching: .images) {
-                    Label(isLoadingPhoto ? "Wczytywanie zdjęcia…" : photoData == nil ? "Dodaj zdjęcie miejsca" : "Zmień zdjęcie",
+                    Label(isLoadingPhoto ? "Wczytywanie zdjęcia…" : displayedCar.photoPath == nil ? "Dodaj zdjęcie miejsca" : "Zmień zdjęcie",
                           systemImage: "photo")
                         .frame(maxWidth: .infinity, minHeight: 44)
                 }
                 .buttonStyle(.bordered)
                 .disabled(isLoadingPhoto)
-
-                Button("Usuń miejsce parkowania", systemImage: "trash", role: .destructive) {
-                    showingRemovalConfirmation = true
-                }
-                .frame(maxWidth: .infinity, minHeight: 44)
             }
             .padding(20)
         }
@@ -295,6 +294,7 @@ struct ParkedCarDetailsSheet: View {
                         .foregroundStyle(Color.naviTextSecondary)
                         .multilineTextAlignment(.center)
                 }
+                removalButton
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
@@ -322,6 +322,9 @@ struct ParkedCarDetailsSheet: View {
                 Text("Koniec parkowania")
             } footer: {
                 Text("Zapisana godzina jest widoczna w karcie auta. Nie wysyła powiadomienia.")
+            }
+            Section {
+                removalButton
             }
         }
         .scrollContentBackground(.hidden)
@@ -375,14 +378,43 @@ struct ParkedCarDetailsSheet: View {
         return String(format: "%.1f km", meters / 1_000)
     }
 
-    private var photoImage: Image? {
-        guard let photoData else { return nil }
+    private var removalButton: some View {
+        Button("Usuń miejsce parkowania", systemImage: "trash", role: .destructive) {
+            showingRemovalConfirmation = true
+        }
+        .frame(maxWidth: .infinity, minHeight: 44)
+        .confirmationDialog("Usunąć zapisane miejsce samochodu?", isPresented: $showingRemovalConfirmation,
+                            titleVisibility: .visible) {
+            Button("Usuń miejsce parkowania", role: .destructive) {
+                guard onRemove() else {
+                    errorMessage = "Nie udało się usunąć miejsca. Spróbuj ponownie."
+                    return
+                }
+                dismiss()
+            }
+            Button("Anuluj", role: .cancel) { }
+        } message: {
+            Text("Tej czynności nie można cofnąć.")
+        }
+    }
+
+    nonisolated private static func photoThumbnail(from data: Data) async -> CGImage? {
+        await Task.detached(priority: .utility) { () -> CGImage? in
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+            return CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: 1_200,
+                kCGImageSourceShouldCacheImmediately: true
+            ] as CFDictionary)
+        }.value
+    }
+
+    private static func image(from thumbnail: CGImage) -> Image {
 #if os(iOS)
-        guard let image = UIImage(data: photoData) else { return nil }
-        return Image(uiImage: image)
+        Image(uiImage: UIImage(cgImage: thumbnail))
 #else
-        guard let image = NSImage(data: photoData) else { return nil }
-        return Image(nsImage: image)
+        Image(nsImage: NSImage(cgImage: thumbnail, size: .zero))
 #endif
     }
 }

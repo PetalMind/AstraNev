@@ -36,6 +36,8 @@ final class MacRouteRenderer {
     private var incidentOverlays: [String: [StyledOverlay]] = [:]
     private var incidentOverlayRenderItems: [MacIncidentLineRenderItem] = []
     private var shownRouteTrafficSegments: [RouteTrafficSegment] = []
+    private var shownRouteTrafficProgressStep: Int?
+    private var shownRouteTrafficStatus: NavigationStatus?
     private var traveledOverlay: StyledOverlay?
     private var trafficOverlays: [StyledOverlay] = []
     private var accuracyHaloOverlay: StyledOverlay?
@@ -263,12 +265,12 @@ final class MacRouteRenderer {
 
     func updateRouteTrafficOverlays(on map: MKMapView) {
         self.map = map
-        let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
         let routeID = parent.state.route?.id
-        let segments = parent.settings.overlays.traffic && parent.state.transportMode == .car && isNavigating
-            ? (parent.state.traffic?.routeFlowSegments ?? []).filter { $0.routeID == routeID }
-            : []
-        guard segments != shownRouteTrafficSegments else { return }
+        let segments = RouteTrafficMapGeometry.visibleSegments(in: parent.state)
+        // Progress redraws the base route. Reinsert colors above that new geometry.
+        guard segments != shownRouteTrafficSegments ||
+              shownRouteTrafficProgressStep != activeGeometryProgressStep ||
+              shownRouteTrafficStatus != parent.state.status else { return }
         let previousOverlays = routeOverlays.filter { overlay in
             if case .routeTraffic = overlay.kind { return true }
             return false
@@ -279,6 +281,8 @@ final class MacRouteRenderer {
             return false
         }
         shownRouteTrafficSegments = segments
+        shownRouteTrafficProgressStep = activeGeometryProgressStep
+        shownRouteTrafficStatus = parent.state.status
         guard let routeID else { return }
         for segment in segments {
             let isSevereJam = segment.colorHex == RouteColorPalette.trafficHeavy
@@ -681,14 +685,14 @@ final class MacRouteRenderer {
         case .incident(let color):
             return LineStyle(hex: color, opacity: 0.96, width: navigating ? 7 : 5)
         case .traveled:
-            return LineStyle(hex: RouteColorPalette.traveled,
-                             opacity: parent.state.status == .rerouting ? 0.16 : 0.4,
+            return LineStyle(hex: dark ? 0x9AA3AC : RouteColorPalette.traveled,
+                             opacity: 0.9,
                              width: max(1, activeRouteWidth(navigating: navigating) * 0.75))
         case .traffic:
             let color = parent.state.traffic?.flow?.overlayColorHex ?? RouteColorPalette.trafficFree
             return LineStyle(hex: color, opacity: 1, width: trafficLineWidth(for: color))
         case .routeTraffic(let color):
-            return LineStyle(hex: color, opacity: 0.98, width: trafficLineWidth(for: color))
+            return LineStyle(hex: color, opacity: 0.98, width: activeRouteWidth(navigating: navigating))
         case .departed:
             return LineStyle(hex: dark ? RouteColorPalette.alternativeDark : RouteColorPalette.alternativeLight,
                              opacity: 0, width: 6)

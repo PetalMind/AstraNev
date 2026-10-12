@@ -41,6 +41,10 @@ extension ContentView {
                         origin: navigationStore.state.location?.coordinate,
                         navigation: navigationStore, trips: placeStore.trips)
                 }
+                settingsCategory("Paliwo i koszty jazdy", subtitle: energyStore.selectedVehicle?.name ?? "Pojazdy, tankowania i ładowania",
+                                 icon: "fuelpump.fill") {
+                    EnergyDashboard(store: energyStore, places: placeStore, coordinate: navigationStore.state.location?.coordinate)
+                }
                 settingsCategory("Historia przejazdów", subtitle: "Ukończone trasy i oceny prowadzenia",
                                  icon: "clock.arrow.circlepath") {
                     settingsTripHistoryPage
@@ -121,7 +125,7 @@ extension ContentView {
             addFavoriteWithFeedback(destination)
         }, onClose: {
             appRouter.dismiss(.settings)
-        }, completedOnly: true, embeddedInNavigation: true)
+        }, energyStore: energyStore, completedOnly: true, embeddedInNavigation: true)
         .overlay(alignment: .top) {
             FavoriteFeedbackOverlay(feedback: $favoriteFeedback)
                 .padding(.top, 48)

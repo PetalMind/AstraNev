@@ -160,7 +160,7 @@ extension ContentView {
             addFavoriteWithFeedback(destination)
         }, onClose: {
             appRouter.dismiss(.history)
-        })
+        }, energyStore: energyStore)
         .overlay(alignment: .top) {
             FavoriteFeedbackOverlay(feedback: $favoriteFeedback)
                 .padding(.top, 48)

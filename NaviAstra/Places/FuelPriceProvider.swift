@@ -74,6 +74,24 @@ final class PaliwoMapaFuelPriceProvider {
         return value
     }
 
+    /// Catalogue lookup uses the device position, independently of the visible map viewport.
+    func nearbyStations(at coordinate: Coordinate, radius: Double = 200) async throws -> [FuelStopStation] {
+        guard (48.9...55.0).contains(coordinate.latitude), (14.0...24.3).contains(coordinate.longitude) else { return [] }
+        let catalog = try await loadStations()
+        try Task.checkCancellation()
+        let idCounts = Dictionary(grouping: catalog, by: \.id).mapValues(\.count)
+        return catalog.compactMap { station in
+            guard idCounts[station.id] == 1, let location = station.coordinate,
+                  location.distance(to: coordinate) <= radius,
+                  station.tags["amenity"] == "fuel" else { return nil }
+            let name = station.tags["name"] ?? station.tags["brand"] ?? station.tags["operator"] ?? "Stacja paliw"
+            return FuelStopStation(id: "\(station.type)/\(station.id)", identity: PlaceIdentity(
+                provider: .openStreetMap, externalID: String(station.id), osmType: station.type,
+                coordinate: location, name: name, category: "fuel", address: nil,
+                brand: station.tags["brand"], operatorName: station.tags["operator"], countryCode: "pl"))
+        }.sorted { $0.identity.coordinate.distance(to: coordinate) < $1.identity.coordinate.distance(to: coordinate) }
+    }
+
     private func loadStations() async throws -> [FuelStation] {
         if let stationsLoadedAt, Date().timeIntervalSince(stationsLoadedAt) < 24 * 60 * 60 {
             return stations

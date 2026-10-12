@@ -1,34 +1,57 @@
 import SwiftUI
 
-/// Static Meteocons Flat SVG artwork, bundled locally under the MIT license.
+/// Native symbols keep weather legible alongside the other map controls.
 struct WeatherIcon: View {
+    @Environment(\.colorScheme) private var colorScheme
     let state: WeatherVisualState?
     var size: CGFloat = 28
+    var showsBackground = true
 
     var body: some View {
-        Image(assetName)
-            .renderingMode(.original)
-            .resizable()
-            .scaledToFit()
+        Image(systemName: symbol)
+            .font(.system(size: size * 0.57, weight: .medium))
+            .symbolRenderingMode(.palette)
+            .foregroundStyle(accent, Color.naviTextPrimary.opacity(0.85))
             .frame(width: size, height: size)
+            .background {
+                if showsBackground {
+                    Circle()
+                        .fill(LinearGradient(colors: [accent.opacity(0.16), accent.opacity(0.04)],
+                                             startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .overlay(Circle().strokeBorder(accent.opacity(0.12), lineWidth: 0.5))
+                }
+            }
             .accessibilityHidden(true)
     }
 
-    private var assetName: String {
-        guard let state else { return "weather_not_available" }
-        let name: String
+    private var symbol: String {
+        guard let state else { return "questionmark.circle" }
         switch state.condition {
-        case .clear: name = state.isDaylight ? "clear_day" : "clear_night"
-        case .cloudy: name = state.isDaylight ? "overcast_day" : "overcast_night"
-        case .rain: name = "rain"
-        case .heavyRain: name = "extreme_rain"
-        case .snow: name = "snow"
-        case .heavySnow: name = "extreme_snow"
-        case .fog: name = "fog"
-        case .storm: name = "thunderstorms_rain"
-        case .unknown: name = "not_available"
+        case .clear: return state.isDaylight ? "sun.max.fill" : "moon.stars.fill"
+        case .cloudy: return "cloud.fill"
+        case .rain: return "cloud.drizzle.fill"
+        case .heavyRain: return "cloud.rain.fill"
+        case .snow, .heavySnow: return "cloud.snow.fill"
+        case .fog: return "cloud.fog.fill"
+        case .storm: return "cloud.bolt.rain.fill"
+        case .unknown: return "questionmark.circle"
         }
-        return "weather_\(name)"
+    }
+
+    private var accent: Color {
+        guard let state, state.condition != .unknown else { return .naviTextSecondary }
+        let dark = colorScheme == .dark
+        let hex: UInt32
+        switch state.condition {
+        case .clear:
+            hex = state.isDaylight ? (dark ? 0xF4C76A : 0xB77912) : (dark ? 0xC4B5FD : 0x7C6BB3)
+        case .cloudy, .fog: hex = dark ? 0xA6B8CA : 0x64788C
+        case .rain, .heavyRain: hex = dark ? 0x7CB5EF : 0x3977B5
+        case .snow, .heavySnow: hex = dark ? 0xA2D5E2 : 0x398298
+        case .storm: hex = dark ? NaviAstraColorPalette.brandPrimaryNight : 0x8265B0
+        case .unknown: hex = NaviAstraColorPalette.textSecondaryDay
+        }
+        return Color(naviHex: hex)
     }
 }
 

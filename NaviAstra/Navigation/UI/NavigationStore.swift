@@ -1,4 +1,5 @@
 import Foundation
+import CoreLocation
 import Observation
 
 @MainActor
@@ -16,6 +17,13 @@ final class NavigationStore {
 
     init(session: NavigationSession) {
         self.session = session
+    }
+
+    func freshFuelLocation() async -> NavigationLocation? {
+        guard let raw = await session.locationManager.freshLocation(precise: true) else { return nil }
+        return NavigationLocation(coordinate: Coordinate(latitude: raw.coordinate.latitude, longitude: raw.coordinate.longitude),
+            speed: raw.speed, course: raw.course, accuracy: raw.horizontalAccuracy,
+            timestamp: raw.timestamp, speedAccuracy: raw.speedAccuracy, courseAccuracy: raw.courseAccuracy)
     }
 
     func startLocation() { session.startLocation() }

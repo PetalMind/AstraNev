@@ -328,16 +328,19 @@ nonisolated struct TrafficSnapshot: Sendable {
     let flow: TrafficFlow?
     let incidents: [TrafficIncident]
     let routeFlowSegments: [RouteTrafficSegment]
+    let routeColorSegments: [RouteTrafficSegment]
     let updatedAt: Date
     let partialError: String?
     let incidentDataAvailable: Bool
 
     init(flow: TrafficFlow?, incidents: [TrafficIncident],
          routeFlowSegments: [RouteTrafficSegment] = [], updatedAt: Date,
-         partialError: String?, incidentDataAvailable: Bool) {
+         partialError: String?, incidentDataAvailable: Bool,
+         routeColorSegments: [RouteTrafficSegment] = []) {
         self.flow = flow
         self.incidents = incidents
         self.routeFlowSegments = routeFlowSegments
+        self.routeColorSegments = routeColorSegments
         self.updatedAt = updatedAt
         self.partialError = partialError
         self.incidentDataAvailable = incidentDataAvailable

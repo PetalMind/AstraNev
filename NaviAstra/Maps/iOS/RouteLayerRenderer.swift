@@ -313,7 +313,7 @@ final class RouteLayerRenderer {
 
     func refreshStyle(on map: MLNMapView, context: RouteLayerRenderContext) {
         self.context = context
-        updateActiveRouteStyle(on: map)
+        if let route = parent.state.route { updateActiveRouteShape(route, on: map) }
         updateAlternativeRouteLayers(on: map)
     }
 
@@ -515,10 +515,11 @@ final class RouteLayerRenderer {
                 * parent.state.routeGeometryProgress
             let split = RouteGeometrySplitter.split(activeRouteLegs(for: route).active,
                                                     atDistance: progressDistance)
-            source.shape = shape(for: split.remaining)
-            completedSource.shape = shape(for: split.completed)
+            source.shape = coloredShape(for: split.remaining, startingAt: progressDistance)
+            completedSource.shape = shape(for: RouteGeometrySplitter.split(route.coordinates,
+                atDistance: progressDistance).completed)
         } else {
-            source.shape = shape(for: visible)
+            source.shape = coloredShape(for: visible, startingAt: 0)
             completedSource.shape = nil
         }
         activeGeometryProgressRouteID = isNavigating ? route.id : nil
@@ -538,6 +539,20 @@ final class RouteLayerRenderer {
         return MLNPolyline(coordinates: &points, count: UInt(points.count))
     }
 
+    private func coloredShape(for coordinates: [Coordinate], startingAt distance: Double) -> MLNShape? {
+        let segments = RouteTrafficMapGeometry.visibleSegments(in: parent.state)
+        let parts = RouteTrafficMapGeometry.coloredLine(coordinates, startingAt: distance,
+            segments: segments, defaultColor: activeRouteColor(dark: parent.colorScheme == .dark))
+        let features = parts.map { part in
+            var points = part.coordinates.map(\.cl)
+            let feature = MLNPolylineFeature(coordinates: &points, count: UInt(points.count))
+            feature.attributes = ["routeColor": String(format: "#%06X", part.colorHex),
+                                  "routeID": parent.state.route?.id.uuidString ?? ""]
+            return feature
+        }
+        return features.isEmpty ? nil : MLNShapeCollectionFeature(shapes: features)
+    }
+
     private func updateActiveRouteStyle(on map: MLNMapView) {
         guard let style = map.style,
               let casing = style.layer(withIdentifier: "naviastra-active-route-casing") as? MLNLineStyleLayer,
@@ -550,13 +565,13 @@ final class RouteLayerRenderer {
         let highlightStyle = lineStyle(for: .activeHighlight)
         let completedCasingStyle = lineStyle(for: .traveledCasing)
         let completedStyle = lineStyle(for: .traveled)
-        let key = "\(parent.state.transportMode)-\(casingStyle.hex)-\(casingStyle.opacity)-\(casingStyle.width)-\(activeStyle.hex)-\(activeStyle.opacity)-\(activeStyle.width)-\(highlightStyle.hex)-\(highlightStyle.opacity)-\(highlightStyle.width)-\(completedCasingStyle.opacity)-\(completedCasingStyle.width)-\(completedStyle.opacity)-\(completedStyle.width)"
+        let key = "\(parent.colorScheme)-\(parent.state.status)-\(parent.state.transportMode)-\(casingStyle.hex)-\(casingStyle.opacity)-\(casingStyle.width)-\(activeStyle.hex)-\(activeStyle.opacity)-\(activeStyle.width)-\(highlightStyle.hex)-\(highlightStyle.opacity)-\(highlightStyle.width)-\(completedCasingStyle.opacity)-\(completedCasingStyle.width)-\(completedStyle.opacity)-\(completedStyle.width)"
         guard key != activeRouteStyleKey else { return }
         activeRouteStyleKey = key
         casing.lineColor = NSExpression(forConstantValue: color(hex: casingStyle.hex, opacity: 1))
         casing.lineOpacity = NSExpression(forConstantValue: casingStyle.opacity)
         casing.lineWidth = NSExpression(forConstantValue: casingStyle.width)
-        line.lineColor = NSExpression(forConstantValue: color(hex: activeStyle.hex, opacity: 1))
+        line.lineColor = NSExpression(mglJSONObject: ["to-color", ["get", "routeColor"]])
         line.lineOpacity = NSExpression(forConstantValue: activeStyle.opacity)
         line.lineWidth = NSExpression(forConstantValue: activeStyle.width)
         let walkingPattern: [NSNumber]? = parent.state.transportMode == .walking
@@ -723,45 +738,20 @@ final class RouteLayerRenderer {
 
     private func updateRouteTrafficLines(on map: MLNMapView) {
         guard let style = map.style else { return }
-        let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
-        let routeID = parent.state.route?.id
-        let segments = parent.settings.overlays.traffic && parent.state.transportMode == .car && isNavigating
-            ? (parent.state.traffic?.routeFlowSegments ?? []).filter { $0.routeID == routeID }
-            : []
-        let sourceID = "naviastra-route-traffic-source"
-        let source: MLNShapeSource
-        if let existing = style.source(withIdentifier: sourceID) as? MLNShapeSource { source = existing }
-        else {
-            source = MLNShapeSource(identifier: sourceID, shape: nil, options: nil)
-            style.addSource(source)
+        // Colors now belong to the active line, rather than a competing overlay.
+        for id in ["naviastra-route-traffic-solid", "naviastra-route-traffic-dashed"] {
+            if let layer = style.layer(withIdentifier: id) { style.removeLayer(layer) }
         }
-        // Compare coordinates as well as IDs, without allocating geometry strings every update.
-        let items = segments.map { RouteTrafficRenderItem(id: $0.id, coordinates: $0.coordinates,
-            colorHex: $0.colorHex, dashed: $0.isRoadClosure || $0.colorHex == RouteColorPalette.trafficHeavy) }
-        if items != routeTrafficRenderItems || source.shape == nil {
-            let features: [MLNPolylineFeature] = items.filter { $0.coordinates.count > 1 }.map { item in
-                var points = item.coordinates.map(\.cl)
-                let feature = MLNPolylineFeature(coordinates: &points, count: UInt(points.count))
-                feature.attributes = ["color": String(format: "#%06X", item.colorHex),
-                                      "width": trafficLineWidth(for: item.colorHex), "dashed": item.dashed]
-                return feature
-            }
-            source.shape = MLNShapeCollectionFeature(shapes: features)
-            routeTrafficRenderItems = items
+        if let source = style.source(withIdentifier: "naviastra-route-traffic-source") {
+            style.removeSource(source)
         }
-        for dashed in [false, true] {
-            let id = "naviastra-route-traffic-\(dashed ? "dashed" : "solid")"
-            guard style.layer(withIdentifier: id) == nil else { continue }
-            let layer = MLNLineStyleLayer(identifier: id, source: source)
-            layer.predicate = NSPredicate(format: "dashed == %@", NSNumber(value: dashed))
-            layer.lineColor = NSExpression(mglJSONObject: ["to-color", ["get", "color"]])
-            layer.lineWidth = NSExpression(forKeyPath: "width")
-            layer.lineOpacity = NSExpression(forConstantValue: 0.98)
-            layer.lineCap = NSExpression(forConstantValue: "round")
-            layer.lineJoin = NSExpression(forConstantValue: "round")
-            if dashed { layer.lineDashPattern = NSExpression(forConstantValue: [2, 1.4]) }
-            style.addLayer(layer)
+        let items = RouteTrafficMapGeometry.visibleSegments(in: parent.state).map {
+            RouteTrafficRenderItem(id: $0.id, coordinates: $0.coordinates,
+                colorHex: $0.colorHex, dashed: $0.isRoadClosure)
         }
+        guard items != routeTrafficRenderItems else { return }
+        routeTrafficRenderItems = items
+        if let route = parent.state.route { updateActiveRouteShape(route, on: map) }
     }
 
     private func styledLine(for polyline: MLNPolyline) -> StyledLine? {
@@ -811,12 +801,12 @@ final class RouteLayerRenderer {
         case .incident(let color):
             return LineStyle(hex: color, opacity: 0.96, width: navigating ? 7 : 5)
         case .traveledCasing:
-            return LineStyle(hex: RouteColorPalette.traveled,
-                             opacity: parent.state.status == .rerouting ? 0.06 : 0.16,
+            return LineStyle(hex: dark ? 0x9AA3AC : RouteColorPalette.traveled,
+                             opacity: 0.45,
                              width: activeRouteWidth(navigating: navigating) * 0.75 + 1)
         case .traveled:
-            return LineStyle(hex: RouteColorPalette.traveled,
-                             opacity: parent.state.status == .rerouting ? 0.16 : 0.4,
+            return LineStyle(hex: dark ? 0x9AA3AC : RouteColorPalette.traveled,
+                             opacity: 0.9,
                              width: max(1, activeRouteWidth(navigating: navigating) * 0.75))
         case .traffic:
             let color = parent.state.traffic?.flow?.overlayColorHex ?? RouteColorPalette.trafficFree

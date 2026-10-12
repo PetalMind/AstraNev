@@ -52,8 +52,8 @@ final class PlaceStore {
         repository.saveParkedCarPhoto(data, for: carID)
     }
 
-    func parkedCarPhotoData(for car: ParkedCar) -> Data? {
-        repository.parkedCarPhotoData(for: car)
+    func parkedCarPhotoData(for car: ParkedCar) async -> Data? {
+        await repository.parkedCarPhotoData(for: car)
     }
 
     @discardableResult
@@ -77,6 +77,11 @@ final class PlaceStore {
 
     func removePlace(_ id: UUID) {
         repository.removePlace(id)
+    }
+
+    @discardableResult
+    func assignVehicle(_ vehicleID: UUID?, to tripID: UUID) -> Bool {
+        repository.assignVehicle(vehicleID, to: tripID)
     }
 
     func addTrip(_ trip: TripRecord) {

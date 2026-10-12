@@ -28,6 +28,7 @@ struct PlaceDetailsView: View {
     let embeddedInBottomSheet: Bool
     let showsPrimaryAction: Bool
     let onExpandDetails: (() -> Void)?
+    let onAddFuelEntry: ((PlaceIdentity) -> Void)?
 
     @State private var details: PlaceDetails?
     @State private var isSaved: Bool
@@ -64,6 +65,7 @@ struct PlaceDetailsView: View {
          onRouteFromPlace: (() -> Void)? = nil,
          onRemove: (() -> Bool)? = nil,
          onRename: ((String) -> Bool)? = nil,
+         onAddFuelEntry: ((PlaceIdentity) -> Void)? = nil,
          onPlanRoute: @escaping () -> Void) {
         self.result = result
         self.isFavoriteFromParent = isSaved
@@ -72,6 +74,7 @@ struct PlaceDetailsView: View {
         self.onRouteFromPlace = onRouteFromPlace
         self.onRemove = onRemove
         self.onRename = onRename
+        self.onAddFuelEntry = onAddFuelEntry
         self.isNavigating = isNavigating
         self.primaryActionTitle = primaryActionTitle
         self.presentation = presentation
@@ -138,6 +141,17 @@ struct PlaceDetailsView: View {
 
             if presentation != .compact, result.isPOI,
                PaliwoMapaFuelPriceProvider.isFuelStation(category: details?.category ?? result.category) {
+                if let onAddFuelEntry {
+                    Button {
+                        onAddFuelEntry(fuelPriceIdentity)
+                    } label: {
+                        Label("Dodaj tankowanie", systemImage: "fuelpump.fill")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(Color.accentColor)
+                    .accessibilityHint("Zapisz tankowanie na wybranej stacji")
+                }
                 PlaceFuelPricesSection(identity: fuelPriceIdentity)
             }
 

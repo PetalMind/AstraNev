@@ -4,6 +4,7 @@ import Foundation
 @MainActor
 final class NavigationSession {
     let state = NavigationState()
+    var selectedVehicleID: (() -> UUID?)?
     lazy var mapCameraController = MapCameraController(
         state: state,
         routeMatchProvider: { [weak self] in self?.previousRouteMatch },
@@ -104,6 +105,7 @@ final class NavigationSession {
     var routeTrafficDataAvailable = false
     var routeTrafficUpdatedAt: Date?
     var routeTrafficFlowSegments: [RouteTrafficSegment] = []
+    var routeTrafficColorSegments: [RouteTrafficSegment] = []
     var routeTrafficFlowUpdatedAt: Date?
     private var speedLimitRequestInFlight = false
     private var speedLimitProvider: SpeedLimitProvider
@@ -441,7 +443,8 @@ final class NavigationSession {
                                       originalExpectedTravelTime: route.expectedTravelTime,
                                       startedAt: Date(), lastLocation: state.location,
                                       tracksDriving: state.transportMode == .car,
-                                      transportMode: state.transportMode)
+                                      transportMode: state.transportMode,
+                                      vehicleID: state.transportMode == .car ? selectedVehicleID?() : nil)
         }
         invalidateSpeedLimit(preservingRoadBuffer: true)
         if usesRoadVoiceGuidance, let location = state.location {
@@ -567,6 +570,7 @@ final class NavigationSession {
         routeTrafficDataAvailable = false
         routeTrafficUpdatedAt = nil
         routeTrafficFlowSegments = []
+        routeTrafficColorSegments = []
         routeTrafficFlowUpdatedAt = nil
         state.traffic = nil
     }
@@ -831,7 +835,8 @@ final class NavigationSession {
                                 drivingScore: arrived ? session.drivingScore : nil,
                                 transportMode: session.transportMode,
                                 trace: session.traceRecorder.points,
-                                maximumSpeedKph: session.traceRecorder.maximumSpeedKph)
+                                maximumSpeedKph: session.traceRecorder.maximumSpeedKph,
+                                vehicleID: session.vehicleID)
         state.lastTrip = record
         onTripFinished?(record)
     }
@@ -857,11 +862,13 @@ struct TripSession {
     var drivingAnalyzer: DrivingBehaviorAnalyzer?
     var transportMode: TransportMode?
     var traceRecorder = TripTraceRecorder()
+    var vehicleID: UUID?
 
     init(destination: Destination, waypoints: [Destination],
          originalExpectedTravelTime: TimeInterval, startedAt: Date,
          lastLocation: NavigationLocation?, tracksDriving: Bool,
-         transportMode: TransportMode? = nil) {
+         transportMode: TransportMode? = nil, vehicleID: UUID? = nil) {
+        self.vehicleID = vehicleID
         self.destination = destination
         self.waypoints = waypoints
         self.originalExpectedTravelTime = originalExpectedTravelTime

@@ -16,6 +16,11 @@ struct ContentView: View {
     @State var transitStore: TransitStore
     @State var mapStore: MapStore
     @State var placeStore: PlaceStore
+    @State var energyStore: EnergyStore
+    @State var fuelStopStore = FuelStopStore()
+    @State var showsFuelStopEntry = false
+    @State var openFuelEntryAfterPlaceDismiss = false
+    @State var fuelStopEntryCandidates: [FuelStopStation] = []
     @State var weatherStore = WeatherStore()
     @State var showsWeatherDetails = false
     @AppStorage("weatherEnabled") var weatherEnabled = true
@@ -100,6 +105,7 @@ struct ContentView: View {
     }
 
     init(dependencies: AppDependencies) {
+        _energyStore = State(initialValue: dependencies.energyStore)
         _navigationStore = State(initialValue: dependencies.navigationStore)
         _appRouter = State(initialValue: dependencies.router)
         _searchStore = State(initialValue: dependencies.searchStore)

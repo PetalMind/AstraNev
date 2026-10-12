@@ -542,6 +542,10 @@ extension ContentView {
                     }
                 }
 
+                if navigationStore.state.transportMode == .car {
+                    routeEnergyPreview(route)
+                }
+
                 HStack(spacing: 7) {
                     ForEach(Array(navigationStore.state.routeOptions.enumerated()), id: \.element.id) { item in
                         routeOption(item.element, index: item.offset + 1,
@@ -1106,6 +1110,12 @@ extension ContentView {
                         .font(.system(size: 9, weight: .medium, design: .rounded).monospacedDigit())
                         .foregroundStyle(Color.naviTextSecondary)
                         .lineLimit(1)
+                }
+                if navigationStore.state.transportMode == .car,
+                   let estimate = energyStore.estimate(vehicleID: energyStore.selectedVehicle?.id,
+                       kilometers: route.distance / 1000, trips: placeStore.trips) {
+                    Text("~\(estimate.cost.formatted(.currency(code: "PLN")))")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Text(routeTransitSummary(route) ?? distance(route.distance))
                     .font(.system(size: 10, weight: .medium))

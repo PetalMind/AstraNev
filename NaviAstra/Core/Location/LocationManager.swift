@@ -59,8 +59,13 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
         manager.requestLocation()
     }
 
-    func freshLocation() async -> CLLocation? {
+    func freshLocation(precise: Bool = false) async -> CLLocation? {
         guard canUseLocationServices else { prepareAuthorization(); return nil }
+        // Preserve the stronger accuracy policy of active navigation.
+        if precise, appliedPolicy?.demand != .continuous { manager.desiredAccuracy = kCLLocationAccuracyBest }
+        defer {
+            if precise, let policy = appliedPolicy { configure(policy) }
+        }
         let id = UUID()
         return await withTaskCancellationHandler {
             guard !Task.isCancelled else { return nil }

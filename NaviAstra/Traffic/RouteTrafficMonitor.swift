@@ -104,7 +104,9 @@ struct RouteTrafficMonitor {
                                             through endDistance: Double,
                                             queries: [RouteTrafficFlowQuery],
                                             samples: [RouteTrafficFlowSample],
-                                            geometry: RouteProgressGeometry) -> [RouteTrafficSegment] {
+                                            geometry: RouteProgressGeometry,
+                                            overlapToleranceMeters: Double = 10,
+                                            projectionToleranceMeters: Double = routeMatchToleranceMeters) -> [RouteTrafficSegment] {
         guard queries.count > 0, !samples.isEmpty else { return [] }
         let routeLength = geometry.length
         let start = max(0, startDistance)
@@ -114,7 +116,8 @@ struct RouteTrafficMonitor {
         let orderedSamples = samples.sorted { $0.distanceAlongRoute < $1.distanceAlongRoute }
         return orderedSamples.compactMap { sample in
             guard sample.flow.confidence.map({ $0 >= 0.5 }) ?? true else { return nil }
-            guard overlapProjection(sample.flow.coordinates, geometry: geometry) != nil else { return nil }
+            guard overlapProjection(sample.flow.coordinates, geometry: geometry,
+                                    tolerance: overlapToleranceMeters) != nil else { return nil }
             guard let index = orderedQueries.firstIndex(where: {
                 abs($0.distanceAlongRoute - sample.distanceAlongRoute) < 1
             }) else { return nil }
@@ -124,7 +127,7 @@ struct RouteTrafficMonitor {
                 : (sample.distanceAlongRoute + orderedQueries[index + 1].distanceAlongRoute) / 2
             let projections = sample.flow.coordinates.compactMap { coordinate -> RouteProjection? in
                 guard let projection = geometry.project(coordinate),
-                      projection.distanceFromRoute <= routeMatchToleranceMeters,
+                      projection.distanceFromRoute <= projectionToleranceMeters,
                       projection.alongRoute >= cellStart - 100,
                       projection.alongRoute <= cellEnd + 100 else { return nil }
                 return projection
@@ -147,6 +150,39 @@ struct RouteTrafficMonitor {
                 currentSpeedKph: Double(sample.flow.currentSpeedKph),
                 freeFlowSpeedKph: Double(sample.flow.freeFlowSpeedKph))
         }
+    }
+
+    /// TomTom flow geometry is displaced for map presentation. Resample it before
+    /// projecting so a sparse two-point response still covers the measured road.
+    /// This tolerance is for route colors only, never closure decisions or ETA.
+    nonisolated static func displaySegments(on route: NavigationRoute, from start: Double,
+                                            through end: Double, queries: [RouteTrafficFlowQuery],
+                                            samples: [RouteTrafficFlowSample],
+                                            geometry: RouteProgressGeometry) -> [RouteTrafficSegment] {
+        let denseSamples = samples.map { sample in
+            var points: [Coordinate] = []
+            for (a, b) in zip(sample.flow.coordinates, sample.flow.coordinates.dropFirst()) {
+                let count = max(1, Int(ceil(a.distance(to: b) / 15)))
+                for index in 0..<count {
+                    points.append(interpolate(a, b, fraction: Double(index) / Double(count)))
+                }
+            }
+            if let last = sample.flow.coordinates.last { points.append(last) }
+            let flow = sample.flow
+            return RouteTrafficFlowSample(distanceAlongRoute: sample.distanceAlongRoute,
+                flow: TrafficFlow(currentSpeedKph: flow.currentSpeedKph,
+                    freeFlowSpeedKph: flow.freeFlowSpeedKph, confidence: flow.confidence,
+                    roadClosure: flow.roadClosure, coordinates: points, updatedAt: flow.updatedAt))
+        }
+        return coloredSegments(on: route, from: start, through: end, queries: queries,
+            samples: denseSamples, geometry: geometry, overlapToleranceMeters: 30,
+            projectionToleranceMeters: 30).map { segment in
+                // Presentation intervals cannot accidentally become measured ETA intervals.
+                RouteTrafficSegment(id: segment.id, routeID: segment.routeID,
+                    startDistance: segment.startDistance, endDistance: segment.endDistance,
+                    coordinates: segment.coordinates, colorHex: segment.colorHex,
+                    isRoadClosure: segment.isRoadClosure)
+            }
     }
 
     static func lookAheadDistance(for route: NavigationRoute, progress: RouteProgress?) -> Double {

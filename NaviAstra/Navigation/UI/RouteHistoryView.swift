@@ -21,6 +21,7 @@ struct RouteHistoryView: View {
     let onSearch: (Destination) -> Void
     let onFavorite: (Destination) -> Void
     let onClose: () -> Void
+    var energyStore: EnergyStore? = nil
     var completedOnly = false
     var embeddedInNavigation = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -163,6 +164,19 @@ struct RouteHistoryView: View {
                             .font(.headline).foregroundStyle(Color.naviTextPrimary)
                             .accessibilityAddTraits(.isHeader)
                         HistoryStatistics(trips: trips, compact: true)
+                        if let energyStore {
+                            let vehicles = energyStore.vehicles.filter { vehicle in
+                                trips.contains { $0.transportMode == .car && $0.vehicleID == vehicle.id }
+                            }
+                            ForEach(vehicles) { vehicle in
+                                Divider()
+                                EnergyConsumptionSummary(store: energyStore, vehicle: vehicle, trips: store.trips)
+                            }
+                            if !vehicles.isEmpty {
+                                Text("Średnie spalanie obejmuje wszystkie dostępne pomiary pojazdu, niezależnie od filtra historii.")
+                                    .font(.caption).foregroundStyle(Color.naviTextSecondary)
+                            }
+                        }
                     }
                     .padding(18)
                     .modifier(NavigationGlassSurface(radius: 24))
@@ -173,9 +187,10 @@ struct RouteHistoryView: View {
                 Section {
                     ForEach(trips) { trip in
                         NavigationLink {
-                            TripHistoryDetail(trip: trip, onPlan: { onPlanTrip(trip) })
+                            TripHistoryDetail(trip: trip, onPlan: { onPlanTrip(trip) }, energyStore: energyStore, places: store)
                         } label: {
-                            TripHistoryRow(trip: trip, showsUnavailableScore: completedOnly)
+                            TripHistoryRow(trip: trip, showsUnavailableScore: completedOnly,
+                                           energyStore: energyStore, allTrips: store.trips)
                         }
                         .padding(16)
                         .modifier(NavigationGlassSurface(radius: 22, interactive: true))
@@ -255,6 +270,8 @@ struct RouteHistoryView: View {
 private struct TripHistoryRow: View {
     let trip: TripRecord
     let showsUnavailableScore: Bool
+    let energyStore: EnergyStore?
+    let allTrips: [TripRecord]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -292,6 +309,16 @@ private struct TripHistoryRow: View {
             }
             .font(.subheadline.monospacedDigit())
             .foregroundStyle(Color.naviTextPrimary)
+            if trip.transportMode == .car, let energyStore {
+                if let estimate = energyStore.estimate(for: trip, trips: allTrips) {
+                    EnergyUsageLabel(estimate: estimate)
+                } else {
+                    Label(trip.vehicleID == nil ? "Przypisz pojazd, aby obliczyć zużycie paliwa"
+                          : "Zużycie paliwa niedostępne · brak pełnych pomiarów lub dystansu", systemImage: "fuelpump")
+                        .font(.caption).foregroundStyle(Color.naviTextSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             HStack(spacing: 6) {
                 Image(systemName: trip.arrived ? "flag.checkered" : "stop.circle")
                 Text(trip.arrived ? "Dojechano" : "Przerwano")
@@ -419,6 +446,8 @@ private struct TripHeatmapView: View {
 }
 
 struct TripHistoryDetail: View {
+    let energyStore: EnergyStore?
+    let places: PlaceStore?
     let trip: TripRecord
     let onPlan: () -> Void
     private let segments: [TripTraceSegment]
@@ -429,7 +458,9 @@ struct TripHistoryDetail: View {
     @State private var playing = false
     @State private var playbackRate = 5.0
 
-    init(trip: TripRecord, onPlan: @escaping () -> Void) {
+    init(trip: TripRecord, onPlan: @escaping () -> Void, energyStore: EnergyStore? = nil, places: PlaceStore? = nil) {
+        self.energyStore = energyStore
+        self.places = places
         self.trip = trip
         self.onPlan = onPlan
         segments = trip.traceSegments
@@ -446,6 +477,7 @@ struct TripHistoryDetail: View {
 
     private var currentPoint: TripTracePoint? { trip.tracePoint(at: elapsed) }
     private var duration: Double { max(1, trip.duration) }
+    private var currentTrip: TripRecord { places?.trips.first { $0.id == trip.id } ?? trip }
 
     var body: some View {
         ScrollView {
@@ -462,6 +494,29 @@ struct TripHistoryDetail: View {
                         .foregroundStyle(Color.naviTextSecondary)
                 }
                 .font(.subheadline)
+
+                if trip.transportMode == .car, let energyStore, let places {
+                    HistoryDetailSection(title: "Paliwo i koszt jazdy", symbol: "fuelpump") {
+                        Picker("Pojazd tego przejazdu", selection: Binding(
+                            get: { currentTrip.vehicleID },
+                            set: { _ = places.assignVehicle($0, to: trip.id) })) {
+                            Text("Nieprzypisany").tag(nil as UUID?)
+                            ForEach(energyStore.vehicles) { Text($0.name).tag(Optional($0.id)) }
+                        }
+                        if let vehicle = energyStore.vehicles.first(where: { $0.id == currentTrip.vehicleID }) {
+                            if let estimate = energyStore.estimate(for: currentTrip, trips: places.trips) {
+                                EnergyCostLabel(estimate: estimate)
+                                Text("Zużycie oszacowano z dystansu przejazdu i aktualnej średniej pojazdu ze wszystkich dostępnych pomiarów, także późniejszych tankowań. Koszt opiera się na ostatnich zapisanych cenach. To nie jest pomiar rzeczywistego spalania tej trasy.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            } else {
+                                EnergyConsumptionSummary(store: energyStore, vehicle: vehicle, trips: places.trips)
+                            }
+                        } else { Text("Wybierz pojazd, aby obliczyć szacowane zużycie paliwa.").foregroundStyle(.secondary) }
+                        if let error = places.errorMessage {
+                            Text(error).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
 
                 if trip.transportMode == .car || trip.drivingScore != nil {
                     DrivingScoreSummaryCard(trip: trip)

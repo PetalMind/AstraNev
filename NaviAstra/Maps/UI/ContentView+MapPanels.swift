@@ -226,6 +226,7 @@ extension ContentView {
             onRouteFromPlace: { setMapPlaceAsRouteOrigin(result) },
             onRemove: { removeFavorite(for: result.destination) },
             onRename: { renameFavorite(for: result.destination, to: $0) },
+            onAddFuelEntry: { openFuelEntry(for: $0) },
             onPlanRoute: { planRoute(from: result) })
 
         if embeddedInBottomSheet {

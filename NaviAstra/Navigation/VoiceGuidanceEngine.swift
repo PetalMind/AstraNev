@@ -146,6 +146,21 @@ final class VoiceGuidanceEngine {
         else if distance <= max(80, speed * 8) { stage = 1 }
         else if distance <= early { stage = 0 }
         else { return }
+        if maneuver.kind.isRoundabout {
+            // Entry and exit form one instruction, not three stages each.
+            // Keep the entry key independent of distance so GPS updates cannot repeat it.
+            if maneuver.kind == .roundaboutExit {
+                guard stage == 2 else { return }
+                scheduler.discardQueuedAnnouncements(withPrefix: "roundabout-enter|")
+            }
+            let prefix = maneuver.kind == .roundaboutEnter ? "roundabout-enter" : "roundabout-exit"
+            scheduler.enqueue(
+                key: "\(prefix)|\(maneuverIdentity(maneuver, coordinate: coordinate))",
+                text: (self.distancePrefix(distance, immediate: stage == 2) ?? "") + maneuver.spokenInstruction,
+                priority: stage == 2 ? .maneuverNow : .navigation
+            )
+            return
+        }
         guard preferences.verbosity.includesManeuverStage(stage) else { return }
 
         let distancePrefix = distancePrefix(distance, immediate: stage == 2)
@@ -340,6 +355,15 @@ private final class VoiceAnnouncementScheduler: NSObject, AVSpeechSynthesizerDel
 #if os(iOS)
         deactivateAudioSession()
 #endif
+    }
+
+    func discardQueuedAnnouncements(withPrefix prefix: String) {
+        let obsolete = queue.filter { $0.key.hasPrefix(prefix) }
+        for announcement in obsolete {
+            pendingKeys.remove(announcement.key)
+            spokenKeys.insert(announcement.key)
+        }
+        queue.removeAll { $0.key.hasPrefix(prefix) }
     }
 
     func enqueue(key: String, text: String, priority: VoiceAnnouncementPriority) {

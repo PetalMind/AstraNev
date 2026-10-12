@@ -226,6 +226,10 @@ extension ContentView {
                         }
 
                         if let route = navigationStore.state.route {
+                            if navigationStore.state.transportMode == .car {
+                                routeEnergyPreview(route)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
                             routePlanningExpandedRouteOptions(for: route)
                             Button {
                                 withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
@@ -644,6 +648,7 @@ extension ContentView {
                         .font(.system(size: 21, weight: .bold, design: .rounded).monospacedDigit())
                         .foregroundStyle(Color.naviTextPrimary)
                         .lineLimit(1)
+                    routeEnergyCostCaption(route)
                     Text("U celu \(routePlanningArrivalTime(route)) · \(distance(route.distance))")
                         .font(.system(size: 14, weight: .medium, design: .rounded).monospacedDigit())
                         .foregroundStyle(Color.naviTextSecondary.opacity(0.68))
@@ -1114,6 +1119,8 @@ extension ContentView {
                     .foregroundStyle(Color.naviTextSecondary.opacity(0.7))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
+
+                routeEnergyCostCaption(route)
 
                 if !compact, let traffic = routePlanningTrafficSummary(for: route) {
                     Label(traffic.title, systemImage: traffic.symbol)

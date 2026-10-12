@@ -73,11 +73,12 @@ extension ContentView {
         if weatherEnabled {
             Button { showsWeatherDetails = true } label: {
                 circleSurface {
-                    VStack(spacing: 0) {
-                        WeatherIcon(state: weatherControlState, size: weatherDistanceLabel == nil ? 34 : 28)
+                    VStack(spacing: 1) {
+                        WeatherIcon(state: weatherControlState, size: weatherDistanceLabel == nil ? 34 : 27,
+                                    showsBackground: false)
                         if let label = weatherDistanceLabel {
                             Text(label)
-                                .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                                .font(.system(size: 10, weight: .semibold).monospacedDigit())
                                 .foregroundStyle(Color.naviTextSecondary)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.75)
@@ -96,32 +97,104 @@ extension ContentView {
     }
 
     private var weatherDetails: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                WeatherIcon(state: weatherControlState, size: 42)
-                VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .center, spacing: 12) {
+                WeatherIcon(state: weatherControlState, size: 48)
+                VStack(alignment: .leading, spacing: 5) {
                     Text(upcomingWeatherSample == nil ? "Pogoda w okolicy" : "Pogoda na trasie")
-                        .font(.headline)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Color.naviTextSecondary)
                     Text(weatherControlState?.condition.title ?? "Brak danych")
-                        .font(.subheadline).foregroundStyle(.secondary)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(Color.naviTextPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+                Spacer(minLength: 0)
             }
-            Text(weatherNoticeText)
-                .font(.subheadline)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 8) {
+                if let distance = weatherDistanceLabel {
+                    Label(distance == "Tutaj" ? "Na tym odcinku" : "Za \(distance)", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
+                Text(weatherNoticeText)
+                    .font(.subheadline)
+                    .foregroundStyle(Color.naviTextSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let state = weatherControlState {
+                HStack(alignment: .top, spacing: 10) {
+                    weatherMetric("Opady", symbol: "drop", value: "\(weatherNumber(state.precipitation)) mm")
+                    weatherMetric("Wiatr", symbol: "wind", value: "\(weatherNumber(state.windSpeed * 3.6)) km/h")
+                }
+                HStack(spacing: 8) {
+                    Image(systemName: "eye")
+                        .foregroundStyle(Color.naviTextSecondary)
+                    Text("Widoczność")
+                        .foregroundStyle(Color.naviTextSecondary)
+                    Spacer(minLength: 4)
+                    Text(weatherVisibilityLabel(state.visibility))
+                        .fontWeight(.medium)
+                        .foregroundStyle(Color.naviTextPrimary)
+                }
+                .font(.caption)
+            }
+
             if upcomingWeatherSample != nil, let current = weatherStore.current {
-                HStack(spacing: 6) {
-                    WeatherIcon(state: current, size: 22)
-                    Text("Teraz w okolicy: \(current.condition.title)").font(.caption)
+                HStack(spacing: 8) {
+                    WeatherIcon(state: current, size: 26, showsBackground: false)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Teraz w okolicy").foregroundStyle(Color.naviTextSecondary)
+                        Text(current.condition.title).fontWeight(.medium)
+                    }
+                    .font(.caption)
+                    Spacer(minLength: 0)
                 }
+                .padding(10)
+                .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
             }
+
+            Divider().opacity(0.6)
             if let updatedAt = weatherStore.updatedAt {
-                Text("Aktualizacja: \(updatedAt.formatted(date: .omitted, time: .shortened)) · prognoza")
-                    .font(.caption2).foregroundStyle(.secondary)
+                Label("Aktualizacja \(updatedAt.formatted(date: .omitted, time: .shortened)) · prognoza",
+                      systemImage: "clock")
+                    .font(.caption2)
+                    .foregroundStyle(Color.naviTextSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(weatherStore.status)
+                    .font(.caption2)
+                    .foregroundStyle(Color.naviTextSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(16)
-        .frame(width: 270, alignment: .leading)
+        .padding(20)
+        .frame(width: 300, alignment: .leading)
+    }
+
+    private func weatherMetric(_ title: String, symbol: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: symbol)
+                .font(.caption)
+                .foregroundStyle(Color.naviTextSecondary)
+            Text(value)
+                .font(.subheadline.weight(.semibold).monospacedDigit())
+                .foregroundStyle(Color.naviTextPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func weatherNumber(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(0...1)))
+    }
+
+    private func weatherVisibilityLabel(_ meters: Double?) -> String {
+        guard let meters else { return "Brak danych" }
+        return meters >= 1000 ? "\(weatherNumber(meters / 1000)) km" : "\(Int(meters.rounded())) m"
     }
 
     var settingsWeatherSection: some View {
