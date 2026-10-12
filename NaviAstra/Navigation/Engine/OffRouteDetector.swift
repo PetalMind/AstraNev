@@ -3,6 +3,7 @@ import Foundation
 /// Tracks consecutive, distinct location fixes that provide enough evidence
 /// that the user has left the active road route.
 struct OffRouteDetector {
+    private(set) var deviationState: RouteDeviationState = .onRoute
     private var departureSince: Date?
     private var sampleCount = 0
     private var lastSampleTimestamp: Date?
@@ -33,15 +34,19 @@ struct OffRouteDetector {
             lastSampleTimestamp = location.timestamp
         }
 
+        deviationState = sampleCount >= 2 ? .probablyOffRoute : .suspicious
         guard let departureSince else {
             self.departureSince = location.timestamp
             return false
         }
 
-        return sampleCount >= 3 && location.timestamp.timeIntervalSince(departureSince) >= 2
+        let confirmed = sampleCount >= 3 && location.timestamp.timeIntervalSince(departureSince) >= 2
+        if confirmed { deviationState = .offRoute }
+        return confirmed
     }
 
     mutating func reset() {
+        deviationState = .onRoute
         departureSince = nil
         sampleCount = 0
         lastSampleTimestamp = nil

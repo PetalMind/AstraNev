@@ -9,6 +9,8 @@ struct RouteProgressMeasurement {
     let canAdvanceGeometryProgress: Bool
     let nextManeuver: Maneuver?
     let distanceToNextManeuver: Double
+    var matching: MapMatchingResult? = nil
+    var etaProgressDistance: Double = 0
 }
 
 /// Owns the geometry caches and route-coordinate calculations used by the
@@ -16,6 +18,7 @@ struct RouteProgressMeasurement {
 /// `NavigationSession`.
 struct RouteProgressTracker {
     private var roadGeometry: RouteProgressGeometry?
+    private var roadETARoute: RoadRouteETA.PreparedRoute?
     private var transitGeometry: TransitRouteProgressGeometry?
     private var displayedProgress: (routeID: UUID, fraction: Double)?
 
@@ -26,27 +29,28 @@ struct RouteProgressTracker {
         previousTimestamp: Date?
     ) -> RouteProgressMeasurement? {
         let geometry = roadGeometry(for: route)
-        let matchedRoute = geometry.match(
-            location,
-            previous: previousMatch,
-            previousTimestamp: previousTimestamp)
+        let matching = MapMatchingEngine.match(route: route, geometry: geometry, location: location,
+            previous: previousMatch, previousTimestamp: previousTimestamp)
+        let matchedRoute = matching?.match
         guard let projection = matchedRoute?.projection
                 ?? geometry.nearestProjection(to: location.coordinate) else {
             return nil
         }
 
+        let progressProjection = MapMatchingEngine.stableProgress(result: matching, projection: projection, previous: previousMatch)
         let geometryLength = geometry.length
         let totalGeometry = route.distance > 0 ? route.distance : geometryLength
-        let fraction = totalGeometry > 0 ? min(1, projection.alongRoute / totalGeometry) : 0
-        let geometryFraction = geometryLength > 0 ? projection.alongRoute / geometryLength : 0
-        let canAdvanceGeometryProgress = projection.distanceFromRoute <= max(40, location.accuracy * 1.5)
-        let nextManeuver = route.maneuvers.first { $0.shapeIndex >= projection.segment + 1 }
+        let fraction = totalGeometry > 0 ? min(1, progressProjection.alongRoute / totalGeometry) : 0
+        let geometryFraction = geometryLength > 0 ? progressProjection.alongRoute / geometryLength : 0
+        let canAdvanceGeometryProgress = (matchedRoute?.confidence ?? 0) >= 0.25 &&
+            matching?.ambiguous != true && projection.distanceFromRoute <= max(40, location.accuracy * 1.5)
+        let nextManeuver = route.maneuvers.first { $0.shapeIndex >= progressProjection.segment + 1 }
         let distanceToNextManeuver: Double
         if let nextManeuver {
             distanceToNextManeuver = max(
                 0,
-                geometry.distance(from: projection.segment, through: nextManeuver.shapeIndex)
-                    - route.coordinates[projection.segment].distance(to: projection.coordinate))
+                geometry.distance(from: progressProjection.segment, through: nextManeuver.shapeIndex)
+                    - route.coordinates[progressProjection.segment].distance(to: progressProjection.coordinate))
         } else {
             distanceToNextManeuver = 0
         }
@@ -59,7 +63,8 @@ struct RouteProgressTracker {
             geometryLength: geometryLength,
             canAdvanceGeometryProgress: canAdvanceGeometryProgress,
             nextManeuver: nextManeuver,
-            distanceToNextManeuver: distanceToNextManeuver)
+            distanceToNextManeuver: distanceToNextManeuver, matching: matching,
+            etaProgressDistance: progressProjection.alongRoute)
     }
 
     mutating func projectRoadCoordinate(route: NavigationRoute, coordinate: Coordinate,
@@ -69,6 +74,19 @@ struct RouteProgressTracker {
 
     mutating func cameraGeometry(for route: NavigationRoute) -> RouteProgressGeometry {
         roadGeometry(for: route)
+    }
+
+    mutating func estimateRoadETA(route: NavigationRoute, from distance: Double,
+                                 traffic: TrafficSnapshot?, paceMultiplier: Double = 1) -> Double {
+        let prepared: RoadRouteETA.PreparedRoute
+        if let cached = roadETARoute, cached.geometry.routeID == route.id {
+            prepared = cached
+        } else {
+            prepared = RoadRouteETA.PreparedRoute(route, geometry: roadGeometry(for: route))
+            roadETARoute = prepared
+        }
+        return RoadRouteETA.estimate(route, prepared: prepared, from: distance,
+                                     traffic: traffic, paceMultiplier: paceMultiplier)
     }
 
     mutating func transitProgress(
@@ -111,6 +129,7 @@ struct RouteProgressTracker {
 
     mutating func invalidateRoadGeometry() {
         roadGeometry = nil
+        roadETARoute = nil
     }
 
     mutating func invalidateTransitGeometry() {

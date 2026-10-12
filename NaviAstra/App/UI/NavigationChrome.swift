@@ -122,6 +122,7 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
     private let mediumHeightFraction: CGFloat
     private let minimumPeekHeight: CGFloat?
     private let minimumMediumHeight: CGFloat?
+    private let dragHandleHeight: CGFloat
     private let hidesExpandedChevron: Bool
     private let resizesFromContent: Bool
     private let onClose: (() -> Void)?
@@ -143,6 +144,7 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
          mediumHeightFraction: CGFloat = 0.48,
          minimumPeekHeight: CGFloat? = nil,
          minimumMediumHeight: CGFloat? = nil,
+         dragHandleHeight: CGFloat = 60,
          hidesExpandedChevron: Bool = false,
          resizesFromContent: Bool = true,
          onClose: (() -> Void)? = nil,
@@ -156,6 +158,7 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
         self.mediumHeightFraction = min(0.72, max(0.28, mediumHeightFraction))
         self.minimumPeekHeight = minimumPeekHeight
         self.minimumMediumHeight = minimumMediumHeight
+        self.dragHandleHeight = max(44, dragHandleHeight)
         self.hidesExpandedChevron = hidesExpandedChevron
         self.resizesFromContent = resizesFromContent
         self.onClose = onClose
@@ -179,9 +182,9 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
                                               minimumMedium))
             return [peek, medium, expanded]
         }
-        // The compact summary sits below a 60 pt grabber; keep enough room for both.
+        // Keep enough room for the compact summary and the grabber.
         let basePeek = min(140, max(124, expanded * 0.18))
-        let maximumPeek = max(basePeek, expanded - 60)
+        let maximumPeek = max(basePeek, expanded - dragHandleHeight)
         let peek = min(maximumPeek, max(basePeek, minimumPeekHeight ?? basePeek))
         let medium = min(expanded - 1, max(peek + 40, expanded * mediumHeightFraction,
                                           minimumMedium))
@@ -305,7 +308,7 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
             }
             .padding(.trailing, 16)
         }
-        .frame(maxWidth: .infinity, minHeight: 60)
+        .frame(maxWidth: .infinity, minHeight: dragHandleHeight)
         .contentShape(Rectangle())
         .highPriorityGesture(dragGesture(fromContent: false))
     }

@@ -105,7 +105,8 @@ final class NavigationPuckEngine {
             guard isNavigating,
                   let matchedRoute,
                   matchedRoute.routeID == geometry.id,
-                  matchedRoute.locationTimestamp == location.timestamp else { return nil }
+                  matchedRoute.locationTimestamp == location.timestamp,
+                  !matchedRoute.isAmbiguous, matchedRoute.match.confidence >= 0.25 else { return nil }
             return matchedRoute.match
         }
         let accuracy = location.accuracy.isFinite ? max(0, location.accuracy) : 0

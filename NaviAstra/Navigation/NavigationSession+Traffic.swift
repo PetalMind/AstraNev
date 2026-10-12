@@ -76,9 +76,17 @@ extension NavigationSession {
         let generation = trafficGeneration
         let routeID = route.id
         let routeCoordinates = route.coordinates
+        let samplingBudget = TrafficSamplingBudget.resolved(isNavigating: state.status == .navigating || state.status == .rerouting,
+            isForeground: appIsForeground, problemDetected: routeTrafficIncidents.contains {
+                ($0.distanceAlongRoute ?? 0) >= startDistance && ($0.isRoadClosure || ($0.delaySeconds ?? 0) >= 120)
+            })
+        state.trafficSamplingBudget = samplingBudget.maximumRequests
+        let knownIncidents = routeTrafficIncidents
+        let measuredSegments = routeTrafficFlowUpdatedAt.map { Date().timeIntervalSince($0) <= 240 } == true
+            ? routeTrafficFlowSegments : []
         let flowQueriesTask = Task.detached(priority: .utility) {
-            RouteTrafficMonitor.flowQueries(for: routeCoordinates, from: startDistance,
-                                            through: endDistance)
+            RouteTrafficMonitor.flowQueries(for: route, from: startDistance,
+                                            through: endDistance, incidents: knownIncidents, measuredSegments: measuredSegments, budget: samplingBudget)
         }
         let boxesTask = Task.detached(priority: .utility) {
             RouteTrafficMonitor.queryBoxes(for: routeCoordinates, from: startDistance,
@@ -232,7 +240,7 @@ extension NavigationSession {
                                             currentRoute: NavigationRoute,
                                             location: Coordinate) {
         guard state.transportMode == .car, state.status == .navigating,
-              !state.routingPreferences.advanced.shortest,
+              state.routingPreferences.advanced.effectiveRoutePreference != .shortest,
               state.route?.id == currentRoute.id else { return }
         let routes = state.routeOptions.isEmpty ? [currentRoute] : state.routeOptions
         guard routes.count > 1 else { return }
@@ -244,6 +252,7 @@ extension NavigationSession {
         let selectionGeneration = trafficRouteSelectionGeneration
         let generation = trafficGeneration
         let currentRouteID = currentRoute.id
+        let requestedPreferences = state.routingPreferences
         let accuracy = state.location?.accuracy ?? 70
         let heading = routingHeading(from: location)
         Task { @MainActor [weak self] in
@@ -251,10 +260,15 @@ extension NavigationSession {
             defer { if generation == self.trafficGeneration { self.trafficComparisonInFlight = false } }
             var scores: [(route: NavigationRoute, eta: Double)] = []
             var snapshots: [UUID: TrafficSnapshot] = [:]
+            var starts: [UUID: Double] = [:]
+            var coverages: [UUID: TrafficCoverage] = [:]
+            let comparisonStarted = ProcessInfo.processInfo.systemUptime
+            var totalQueries = 0
             for route in routes {
                 guard generation == self.trafficGeneration,
                       selectionGeneration == self.trafficRouteSelectionGeneration,
-                      self.state.route?.id == currentRouteID, self.state.status == .navigating else { return }
+                      self.state.route?.id == currentRouteID, self.state.status == .navigating,
+                      self.state.routingPreferences == requestedPreferences else { return }
                 let geometry = RouteProgressGeometry(route)
                 guard let projection = geometry.project(location, within: max(50, accuracy * 2)),
                       projection.distanceFromRoute <= max(50, accuracy * 2),
@@ -264,7 +278,10 @@ extension NavigationSession {
                                   RouteTrafficMonitor.lookAheadDistance(for: route, progress: nil))
                 let end = start + horizon
                 let boxes = RouteTrafficMonitor.queryBoxes(for: route.coordinates, from: start, through: end)
-                let queries = RouteTrafficMonitor.flowQueries(for: route.coordinates, from: start, through: end)
+                let queries = RouteTrafficMonitor.flowQueries(for: route, from: start, through: end, incidents: snapshot.incidents,
+                    budget: TrafficSamplingBudget.resolved(isNavigating: true, isForeground: self.appIsForeground,
+                        problemDetected: snapshot.incidents.contains { ($0.delaySeconds ?? 0) >= 120 }))
+                totalQueries += queries.count
                 async let incidentRequest = provider.incidents(in: boxes)
                 async let flowRequest = provider.routeFlowSamples(at: queries)
                 let incidents: [TrafficIncident]
@@ -280,23 +297,49 @@ extension NavigationSession {
                 let traffic = TrafficSnapshot(flow: nil, incidents: matched, routeFlowSegments: segments,
                                               updatedAt: Date(), partialError: nil, incidentDataAvailable: true)
                 snapshots[route.id] = traffic
+                starts[route.id] = start
+                coverages[route.id] = TrafficCoverage.measure(route: route, from: start, through: end, traffic: traffic)
                 scores.append((route, RoadRouteETA.estimate(route, from: start, traffic: traffic)))
             }
             guard generation == self.trafficGeneration,
                   self.trafficRouteSelectionGeneration == selectionGeneration,
+                  self.state.routingPreferences == requestedPreferences else { return }
+            RoutingDiagnostics.shared.publish(.make(routes: scores.map { $0.route },
+                preference: requestedPreferences.advanced.effectiveRoutePreference,
+                selected: currentRouteID, source: "traffic-comparison-before-switch", calculationSeconds: ProcessInfo.processInfo.systemUptime - comparisonStarted,
+                samplingCount: totalQueries,
+                samplingBudget: self.state.trafficSamplingBudget,
+                gpsMatchQuality: self.state.routeMatch?.match.confidence, starts: starts, traffic: snapshots))
+            guard generation == self.trafficGeneration,
+                  self.trafficRouteSelectionGeneration == selectionGeneration,
                   self.state.route?.id == currentRouteID, self.state.status == .navigating,
+                  self.state.routingPreferences == requestedPreferences,
                   self.state.location?.coordinate.distance(to: location) ?? .infinity < 100,
-                  let best = scores.min(by: { $0.eta < $1.eta }),
+                  let recommended = RouteScoringEngine.ranked(scores.map { $0.route },
+                      preference: requestedPreferences.advanced.effectiveRoutePreference,
+                      from: starts, traffic: snapshots).first,
+                  let best = scores.first(where: { $0.route.id == recommended.id }),
                   best.route.id != currentRouteID, best.eta.isFinite,
                   let currentScore = scores.first(where: { $0.route.id == currentRouteID })?.eta,
                   currentScore.isFinite,
+                  let currentCoverage = coverages[currentRouteID], let bestCoverage = coverages[best.route.id],
+                  currentCoverage.corridorFraction >= 0.5, bestCoverage.corridorFraction >= 0.5,
+                  bestCoverage.corridorFraction + 0.1 >= currentCoverage.corridorFraction,
                   currentScore - best.eta >= max(120, currentScore * 0.15) else { return }
             if self.state.voiceEnabled {
                 self.voice.announceFasterRoute(savedSeconds: currentScore - best.eta, routeID: best.route.id)
             }
             self.arrivalDetector.reset()
+            RoutingDiagnostics.shared.publish(.make(routes: scores.map { $0.route },
+                preference: requestedPreferences.advanced.effectiveRoutePreference,
+                selected: best.route.id, source: "traffic-switch", calculationSeconds: ProcessInfo.processInfo.systemUptime - comparisonStarted,
+                samplingCount: totalQueries,
+                samplingBudget: self.state.trafficSamplingBudget,
+                gpsMatchQuality: self.state.routeMatch?.match.confidence, starts: starts, traffic: snapshots))
             self.state.route = best.route
-            self.state.routeOptions = scores.sorted { $0.eta < $1.eta }.map { $0.route }
+            self.state.routeOptions = RouteScoringEngine.ranked(scores.map { $0.route },
+                preference: requestedPreferences.advanced.effectiveRoutePreference,
+                from: starts, traffic: snapshots)
             self.state.evChargingStops = best.route.chargingStops.map(\.destination)
             self.loadRoadData(for: best.route)
             self.trafficProjectionRouteID = nil
@@ -322,6 +365,16 @@ extension NavigationSession {
 
 /// One ETA calculation for navigation and alternative selection.
 nonisolated enum RoadRouteETA {
+    struct PreparedRoute {
+        let geometry: RouteProgressGeometry
+        let travelSegments: [RouteTravelSegment]
+
+        init(_ route: NavigationRoute, geometry: RouteProgressGeometry? = nil) {
+            self.geometry = geometry ?? RouteProgressGeometry(route)
+            travelSegments = route.travelSegments.sorted { $0.startDistance < $1.startDistance }
+        }
+    }
+
     static func canFollow(_ route: NavigationRoute, projection: RouteProjection, heading: Double?) -> Bool {
         guard let heading else { return true }
         guard route.coordinates.indices.contains(projection.segment + 1) else { return false }
@@ -335,15 +388,19 @@ nonisolated enum RoadRouteETA {
     }
 
     static func drivingTime(_ route: NavigationRoute, from start: Double, through end: Double) -> Double {
+        drivingTime(route, prepared: PreparedRoute(route), from: start, through: end)
+    }
+
+    private static func drivingTime(_ route: NavigationRoute, prepared: PreparedRoute,
+                                   from start: Double, through end: Double) -> Double {
         guard end > start else { return 0 }
-        let length = zip(route.coordinates, route.coordinates.dropFirst())
-            .reduce(0.0) { $0 + $1.0.distance(to: $1.1) }
+        let length = prepared.geometry.length
         guard length > 0 else { return 0 }
         let baseline = max(0, route.expectedTravelTime - route.chargingDuration)
         var result = 0.0
         var covered = 0.0
         var cursor = start
-        for segment in route.travelSegments.sorted(by: { $0.startDistance < $1.startDistance }) {
+        for segment in prepared.travelSegments {
             let lower = max(cursor, segment.startDistance)
             let upper = min(end, segment.endDistance)
             guard upper > lower, segment.endDistance > segment.startDistance else { continue }
@@ -356,14 +413,21 @@ nonisolated enum RoadRouteETA {
 
     static func estimate(_ route: NavigationRoute, from start: Double,
                          traffic: TrafficSnapshot?, paceMultiplier: Double = 1) -> Double {
-        let geometry = RouteProgressGeometry(route)
+        estimate(route, prepared: PreparedRoute(route), from: start,
+                 traffic: traffic, paceMultiplier: paceMultiplier)
+    }
+
+    static func estimate(_ route: NavigationRoute, prepared: PreparedRoute, from start: Double,
+                         traffic: TrafficSnapshot?, paceMultiplier: Double = 1) -> Double {
+        let geometry = prepared.geometry
         let end = geometry.length
-        var time = drivingTime(route, from: start, through: end) * paceMultiplier
+        var time = drivingTime(route, prepared: prepared, from: start, through: end) * paceMultiplier
         var flowIntervals: [(Double, Double)] = []
         if let traffic, Date().timeIntervalSince(traffic.updatedAt) <= 240 {
             var cursor = start
             for segment in traffic.routeFlowSegments.filter({ $0.routeID == route.id })
                 .sorted(by: { $0.startDistance < $1.startDistance }) {
+                guard (-5...240).contains(Date().timeIntervalSince(segment.measuredAt ?? traffic.updatedAt)) else { continue }
                 let lower = max(cursor, segment.startDistance)
                 let upper = min(end, segment.endDistance)
                 guard upper > lower else { continue }
@@ -371,19 +435,21 @@ nonisolated enum RoadRouteETA {
                 guard let speed = segment.currentSpeedKph, speed.isFinite, speed >= 0 else { continue }
                 // Replace the engine's time on the measured interval, without counting it twice.
                 let measured = (upper - lower) / (max(1, speed) / 3.6)
-                time += max(0, measured - drivingTime(route, from: lower, through: upper) * paceMultiplier)
+                time += max(0, measured - drivingTime(route, prepared: prepared,
+                    from: lower, through: upper) * paceMultiplier)
                 flowIntervals.append((lower, upper))
                 cursor = upper
             }
             if traffic.incidentDataAvailable, Date().timeIntervalSince(traffic.updatedAt) <= 120 {
                 var seen = Set<String>()
                 for incident in traffic.incidents where seen.insert(incident.id).inserted {
-                    guard let projection = RouteTrafficMonitor.incidentProjection(incident, geometry: geometry) else { continue }
+                    guard (-5...120).contains(Date().timeIntervalSince(incident.observedAt ?? traffic.updatedAt)) else { continue }
+                    guard let projection = RouteTrafficMonitor.incidentProjection(incident, geometry: geometry, route: route) else { continue }
                     let position = projection.alongRoute
                     guard position > start + 40 else { continue }
                     if incident.isRoadClosure { return .infinity }
                     let isMeasured = flowIntervals.contains { position >= $0.0 && position <= $0.1 }
-                    if !isMeasured { time += Double(max(0, incident.delaySeconds ?? 0)) }
+                    if !isMeasured { time += Double(max(0, incident.routingDelaySeconds ?? 0)) }
                 }
             }
         }

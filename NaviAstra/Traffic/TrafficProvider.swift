@@ -7,6 +7,8 @@ nonisolated struct TrafficFlow: Sendable {
     let roadClosure: Bool
     let coordinates: [Coordinate]
     let updatedAt: Date
+    var roadClass: String? = nil
+    var geometryDirection: TrafficGeometryDirection = .unknown
 
     var overlayColorHex: UInt32 {
         if roadClosure { return RouteColorPalette.closure }
@@ -106,7 +108,7 @@ extension TrafficIncidentCategory {
         }
     }
 
-    var mapSymbolName: String {
+    nonisolated var mapSymbolName: String {
         switch self {
         case .unknown: "exclamationmark.triangle.fill"
         case .accident: "car.side.front.open.fill"
@@ -137,7 +139,7 @@ extension TrafficIncidentCategory {
         }
     }
 
-    var isImportantDuringNavigation: Bool {
+    nonisolated var isImportantDuringNavigation: Bool {
         switch self {
         case .accident, .fog, .dangerousConditions, .ice, .jam, .laneClosed,
              .roadClosed, .roadWorks, .wind, .flooding, .cluster, .brokenDownVehicle: true
@@ -186,7 +188,7 @@ struct TrafficMapPresentation {
     let isCritical: Bool
 
     init(_ incident: TrafficIncident) {
-        symbolName = incident.category.mapSymbolName
+        symbolName = incident.alertSymbolName
         markerText = nil
         roadSign = nil
         isDirectionUncertain = false
@@ -284,7 +286,67 @@ extension RoadAlertType {
 }
 
 extension TrafficIncident {
-    var isImportantDuringNavigation: Bool { category.isImportantDuringNavigation || severity == .major }
+    nonisolated var isImportantDuringNavigation: Bool {
+        category.isImportantDuringNavigation || severity == .major ||
+            cause == .policeCheckpoint || events.contains { $0.category.isImportantDuringNavigation }
+            || cause.label != nil
+    }
+}
+
+/// Semantic causes are separate from the provider's broad icon category.
+/// REST event codes are retained verbatim; they are not SDK TPEG CauseCode values.
+nonisolated enum RoadEventCause: String, Sendable {
+    case accident, policeCheckpoint, brokenDownVehicle, objectsOnTheRoad, animalsOnRoadway
+    case peopleOnRoadway, roadWorks, flooding, ice, fire, other
+
+    init(category: TrafficIncidentCategory) {
+        self = Self(rawValue: category.rawValue) ?? .other
+    }
+
+    var label: String? {
+        switch self {
+        case .policeCheckpoint: "Kontrola policyjna"
+        case .objectsOnTheRoad: "Przedmioty na drodze"
+        case .animalsOnRoadway: "Zwierzęta na drodze"
+        case .peopleOnRoadway: "Ludzie na drodze"
+        case .fire: "Pożar"
+        default: nil
+        }
+    }
+}
+
+nonisolated struct RoadEventDetail: Sendable {
+    let code: Int?
+    let description: String?
+    let category: TrafficIncidentCategory
+}
+
+nonisolated struct RoadEventCommunity: Sendable {
+    let numberOfReports: Int?
+    let lastReportAt: Date?
+    let probabilityOfOccurrence: String?
+
+    var labels: [String] {
+        var result: [String] = []
+        if let numberOfReports, numberOfReports > 0 { result.append("Zgłoszenia: \(numberOfReports)") }
+        switch probabilityOfOccurrence {
+        case "probable": result.append("Zdarzenie prawdopodobne")
+        case "risk_of": result.append("Ryzyko wystąpienia zdarzenia")
+        case "improbable": result.append("Zdarzenie mało prawdopodobne")
+        default: break
+        }
+        if let lastReportAt {
+            result.append("Ostatnie zgłoszenie: \(lastReportAt.formatted(date: .abbreviated, time: .shortened))")
+        }
+        return result
+    }
+}
+
+/// Uses the same incident store as ETA, without treating informational causes as closures.
+nonisolated enum SafetyAlertEngine {
+    static func alerts(in incidents: [TrafficIncident], at date: Date = .now) -> [TrafficIncident] {
+        incidents.filter { $0.isActive(at: date) && $0.isImportantDuringNavigation }
+    }
 }
 
 nonisolated struct TrafficIncident: Identifiable, Sendable {
@@ -296,10 +358,22 @@ nonisolated struct TrafficIncident: Identifiable, Sendable {
     let severity: TrafficIncidentSeverity
     let geometry: [Coordinate]
     let distanceAlongRoute: Double?
+    let roadNumbers: [String]
+    let geometryDirection: TrafficGeometryDirection
+    let observedAt: Date?
+    let cause: RoadEventCause
+    let events: [RoadEventDetail]
+    let startsAt: Date?
+    let expiresAt: Date?
+    let community: RoadEventCommunity?
 
     init(id: String, description: String, coordinate: Coordinate, delaySeconds: Int?,
          category: TrafficIncidentCategory, severity: TrafficIncidentSeverity,
-         geometry: [Coordinate] = [], distanceAlongRoute: Double? = nil) {
+         geometry: [Coordinate] = [], distanceAlongRoute: Double? = nil,
+         roadNumbers: [String] = [], geometryDirection: TrafficGeometryDirection = .unknown,
+         observedAt: Date? = nil, cause: RoadEventCause? = nil,
+         events: [RoadEventDetail] = [], startsAt: Date? = nil, expiresAt: Date? = nil,
+         community: RoadEventCommunity? = nil) {
         self.id = id
         self.description = description
         self.coordinate = coordinate
@@ -308,18 +382,41 @@ nonisolated struct TrafficIncident: Identifiable, Sendable {
         self.severity = severity
         self.geometry = geometry
         self.distanceAlongRoute = distanceAlongRoute
+        self.roadNumbers = roadNumbers
+        self.geometryDirection = geometryDirection
+        self.observedAt = observedAt
+        self.cause = cause ?? RoadEventCause(category: category)
+        self.events = events
+        self.startsAt = startsAt
+        self.expiresAt = expiresAt
+        self.community = community
     }
 
-    var isRoadClosure: Bool { category == .roadClosed }
+    func isActive(at date: Date = .now) -> Bool {
+        (startsAt.map { $0 <= date } ?? true) && (expiresAt.map { $0 > date } ?? true)
+    }
 
-    var mapTitle: String { isRoadClosure ? "Droga zamknięta" : description }
+    var affectsRouting: Bool { cause != .policeCheckpoint }
+    var routingDelaySeconds: Int? { affectsRouting ? delaySeconds : nil }
+    var isRoadClosure: Bool { affectsRouting && category == .roadClosed }
+    var alertTitle: String { cause.label ?? category.mapLabel }
+    var alertSymbolName: String { cause == .policeCheckpoint ? "shield.fill" : category.mapSymbolName }
+
+    var detailDescriptions: [String] {
+        var seen = Set<String>()
+        return ([description] + events.compactMap(\.description))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0 != alertTitle && seen.insert($0).inserted }
+    }
+
+    var mapTitle: String { alertTitle }
 
     var mapSubtitle: String {
-        var details = [category.mapLabel, severity.mapLabel]
-        if let delaySeconds, delaySeconds > 0 {
+        var details = [severity.mapLabel] + detailDescriptions
+        if let delaySeconds = routingDelaySeconds, delaySeconds > 0 {
             details.append("Opóźnienie około \(max(1, Int((Double(delaySeconds) / 60).rounded()))) min")
         }
-        if description != mapTitle { details.append(description) }
+        details += community?.labels ?? []
         return details.joined(separator: " · ")
     }
 }
@@ -499,7 +596,7 @@ struct TomTomTrafficProvider: TrafficProvider {
         }
         return TrafficFlow(currentSpeedKph: response.currentSpeed, freeFlowSpeedKph: response.freeFlowSpeed,
                            confidence: response.confidence, roadClosure: response.roadClosure ?? false,
-                           coordinates: coordinates, updatedAt: Date())
+                           coordinates: coordinates, updatedAt: Date(), roadClass: response.frc)
     }
 
     private func fetchIncidents(in box: TrafficBoundingBox) async throws -> [TrafficIncident] {
@@ -513,18 +610,34 @@ struct TomTomTrafficProvider: TrafficProvider {
         request.timeoutInterval = 12
         request.setValue(apiKey, forHTTPHeaderField: "TomTom-Api-Key")
         request.setValue("2", forHTTPHeaderField: "TomTom-Api-Version")
-        request.setValue("incidents(type,geometry(type,coordinates),properties(id,events(description),delayInSeconds,iconCategory,magnitudeOfDelay))",
+        request.setValue("incidents(type,geometry(type,coordinates),properties(id,events(description,code,iconCategory),delayInSeconds,iconCategory,magnitudeOfDelay,roadNumbers,startTime,endTime,numberOfReports,lastReportTime,probabilityOfOccurrence))",
                          forHTTPHeaderField: "Attributes")
         request.setValue("pl-PL", forHTTPHeaderField: "Accept-Language")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let data = try await load(request)
+        return try Self.decodeIncidents(try await load(request))
+    }
+
+    static func decodeIncidents(_ data: Data, observedAt: Date = .now) throws -> [TrafficIncident] {
         guard !data.isEmpty else { return [] }
         let features = try JSONDecoder().decode(IncidentResponse.self, from: data).incidents
         return features.compactMap { feature in
             let points = feature.geometry.points
             guard !points.isEmpty else { return nil }
-            let description = feature.properties.events?.first?.description ?? "Utrudnienie drogowe"
             let category = TrafficIncidentCategory(tomTomValue: feature.properties.iconCategory)
+            let events = (feature.properties.events ?? []).map {
+                RoadEventDetail(code: $0.code, description: $0.description,
+                                category: TrafficIncidentCategory(tomTomValue: $0.iconCategory))
+            }
+            let description = events.compactMap(\.description)
+                .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? category.mapLabel
+            // Accept explicit symbolic causes only; do not infer police from descriptions
+            // or interpret REST alert codes as SDK CauseCode values.
+            let cause = ([feature.properties.iconCategory] + (feature.properties.events ?? []).map(\.iconCategory))
+                .compactMap { $0.flatMap(RoadEventCause.init(rawValue:)) }.first { $0 != .other }
+            let startsAt = Self.parseTimestamp(feature.properties.startTime)
+            let expiresAt = Self.parseTimestamp(feature.properties.endTime)
+            guard startsAt.map({ $0 <= observedAt }) ?? true,
+                  expiresAt.map({ $0 > observedAt }) ?? true else { return nil }
             let providerID = feature.properties.id?.trimmingCharacters(in: .whitespacesAndNewlines)
             let incidentID = (providerID?.isEmpty == false ? providerID : nil)
                 ?? Self.fallbackIncidentID(category: category, points: points)
@@ -533,8 +646,21 @@ struct TomTomTrafficProvider: TrafficProvider {
                                    delaySeconds: feature.properties.delayInSeconds,
                                    category: category,
                                    severity: TrafficIncidentSeverity(tomTomValue: feature.properties.magnitudeOfDelay),
-                                   geometry: points)
+                                   geometry: points, roadNumbers: feature.properties.roadNumbers ?? [], observedAt: observedAt,
+                                   cause: cause, events: events, startsAt: startsAt, expiresAt: expiresAt,
+                                   community: RoadEventCommunity(numberOfReports: feature.properties.numberOfReports,
+                                       lastReportAt: Self.parseTimestamp(feature.properties.lastReportTime),
+                                       probabilityOfOccurrence: feature.properties.probabilityOfOccurrence))
         }
+    }
+
+    private static func parseTimestamp(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
     }
 
     private static func fallbackIncidentID(category: TrafficIncidentCategory,
@@ -567,6 +693,7 @@ struct TomTomTrafficProvider: TrafficProvider {
 
     private struct FlowResponse: Decodable { let flowSegmentData: FlowData }
     private struct FlowData: Decodable {
+        let frc: String?
         let currentSpeed: Int
         let freeFlowSpeed: Int
         let confidence: Double?
@@ -588,13 +715,26 @@ struct TomTomTrafficProvider: TrafficProvider {
         let delayInSeconds: Int?
         let iconCategory: String?
         let magnitudeOfDelay: String?
+        let roadNumbers: [String]?
+        let startTime: String?
+        let endTime: String?
+        let numberOfReports: Int?
+        let lastReportTime: String?
+        let probabilityOfOccurrence: String?
 
         private enum CodingKeys: String, CodingKey {
-            case id, events, delayInSeconds, iconCategory, magnitudeOfDelay
+            case id, events, delayInSeconds, iconCategory, magnitudeOfDelay, roadNumbers
+            case startTime, endTime, numberOfReports, lastReportTime, probabilityOfOccurrence
         }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
+            startTime = try container.decodeIfPresent(String.self, forKey: .startTime)
+            endTime = try container.decodeIfPresent(String.self, forKey: .endTime)
+            numberOfReports = try container.decodeIfPresent(Int.self, forKey: .numberOfReports)
+            lastReportTime = try container.decodeIfPresent(String.self, forKey: .lastReportTime)
+            probabilityOfOccurrence = try container.decodeIfPresent(String.self, forKey: .probabilityOfOccurrence)
+            roadNumbers = try container.decodeIfPresent([String].self, forKey: .roadNumbers)
             id = try container.decodeIfPresent(String.self, forKey: .id)
             events = try container.decodeIfPresent([IncidentEvent].self, forKey: .events)
             delayInSeconds = try container.decodeIfPresent(Int.self, forKey: .delayInSeconds)
@@ -604,7 +744,20 @@ struct TomTomTrafficProvider: TrafficProvider {
                 ?? (try? container.decode(Int.self, forKey: .magnitudeOfDelay)).map(String.init)
         }
     }
-    private struct IncidentEvent: Decodable { let description: String? }
+    private struct IncidentEvent: Decodable {
+        let description: String?
+        let code: Int?
+        let iconCategory: String?
+
+        private enum CodingKeys: String, CodingKey { case description, code, iconCategory }
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            description = try container.decodeIfPresent(String.self, forKey: .description)
+            code = try container.decodeIfPresent(Int.self, forKey: .code)
+            iconCategory = (try? container.decode(String.self, forKey: .iconCategory))
+                ?? (try? container.decode(Int.self, forKey: .iconCategory)).map(String.init)
+        }
+    }
     private struct JSONCoordinates: Decodable {
         let values: Value
         init(from decoder: Decoder) throws { values = try Value(from: decoder) }

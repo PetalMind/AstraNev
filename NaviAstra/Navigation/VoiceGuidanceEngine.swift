@@ -139,13 +139,10 @@ final class VoiceGuidanceEngine {
         scheduler.reset(preservingSpokenAnnouncements: preservingSpokenAnnouncements)
     }
 
-    func announce(_ maneuver: Maneuver, coordinate: Coordinate?, distance: Double, speed: Double) {
-        let early = max(200, min(1_200, speed * 24))
-        let stage: Int
-        if distance <= 35 { stage = 2 }
-        else if distance <= max(80, speed * 8) { stage = 1 }
-        else if distance <= early { stage = 0 }
-        else { return }
+    func announce(_ maneuver: Maneuver, coordinate: Coordinate?, distance: Double, speed: Double,
+                  quality: GuidanceQuality? = nil, lanes: LaneGuidance? = nil) {
+        let quality = quality ?? GuidanceQualityEngine.evaluate(maneuver: maneuver, followingDistance: nil, speed: speed)
+        guard let stage = quality.stage(at: distance) else { return }
         if maneuver.kind.isRoundabout {
             // Entry and exit form one instruction, not three stages each.
             // Keep the entry key independent of distance so GPS updates cannot repeat it.
@@ -170,7 +167,7 @@ final class VoiceGuidanceEngine {
         let instruction = providerText.flatMap { $0.isEmpty ? nil : $0 } ?? maneuver.spokenInstruction
         scheduler.enqueue(
             key: key,
-            text: (distancePrefix ?? "") + instruction,
+            text: (distancePrefix ?? "") + instruction + (stage != 2 ? lanes.map { " " + $0.instruction } ?? "" : ""),
             priority: stage == 2 ? .maneuverNow : .navigation
         )
     }
@@ -198,14 +195,17 @@ final class VoiceGuidanceEngine {
     }
 
     func announce(_ incident: TrafficIncident, distance: Double) {
-        guard preferences.verbosity.includes(incident.category),
+        guard incident.isActive(),
+              (preferences.verbosity.includes(incident.category) ||
+               (preferences.verbosity != .concise && incident.isImportantDuringNavigation)),
               let stage = roadAlertStage(for: distance) else { return }
-        let isCritical = incident.category == .roadClosed ||
+        let isCritical = incident.isRoadClosure ||
             ((incident.category == .accident || incident.category == .dangerousConditions || incident.category == .ice)
-                && incident.severity == .major && distance <= 300)
+                && incident.affectsRouting && incident.severity == .major && distance <= 300)
         let priority: VoiceAnnouncementPriority = isCritical ? .critical :
-            (incident.category == .jam || incident.category == .cluster ? .informational : .safety)
-        var message = incident.category.mapLabel
+            (incident.cause == .policeCheckpoint || incident.category == .jam || incident.category == .cluster ? .informational : .safety)
+        var message = incident.alertTitle
+        if let detail = incident.detailDescriptions.first { message += ". " + detail }
         if preferences.verbosity == .detailed,
            incident.category == .jam,
            let delay = incident.delaySeconds,

@@ -659,7 +659,6 @@ struct MapLibreView: UIViewRepresentable {
             weatherRenderer.update(map: map, configuration: parent.scene.weather, samples: parent.scene.weatherSamples)
             routeLayerRenderer.updateRoutes(on: map, context: routeLayerContext)
             updateTrafficLine(on: map)
-            routeLayerRenderer.updateTrafficSegments(on: map, context: routeLayerContext)
             updateTrafficRasterLayer(on: map)
             if showsOnlyRouteEndpoints {
                 removeClosurePin(from: map)

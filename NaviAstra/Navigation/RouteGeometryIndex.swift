@@ -112,6 +112,7 @@ nonisolated struct NavigationRouteMatch: Sendable {
     let routeID: UUID
     let locationTimestamp: Date
     let match: RouteMatch
+    var isAmbiguous = false
 }
 
 nonisolated struct RouteProgressGeometry: Sendable {
@@ -200,11 +201,25 @@ nonisolated struct RouteProgressGeometry: Sendable {
     func corridor(from start: Double, through end: Double) -> [Coordinate] {
         guard end > start, let first = coordinate(at: start), let last = coordinate(at: end) else { return [] }
         var result = [first]
-        for index in coordinates.indices where cumulativeDistances[index] > start && cumulativeDistances[index] < end {
+        let firstIndex = firstVertex(after: start)
+        for index in firstIndex..<coordinates.count {
+            guard cumulativeDistances[index] < end else { break }
             result.append(coordinates[index])
         }
         if result.last != last { result.append(last) }
         return result
+    }
+
+    /// Upper bound in the cached distances; independent of the distance already traveled.
+    func firstVertex(after distance: Double) -> Int {
+        var lower = 0
+        var upper = coordinates.count
+        while lower < upper {
+            let middle = (lower + upper) / 2
+            if cumulativeDistances[middle] <= distance { lower = middle + 1 }
+            else { upper = middle }
+        }
+        return lower
     }
 
     func bearing(at distance: Double, lookAhead: Double) -> Double? {
@@ -245,6 +260,12 @@ nonisolated struct RouteProgressGeometry: Sendable {
         guard !candidates.isEmpty else { return nil }
         return candidates.compactMap { projection(of: location, onto: $0) }
             .min { $0.distanceFromRoute < $1.distanceFromRoute }
+    }
+
+    func projections(near location: Coordinate, within radius: Double) -> [RouteProjection] {
+        guard let indices = candidateSegments(near: location, within: radius) else { return [] }
+        return indices.compactMap { projection(of: location, onto: $0) }
+            .filter { $0.distanceFromRoute <= radius }
     }
 
     func nearestProjection(to location: Coordinate) -> RouteProjection? {

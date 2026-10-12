@@ -71,8 +71,16 @@ struct ValhallaPreferencesView: View {
                 }
             }
             Section("Dojazd i wybór trasy") {
-                Toggle("Preferuj najkrótszą odległość", isOn: $draft.advanced.shortest)
-                if draft.advanced.shortest {
+                Picker("Wybór trasy drogowej", selection: Binding(
+                    get: { draft.advanced.effectiveRoutePreference },
+                    set: { draft.advanced.routePreference = $0; draft.advanced.shortest = $0 == .shortest })) {
+                    ForEach(RoutePreference.allCases) { Text($0.title).tag($0) }
+                }
+                Text("Zrównoważona i wygodna trasa uwzględniają złożoność manewrów oraz znane dane nawierzchni. Ocena nie zwiększa wyświetlanego czasu jazdy.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("Najkrótsza odległość wpływa także na profil tras pieszych i rowerowych.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if draft.advanced.effectiveRoutePreference == .shortest {
                     Text("Przy wyborze najkrótszej odległości serwer pomija miękkie preferencje dróg, opłat i podjazdów. Ograniczenia dostępu i wykluczone obszary nadal obowiązują.")
                         .font(.caption).foregroundStyle(.secondary)
                 }

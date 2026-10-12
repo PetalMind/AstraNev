@@ -45,6 +45,13 @@ final class NavigationState {
     var pendingWaypointIDs: [UUID] = []
     var routingPreferences = RoutingPreferences()
     var progress: RouteProgress?
+    var mapMatchingResult: MapMatchingResult?
+    var deviationState: RouteDeviationState = .onRoute
+    var routeReliability: RouteReliability?
+    var etaConfidence: ETAConfidence?
+    var laneGuidance: LaneGuidance?
+    var guidanceQuality: GuidanceQuality?
+    var trafficSamplingBudget = 40
     var routeMatch: NavigationRouteMatch?
     var transitProgress: TransitNavigationProgress?
     var transitPlanningPhase: TransitPlanningPhase?

@@ -31,6 +31,9 @@ struct ValhallaToolsView: View {
                     Text(height.map { "Wysokość terenu: \(Int($0.rounded())) m n.p.m." } ?? "Brak danych wysokości dla tego punktu.")
                 }
             }
+            Section("Diagnostyka decyzji") {
+                NavigationLink("Ranking, jakość danych i benchmarki") { RoutingDiagnosticsView(navigation: navigation) }
+            }
             if let endpoint {
                 Section("Analiza i planowanie") {
                     NavigationLink("Zasięg czasu lub odległości") {

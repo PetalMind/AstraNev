@@ -109,13 +109,16 @@ nonisolated struct ValhallaRoutingOptions: Codable, Equatable {
     var truckHazmat = false
     var scooterTopSpeed = 45.0
     var shortest = false
+    var routePreference: RoutePreference = .fastest
+
+    var effectiveRoutePreference: RoutePreference { shortest ? .shortest : routePreference }
     var arrivalSide: ValhallaArrivalSide = .either
     var avoidAreas: [ValhallaAvoidArea] = []
 
     init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case vehicle, walkingProfile, bicycle, walkingSpeed, wheelchairSpeed, cyclingSpeed, useHills, walkingUseHills, useRoads, preferLit, hikingDifficulty, truckHeight, truckWidth, truckLength, truckWeight, truckAxleLoad, truckHazmat, scooterTopSpeed, shortest, arrivalSide, avoidAreas
+        case vehicle, walkingProfile, bicycle, walkingSpeed, wheelchairSpeed, cyclingSpeed, useHills, walkingUseHills, useRoads, preferLit, hikingDifficulty, truckHeight, truckWidth, truckLength, truckWeight, truckAxleLoad, truckHazmat, scooterTopSpeed, shortest, routePreference, arrivalSide, avoidAreas
     }
 
     init(from decoder: Decoder) throws {
@@ -140,6 +143,7 @@ nonisolated struct ValhallaRoutingOptions: Codable, Equatable {
         truckHazmat = try values.decodeIfPresent(Bool.self, forKey: .truckHazmat) ?? truckHazmat
         scooterTopSpeed = try values.decodeIfPresent(Double.self, forKey: .scooterTopSpeed) ?? scooterTopSpeed
         shortest = try values.decodeIfPresent(Bool.self, forKey: .shortest) ?? shortest
+        routePreference = try values.decodeIfPresent(RoutePreference.self, forKey: .routePreference) ?? routePreference
         arrivalSide = try values.decodeIfPresent(ValhallaArrivalSide.self, forKey: .arrivalSide) ?? arrivalSide
         avoidAreas = try values.decodeIfPresent([ValhallaAvoidArea].self, forKey: .avoidAreas) ?? avoidAreas
     }
@@ -251,7 +255,7 @@ extension RoutingPreferences {
             options["use_hills"] = try validated(profile.useHills, 0...1, "Preferencja podjazdów")
             options["use_roads"] = try validated(profile.useRoads, 0...1, "Preferencja jezdni")
         }
-        options["shortest"] = profile.shortest
+        options["shortest"] = profile.effectiveRoutePreference == .shortest
         payload["costing_options"] = [costing: options]
         if payload["locations"] != nil {
             var locations = payload["locations"] as? [[String: Any]] ?? []
@@ -263,7 +267,8 @@ extension RoutingPreferences {
         guard profile.avoidAreas.count <= 8, profile.avoidAreas.allSatisfy(\.isValid) else {
             throw ValhallaFeatureError.message("Obszary omijane muszą mieć 3–32 wierzchołki bez przecięć. Maksymalnie 8 obszarów.")
         }
-        if !profile.avoidAreas.isEmpty { payload["exclude_polygons"] = profile.avoidAreas.map(\.closedRing) }
+        let polygons = profile.avoidAreas.map(\.closedRing) + RoadRoutingContext.closurePolygons
+        if !polygons.isEmpty { payload["exclude_polygons"] = polygons }
         payload["date_time"] = (RoadRoutingContext.planningTime ?? ValhallaPlanningTime(type: 0)).payload
     }
 }

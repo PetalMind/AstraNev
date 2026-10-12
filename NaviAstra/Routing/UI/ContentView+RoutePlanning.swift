@@ -193,7 +193,10 @@ extension ContentView {
                               mediumHeightFraction: 0.72,
                               minimumPeekHeight: navigationStore.state.route != nil || navigationStore.state.status == .error
                                   ? 220 : nil,
-                              hidesExpandedChevron: true) { detent, _ in
+                              minimumMediumHeight: 420,
+                              dragHandleHeight: 44,
+                              hidesExpandedChevron: true,
+                              resizesFromContent: false) { detent, _ in
             Group {
                 switch detent {
                 case .peek:
@@ -277,6 +280,29 @@ extension ContentView {
 
     private var routePlanningCompactEndpoints: some View {
         VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text("Punkty trasy")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.naviTextSecondary)
+                Spacer(minLength: 0)
+                Button {
+                    selectingRouteOriginInSearch = false
+                    addingWaypoint = true
+                    appRouter.present(.search)
+                } label: {
+                    Label("Dodaj przystanek", systemImage: "plus")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(navigationStore.state.waypoints.count >= 8 || navigationStore.state.status != .routePreview)
+                .accessibilityLabel("Dodaj przystanek przed celem podróży")
+            }
+
             HStack(spacing: 10) {
                 RoutePlanningEndpointMarker(
                     symbolName: routeOriginPoint?.isCurrentLocation == true ? "location.north.fill" : "a.circle.fill",
@@ -340,8 +366,6 @@ extension ContentView {
                 updateRouteStopDropTarget("route-destination", isTargeted: isTargeted)
             }
             .modifier(RouteStopDropTargetHighlight(isTargeted: routeStopDropTargetID == "route-destination"))
-
-            routeWaypointAddButton()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -559,24 +583,25 @@ extension ContentView {
                     Task { await navigationStore.selectTransportMode(mode) }
                 } label: {
                     Image(systemName: mode.symbol)
-                        .font(.system(size: 19, weight: .semibold))
+                        .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(Color.naviTextSecondary.opacity(selected ? 1 : 0.78))
-                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .frame(maxWidth: .infinity, minHeight: 36)
                         .background {
                             if selected {
-                                RoundedRectangle(cornerRadius: 27, style: .continuous)
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
                                     .fill(Color.accentColor.opacity(0.13))
                             }
                         }
-                        .contentShape(RoundedRectangle(cornerRadius: 27, style: .continuous))
+                        .padding(.vertical, 4)
+                        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(mode.title)
                 .accessibilityAddTraits(selected ? .isSelected : [])
             }
         }
-        .padding(4)
-        .modifier(NavigationGlassSurface(radius: 32, interactive: true))
+        .padding(.horizontal, 4)
+        .modifier(NavigationGlassSurface(radius: 22, interactive: true))
         .animation(.spring(response: 0.34, dampingFraction: 0.88), value: navigationStore.state.transportMode)
     }
 
@@ -1045,6 +1070,8 @@ extension ContentView {
 
             if showsSecondaryActions {
                 routePlanningSecondaryActions(compact: compact)
+            } else {
+                routePlanningCancelAction
             }
         }
         .padding(.horizontal, 14)
@@ -1055,17 +1082,7 @@ extension ContentView {
 
     private func routePlanningSecondaryActions(compact: Bool) -> some View {
         HStack(spacing: 10) {
-            Button {
-                navigationStore.stop()
-            } label: {
-                Label("Anuluj trasę", systemImage: "xmark")
-                    .font(compact ? .system(size: 13, weight: .medium) : .subheadline.weight(.medium))
-                    .frame(maxWidth: .infinity, minHeight: compact ? 38 : 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.naviTextSecondary.opacity(0.7))
-            .accessibilityLabel("Anuluj trasę")
+            routePlanningCancelAction
 
             if let url = routePlanningShareURL {
                 ShareLink(item: url) {
@@ -1092,6 +1109,20 @@ extension ContentView {
         }
     }
 
+    private var routePlanningCancelAction: some View {
+        Button {
+            navigationStore.stop()
+        } label: {
+            Label("Anuluj trasę", systemImage: "xmark")
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Color(naviHex: NaviAstraColorPalette.danger))
+        .accessibilityLabel("Anuluj trasę")
+    }
+
     private func routePlanningSelectedRouteCard(_ route: NavigationRoute, compact: Bool,
                                                 medium: Bool) -> some View {
         let routes = routePlanningCarouselRoutes
@@ -1101,7 +1132,7 @@ extension ContentView {
             VStack(alignment: .leading, spacing: medium ? 5 : (compact ? 3 : 7)) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(time(route.expectedTravelTime))
-                        .font(.system(size: medium ? 30 : (compact ? 23 : 34), weight: .bold, design: .rounded).monospacedDigit())
+                        .font(.system(size: medium ? 26 : (compact ? 23 : 34), weight: .bold, design: .rounded).monospacedDigit())
                         .foregroundStyle(Color.naviTextPrimary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
@@ -1150,8 +1181,8 @@ extension ContentView {
             Spacer(minLength: 0)
             routePlanningStartAction(compact: true, emphasized: medium || !compact, medium: medium)
         }
-        .padding(medium ? 12 : (compact ? 9 : 16))
-        .frame(maxWidth: .infinity, minHeight: medium ? 112 : (compact ? 70 : 208), alignment: .leading)
+        .padding(medium ? 10 : (compact ? 9 : 16))
+        .frame(maxWidth: .infinity, minHeight: medium ? 92 : (compact ? 70 : 208), alignment: .leading)
         .modifier(NavigationStableSurface(radius: 20))
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { value in
@@ -1206,8 +1237,8 @@ extension ContentView {
             }
             .foregroundStyle(.white)
             .frame(maxWidth: compact ? nil : .infinity,
-                   minHeight: compact ? (medium ? 88 : (expandedCard ? 92 : (emphasized ? 130 : 58))) : 56)
-            .frame(width: compact ? (medium ? 88 : (expandedCard ? 92 : (emphasized ? 112 : 72))) : nil)
+                   minHeight: compact ? (medium ? 64 : (expandedCard ? 92 : (emphasized ? 130 : 58))) : 56)
+            .frame(width: compact ? (medium ? 72 : (expandedCard ? 92 : (emphasized ? 112 : 72))) : nil)
             .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)

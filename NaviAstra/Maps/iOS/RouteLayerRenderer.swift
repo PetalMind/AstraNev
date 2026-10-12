@@ -28,6 +28,8 @@ private struct AlternativeRouteRenderItem: Equatable {
 
 private struct RouteTrafficRenderItem: Equatable {
     let id: String
+    let startDistance: Double
+    let endDistance: Double
     let coordinates: [Coordinate]
     let colorHex: UInt32
     let dashed: Bool
@@ -70,8 +72,12 @@ final class RouteLayerRenderer {
     private var incidentLineRenderItems: [IncidentLineRenderItem] = []
     private var activeRouteSource: MLNShapeSource?
     private var completedRouteSource: MLNShapeSource?
-    private var revealGeometry: RouteRevealGeometry?
-    private var revealRouteID: UUID?
+    private var completedRouteTailSource: MLNShapeSource?
+    private var routeGeometry: RouteProgressGeometry?
+    private var activeLegGeometry: RouteProgressGeometry?
+    private var completedShapeRouteID: UUID?
+    private var shownCompletedChunkEnd: Double?
+    private static let completedChunkSegmentCount = 128
     private var activeRouteStyleKey = ""
     private var alternativeRenderItems: [AlternativeRouteRenderItem] = []
     private var alternativeStyleKey = ""
@@ -93,6 +99,7 @@ final class RouteLayerRenderer {
         let activeTargetID = parent.state.route.flatMap { activeRouteLegs(for: $0).targetID }
         let routesChanged = shownRouteIDs != routeIDs || shownActiveTargetID != activeTargetID
         let revealChanged = shownRevealStep != revealStep
+        let trafficChanged = updateRouteTrafficRenderItems()
         if routesChanged {
             let oldActiveID = shownRouteIDs?.last
             let animateSelection = parent.previousStatus == .routePreview && parent.state.status == .routePreview &&
@@ -105,11 +112,13 @@ final class RouteLayerRenderer {
             routeLines.removeAll()
             activeGeometryProgressRouteID = nil
             activeGeometryProgressStep = nil
-            routeTrafficRenderItems = []
             activeRouteSource?.shape = nil
             completedRouteSource?.shape = nil
-            revealGeometry = nil
-            revealRouteID = nil
+            completedRouteTailSource?.shape = nil
+            activeLegGeometry = nil
+            completedShapeRouteID = nil
+            shownCompletedChunkEnd = nil
+            if routeGeometry?.routeID != parent.state.route?.id { routeGeometry = nil }
             if animateReroute, let previousActive {
                 let dark = parent.colorScheme == .dark
                 let fadedBlue = LineStyle(hex: activeRouteColor(dark: dark), opacity: 0.3, width: 11)
@@ -126,7 +135,7 @@ final class RouteLayerRenderer {
             shownActiveTargetID = activeTargetID
             if animateSelection || animateReroute { animateRouteSelection(on: map, removeDeparted: animateReroute) }
         }
-        if revealChanged {
+        if revealChanged || trafficChanged {
             if !routesChanged {
                 if let route = parent.state.route { updateActiveRouteShape(route, on: map) }
             }
@@ -301,11 +310,6 @@ final class RouteLayerRenderer {
         return hypot(point.x - (start.x + projection * dx), point.y - (start.y + projection * dy))
     }
 
-    func updateTrafficSegments(on map: MLNMapView, context: RouteLayerRenderContext) {
-        self.context = context
-        updateRouteTrafficLines(on: map)
-    }
-
     func animateNavigationStart(on map: MLNMapView, context: RouteLayerRenderContext) {
         self.context = context
         animateNavigationStart(on: map)
@@ -321,13 +325,16 @@ final class RouteLayerRenderer {
         self.context = context
         activeRouteSource = nil
         completedRouteSource = nil
+        completedRouteTailSource = nil
+        completedShapeRouteID = nil
+        shownCompletedChunkEnd = nil
         activeRouteStyleKey = ""
         alternativeRenderItems = []
         alternativeStyleKey = ""
         activeGeometryProgressRouteID = nil
         activeGeometryProgressStep = nil
+        _ = updateRouteTrafficRenderItems()
         if let route = parent.state.route { updateActiveRouteShape(route, on: map) }
-        updateRouteTrafficLines(on: map)
         updateAlternativeRouteLayers(on: map)
     }
 
@@ -418,6 +425,7 @@ final class RouteLayerRenderer {
         if parent.state.transportMode == .transit, route.journey != nil {
             (style.source(withIdentifier: "naviastra-active-route-source") as? MLNShapeSource)?.shape = nil
             (style.source(withIdentifier: "naviastra-completed-route-source") as? MLNShapeSource)?.shape = nil
+            (style.source(withIdentifier: "naviastra-completed-route-tail-source") as? MLNShapeSource)?.shape = nil
             activeGeometryProgressRouteID = route.id
             activeGeometryProgressStep = nil
             return
@@ -443,9 +451,20 @@ final class RouteLayerRenderer {
             style.addSource(completedSource)
         }
         completedRouteSource = completedSource
-        if revealRouteID != route.id {
-            revealRouteID = route.id
-            revealGeometry = RouteRevealGeometry(coordinates: activeRouteLegs(for: route).active)
+        let completedTailSourceID = "naviastra-completed-route-tail-source"
+        let completedTailSource: MLNShapeSource
+        if let existing = style.source(withIdentifier: completedTailSourceID) as? MLNShapeSource {
+            completedTailSource = existing
+        } else {
+            completedTailSource = MLNShapeSource(identifier: completedTailSourceID, shape: nil, options: nil)
+            style.addSource(completedTailSource)
+        }
+        completedRouteTailSource = completedTailSource
+        if routeGeometry?.routeID != route.id { routeGeometry = RouteProgressGeometry(route) }
+        guard let geometry = routeGeometry else { return }
+        if activeLegGeometry == nil {
+            let legs = activeRouteLegs(for: route)
+            activeLegGeometry = legs.targetID == nil ? geometry : RouteProgressGeometry(coordinates: legs.active)
         }
 
         let casing: MLNLineStyleLayer
@@ -505,28 +524,39 @@ final class RouteLayerRenderer {
             completedLine.lineWidthTransition = MLNTransitionMake(0.3, 0)
             style.addLayer(completedLine)
         }
+        for (id, sourceLayer) in [("naviastra-completed-route-tail-casing", completedCasing),
+                                  ("naviastra-completed-route-tail-line", completedLine)] {
+            if style.layer(withIdentifier: id) == nil {
+                let layer = MLNLineStyleLayer(identifier: id, source: completedTailSource)
+                layer.lineCap = NSExpression(forConstantValue: "round")
+                layer.lineJoin = NSExpression(forConstantValue: "round")
+                style.insertLayer(layer, above: sourceLayer)
+                activeRouteStyleKey = ""
+            }
+        }
         updateActiveRouteStyle(on: map)
 
         let progress = parent.state.status == .routePreview ? parent.state.routeRevealProgress : 1
-        let visible = revealGeometry?.visibleCoordinates(progress: progress) ?? activeRouteLegs(for: route).active
         let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
+        guard let activeGeometry = activeLegGeometry else { return }
         if isNavigating {
-            let progressDistance = RouteGeometrySplitter.length(of: route.coordinates)
-                * parent.state.routeGeometryProgress
-            let split = RouteGeometrySplitter.split(activeRouteLegs(for: route).active,
-                                                    atDistance: progressDistance)
-            source.shape = coloredShape(for: split.remaining, startingAt: progressDistance)
-            completedSource.shape = shape(for: RouteGeometrySplitter.split(route.coordinates,
-                atDistance: progressDistance).completed)
+            let progressDistance = geometry.length * parent.state.routeGeometryProgress
+            source.shape = coloredShape(for: activeGeometry, from: progressDistance,
+                                        through: activeGeometry.length)
+            updateCompletedRoute(geometry, distance: progressDistance, on: style)
         } else {
-            source.shape = coloredShape(for: visible, startingAt: 0)
+            source.shape = coloredShape(for: activeGeometry, from: 0,
+                                        through: activeGeometry.length * max(0, min(1, progress)))
             completedSource.shape = nil
+            completedTailSource.shape = nil
+            completedShapeRouteID = nil
+            shownCompletedChunkEnd = nil
         }
         activeGeometryProgressRouteID = isNavigating ? route.id : nil
         if isNavigating {
             let stepDistance = route.distance > 0
                 ? route.distance * parent.state.routeGeometryProgress
-                : RouteGeometrySplitter.length(of: route.coordinates) * parent.state.routeGeometryProgress
+                : geometry.length * parent.state.routeGeometryProgress
             activeGeometryProgressStep = Int((stepDistance / 2).rounded(.down))
         } else {
             activeGeometryProgressStep = nil
@@ -539,9 +569,10 @@ final class RouteLayerRenderer {
         return MLNPolyline(coordinates: &points, count: UInt(points.count))
     }
 
-    private func coloredShape(for coordinates: [Coordinate], startingAt distance: Double) -> MLNShape? {
-        let segments = RouteTrafficMapGeometry.visibleSegments(in: parent.state)
-        let parts = RouteTrafficMapGeometry.coloredLine(coordinates, startingAt: distance,
+    private func coloredShape(for geometry: RouteProgressGeometry, from start: Double,
+                              through end: Double) -> MLNShape? {
+        let segments = RouteTrafficMapGeometry.measuredSegments(in: parent.state)
+        let parts = RouteTrafficMapGeometry.coloredLine(geometry, from: start, through: end,
             segments: segments, defaultColor: activeRouteColor(dark: parent.colorScheme == .dark))
         let features = parts.map { part in
             var points = part.coordinates.map(\.cl)
@@ -551,6 +582,37 @@ final class RouteLayerRenderer {
             return feature
         }
         return features.isEmpty ? nil : MLNShapeCollectionFeature(shapes: features)
+    }
+
+    /// Completed chunks remain in the source for the whole route. Only the current
+    /// chunk is cropped on GPS updates, so the work does not grow with trip duration.
+    private func updateCompletedRoute(_ geometry: RouteProgressGeometry, distance: Double, on style: MLNStyle) {
+        guard geometry.coordinates.count > 1, let completedRouteSource, let completedRouteTailSource else { return }
+        let chunkSize = Self.completedChunkSegmentCount
+        if completedShapeRouteID != geometry.routeID {
+            let features = stride(from: 0, to: geometry.coordinates.count - 1, by: chunkSize).map { start in
+                let end = min(start + chunkSize, geometry.coordinates.count - 1)
+                var coordinates = geometry.coordinates[start...end].map(\.cl)
+                let feature = MLNPolylineFeature(coordinates: &coordinates, count: UInt(coordinates.count))
+                feature.attributes = ["endDistance": geometry.cumulativeDistances[end]]
+                return feature
+            }
+            completedRouteSource.shape = MLNShapeCollectionFeature(shapes: features)
+            completedShapeRouteID = geometry.routeID
+            shownCompletedChunkEnd = nil
+        }
+        let vertex = max(0, geometry.firstVertex(after: distance) - 1)
+        let chunkStart = min(geometry.coordinates.count - 1, vertex / chunkSize * chunkSize)
+        let finished = distance >= geometry.length
+        let completedEnd = finished ? geometry.length : geometry.cumulativeDistances[chunkStart]
+        if shownCompletedChunkEnd != completedEnd {
+            let predicate = NSPredicate(format: "endDistance <= %@", NSNumber(value: completedEnd))
+            (style.layer(withIdentifier: "naviastra-completed-route-casing") as? MLNLineStyleLayer)?.predicate = predicate
+            (style.layer(withIdentifier: "naviastra-completed-route-line") as? MLNLineStyleLayer)?.predicate = predicate
+            shownCompletedChunkEnd = completedEnd
+        }
+        completedRouteTailSource.shape = finished ? nil : shape(for: geometry.corridor(
+            from: completedEnd, through: min(geometry.length, distance)))
     }
 
     private func updateActiveRouteStyle(on map: MLNMapView) {
@@ -590,6 +652,14 @@ final class RouteLayerRenderer {
         completedLine.lineOpacity = NSExpression(forConstantValue: completedStyle.opacity)
         completedLine.lineWidth = NSExpression(forConstantValue: completedStyle.width)
         completedLine.lineDashPattern = walkingPattern.map { NSExpression(forConstantValue: $0) }
+        for (id, presentation) in [("naviastra-completed-route-tail-casing", completedCasingStyle),
+                                   ("naviastra-completed-route-tail-line", completedStyle)] {
+            guard let layer = style.layer(withIdentifier: id) as? MLNLineStyleLayer else { continue }
+            layer.lineColor = NSExpression(forConstantValue: color(hex: presentation.hex, opacity: 1))
+            layer.lineOpacity = NSExpression(forConstantValue: presentation.opacity)
+            layer.lineWidth = NSExpression(forConstantValue: presentation.width)
+            layer.lineDashPattern = id.hasSuffix("-line") ? walkingPattern.map { NSExpression(forConstantValue: $0) } : nil
+        }
     }
 
     private func addJourneyLegs(_ legs: [JourneyLeg], routeID: UUID, transitionStyle: LineStyle?,
@@ -727,31 +797,23 @@ final class RouteLayerRenderer {
             return
         }
 
-        let routeDistance = route.distance > 0 ? route.distance : RouteGeometrySplitter.length(of: route.coordinates)
+        let routeDistance = route.distance > 0 ? route.distance : routeGeometry?.length ?? 0
         let step = Int((routeDistance * parent.state.routeGeometryProgress / 2).rounded(.down))
         guard activeGeometryProgressRouteID != route.id || activeGeometryProgressStep != step else { return }
         activeGeometryProgressRouteID = route.id
         activeGeometryProgressStep = step
-        guard step > 0 else { return }
         updateActiveRouteShape(route, on: map)
     }
 
-    private func updateRouteTrafficLines(on map: MLNMapView) {
-        guard let style = map.style else { return }
-        // Colors now belong to the active line, rather than a competing overlay.
-        for id in ["naviastra-route-traffic-solid", "naviastra-route-traffic-dashed"] {
-            if let layer = style.layer(withIdentifier: id) { style.removeLayer(layer) }
-        }
-        if let source = style.source(withIdentifier: "naviastra-route-traffic-source") {
-            style.removeSource(source)
-        }
-        let items = RouteTrafficMapGeometry.visibleSegments(in: parent.state).map {
-            RouteTrafficRenderItem(id: $0.id, coordinates: $0.coordinates,
+    private func updateRouteTrafficRenderItems() -> Bool {
+        let items = RouteTrafficMapGeometry.measuredSegments(in: parent.state).map {
+            RouteTrafficRenderItem(id: $0.id, startDistance: $0.startDistance, endDistance: $0.endDistance,
+                coordinates: $0.coordinates,
                 colorHex: $0.colorHex, dashed: $0.isRoadClosure)
         }
-        guard items != routeTrafficRenderItems else { return }
+        guard items != routeTrafficRenderItems else { return false }
         routeTrafficRenderItems = items
-        if let route = parent.state.route { updateActiveRouteShape(route, on: map) }
+        return true
     }
 
     private func styledLine(for polyline: MLNPolyline) -> StyledLine? {

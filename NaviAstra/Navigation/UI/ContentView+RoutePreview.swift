@@ -31,7 +31,7 @@ extension ContentView {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(navigationStore.state.status == .rerouting
                          ? "Przeliczanie trasy…"
-                         : (guidanceDistance <= 25 ? "TERAZ" : distance(guidanceDistance)))
+                         : (guidanceDistance <= (navigationStore.state.guidanceQuality?.immediateDistance ?? 25) ? "TERAZ" : distance(guidanceDistance)))
                         .font(.system(size: 20, weight: .bold, design: .rounded))
                         .contentTransition(.numericText())
 
@@ -101,15 +101,14 @@ extension ContentView {
             let remainingDistance = max(0, (incident.distanceAlongRoute ?? routeDistance) - routeDistance)
             let incidentDetails = trafficIncidentDetails(incident)
             NavigationAlertDisclosure(
-                title: incident.category.mapLabel,
+                title: incident.alertTitle,
                 distanceText: distance(remainingDistance),
                 distance: remainingDistance,
                 details: incidentDetails,
                 tint: Color(naviHex: incident.isRoadClosure
                     ? NaviAstraColorPalette.danger : NaviAstraColorPalette.warning),
                 cornerRadius: 17,
-                symbol: Image(systemName: incident.isRoadClosure
-                              ? "nosign" : "exclamationmark.triangle.fill")
+                symbol: Image(systemName: incident.alertSymbolName)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Color(naviHex: incident.isRoadClosure
                         ? NaviAstraColorPalette.danger : NaviAstraColorPalette.warning)))
@@ -118,13 +117,11 @@ extension ContentView {
     }
 
     private func trafficIncidentDetails(_ incident: TrafficIncident) -> [String] {
-        var details = [incident.severity.mapLabel]
-        if let delay = incident.delaySeconds, delay > 0 {
+        var details = [incident.severity.mapLabel] + incident.detailDescriptions
+        if let delay = incident.routingDelaySeconds, delay > 0 {
             details.append("Opóźnienie około \(max(1, Int((Double(delay) / 60).rounded()))) min")
         }
-        if incident.description != incident.category.mapLabel {
-            details.append(incident.description)
-        }
+        details += incident.community?.labels ?? []
         return details
     }
 
@@ -154,7 +151,7 @@ extension ContentView {
     var nextRouteTrafficIncident: TrafficIncident? {
         guard navigationStore.state.route != nil else { return nil }
         let traveledDistance = navigationStore.state.progress?.traveledDistance ?? 0
-        return (navigationStore.state.traffic?.incidents ?? [])
+        return SafetyAlertEngine.alerts(in: navigationStore.state.traffic?.incidents ?? [])
             .filter { incident in
                 guard let distance = incident.distanceAlongRoute else { return false }
                 return distance > traveledDistance && distance <= traveledDistance + 12_000
@@ -254,9 +251,12 @@ extension ContentView {
     @ViewBuilder
     var laneGuidance: some View {
         if let lanes = navigationStore.state.progress?.nextManeuver?.lanes, !lanes.isEmpty {
-            HStack(spacing: 4) {
-                ForEach(lanes) { lane in
-                    laneGuidanceCell(lane)
+            VStack(spacing: 5) {
+                HStack(spacing: 4) {
+                    ForEach(lanes) { lane in laneGuidanceCell(lane) }
+                }
+                if let guidance = navigationStore.state.laneGuidance {
+                    Text(guidance.instruction).font(.caption.weight(.medium))
                 }
             }
             .padding(5)

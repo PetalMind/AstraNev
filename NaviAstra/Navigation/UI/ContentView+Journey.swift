@@ -275,6 +275,11 @@ extension ContentView {
                     journeyNavigationSummaryRow(detent: detent)
                         .padding(.horizontal, 18)
                         .padding(.top, detent == .peek ? 0 : 4)
+                    if detent == .expanded, navigationStore.state.transportMode == .car,
+                       let confidence = navigationStore.state.etaConfidence {
+                        Text(confidence.explanation).font(.caption).foregroundStyle(.secondary)
+                            .padding(.horizontal, 18).padding(.bottom, 6)
+                    }
 
                     if detent == .expanded {
                         journeyDestinationRow

@@ -141,7 +141,9 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
         let (data, offline) = try await routeData(for: request, mode: mode)
         try RoadRoutingContext.checkCancellation()
         let routes = try decodeRoutes(data, mode: mode, costing: preferences.advanced.costing(for: mode), offline: offline)
-        return preferences.advanced.shortest ? routes.sorted { $0.distance < $1.distance } : routes
+        guard mode == .car else { return routes }
+        let ranked = RouteScoringEngine.ranked(routes, preference: preferences.advanced.effectiveRoutePreference)
+        return RouteSimilarity.diverse(ranked)
     }
 
     private func routeData(for request: URLRequest, mode: TransportMode) async throws -> (Data, Bool) {
@@ -244,9 +246,8 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
                                                                       costing: costing, planningTime: RoadRoutingContext.planningTime)))
         }
         guard !routes.isEmpty else { throw RoutingError.invalidResponse }
-        guard mode == .car, costing == "auto" else { return routes }
-        // Return ready routes immediately; auxiliary Overpass requests must not block routing.
-        return CarRouteRanking.ranked(routes)
+        // Ranking belongs to the request path, which knows the driver preferences.
+        return routes
     }
 
     func optimizedWaypointOrder(from: Coordinate, to: Coordinate, waypoints: [Destination], mode: TransportMode,

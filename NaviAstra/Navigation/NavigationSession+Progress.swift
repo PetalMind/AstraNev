@@ -43,6 +43,11 @@ extension NavigationSession {
         if state.transportMode == .transit,
            let route = state.route, let journey = route.journey {
             state.routeMatch = nil
+            state.mapMatchingResult = nil
+            state.laneGuidance = nil
+            state.guidanceQuality = nil
+            state.routeReliability = nil
+            state.etaConfidence = nil
             let isActive = state.status == .navigating || state.status == .rerouting
             let transitProgress = journeyProgress
 
@@ -93,6 +98,11 @@ extension NavigationSession {
         }
         guard let route = state.route, let location = state.location else {
             state.routeMatch = nil
+            state.mapMatchingResult = nil
+            state.laneGuidance = nil
+            state.guidanceQuality = nil
+            state.routeReliability = nil
+            state.etaConfidence = nil
             return
         }
         let previousMatch = previousRouteMatch?.routeID == route.id ? previousRouteMatch : nil
@@ -102,15 +112,24 @@ extension NavigationSession {
             previousMatch: previousMatch?.projection,
             previousTimestamp: previousMatch?.timestamp) else {
             state.routeMatch = nil
+            state.mapMatchingResult = nil
+            state.laneGuidance = nil
+            state.guidanceQuality = nil
+            state.routeReliability = nil
+            state.etaConfidence = nil
             return
         }
         let projection = measurement.projection
         let routeMatch = measurement.matchedRoute
-        previousRouteMatch = (route.id, projection, location.timestamp)
+        state.mapMatchingResult = measurement.matching
+        if (routeMatch?.confidence ?? 0) >= 0.25, measurement.matching?.ambiguous != true {
+            previousRouteMatch = (route.id, projection, location.timestamp)
+        }
         state.routeMatch = NavigationRouteMatch(
             routeID: route.id,
             locationTimestamp: location.timestamp,
-            match: routeMatch ?? RouteMatch(projection: projection, confidence: 0))
+            match: routeMatch ?? RouteMatch(projection: projection, confidence: 0),
+            isAmbiguous: measurement.matching?.ambiguous ?? true)
         let fraction = measurement.fraction
         let geometryProgress = routeProgressTracker.displayedGeometryProgress(
             routeID: route.id,
@@ -119,6 +138,23 @@ extension NavigationSession {
             isNavigationActive: state.status == .navigating || state.status == .rerouting)
         let next = measurement.nextManeuver
         let maneuverDistance = measurement.distanceToNextManeuver
+        state.laneGuidance = next.flatMap { LaneGuidanceEngine.guidance(for: $0) }
+        let followingDistance: Double? = next.flatMap { current in
+            guard let index = route.maneuvers.firstIndex(where: { $0.id == current.id }),
+                  route.maneuvers.indices.contains(index + 1) else { return nil }
+            return routeProgressTracker.cameraGeometry(for: route).distance(
+                from: current.shapeIndex, through: route.maneuvers[index + 1].shapeIndex)
+        }
+        state.guidanceQuality = next.map { GuidanceQualityEngine.evaluate(maneuver: $0,
+            followingDistance: followingDistance, speed: location.speed, mode: state.transportMode) }
+        if state.transportMode == .car {
+            let reliability = RouteReliability.evaluate(route: route, from: measurement.etaProgressDistance,
+                through: measurement.etaProgressDistance + RouteTrafficMonitor.lookAheadDistance(for: route, progress: state.progress),
+                traffic: state.traffic, geometry: routeProgressTracker.cameraGeometry(for: route))
+            state.routeReliability = reliability
+            state.etaConfidence = ETAConfidence.evaluate(reliability, gpsConfidence: routeMatch?.confidence)
+        }
+
         let remainingDistance = route.distance * (1 - fraction)
         let plannedDrivingTime = max(0, route.expectedTravelTime - route.chargingDuration)
         var paceMultiplier = 1.0
@@ -129,11 +165,11 @@ extension NavigationSession {
             let paceFactor = max(0.65, min(1.8, plannedSpeed / max(1, observedSpeed)))
             paceMultiplier = 1 + (paceFactor - 1) * 0.55
         }
-        let estimate = RoadRouteETA.estimate(route, from: projection.alongRoute,
+        let estimate = routeProgressTracker.estimateRoadETA(route: route, from: measurement.etaProgressDistance,
                                             traffic: state.traffic, paceMultiplier: paceMultiplier)
         // A closure triggers rerouting separately; retain a finite display while it is calculated.
-        let remainingTime = estimate.isFinite ? estimate : RoadRouteETA.estimate(
-            route, from: projection.alongRoute, traffic: nil, paceMultiplier: paceMultiplier)
+        let remainingTime = estimate.isFinite ? estimate : routeProgressTracker.estimateRoadETA(
+            route: route, from: measurement.etaProgressDistance, traffic: nil, paceMultiplier: paceMultiplier)
         state.progress = RouteProgress(traveledDistance: route.distance * fraction,
                                        remainingDistance: remainingDistance,
                                        remainingTime: max(0, remainingTime),
@@ -161,11 +197,13 @@ extension NavigationSession {
             return
         }
         let isOnParkRideCarLeg = state.transportMode != .parkRide || journeyProgress?.legIndex == 0
-        if let next, state.voiceEnabled, isOnParkRideCarLeg {
+        if let next, state.voiceEnabled, isOnParkRideCarLeg,
+           (routeMatch?.confidence ?? 0) >= 0.25, measurement.matching?.ambiguous != true {
             let maneuverCoordinate = route.coordinates.indices.contains(next.shapeIndex)
                 ? route.coordinates[next.shapeIndex] : nil
             voice.announce(next, coordinate: maneuverCoordinate,
-                           distance: max(0, maneuverDistance), speed: max(0, location.speed))
+                           distance: max(0, maneuverDistance), speed: max(0, location.speed),
+                           quality: state.guidanceQuality, lanes: state.laneGuidance)
         }
         if state.voiceEnabled, isOnParkRideCarLeg {
             for alert in state.roadSafetyAlerts {
@@ -177,7 +215,7 @@ extension NavigationSession {
             }
             if let snapshot = state.traffic,
                Date().timeIntervalSince(snapshot.updatedAt) <= 180 {
-                for incident in snapshot.incidents {
+                for incident in SafetyAlertEngine.alerts(in: snapshot.incidents) {
                     guard let distance = distanceToTrafficIncident(incident, on: route,
                                                                   after: projection.alongRoute),
                           distance >= 0, distance <= 1_200 else { continue }
@@ -196,6 +234,7 @@ extension NavigationSession {
             route: route,
             projection: routeMatch?.projection ?? projection,
             matchConfidence: routeMatch?.confidence ?? 0)
+        state.deviationState = offRouteDetector.deviationState
         if hasSustainedDeparture,
            Date().timeIntervalSince(rerouteController.lastReroute) > 20,
            state.status != .rerouting {
@@ -282,8 +321,9 @@ extension NavigationSession {
     func distanceToTrafficIncident(_ incident: TrafficIncident,
                                            on route: NavigationRoute,
                                            after traveledDistance: Double) -> Double? {
+        if let observedAt = incident.observedAt, Date().timeIntervalSince(observedAt) > 120 { return nil }
         guard let projection = RouteTrafficMonitor.incidentProjection(
-            incident, geometry: RouteProgressGeometry(route)) else { return nil }
+            incident, geometry: RouteProgressGeometry(route), route: route) else { return nil }
         return projection.alongRoute - traveledDistance
     }
 
@@ -302,7 +342,7 @@ extension NavigationSession {
                 guard let projection = projections.min(by: {
                     $0.distanceFromRoute < $1.distanceFromRoute
                 }) else { return nil }
-                return (alongRoute: projection.alongRoute, delaySeconds: incident.delaySeconds)
+                return (alongRoute: projection.alongRoute, delaySeconds: incident.routingDelaySeconds)
             }
         }
         let delay = projectedTrafficIncidents.reduce(0.0) { total, incident in

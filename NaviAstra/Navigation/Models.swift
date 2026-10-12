@@ -103,21 +103,6 @@ struct NavigationRoute: Identifiable, Sendable {
     var trafficSignalCount: Int? = nil
 }
 
-nonisolated enum CarRouteRanking {
-    /// Comfort cost, not invented travel time. Signal cycles and red phases are unknown.
-    static let signalPenaltySeconds = 20.0
-
-    static func ranked(_ routes: [NavigationRoute]) -> [NavigationRoute] {
-        let hasComparableSignals = routes.allSatisfy { $0.trafficSignalCount != nil }
-        return routes.enumerated().sorted { left, right in
-            let a = left.element.expectedTravelTime + (hasComparableSignals
-                ? Double(left.element.trafficSignalCount ?? 0) * signalPenaltySeconds : 0)
-            let b = right.element.expectedTravelTime + (hasComparableSignals
-                ? Double(right.element.trafficSignalCount ?? 0) * signalPenaltySeconds : 0)
-            return a == b ? left.offset < right.offset : a < b
-        }.map(\.element)
-    }
-}
 
 struct EVChargingStop: Identifiable, Sendable {
     let id: String
@@ -292,6 +277,7 @@ nonisolated enum RoadRoutingContext {
     @TaskLocal static var cancellationToken: TransitPlanningCancellationToken?
     @TaskLocal static var heading: Double?
     @TaskLocal static var planningTime: ValhallaPlanningTime?
+    @TaskLocal static var closurePolygons: [[[Double]]] = []
 
     static func checkCancellation() throws {
         try Task.checkCancellation()

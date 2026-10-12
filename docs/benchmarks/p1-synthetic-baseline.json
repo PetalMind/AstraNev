@@ -1,0 +1,5217 @@
+{
+  "cases" : [
+    {
+      "category" : "miasto",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 2998.482077600411,
+              "observedDistance" : 0,
+              "routeDistance" : 2998.482077600411
+            },
+            "distance" : 2998.482077600411,
+            "eta" : 600,
+            "geometry" : [
+              {
+                "latitude" : 52,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.010000000000005,
+                "longitude" : 21.014692932448334
+              },
+              {
+                "latitude" : 52.02,
+                "longitude" : 21
+              }
+            ],
+            "id" : "DD5DDD35-7CEE-45F0-BE04-E192B3A81EAA",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 600,
+            "rawScore" : {
+              "distance" : 2998.482077600411,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 600
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 2699.024851681429,
+              "observedDistance" : 0,
+              "routeDistance" : 2699.024851681429
+            },
+            "distance" : 2699.024851681429,
+            "eta" : 660,
+            "geometry" : [
+              {
+                "latitude" : 52,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.010000000000005,
+                "longitude" : 21.011172649396684
+              },
+              {
+                "latitude" : 52.02,
+                "longitude" : 21
+              }
+            ],
+            "id" : "C0864811-5D6A-4491-A492-70994634DDEF",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.47372032806314396,
+              "time" : 0.5
+            },
+            "rankingValue" : 660,
+            "rawScore" : {
+              "distance" : 2699.024851681429,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 660
+            },
+            "reason" : "60 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "3B346474-689F-42D9-8E01-E309B91D4C31",
+        "preference" : "fastest",
+        "recommendedRouteID" : "DD5DDD35-7CEE-45F0-BE04-E192B3A81EAA",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "DD5DDD35-7CEE-45F0-BE04-E192B3A81EAA",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "miasto-0",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "aglomeracja",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 19977.80696007699,
+              "observedDistance" : 0,
+              "routeDistance" : 19977.80696007699
+            },
+            "distance" : 19977.80696007699,
+            "eta" : 1800,
+            "geometry" : [
+              {
+                "latitude" : 52,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.010000000000005,
+                "longitude" : 21.14503748034011
+              },
+              {
+                "latitude" : 52.02,
+                "longitude" : 21
+              }
+            ],
+            "id" : "5B5B99E8-38B5-49F1-88D9-DF1E89450217",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 1800,
+            "rawScore" : {
+              "distance" : 19977.80696007699,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 1800
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 17980.0849513436,
+              "observedDistance" : 0,
+              "routeDistance" : 17980.0849513436
+            },
+            "distance" : 17980.0849513436,
+            "eta" : 1980.0000000000002,
+            "geometry" : [
+              {
+                "latitude" : 52,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.010000000000005,
+                "longitude" : 21.130341930055213
+              },
+              {
+                "latitude" : 52.02,
+                "longitude" : 21
+              }
+            ],
+            "id" : "2A60E90E-528D-433F-8F61-41ACBC920421",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.4736850242711671,
+              "time" : 0.5
+            },
+            "rankingValue" : 1980.0000000000002,
+            "rawScore" : {
+              "distance" : 17980.0849513436,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 1980.0000000000002
+            },
+            "reason" : "180 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "FFC0EF33-3D2A-42C3-882B-338106E261FF",
+        "preference" : "fastest",
+        "recommendedRouteID" : "5B5B99E8-38B5-49F1-88D9-DF1E89450217",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "5B5B99E8-38B5-49F1-88D9-DF1E89450217",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "aglomeracja-0",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "droga-krajowa",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 79910.18536055309,
+              "observedDistance" : 0,
+              "routeDistance" : 79910.18536055309
+            },
+            "distance" : 79910.18536055309,
+            "eta" : 4000,
+            "geometry" : [
+              {
+                "latitude" : 52,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.010000000000005,
+                "longitude" : 21.583544500747525
+              },
+              {
+                "latitude" : 52.02,
+                "longitude" : 21
+              }
+            ],
+            "id" : "D00C48B6-884B-4C5C-988F-84DE7D54708C",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 4000,
+            "rawScore" : {
+              "distance" : 79910.18536055309,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 4000
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 71919.18149653045,
+              "observedDistance" : 0,
+              "routeDistance" : 71919.18149653045
+            },
+            "distance" : 71919.18149653045,
+            "eta" : 4400,
+            "geometry" : [
+              {
+                "latitude" : 52,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.010000000000005,
+                "longitude" : 21.525142411909783
+              },
+              {
+                "latitude" : 52.02,
+                "longitude" : 21
+              }
+            ],
+            "id" : "98449261-16D6-464C-9484-B7487F65CDC8",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.4736842613868483,
+              "time" : 0.5
+            },
+            "rankingValue" : 4400,
+            "rawScore" : {
+              "distance" : 71919.18149653045,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 4400
+            },
+            "reason" : "400 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "C1D701EB-1A30-4A09-9C61-2A34BEF1F865",
+        "preference" : "fastest",
+        "recommendedRouteID" : "D00C48B6-884B-4C5C-988F-84DE7D54708C",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "D00C48B6-884B-4C5C-988F-84DE7D54708C",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "droga-krajowa-0",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "autostrada",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 299662.95301342057,
+              "observedDistance" : 0,
+              "routeDistance" : 299662.95301342057
+            },
+            "distance" : 299662.95301342057,
+            "eta" : 10000,
+            "geometry" : [
+              {
+                "latitude" : 52,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.010000000000005,
+                "longitude" : 23.189077740632452
+              },
+              {
+                "latitude" : 52.02,
+                "longitude" : 21
+              }
+            ],
+            "id" : "A2AFDB3D-D642-40D6-9829-6C9AA91DC40C",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 10000,
+            "rawScore" : {
+              "distance" : 299662.95301342057,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 10000
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 269696.6616246245,
+              "observedDistance" : 0,
+              "routeDistance" : 269696.6616246245
+            },
+            "distance" : 269696.6616246245,
+            "eta" : 11000,
+            "geometry" : [
+              {
+                "latitude" : 52,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.010000000000005,
+                "longitude" : 22.97015726799463
+              },
+              {
+                "latitude" : 52.02,
+                "longitude" : 21
+              }
+            ],
+            "id" : "F5E4028B-6FD8-424D-8011-AB394D903C65",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.47368421414307166,
+              "time" : 0.5
+            },
+            "rankingValue" : 11000,
+            "rawScore" : {
+              "distance" : 269696.6616246245,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 11000
+            },
+            "reason" : "1000 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "EDCAB3BA-8B0B-4A18-AB63-2DA949E7037B",
+        "preference" : "fastest",
+        "recommendedRouteID" : "A2AFDB3D-D642-40D6-9829-6C9AA91DC40C",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "A2AFDB3D-D642-40D6-9829-6C9AA91DC40C",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "autostrada-0",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "mieszana",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 18978.945142899734,
+              "observedDistance" : 0,
+              "routeDistance" : 18978.945142899734
+            },
+            "distance" : 18978.945142899734,
+            "eta" : 1860,
+            "geometry" : [
+              {
+                "latitude" : 52,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.010000000000005,
+                "longitude" : 21.137692398717896
+              },
+              {
+                "latitude" : 52.02,
+                "longitude" : 21
+              }
+            ],
+            "id" : "244E652D-8203-4A5D-81AD-F75BE01622D5",
+            "maneuverCount" : 41,
+            "normalized" : {
+              "comfort" : 0.5,
+              "distance" : 0.4634156084790728,
+              "time" : 0.484375
+            },
+            "rankingValue" : 0.48558565982106744,
+            "rawScore" : {
+              "distance" : 18978.945142899734,
+              "hasManeuverData" : true,
+              "maneuverCost" : 328,
+              "travelTime" : 1860
+            },
+            "reason" : "0 s względem najszybszego wariantu; 41 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 21975.534584678964,
+              "observedDistance" : 0,
+              "routeDistance" : 21975.534584678964
+            },
+            "distance" : 21975.534584678964,
+            "eta" : 1980,
+            "geometry" : [
+              {
+                "latitude" : 52,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.010000000000005,
+                "longitude" : 21.15971445487024
+              },
+              {
+                "latitude" : 52.02,
+                "longitude" : 21
+              }
+            ],
+            "id" : "18A35209-EC0E-4042-8CC7-11C024169920",
+            "maneuverCount" : 8,
+            "normalized" : {
+              "comfort" : 0.16326530612244897,
+              "distance" : 0.5,
+              "time" : 0.5
+            },
+            "rankingValue" : 0.42076830732292914,
+            "rawScore" : {
+              "distance" : 21975.534584678964,
+              "hasManeuverData" : true,
+              "maneuverCost" : 64,
+              "travelTime" : 1980
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Zrównoważona; 120 s względem najszybszego wariantu; 8 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "09A961F5-806A-44A4-8900-E978E23EED4F",
+        "preference" : "balanced",
+        "recommendedRouteID" : "18A35209-EC0E-4042-8CC7-11C024169920",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "18A35209-EC0E-4042-8CC7-11C024169920",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Mniej złożonych manewrów przy małej różnicy czasu",
+      "id" : "mieszana-0",
+      "measured" : "easy=true",
+      "passed" : true
+    },
+    {
+      "category" : "korki",
+      "expected" : "50% pomiaru i wzrost ETA",
+      "id" : "korki-0",
+      "measured" : "coverage=0.5",
+      "passed" : true
+    },
+    {
+      "category" : "zamkniecie",
+      "expected" : "Odrzucenie przejazdu przez środek blokady",
+      "id" : "zamkniecie-0",
+      "measured" : "intersection=true",
+      "passed" : true
+    },
+    {
+      "category" : "alternatywy",
+      "expected" : "Jeden wariant identycznej drogi",
+      "id" : "alternatywy-0",
+      "measured" : "count=1",
+      "passed" : true
+    },
+    {
+      "category" : "poi",
+      "expected" : "Hierarchia dostępu i blokująca bariera",
+      "id" : "poi-0",
+      "measured" : "denied=true, override=true",
+      "passed" : true
+    },
+    {
+      "category" : "ev",
+      "expected" : "Dodatni postój ładowania",
+      "id" : "ev-0",
+      "measured" : "chargingSeconds=1199.1855203619907",
+      "passed" : true
+    },
+    {
+      "category" : "gps",
+      "expected" : "Pewne dopasowanie na drodze",
+      "id" : "gps-0",
+      "measured" : "quality=1.0",
+      "passed" : true
+    },
+    {
+      "category" : "pasy-i-komunikaty",
+      "expected" : "Pas dostawcy i wcześniejsze przygotowanie do złożonego węzła",
+      "id" : "pasy-i-komunikaty-0",
+      "measured" : "lanes=[1], early=1100.0",
+      "passed" : true
+    },
+    {
+      "category" : "miasto",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 3298.3302852409715,
+              "observedDistance" : 0,
+              "routeDistance" : 3298.3302852409715
+            },
+            "distance" : 3298.3302852409715,
+            "eta" : 660,
+            "geometry" : [
+              {
+                "latitude" : 52.01,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.021,
+                "longitude" : 21.016166199959486
+              },
+              {
+                "latitude" : 52.032,
+                "longitude" : 21
+              }
+            ],
+            "id" : "3CEF7292-AAC3-48C1-BF39-B42D89F92113",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 660,
+            "rawScore" : {
+              "distance" : 3298.3302852409715,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 660
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 2968.9273369397574,
+              "observedDistance" : 0,
+              "routeDistance" : 2968.9273369397574
+            },
+            "distance" : 2968.9273369397574,
+            "eta" : 726.0000000000001,
+            "geometry" : [
+              {
+                "latitude" : 52.01,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.021,
+                "longitude" : 21.012292936407302
+              },
+              {
+                "latitude" : 52.032,
+                "longitude" : 21
+              }
+            ],
+            "id" : "F7F98547-6B12-46EE-B28A-6CFDE1452DEE",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.47372032807974823,
+              "time" : 0.5
+            },
+            "rankingValue" : 726.0000000000001,
+            "rawScore" : {
+              "distance" : 2968.9273369397574,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 726.0000000000001
+            },
+            "reason" : "66 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "D798EE42-3110-42F8-8D36-48DCF9B85BB5",
+        "preference" : "fastest",
+        "recommendedRouteID" : "3CEF7292-AAC3-48C1-BF39-B42D89F92113",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "3CEF7292-AAC3-48C1-BF39-B42D89F92113",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "miasto-1",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "aglomeracja",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 21975.58763908961,
+              "observedDistance" : 0,
+              "routeDistance" : 21975.58763908961
+            },
+            "distance" : 21975.58763908961,
+            "eta" : 1980.0000000000002,
+            "geometry" : [
+              {
+                "latitude" : 52.01,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.021,
+                "longitude" : 21.15958045931552
+              },
+              {
+                "latitude" : 52.032,
+                "longitude" : 21
+              }
+            ],
+            "id" : "D7C1F0FB-3A83-4FB2-84C6-0FD6652F7041",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 1980.0000000000002,
+            "rawScore" : {
+              "distance" : 21975.58763908961,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 1980.0000000000002
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 19778.093431293444,
+              "observedDistance" : 0,
+              "routeDistance" : 19778.093431293444
+            },
+            "distance" : 19778.093431293444,
+            "eta" : 2178.0000000000005,
+            "geometry" : [
+              {
+                "latitude" : 52.01,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.021,
+                "longitude" : 21.143411379027725
+              },
+              {
+                "latitude" : 52.032,
+                "longitude" : 21
+              }
+            ],
+            "id" : "CCC49D1D-532E-4E1B-90EB-820AA5928560",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.4736850242725676,
+              "time" : 0.5
+            },
+            "rankingValue" : 2178.0000000000005,
+            "rawScore" : {
+              "distance" : 19778.093431293444,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 2178.0000000000005
+            },
+            "reason" : "198 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "FAEAF9A6-1FFF-4B3F-A10F-4E8F3CAE24FE",
+        "preference" : "fastest",
+        "recommendedRouteID" : "D7C1F0FB-3A83-4FB2-84C6-0FD6652F7041",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "D7C1F0FB-3A83-4FB2-84C6-0FD6652F7041",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "aglomeracja-1",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "droga-krajowa",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 87901.20382647074,
+              "observedDistance" : 0,
+              "routeDistance" : 87901.20382647074
+            },
+            "distance" : 87901.20382647074,
+            "eta" : 4400,
+            "geometry" : [
+              {
+                "latitude" : 52.01,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.021,
+                "longitude" : 21.64205679278186
+              },
+              {
+                "latitude" : 52.032,
+                "longitude" : 21
+              }
+            ],
+            "id" : "A2E8E67E-362A-4121-A385-DF2133DAFECA",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 4400,
+            "rawScore" : {
+              "distance" : 87901.20382647074,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 4400
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 79111.09958308734,
+              "observedDistance" : 0,
+              "routeDistance" : 79111.09958308734
+            },
+            "distance" : 79111.09958308734,
+            "eta" : 4840,
+            "geometry" : [
+              {
+                "latitude" : 52.01,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.021,
+                "longitude" : 21.57779869797866
+              },
+              {
+                "latitude" : 52.032,
+                "longitude" : 21
+              }
+            ],
+            "id" : "2EEFB83B-C915-4E7D-9C58-450A67BD97F1",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.4736842613869358,
+              "time" : 0.5
+            },
+            "rankingValue" : 4840,
+            "rawScore" : {
+              "distance" : 79111.09958308734,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 4840
+            },
+            "reason" : "440 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "C9120F98-F18D-4BB0-A6CF-669FEDCD10EF",
+        "preference" : "fastest",
+        "recommendedRouteID" : "A2E8E67E-362A-4121-A385-DF2133DAFECA",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "A2E8E67E-362A-4121-A385-DF2133DAFECA",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "droga-krajowa-1",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "autostrada",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 329629.24805122725,
+              "observedDistance" : 0,
+              "routeDistance" : 329629.24805122725
+            },
+            "distance" : 329629.24805122725,
+            "eta" : 11000,
+            "geometry" : [
+              {
+                "latitude" : 52.01,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.021,
+                "longitude" : 23.40857763461084
+              },
+              {
+                "latitude" : 52.032,
+                "longitude" : 21
+              }
+            ],
+            "id" : "FC706877-88DC-4DA8-9C2D-EB434F18DE12",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 11000,
+            "rawScore" : {
+              "distance" : 329629.24805122725,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 11000
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 296666.327549916,
+              "observedDistance" : 0,
+              "routeDistance" : 296666.327549916
+            },
+            "distance" : 296666.327549916,
+            "eta" : 12100.000000000002,
+            "geometry" : [
+              {
+                "latitude" : 52.01,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.021,
+                "longitude" : 23.167705899282907
+              },
+              {
+                "latitude" : 52.032,
+                "longitude" : 21
+              }
+            ],
+            "id" : "C5E573F3-9207-4718-9069-71FA235A0EDC",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.47368421414308076,
+              "time" : 0.5
+            },
+            "rankingValue" : 12100.000000000002,
+            "rawScore" : {
+              "distance" : 296666.327549916,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 12100.000000000002
+            },
+            "reason" : "1100 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "82B16873-D8F9-417F-9F24-49459F745387",
+        "preference" : "fastest",
+        "recommendedRouteID" : "FC706877-88DC-4DA8-9C2D-EB434F18DE12",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "FC706877-88DC-4DA8-9C2D-EB434F18DE12",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "autostrada-1",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "mieszana",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 20876.839641090097,
+              "observedDistance" : 0,
+              "routeDistance" : 20876.839641090097
+            },
+            "distance" : 20876.839641090097,
+            "eta" : 2046.0000000000002,
+            "geometry" : [
+              {
+                "latitude" : 52.01,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.021,
+                "longitude" : 21.151498882772447
+              },
+              {
+                "latitude" : 52.032,
+                "longitude" : 21
+              }
+            ],
+            "id" : "76365D13-1B5D-483D-85C5-84781BDCDEE3",
+            "maneuverCount" : 41,
+            "normalized" : {
+              "comfort" : 0.5,
+              "distance" : 0.46341560848083996,
+              "time" : 0.48437500000000006
+            },
+            "rankingValue" : 0.48558565982127533,
+            "rawScore" : {
+              "distance" : 20876.839641090097,
+              "hasManeuverData" : true,
+              "maneuverCost" : 328,
+              "travelTime" : 2046.0000000000002
+            },
+            "reason" : "0 s względem najszybszego wariantu; 41 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 24173.08802433349,
+              "observedDistance" : 0,
+              "routeDistance" : 24173.08802433349
+            },
+            "distance" : 24173.08802433349,
+            "eta" : 2178,
+            "geometry" : [
+              {
+                "latitude" : 52.01,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.021,
+                "longitude" : 21.175729101248542
+              },
+              {
+                "latitude" : 52.032,
+                "longitude" : 21
+              }
+            ],
+            "id" : "44D582FB-1B0E-4B98-8BA0-8FFE31B1CDAC",
+            "maneuverCount" : 8,
+            "normalized" : {
+              "comfort" : 0.16326530612244897,
+              "distance" : 0.5,
+              "time" : 0.5
+            },
+            "rankingValue" : 0.42076830732292914,
+            "rawScore" : {
+              "distance" : 24173.08802433349,
+              "hasManeuverData" : true,
+              "maneuverCost" : 64,
+              "travelTime" : 2178
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Zrównoważona; 132 s względem najszybszego wariantu; 8 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "363D2BAE-6748-4E05-9564-EB9DC841DE7F",
+        "preference" : "balanced",
+        "recommendedRouteID" : "44D582FB-1B0E-4B98-8BA0-8FFE31B1CDAC",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "44D582FB-1B0E-4B98-8BA0-8FFE31B1CDAC",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Mniej złożonych manewrów przy małej różnicy czasu",
+      "id" : "mieszana-1",
+      "measured" : "easy=true",
+      "passed" : true
+    },
+    {
+      "category" : "korki",
+      "expected" : "50% pomiaru i wzrost ETA",
+      "id" : "korki-1",
+      "measured" : "coverage=0.5",
+      "passed" : true
+    },
+    {
+      "category" : "zamkniecie",
+      "expected" : "Odrzucenie przejazdu przez środek blokady",
+      "id" : "zamkniecie-1",
+      "measured" : "intersection=true",
+      "passed" : true
+    },
+    {
+      "category" : "alternatywy",
+      "expected" : "Jeden wariant identycznej drogi",
+      "id" : "alternatywy-1",
+      "measured" : "count=1",
+      "passed" : true
+    },
+    {
+      "category" : "poi",
+      "expected" : "Hierarchia dostępu i blokująca bariera",
+      "id" : "poi-1",
+      "measured" : "denied=true, override=true",
+      "passed" : true
+    },
+    {
+      "category" : "ev",
+      "expected" : "Dodatni postój ładowania",
+      "id" : "ev-1",
+      "measured" : "chargingSeconds=1199.1855203619907",
+      "passed" : true
+    },
+    {
+      "category" : "gps",
+      "expected" : "Pewne dopasowanie na drodze",
+      "id" : "gps-1",
+      "measured" : "quality=1.0",
+      "passed" : true
+    },
+    {
+      "category" : "pasy-i-komunikaty",
+      "expected" : "Pas dostawcy i wcześniejsze przygotowanie do złożonego węzła",
+      "id" : "pasy-i-komunikaty-1",
+      "measured" : "lanes=[1], early=1100.0",
+      "passed" : true
+    },
+    {
+      "category" : "miasto",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 3598.178492858931,
+              "observedDistance" : 0,
+              "routeDistance" : 3598.178492858931
+            },
+            "distance" : 3598.178492858931,
+            "eta" : 720,
+            "geometry" : [
+              {
+                "latitude" : 52.02,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.032000000000004,
+                "longitude" : 21.017640192847605
+              },
+              {
+                "latitude" : 52.044000000000004,
+                "longitude" : 21
+              }
+            ],
+            "id" : "006C6EC9-4432-43E4-9ED5-C10E0FBBF9E3",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 720,
+            "rawScore" : {
+              "distance" : 3598.178492858931,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 720
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 3238.8298222181165,
+              "observedDistance" : 0,
+              "routeDistance" : 3238.8298222181165
+            },
+            "distance" : 3238.8298222181165,
+            "eta" : 792,
+            "geometry" : [
+              {
+                "latitude" : 52.02,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.032000000000004,
+                "longitude" : 21.013413775001645
+              },
+              {
+                "latitude" : 52.044000000000004,
+                "longitude" : 21
+              }
+            ],
+            "id" : "84A338C0-7DC9-4FDA-B8F5-C5DF83DB7AA8",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.4737203280966929,
+              "time" : 0.5
+            },
+            "rankingValue" : 792,
+            "rawScore" : {
+              "distance" : 3238.8298222181165,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 792
+            },
+            "reason" : "72 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "87375460-B09F-4F03-832F-C98CA51B7A32",
+        "preference" : "fastest",
+        "recommendedRouteID" : "006C6EC9-4432-43E4-9ED5-C10E0FBBF9E3",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "006C6EC9-4432-43E4-9ED5-C10E0FBBF9E3",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "miasto-2",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "aglomeracja",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 23973.368313233572,
+              "observedDistance" : 0,
+              "routeDistance" : 23973.368313233572
+            },
+            "distance" : 23973.368313233572,
+            "eta" : 2160,
+            "geometry" : [
+              {
+                "latitude" : 52.02,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.032000000000004,
+                "longitude" : 21.17413059866197
+              },
+              {
+                "latitude" : 52.044000000000004,
+                "longitude" : 21
+              }
+            ],
+            "id" : "CF6CE7F7-E26B-417B-9BEF-9F1099EACF21",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 2160,
+            "rawScore" : {
+              "distance" : 23973.368313233572,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 2160
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 21576.101906911812,
+              "observedDistance" : 0,
+              "routeDistance" : 21576.101906911812
+            },
+            "distance" : 21576.101906911812,
+            "eta" : 2376,
+            "geometry" : [
+              {
+                "latitude" : 52.02,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.032000000000004,
+                "longitude" : 21.15648726286507
+              },
+              {
+                "latitude" : 52.044000000000004,
+                "longitude" : 21
+              }
+            ],
+            "id" : "E184801D-14FF-4B64-A84A-151F98DE6916",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.47368502427431625,
+              "time" : 0.5
+            },
+            "rankingValue" : 2376,
+            "rawScore" : {
+              "distance" : 21576.101906911812,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 2376
+            },
+            "reason" : "216 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "C8B237D5-AC7B-4F62-9291-5A70F1728941",
+        "preference" : "fastest",
+        "recommendedRouteID" : "CF6CE7F7-E26B-417B-9BEF-9F1099EACF21",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "CF6CE7F7-E26B-417B-9BEF-9F1099EACF21",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "aglomeracja-2",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "droga-krajowa",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 95892.22227234606,
+              "observedDistance" : 0,
+              "routeDistance" : 95892.22227234606
+            },
+            "distance" : 95892.22227234606,
+            "eta" : 4800,
+            "geometry" : [
+              {
+                "latitude" : 52.02,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.032000000000004,
+                "longitude" : 21.700597893887732
+              },
+              {
+                "latitude" : 52.044000000000004,
+                "longitude" : 21
+              }
+            ],
+            "id" : "F5D1697A-D759-40B3-B7E8-12265C5D79A8",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 4800,
+            "rawScore" : {
+              "distance" : 95892.22227234606,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 4800
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 86303.01765160996,
+              "observedDistance" : 0,
+              "routeDistance" : 86303.01765160996
+            },
+            "distance" : 86303.01765160996,
+            "eta" : 5280,
+            "geometry" : [
+              {
+                "latitude" : 52.02,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.032000000000004,
+                "longitude" : 21.630480909860033
+              },
+              {
+                "latitude" : 52.044000000000004,
+                "longitude" : 21
+              }
+            ],
+            "id" : "EB08C759-B4E4-4D01-A18C-4D7B2ECC228A",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.47368426138701974,
+              "time" : 0.5
+            },
+            "rankingValue" : 5280,
+            "rawScore" : {
+              "distance" : 86303.01765160996,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 5280
+            },
+            "reason" : "480 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "436581E8-250B-4844-B53F-952FCFFDA9B2",
+        "preference" : "fastest",
+        "recommendedRouteID" : "F5D1697A-D759-40B3-B7E8-12265C5D79A8",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "F5D1697A-D759-40B3-B7E8-12265C5D79A8",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "droga-krajowa-2",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "autostrada",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 359595.5430137343,
+              "observedDistance" : 0,
+              "routeDistance" : 359595.5430137343
+            },
+            "distance" : 359595.5430137343,
+            "eta" : 12000,
+            "geometry" : [
+              {
+                "latitude" : 52.02,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.032000000000004,
+                "longitude" : 23.628185601404827
+              },
+              {
+                "latitude" : 52.044000000000004,
+                "longitude" : 21
+              }
+            ],
+            "id" : "FC8A1FC5-3065-4C88-B4B3-79B98E170B8F",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 12000,
+            "rawScore" : {
+              "distance" : 359595.5430137343,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 12000
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 323635.9934074296,
+              "observedDistance" : 0,
+              "routeDistance" : 323635.9934074296
+            },
+            "distance" : 323635.9934074296,
+            "eta" : 13200,
+            "geometry" : [
+              {
+                "latitude" : 52.02,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.032000000000004,
+                "longitude" : 23.365351795478304
+              },
+              {
+                "latitude" : 52.044000000000004,
+                "longitude" : 21
+              }
+            ],
+            "id" : "050DC7A8-A587-47B3-A797-5E5893047731",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.4736842141430821,
+              "time" : 0.5
+            },
+            "rankingValue" : 13200,
+            "rawScore" : {
+              "distance" : 323635.9934074296,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 13200
+            },
+            "reason" : "1200 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "F29132C5-C8F6-4DCA-ADF3-528869900933",
+        "preference" : "fastest",
+        "recommendedRouteID" : "FC8A1FC5-3065-4C88-B4B3-79B98E170B8F",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "FC8A1FC5-3065-4C88-B4B3-79B98E170B8F",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "autostrada-2",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "mieszana",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 22774.734134692677,
+              "observedDistance" : 0,
+              "routeDistance" : 22774.734134692677
+            },
+            "distance" : 22774.734134692677,
+            "eta" : 2232,
+            "geometry" : [
+              {
+                "latitude" : 52.02,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.032000000000004,
+                "longitude" : 21.165312164577912
+              },
+              {
+                "latitude" : 52.044000000000004,
+                "longitude" : 21
+              }
+            ],
+            "id" : "C225C7DE-BE7B-4DB5-A2FC-3E8280C33A26",
+            "maneuverCount" : 41,
+            "normalized" : {
+              "comfort" : 0.5,
+              "distance" : 0.463415608482784,
+              "time" : 0.484375
+            },
+            "rankingValue" : 0.4855856598215039,
+            "rawScore" : {
+              "distance" : 22774.734134692677,
+              "hasManeuverData" : true,
+              "maneuverCost" : 328,
+              "travelTime" : 2232
+            },
+            "reason" : "0 s względem najszybszego wariantu; 41 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 26370.64145862587,
+              "observedDistance" : 0,
+              "routeDistance" : 26370.64145862587
+            },
+            "distance" : 26370.64145862587,
+            "eta" : 2376,
+            "geometry" : [
+              {
+                "latitude" : 52.02,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.032000000000004,
+                "longitude" : 21.191751632587028
+              },
+              {
+                "latitude" : 52.044000000000004,
+                "longitude" : 21
+              }
+            ],
+            "id" : "43770C58-8E98-447E-8197-F6C81C8C554F",
+            "maneuverCount" : 8,
+            "normalized" : {
+              "comfort" : 0.16326530612244897,
+              "distance" : 0.5,
+              "time" : 0.5
+            },
+            "rankingValue" : 0.42076830732292914,
+            "rawScore" : {
+              "distance" : 26370.64145862587,
+              "hasManeuverData" : true,
+              "maneuverCost" : 64,
+              "travelTime" : 2376
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Zrównoważona; 144 s względem najszybszego wariantu; 8 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "3EAFC6C3-084C-46FD-A51E-B47E064BEC99",
+        "preference" : "balanced",
+        "recommendedRouteID" : "43770C58-8E98-447E-8197-F6C81C8C554F",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "43770C58-8E98-447E-8197-F6C81C8C554F",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Mniej złożonych manewrów przy małej różnicy czasu",
+      "id" : "mieszana-2",
+      "measured" : "easy=true",
+      "passed" : true
+    },
+    {
+      "category" : "korki",
+      "expected" : "50% pomiaru i wzrost ETA",
+      "id" : "korki-2",
+      "measured" : "coverage=0.5",
+      "passed" : true
+    },
+    {
+      "category" : "zamkniecie",
+      "expected" : "Odrzucenie przejazdu przez środek blokady",
+      "id" : "zamkniecie-2",
+      "measured" : "intersection=true",
+      "passed" : true
+    },
+    {
+      "category" : "alternatywy",
+      "expected" : "Jeden wariant identycznej drogi",
+      "id" : "alternatywy-2",
+      "measured" : "count=1",
+      "passed" : true
+    },
+    {
+      "category" : "poi",
+      "expected" : "Hierarchia dostępu i blokująca bariera",
+      "id" : "poi-2",
+      "measured" : "denied=true, override=true",
+      "passed" : true
+    },
+    {
+      "category" : "ev",
+      "expected" : "Dodatni postój ładowania",
+      "id" : "ev-2",
+      "measured" : "chargingSeconds=1199.1855203619907",
+      "passed" : true
+    },
+    {
+      "category" : "gps",
+      "expected" : "Pewne dopasowanie na drodze",
+      "id" : "gps-2",
+      "measured" : "quality=1.0",
+      "passed" : true
+    },
+    {
+      "category" : "pasy-i-komunikaty",
+      "expected" : "Pas dostawcy i wcześniejsze przygotowanie do złożonego węzła",
+      "id" : "pasy-i-komunikaty-2",
+      "measured" : "lanes=[1], early=1100.0",
+      "passed" : true
+    },
+    {
+      "category" : "miasto",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 3898.026700445622,
+              "observedDistance" : 0,
+              "routeDistance" : 3898.026700445622
+            },
+            "distance" : 3898.026700445622,
+            "eta" : 780,
+            "geometry" : [
+              {
+                "latitude" : 52.03,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.043000000000006,
+                "longitude" : 21.019114911811023
+              },
+              {
+                "latitude" : 52.056000000000004,
+                "longitude" : 21
+              }
+            ],
+            "id" : "135D46A2-548C-4826-99CF-CEA8CB85AA98",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 780,
+            "rawScore" : {
+              "distance" : 3898.026700445622,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 780
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 3508.7323075383274,
+              "observedDistance" : 0,
+              "routeDistance" : 3508.7323075383274
+            },
+            "distance" : 3508.7323075383274,
+            "eta" : 858,
+            "geometry" : [
+              {
+                "latitude" : 52.03,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.043000000000006,
+                "longitude" : 21.014535165710733
+              },
+              {
+                "latitude" : 52.056000000000004,
+                "longitude" : 21
+              }
+            ],
+            "id" : "196A24D7-5BD9-4CF8-879D-F438CF85D83B",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.47372032811600434,
+              "time" : 0.5
+            },
+            "rankingValue" : 858,
+            "rawScore" : {
+              "distance" : 3508.7323075383274,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 858
+            },
+            "reason" : "78 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "7C0424AB-56EB-4388-ABB6-DE48BAF9E52C",
+        "preference" : "fastest",
+        "recommendedRouteID" : "135D46A2-548C-4826-99CF-CEA8CB85AA98",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "135D46A2-548C-4826-99CF-CEA8CB85AA98",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "miasto-3",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "aglomeracja",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 25971.148982094855,
+              "observedDistance" : 0,
+              "routeDistance" : 25971.148982094855
+            },
+            "distance" : 25971.148982094855,
+            "eta" : 2340,
+            "geometry" : [
+              {
+                "latitude" : 52.03,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.043000000000006,
+                "longitude" : 21.188687905273007
+              },
+              {
+                "latitude" : 52.056000000000004,
+                "longitude" : 21
+              }
+            ],
+            "id" : "918064C1-0F6A-4441-AED1-35514CEFBD61",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 2340,
+            "rawScore" : {
+              "distance" : 25971.148982094855,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 2340
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 23374.11037779814,
+              "observedDistance" : 0,
+              "routeDistance" : 23374.11037779814
+            },
+            "distance" : 23374.11037779814,
+            "eta" : 2574.0000000000005,
+            "geometry" : [
+              {
+                "latitude" : 52.03,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.043000000000006,
+                "longitude" : 21.16956958776232
+              },
+              {
+                "latitude" : 52.056000000000004,
+                "longitude" : 21
+              }
+            ],
+            "id" : "D39C06F4-365C-426B-BB53-A88387441C85",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.47368502427603465,
+              "time" : 0.5
+            },
+            "rankingValue" : 2574.0000000000005,
+            "rawScore" : {
+              "distance" : 23374.11037779814,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 2574.0000000000005
+            },
+            "reason" : "234 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "A1F531F0-756D-4C09-B17C-D058567190F7",
+        "preference" : "fastest",
+        "recommendedRouteID" : "918064C1-0F6A-4441-AED1-35514CEFBD61",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "918064C1-0F6A-4441-AED1-35514CEFBD61",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "aglomeracja-3",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "droga-krajowa",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 103883.2406963393,
+              "observedDistance" : 0,
+              "routeDistance" : 103883.2406963393
+            },
+            "distance" : 103883.2406963393,
+            "eta" : 5200,
+            "geometry" : [
+              {
+                "latitude" : 52.03,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.043000000000006,
+                "longitude" : 21.75916783180065
+              },
+              {
+                "latitude" : 52.056000000000004,
+                "longitude" : 21
+              }
+            ],
+            "id" : "0A3D017A-442D-4C03-9997-9F8C0E8D144A",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 5200,
+            "rawScore" : {
+              "distance" : 103883.2406963393,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 5200
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 93494.93570047776,
+              "observedDistance" : 0,
+              "routeDistance" : 93494.93570047776
+            },
+            "distance" : 93494.93570047776,
+            "eta" : 5720,
+            "geometry" : [
+              {
+                "latitude" : 52.03,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.043000000000006,
+                "longitude" : 21.683189072513603
+              },
+              {
+                "latitude" : 52.056000000000004,
+                "longitude" : 21
+              }
+            ],
+            "id" : "ADA8C26A-1624-42C0-9760-1E1557F150A5",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.47368426138719494,
+              "time" : 0.5
+            },
+            "rankingValue" : 5720,
+            "rawScore" : {
+              "distance" : 93494.93570047776,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 5720
+            },
+            "reason" : "520 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "D21D92C3-E206-4BF5-A565-3F81D58FC62E",
+        "preference" : "fastest",
+        "recommendedRouteID" : "0A3D017A-442D-4C03-9997-9F8C0E8D144A",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "0A3D017A-442D-4C03-9997-9F8C0E8D144A",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "droga-krajowa-3",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "autostrada",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 389561.8378940945,
+              "observedDistance" : 0,
+              "routeDistance" : 389561.8378940945
+            },
+            "distance" : 389561.8378940945,
+            "eta" : 13000,
+            "geometry" : [
+              {
+                "latitude" : 52.03,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.043000000000006,
+                "longitude" : 23.847901745059936
+              },
+              {
+                "latitude" : 52.056000000000004,
+                "longitude" : 21
+              }
+            ],
+            "id" : "79479810-127F-4DA2-9FCB-13136F051AF0",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 13000,
+            "rawScore" : {
+              "distance" : 389561.8378940945,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 13000
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 350605.659191014,
+              "observedDistance" : 0,
+              "routeDistance" : 350605.659191014
+            },
+            "distance" : 350605.659191014,
+            "eta" : 14300,
+            "geometry" : [
+              {
+                "latitude" : 52.03,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.043000000000006,
+                "longitude" : 23.563095050221193
+              },
+              {
+                "latitude" : 52.056000000000004,
+                "longitude" : 21
+              }
+            ],
+            "id" : "413E5FD7-DBA5-4595-A735-1CA6CCB450E5",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.4736842141430853,
+              "time" : 0.5
+            },
+            "rankingValue" : 14300,
+            "rawScore" : {
+              "distance" : 350605.659191014,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 14300
+            },
+            "reason" : "1300 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "A5DC2AD2-1584-4CCE-979F-882B3F7A9479",
+        "preference" : "fastest",
+        "recommendedRouteID" : "79479810-127F-4DA2-9FCB-13136F051AF0",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "79479810-127F-4DA2-9FCB-13136F051AF0",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "autostrada-3",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "mieszana",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 24672.628623282737,
+              "observedDistance" : 0,
+              "routeDistance" : 24672.628623282737
+            },
+            "distance" : 24672.628623282737,
+            "eta" : 2418,
+            "geometry" : [
+              {
+                "latitude" : 52.03,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.043000000000006,
+                "longitude" : 21.179132250678723
+              },
+              {
+                "latitude" : 52.056000000000004,
+                "longitude" : 21
+              }
+            ],
+            "id" : "FAE82F66-9DAA-47B7-A6E8-2C817145BB01",
+            "maneuverCount" : 41,
+            "normalized" : {
+              "comfort" : 0.5,
+              "distance" : 0.46341560848500635,
+              "time" : 0.484375
+            },
+            "rankingValue" : 0.48558565982176544,
+            "rawScore" : {
+              "distance" : 24672.628623282737,
+              "hasManeuverData" : true,
+              "maneuverCost" : 328,
+              "travelTime" : 2418
+            },
+            "reason" : "0 s względem najszybszego wariantu; 41 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 28568.19488704797,
+              "observedDistance" : 0,
+              "routeDistance" : 28568.19488704797
+            },
+            "distance" : 28568.19488704797,
+            "eta" : 2574,
+            "geometry" : [
+              {
+                "latitude" : 52.03,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.043000000000006,
+                "longitude" : 21.207782056476827
+              },
+              {
+                "latitude" : 52.056000000000004,
+                "longitude" : 21
+              }
+            ],
+            "id" : "829678CD-C068-4F82-B23A-DA5BCDC4B97E",
+            "maneuverCount" : 8,
+            "normalized" : {
+              "comfort" : 0.16326530612244897,
+              "distance" : 0.5,
+              "time" : 0.5
+            },
+            "rankingValue" : 0.42076830732292914,
+            "rawScore" : {
+              "distance" : 28568.19488704797,
+              "hasManeuverData" : true,
+              "maneuverCost" : 64,
+              "travelTime" : 2574
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Zrównoważona; 156 s względem najszybszego wariantu; 8 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "F8EC3F8C-C949-4D3E-B495-BA53D26C8288",
+        "preference" : "balanced",
+        "recommendedRouteID" : "829678CD-C068-4F82-B23A-DA5BCDC4B97E",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "829678CD-C068-4F82-B23A-DA5BCDC4B97E",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Mniej złożonych manewrów przy małej różnicy czasu",
+      "id" : "mieszana-3",
+      "measured" : "easy=true",
+      "passed" : true
+    },
+    {
+      "category" : "korki",
+      "expected" : "50% pomiaru i wzrost ETA",
+      "id" : "korki-3",
+      "measured" : "coverage=0.5",
+      "passed" : true
+    },
+    {
+      "category" : "zamkniecie",
+      "expected" : "Odrzucenie przejazdu przez środek blokady",
+      "id" : "zamkniecie-3",
+      "measured" : "intersection=true",
+      "passed" : true
+    },
+    {
+      "category" : "alternatywy",
+      "expected" : "Jeden wariant identycznej drogi",
+      "id" : "alternatywy-3",
+      "measured" : "count=1",
+      "passed" : true
+    },
+    {
+      "category" : "poi",
+      "expected" : "Hierarchia dostępu i blokująca bariera",
+      "id" : "poi-3",
+      "measured" : "denied=true, override=true",
+      "passed" : true
+    },
+    {
+      "category" : "ev",
+      "expected" : "Dodatni postój ładowania",
+      "id" : "ev-3",
+      "measured" : "chargingSeconds=1199.1855203619907",
+      "passed" : true
+    },
+    {
+      "category" : "gps",
+      "expected" : "Pewne dopasowanie na drodze",
+      "id" : "gps-3",
+      "measured" : "quality=1.0",
+      "passed" : true
+    },
+    {
+      "category" : "pasy-i-komunikaty",
+      "expected" : "Pas dostawcy i wcześniejsze przygotowanie do złożonego węzła",
+      "id" : "pasy-i-komunikaty-3",
+      "measured" : "lanes=[1], early=1100.0",
+      "passed" : true
+    },
+    {
+      "category" : "miasto",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 4197.87490799881,
+              "observedDistance" : 0,
+              "routeDistance" : 4197.87490799881
+            },
+            "distance" : 4197.87490799881,
+            "eta" : 840,
+            "geometry" : [
+              {
+                "latitude" : 52.04,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.054,
+                "longitude" : 21.020590357548915
+              },
+              {
+                "latitude" : 52.068,
+                "longitude" : 21
+              }
+            ],
+            "id" : "1BFD6400-D26B-42B7-AB98-7E89ABB5AEE0",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 840,
+            "rawScore" : {
+              "distance" : 4197.87490799881,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 840
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 3778.634792888396,
+              "observedDistance" : 0,
+              "routeDistance" : 3778.634792888396
+            },
+            "distance" : 3778.634792888396,
+            "eta" : 923.9999999999999,
+            "geometry" : [
+              {
+                "latitude" : 52.04,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.054,
+                "longitude" : 21.015657109066243
+              },
+              {
+                "latitude" : 52.068,
+                "longitude" : 21
+              }
+            ],
+            "id" : "C6EC2FE7-E8E4-47C4-97F2-38E88E89C44D",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.4737203281365167,
+              "time" : 0.5
+            },
+            "rankingValue" : 923.9999999999999,
+            "rawScore" : {
+              "distance" : 3778.634792888396,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 923.9999999999999
+            },
+            "reason" : "84 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "C61FD330-3011-4EFD-9852-249815560AD0",
+        "preference" : "fastest",
+        "recommendedRouteID" : "1BFD6400-D26B-42B7-AB98-7E89ABB5AEE0",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "1BFD6400-D26B-42B7-AB98-7E89ABB5AEE0",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "miasto-4",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "aglomeracja",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 27968.929645212433,
+              "observedDistance" : 0,
+              "routeDistance" : 27968.929645212433
+            },
+            "distance" : 27968.929645212433,
+            "eta" : 2520,
+            "geometry" : [
+              {
+                "latitude" : 52.04,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.054,
+                "longitude" : 21.203252386050018
+              },
+              {
+                "latitude" : 52.068,
+                "longitude" : 21
+              }
+            ],
+            "id" : "2D29EE59-D0F2-4578-AE55-30A5356F9270",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 2520,
+            "rawScore" : {
+              "distance" : 27968.929645212433,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 2520
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 25172.118843551092,
+              "observedDistance" : 0,
+              "routeDistance" : 25172.118843551092
+            },
+            "distance" : 25172.118843551092,
+            "eta" : 2772,
+            "geometry" : [
+              {
+                "latitude" : 52.04,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.054,
+                "longitude" : 21.182658359921604
+              },
+              {
+                "latitude" : 52.068,
+                "longitude" : 21
+              }
+            ],
+            "id" : "6CD8B196-A227-4FE2-948A-24DCBE3C1FEF",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.4736850242778639,
+              "time" : 0.5
+            },
+            "rankingValue" : 2772,
+            "rawScore" : {
+              "distance" : 25172.118843551092,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 2772
+            },
+            "reason" : "252 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "FA338165-EA48-41C5-AF98-ABEDB4F585B9",
+        "preference" : "fastest",
+        "recommendedRouteID" : "2D29EE59-D0F2-4578-AE55-30A5356F9270",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "2D29EE59-D0F2-4578-AE55-30A5356F9270",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "aglomeracja-4",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "droga-krajowa",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 111874.25909666313,
+              "observedDistance" : 0,
+              "routeDistance" : 111874.25909666313
+            },
+            "distance" : 111874.25909666313,
+            "eta" : 5600,
+            "geometry" : [
+              {
+                "latitude" : 52.04,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.054,
+                "longitude" : 21.81776663428769
+              },
+              {
+                "latitude" : 52.068,
+                "longitude" : 21
+              }
+            ],
+            "id" : "B78A6136-6970-493B-AA11-A68F0E535693",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 5600,
+            "rawScore" : {
+              "distance" : 111874.25909666313,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 5600
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 100686.853728026,
+              "observedDistance" : 0,
+              "routeDistance" : 100686.853728026
+            },
+            "distance" : 100686.853728026,
+            "eta" : 6160,
+            "geometry" : [
+              {
+                "latitude" : 52.04,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.054,
+                "longitude" : 21.735923210927467
+              },
+              {
+                "latitude" : 52.068,
+                "longitude" : 21
+              }
+            ],
+            "id" : "284B1AD6-85F2-4D17-B216-8B602BFA19DB",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.4736842613873028,
+              "time" : 0.5
+            },
+            "rankingValue" : 6160,
+            "rawScore" : {
+              "distance" : 100686.853728026,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 6160
+            },
+            "reason" : "560 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "0C2BC200-96E7-476F-8430-C025ED4C6F68",
+        "preference" : "fastest",
+        "recommendedRouteID" : "B78A6136-6970-493B-AA11-A68F0E535693",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "B78A6136-6970-493B-AA11-A68F0E535693",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "droga-krajowa-4",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "autostrada",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 419528.13268546923,
+              "observedDistance" : 0,
+              "routeDistance" : 419528.13268546923
+            },
+            "distance" : 419528.13268546923,
+            "eta" : 14000,
+            "geometry" : [
+              {
+                "latitude" : 52.04,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.054,
+                "longitude" : 24.067726169740094
+              },
+              {
+                "latitude" : 52.068,
+                "longitude" : 21
+              }
+            ],
+            "id" : "E86F48B8-7A6A-4127-824D-434F664C92B3",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 14000,
+            "rawScore" : {
+              "distance" : 419528.13268546923,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 14000
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 377575.3248945292,
+              "observedDistance" : 0,
+              "routeDistance" : 377575.3248945292
+            },
+            "distance" : 377575.3248945292,
+            "eta" : 15399.999999999998,
+            "geometry" : [
+              {
+                "latitude" : 52.04,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.054,
+                "longitude" : 23.760935757258498
+              },
+              {
+                "latitude" : 52.068,
+                "longitude" : 21
+              }
+            ],
+            "id" : "49D13809-9F89-41F7-864F-B08AA872F1B6",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.47368421414309975,
+              "time" : 0.5
+            },
+            "rankingValue" : 15399.999999999998,
+            "rawScore" : {
+              "distance" : 377575.3248945292,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 15399.999999999998
+            },
+            "reason" : "1400 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "EE876DD2-284C-4915-B9DE-C813339CDBDB",
+        "preference" : "fastest",
+        "recommendedRouteID" : "E86F48B8-7A6A-4127-824D-434F664C92B3",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "E86F48B8-7A6A-4127-824D-434F664C92B3",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "autostrada-4",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "mieszana",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 26570.523106427085,
+              "observedDistance" : 0,
+              "routeDistance" : 26570.523106427085
+            },
+            "distance" : 26570.523106427085,
+            "eta" : 2604,
+            "geometry" : [
+              {
+                "latitude" : 52.04,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.054,
+                "longitude" : 21.192959147626773
+              },
+              {
+                "latitude" : 52.068,
+                "longitude" : 21
+              }
+            ],
+            "id" : "211E3830-186E-4269-9F39-93AEEBA3B7A7",
+            "maneuverCount" : 41,
+            "normalized" : {
+              "comfort" : 0.5,
+              "distance" : 0.4634156084872526,
+              "time" : 0.484375
+            },
+            "rankingValue" : 0.48558565982202967,
+            "rawScore" : {
+              "distance" : 26570.523106427085,
+              "hasManeuverData" : true,
+              "maneuverCost" : 328,
+              "travelTime" : 2604
+            },
+            "reason" : "0 s względem najszybszego wariantu; 41 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 30765.748309122297,
+              "observedDistance" : 0,
+              "routeDistance" : 30765.748309122297
+            },
+            "distance" : 30765.748309122297,
+            "eta" : 2772,
+            "geometry" : [
+              {
+                "latitude" : 52.04,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.054,
+                "longitude" : 21.223820380517715
+              },
+              {
+                "latitude" : 52.068,
+                "longitude" : 21
+              }
+            ],
+            "id" : "E02FE779-8598-427F-8AAD-6335360C4E92",
+            "maneuverCount" : 8,
+            "normalized" : {
+              "comfort" : 0.16326530612244897,
+              "distance" : 0.5,
+              "time" : 0.5
+            },
+            "rankingValue" : 0.42076830732292914,
+            "rawScore" : {
+              "distance" : 30765.748309122297,
+              "hasManeuverData" : true,
+              "maneuverCost" : 64,
+              "travelTime" : 2772
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Zrównoważona; 168 s względem najszybszego wariantu; 8 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "A3486623-2A70-4CDB-8161-8B83F43A10E7",
+        "preference" : "balanced",
+        "recommendedRouteID" : "E02FE779-8598-427F-8AAD-6335360C4E92",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "E02FE779-8598-427F-8AAD-6335360C4E92",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Mniej złożonych manewrów przy małej różnicy czasu",
+      "id" : "mieszana-4",
+      "measured" : "easy=true",
+      "passed" : true
+    },
+    {
+      "category" : "korki",
+      "expected" : "50% pomiaru i wzrost ETA",
+      "id" : "korki-4",
+      "measured" : "coverage=0.5",
+      "passed" : true
+    },
+    {
+      "category" : "zamkniecie",
+      "expected" : "Odrzucenie przejazdu przez środek blokady",
+      "id" : "zamkniecie-4",
+      "measured" : "intersection=true",
+      "passed" : true
+    },
+    {
+      "category" : "alternatywy",
+      "expected" : "Jeden wariant identycznej drogi",
+      "id" : "alternatywy-4",
+      "measured" : "count=1",
+      "passed" : true
+    },
+    {
+      "category" : "poi",
+      "expected" : "Hierarchia dostępu i blokująca bariera",
+      "id" : "poi-4",
+      "measured" : "denied=true, override=true",
+      "passed" : true
+    },
+    {
+      "category" : "ev",
+      "expected" : "Dodatni postój ładowania",
+      "id" : "ev-4",
+      "measured" : "chargingSeconds=1199.1855203619907",
+      "passed" : true
+    },
+    {
+      "category" : "gps",
+      "expected" : "Pewne dopasowanie na drodze",
+      "id" : "gps-4",
+      "measured" : "quality=1.0",
+      "passed" : true
+    },
+    {
+      "category" : "pasy-i-komunikaty",
+      "expected" : "Pas dostawcy i wcześniejsze przygotowanie do złożonego węzła",
+      "id" : "pasy-i-komunikaty-4",
+      "measured" : "lanes=[1], early=1100.0",
+      "passed" : true
+    },
+    {
+      "category" : "miasto",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 4497.72311551169,
+              "observedDistance" : 0,
+              "routeDistance" : 4497.72311551169
+            },
+            "distance" : 4497.72311551169,
+            "eta" : 900,
+            "geometry" : [
+              {
+                "latitude" : 52.05,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.065,
+                "longitude" : 21.02206653076119
+              },
+              {
+                "latitude" : 52.08,
+                "longitude" : 21
+              }
+            ],
+            "id" : "8075FF28-A618-48A9-A88B-7F5CA3F49F3D",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 900,
+            "rawScore" : {
+              "distance" : 4497.72311551169,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 900
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 4048.537278268783,
+              "observedDistance" : 0,
+              "routeDistance" : 4048.537278268783
+            },
+            "distance" : 4048.537278268783,
+            "eta" : 990,
+            "geometry" : [
+              {
+                "latitude" : 52.05,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.065,
+                "longitude" : 21.016779605600373
+              },
+              {
+                "latitude" : 52.08,
+                "longitude" : 21
+              }
+            ],
+            "id" : "D0C237C6-089F-472C-88BB-A2EE010F1391",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.47372032815839543,
+              "time" : 0.5
+            },
+            "rankingValue" : 990,
+            "rawScore" : {
+              "distance" : 4048.537278268783,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 990
+            },
+            "reason" : "90 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "535A9B5E-5AC0-423A-87F0-C542039763BF",
+        "preference" : "fastest",
+        "recommendedRouteID" : "8075FF28-A618-48A9-A88B-7F5CA3F49F3D",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "8075FF28-A618-48A9-A88B-7F5CA3F49F3D",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "miasto-5",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "aglomeracja",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 29966.710302140073,
+              "observedDistance" : 0,
+              "routeDistance" : 29966.710302140073
+            },
+            "distance" : 29966.710302140073,
+            "eta" : 2700,
+            "geometry" : [
+              {
+                "latitude" : 52.05,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.065,
+                "longitude" : 21.217824047902248
+              },
+              {
+                "latitude" : 52.08,
+                "longitude" : 21
+              }
+            ],
+            "id" : "9C832EF7-59FD-4BFD-94AF-324BF3297187",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 2700,
+            "rawScore" : {
+              "distance" : 29966.710302140073,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 2700
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 26970.1273037996,
+              "observedDistance" : 0,
+              "routeDistance" : 26970.1273037996
+            },
+            "distance" : 26970.1273037996,
+            "eta" : 2970.0000000000005,
+            "geometry" : [
+              {
+                "latitude" : 52.05,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.065,
+                "longitude" : 21.19575358555209
+              },
+              {
+                "latitude" : 52.08,
+                "longitude" : 21
+              }
+            ],
+            "id" : "1C43B340-E6EC-4594-A0B9-0E2E490AE525",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.4736850242800641,
+              "time" : 0.5
+            },
+            "rankingValue" : 2970.0000000000005,
+            "rawScore" : {
+              "distance" : 26970.1273037996,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 2970.0000000000005
+            },
+            "reason" : "270 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "1ACA2DB8-D785-4019-BE5A-BF53B8D5EB5A",
+        "preference" : "fastest",
+        "recommendedRouteID" : "9C832EF7-59FD-4BFD-94AF-324BF3297187",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "9C832EF7-59FD-4BFD-94AF-324BF3297187",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "aglomeracja-5",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "droga-krajowa",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 119865.27747148336,
+              "observedDistance" : 0,
+              "routeDistance" : 119865.27747148336
+            },
+            "distance" : 119865.27747148336,
+            "eta" : 6000,
+            "geometry" : [
+              {
+                "latitude" : 52.05,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.065,
+                "longitude" : 21.87639432914753
+              },
+              {
+                "latitude" : 52.08,
+                "longitude" : 21
+              }
+            ],
+            "id" : "F5C1C802-4D25-4DE9-A2A2-5D73C9CDB64E",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 6000,
+            "rawScore" : {
+              "distance" : 119865.27747148336,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 6000
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 107878.7717326337,
+              "observedDistance" : 0,
+              "routeDistance" : 107878.7717326337
+            },
+            "distance" : 107878.7717326337,
+            "eta" : 6600,
+            "geometry" : [
+              {
+                "latitude" : 52.05,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.065,
+                "longitude" : 21.78868335011817
+              },
+              {
+                "latitude" : 52.08,
+                "longitude" : 21
+              }
+            ],
+            "id" : "D1DE71F2-C317-4C6B-A168-98BE11E21129",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.4736842613874256,
+              "time" : 0.5
+            },
+            "rankingValue" : 6600,
+            "rawScore" : {
+              "distance" : 107878.7717326337,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 6600
+            },
+            "reason" : "600 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "E67B9DD6-2ADF-473B-AB22-56BB988E9E99",
+        "preference" : "fastest",
+        "recommendedRouteID" : "F5C1C802-4D25-4DE9-A2A2-5D73C9CDB64E",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "F5C1C802-4D25-4DE9-A2A2-5D73C9CDB64E",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "droga-krajowa-5",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "autostrada",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 449494.427381005,
+              "observedDistance" : 0,
+              "routeDistance" : 449494.427381005
+            },
+            "distance" : 449494.427381005,
+            "eta" : 15000,
+            "geometry" : [
+              {
+                "latitude" : 52.05,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.065,
+                "longitude" : 24.287658979727798
+              },
+              {
+                "latitude" : 52.08,
+                "longitude" : 21
+              }
+            ],
+            "id" : "4C530C60-1B5F-48C8-83AB-7058243DDBD6",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 15000,
+            "rawScore" : {
+              "distance" : 449494.427381005,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 15000
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 404544.9905117932,
+              "observedDistance" : 0,
+              "routeDistance" : 404544.9905117932
+            },
+            "distance" : 404544.9905117932,
+            "eta" : 16500,
+            "geometry" : [
+              {
+                "latitude" : 52.05,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.065,
+                "longitude" : 23.958874010443864
+              },
+              {
+                "latitude" : 52.08,
+                "longitude" : 21
+              }
+            ],
+            "id" : "56FCD167-91D2-45F4-91E7-F9CE4ED1C1BB",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.4736842141431146,
+              "time" : 0.5
+            },
+            "rankingValue" : 16500,
+            "rawScore" : {
+              "distance" : 404544.9905117932,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 16500
+            },
+            "reason" : "1500 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "662AB5EF-CEE3-4587-B04C-FB9323D23B11",
+        "preference" : "fastest",
+        "recommendedRouteID" : "4C530C60-1B5F-48C8-83AB-7058243DDBD6",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "4C530C60-1B5F-48C8-83AB-7058243DDBD6",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "autostrada-5",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "mieszana",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 28468.41758373051,
+              "observedDistance" : 0,
+              "routeDistance" : 28468.41758373051
+            },
+            "distance" : 28468.41758373051,
+            "eta" : 2790,
+            "geometry" : [
+              {
+                "latitude" : 52.05,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.065,
+                "longitude" : 21.2067928619814
+              },
+              {
+                "latitude" : 52.08,
+                "longitude" : 21
+              }
+            ],
+            "id" : "ACD81581-C11A-4DE8-ACE5-8A7184EA6275",
+            "maneuverCount" : 41,
+            "normalized" : {
+              "comfort" : 0.5,
+              "distance" : 0.46341560848978935,
+              "time" : 0.484375
+            },
+            "rankingValue" : 0.4855856598223281,
+            "rawScore" : {
+              "distance" : 28468.41758373051,
+              "hasManeuverData" : true,
+              "maneuverCost" : 328,
+              "travelTime" : 2790
+            },
+            "reason" : "0 s względem najszybszego wariantu; 41 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 32963.30172435526,
+              "observedDistance" : 0,
+              "routeDistance" : 32963.30172435526
+            },
+            "distance" : 32963.30172435526,
+            "eta" : 2970,
+            "geometry" : [
+              {
+                "latitude" : 52.05,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.065,
+                "longitude" : 21.239866612318107
+              },
+              {
+                "latitude" : 52.08,
+                "longitude" : 21
+              }
+            ],
+            "id" : "C5FFD190-7A50-4F9E-8F7D-68293F29C0DB",
+            "maneuverCount" : 8,
+            "normalized" : {
+              "comfort" : 0.16326530612244897,
+              "distance" : 0.5,
+              "time" : 0.5
+            },
+            "rankingValue" : 0.42076830732292914,
+            "rawScore" : {
+              "distance" : 32963.30172435526,
+              "hasManeuverData" : true,
+              "maneuverCost" : 64,
+              "travelTime" : 2970
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Zrównoważona; 180 s względem najszybszego wariantu; 8 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "FCCD65DB-1CBB-4F4D-9D50-8C33D3177117",
+        "preference" : "balanced",
+        "recommendedRouteID" : "C5FFD190-7A50-4F9E-8F7D-68293F29C0DB",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "C5FFD190-7A50-4F9E-8F7D-68293F29C0DB",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Mniej złożonych manewrów przy małej różnicy czasu",
+      "id" : "mieszana-5",
+      "measured" : "easy=true",
+      "passed" : true
+    },
+    {
+      "category" : "korki",
+      "expected" : "50% pomiaru i wzrost ETA",
+      "id" : "korki-5",
+      "measured" : "coverage=0.5",
+      "passed" : true
+    },
+    {
+      "category" : "zamkniecie",
+      "expected" : "Odrzucenie przejazdu przez środek blokady",
+      "id" : "zamkniecie-5",
+      "measured" : "intersection=true",
+      "passed" : true
+    },
+    {
+      "category" : "alternatywy",
+      "expected" : "Jeden wariant identycznej drogi",
+      "id" : "alternatywy-5",
+      "measured" : "count=1",
+      "passed" : true
+    },
+    {
+      "category" : "poi",
+      "expected" : "Hierarchia dostępu i blokująca bariera",
+      "id" : "poi-5",
+      "measured" : "denied=true, override=true",
+      "passed" : true
+    },
+    {
+      "category" : "ev",
+      "expected" : "Dodatni postój ładowania",
+      "id" : "ev-5",
+      "measured" : "chargingSeconds=1199.1855203619907",
+      "passed" : true
+    },
+    {
+      "category" : "gps",
+      "expected" : "Pewne dopasowanie na drodze",
+      "id" : "gps-5",
+      "measured" : "quality=1.0",
+      "passed" : true
+    },
+    {
+      "category" : "pasy-i-komunikaty",
+      "expected" : "Pas dostawcy i wcześniejsze przygotowanie do złożonego węzła",
+      "id" : "pasy-i-komunikaty-5",
+      "measured" : "lanes=[1], early=1100.0",
+      "passed" : true
+    },
+    {
+      "category" : "miasto",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 4797.571322983144,
+              "observedDistance" : 0,
+              "routeDistance" : 4797.571322983144
+            },
+            "distance" : 4797.571322983144,
+            "eta" : 960,
+            "geometry" : [
+              {
+                "latitude" : 52.06,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.076,
+                "longitude" : 21.023543432148603
+              },
+              {
+                "latitude" : 52.092,
+                "longitude" : 21
+              }
+            ],
+            "id" : "7F4D3FE7-4355-464D-B786-766FE32CF004",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 960,
+            "rawScore" : {
+              "distance" : 4797.571322983144,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 960
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 4318.439763689478,
+              "observedDistance" : 0,
+              "routeDistance" : 4318.439763689478
+            },
+            "distance" : 4318.439763689478,
+            "eta" : 1056,
+            "geometry" : [
+              {
+                "latitude" : 52.06,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.076,
+                "longitude" : 21.017902655846
+              },
+              {
+                "latitude" : 52.092,
+                "longitude" : 21
+              }
+            ],
+            "id" : "BF5F0C81-4672-4A34-86C3-6F239AE4DEDC",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.4737203281820191,
+              "time" : 0.5
+            },
+            "rankingValue" : 1056,
+            "rawScore" : {
+              "distance" : 4318.439763689478,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 1056
+            },
+            "reason" : "96 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "E97E0F26-EBE1-4120-AA8B-466C0F6945E8",
+        "preference" : "fastest",
+        "recommendedRouteID" : "7F4D3FE7-4355-464D-B786-766FE32CF004",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "7F4D3FE7-4355-464D-B786-766FE32CF004",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "miasto-6",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "aglomeracja",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 31964.490952458647,
+              "observedDistance" : 0,
+              "routeDistance" : 31964.490952458647
+            },
+            "distance" : 31964.490952458647,
+            "eta" : 2880,
+            "geometry" : [
+              {
+                "latitude" : 52.06,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.076,
+                "longitude" : 21.232402897746805
+              },
+              {
+                "latitude" : 52.092,
+                "longitude" : 21
+              }
+            ],
+            "id" : "A11904BB-C737-429B-9300-CE145E81A9D6",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 2880,
+            "rawScore" : {
+              "distance" : 31964.490952458647,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 2880
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 28768.135758122655,
+              "observedDistance" : 0,
+              "routeDistance" : 28768.135758122655
+            },
+            "distance" : 28768.135758122655,
+            "eta" : 3168.0000000000005,
+            "geometry" : [
+              {
+                "latitude" : 52.06,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.076,
+                "longitude" : 21.208855270870043
+              },
+              {
+                "latitude" : 52.092,
+                "longitude" : 21
+              }
+            ],
+            "id" : "04CC4AC1-604A-4C0E-8A4B-622E041A7980",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.47368502428218623,
+              "time" : 0.5
+            },
+            "rankingValue" : 3168.0000000000005,
+            "rawScore" : {
+              "distance" : 28768.135758122655,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 3168.0000000000005
+            },
+            "reason" : "288 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "B9E7FA55-811A-4929-8D2E-66D93E1F24A0",
+        "preference" : "fastest",
+        "recommendedRouteID" : "A11904BB-C737-429B-9300-CE145E81A9D6",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "A11904BB-C737-429B-9300-CE145E81A9D6",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "aglomeracja-6",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "droga-krajowa",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 127856.29581897467,
+              "observedDistance" : 0,
+              "routeDistance" : 127856.29581897467
+            },
+            "distance" : 127856.29581897467,
+            "eta" : 6400,
+            "geometry" : [
+              {
+                "latitude" : 52.06,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.076,
+                "longitude" : 21.935050944210516
+              },
+              {
+                "latitude" : 52.092,
+                "longitude" : 21
+              }
+            ],
+            "id" : "B95B3DBA-DBB6-41EC-976E-B7C03CC05A4F",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 6400,
+            "rawScore" : {
+              "distance" : 127856.29581897467,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 6400
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 115070.6897126555,
+              "observedDistance" : 0,
+              "routeDistance" : 115070.6897126555
+            },
+            "distance" : 115070.6897126555,
+            "eta" : 7040,
+            "geometry" : [
+              {
+                "latitude" : 52.06,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.076,
+                "longitude" : 21.841469515130743
+              },
+              {
+                "latitude" : 52.092,
+                "longitude" : 21
+              }
+            ],
+            "id" : "B683DE68-FC41-450C-9AB1-574156A9F429",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.473684261387555,
+              "time" : 0.5
+            },
+            "rankingValue" : 7040,
+            "rawScore" : {
+              "distance" : 115070.6897126555,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 7040
+            },
+            "reason" : "640 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "71F1A8E6-30DC-4BAC-819D-82E8BD383F57",
+        "preference" : "fastest",
+        "recommendedRouteID" : "B95B3DBA-DBB6-41EC-976E-B7C03CC05A4F",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "B95B3DBA-DBB6-41EC-976E-B7C03CC05A4F",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "droga-krajowa-6",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "autostrada",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 479460.72197387216,
+              "observedDistance" : 0,
+              "routeDistance" : 479460.72197387216
+            },
+            "distance" : 479460.72197387216,
+            "eta" : 16000,
+            "geometry" : [
+              {
+                "latitude" : 52.06,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.076,
+                "longitude" : 24.507700279424284
+              },
+              {
+                "latitude" : 52.092,
+                "longitude" : 21
+              }
+            ],
+            "id" : "E0AB8375-7118-46C8-8C78-ECB0A04444D2",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 16000,
+            "rawScore" : {
+              "distance" : 479460.72197387216,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 16000
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 431514.65603664,
+              "observedDistance" : 0,
+              "routeDistance" : 431514.65603664
+            },
+            "distance" : 431514.65603664,
+            "eta" : 17600,
+            "geometry" : [
+              {
+                "latitude" : 52.06,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.076,
+                "longitude" : 24.156909903737798
+              },
+              {
+                "latitude" : 52.092,
+                "longitude" : 21
+              }
+            ],
+            "id" : "81432395-E767-42A9-A3A6-B7B0F3FBC594",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.4736842141431188,
+              "time" : 0.5
+            },
+            "rankingValue" : 17600,
+            "rawScore" : {
+              "distance" : 431514.65603664,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 17600
+            },
+            "reason" : "1600 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "24AE37D0-E5D3-47ED-8DD7-5AF095F0DFA1",
+        "preference" : "fastest",
+        "recommendedRouteID" : "E0AB8375-7118-46C8-8C78-ECB0A04444D2",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "E0AB8375-7118-46C8-8C78-ECB0A04444D2",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "autostrada-6",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "mieszana",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 30366.312054770853,
+              "observedDistance" : 0,
+              "routeDistance" : 30366.312054770853
+            },
+            "distance" : 30366.312054770853,
+            "eta" : 2976,
+            "geometry" : [
+              {
+                "latitude" : 52.06,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.076,
+                "longitude" : 21.220633400309406
+              },
+              {
+                "latitude" : 52.092,
+                "longitude" : 21
+              }
+            ],
+            "id" : "5FD60988-5277-4119-BCD9-25BF43F60940",
+            "maneuverCount" : 41,
+            "normalized" : {
+              "comfort" : 0.5,
+              "distance" : 0.46341560849251345,
+              "time" : 0.484375
+            },
+            "rankingValue" : 0.4855856598226486,
+            "rawScore" : {
+              "distance" : 30366.312054770853,
+              "hasManeuverData" : true,
+              "maneuverCost" : 328,
+              "travelTime" : 2976
+            },
+            "reason" : "0 s względem najszybszego wariantu; 41 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 35160.855132264944,
+              "observedDistance" : 0,
+              "routeDistance" : 35160.855132264944
+            },
+            "distance" : 35160.855132264944,
+            "eta" : 3168,
+            "geometry" : [
+              {
+                "latitude" : 52.06,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.076,
+                "longitude" : 21.255920759495087
+              },
+              {
+                "latitude" : 52.092,
+                "longitude" : 21
+              }
+            ],
+            "id" : "01252ACF-E631-4F98-90CC-08A6C3EB65EA",
+            "maneuverCount" : 8,
+            "normalized" : {
+              "comfort" : 0.16326530612244897,
+              "distance" : 0.5,
+              "time" : 0.5
+            },
+            "rankingValue" : 0.42076830732292914,
+            "rawScore" : {
+              "distance" : 35160.855132264944,
+              "hasManeuverData" : true,
+              "maneuverCost" : 64,
+              "travelTime" : 3168
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Zrównoważona; 192 s względem najszybszego wariantu; 8 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "EADE5733-6546-43AD-BA5D-42FB2CBDF044",
+        "preference" : "balanced",
+        "recommendedRouteID" : "01252ACF-E631-4F98-90CC-08A6C3EB65EA",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "01252ACF-E631-4F98-90CC-08A6C3EB65EA",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Mniej złożonych manewrów przy małej różnicy czasu",
+      "id" : "mieszana-6",
+      "measured" : "easy=true",
+      "passed" : true
+    },
+    {
+      "category" : "korki",
+      "expected" : "50% pomiaru i wzrost ETA",
+      "id" : "korki-6",
+      "measured" : "coverage=0.5",
+      "passed" : true
+    },
+    {
+      "category" : "zamkniecie",
+      "expected" : "Odrzucenie przejazdu przez środek blokady",
+      "id" : "zamkniecie-6",
+      "measured" : "intersection=true",
+      "passed" : true
+    },
+    {
+      "category" : "alternatywy",
+      "expected" : "Jeden wariant identycznej drogi",
+      "id" : "alternatywy-6",
+      "measured" : "count=1",
+      "passed" : true
+    },
+    {
+      "category" : "poi",
+      "expected" : "Hierarchia dostępu i blokująca bariera",
+      "id" : "poi-6",
+      "measured" : "denied=true, override=true",
+      "passed" : true
+    },
+    {
+      "category" : "ev",
+      "expected" : "Dodatni postój ładowania",
+      "id" : "ev-6",
+      "measured" : "chargingSeconds=1199.1855203619907",
+      "passed" : true
+    },
+    {
+      "category" : "gps",
+      "expected" : "Pewne dopasowanie na drodze",
+      "id" : "gps-6",
+      "measured" : "quality=1.0",
+      "passed" : true
+    },
+    {
+      "category" : "pasy-i-komunikaty",
+      "expected" : "Pas dostawcy i wcześniejsze przygotowanie do złożonego węzła",
+      "id" : "pasy-i-komunikaty-6",
+      "measured" : "lanes=[1], early=1100.0",
+      "passed" : true
+    },
+    {
+      "category" : "miasto",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 5097.419530415076,
+              "observedDistance" : 0,
+              "routeDistance" : 5097.419530415076
+            },
+            "distance" : 5097.419530415076,
+            "eta" : 1020.0000000000001,
+            "geometry" : [
+              {
+                "latitude" : 52.07,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.087,
+                "longitude" : 21.025021062412677
+              },
+              {
+                "latitude" : 52.104,
+                "longitude" : 21
+              }
+            ],
+            "id" : "2923B276-CA27-4CBE-87EB-FEDEEBF22557",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 1020.0000000000001,
+            "rawScore" : {
+              "distance" : 5097.419530415076,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 1020.0000000000001
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 4588.342249152247,
+              "observedDistance" : 0,
+              "routeDistance" : 4588.342249152247
+            },
+            "distance" : 4588.342249152247,
+            "eta" : 1122.0000000000002,
+            "geometry" : [
+              {
+                "latitude" : 52.07,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.087,
+                "longitude" : 21.01902626033656
+              },
+              {
+                "latitude" : 52.104,
+                "longitude" : 21
+              }
+            ],
+            "id" : "A5B68285-6AD3-4789-8B95-53AB98231EA6",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.47372032820708243,
+              "time" : 0.5
+            },
+            "rankingValue" : 1122.0000000000002,
+            "rawScore" : {
+              "distance" : 4588.342249152247,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 1122.0000000000002
+            },
+            "reason" : "102 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "88F4E80E-3070-4A1A-9C39-EF067B0EBE68",
+        "preference" : "fastest",
+        "recommendedRouteID" : "2923B276-CA27-4CBE-87EB-FEDEEBF22557",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "2923B276-CA27-4CBE-87EB-FEDEEBF22557",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "miasto-7",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "aglomeracja",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 33962.2715956985,
+              "observedDistance" : 0,
+              "routeDistance" : 33962.2715956985
+            },
+            "distance" : 33962.2715956985,
+            "eta" : 3060.0000000000005,
+            "geometry" : [
+              {
+                "latitude" : 52.07,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.087,
+                "longitude" : 21.24698894250868
+              },
+              {
+                "latitude" : 52.104,
+                "longitude" : 21
+              }
+            ],
+            "id" : "93E0F99C-FE70-4C9A-8B58-AD2D77570B28",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.4761904761904761
+            },
+            "rankingValue" : 3060.0000000000005,
+            "rawScore" : {
+              "distance" : 33962.2715956985,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 3060.0000000000005
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 30566.14420615715,
+              "observedDistance" : 0,
+              "routeDistance" : 30566.14420615715
+            },
+            "distance" : 30566.14420615715,
+            "eta" : 3366.000000000001,
+            "geometry" : [
+              {
+                "latitude" : 52.07,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.087,
+                "longitude" : 21.22196342209879
+              },
+              {
+                "latitude" : 52.104,
+                "longitude" : 21
+              }
+            ],
+            "id" : "679CF2A2-2ABE-4ABC-86C9-F81BAA4D6AD4",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.47368502428473,
+              "time" : 0.5
+            },
+            "rankingValue" : 3366.000000000001,
+            "rawScore" : {
+              "distance" : 30566.14420615715,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 3366.000000000001
+            },
+            "reason" : "306 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "FCE4603F-20BA-48B7-A0F5-615E6DCC4A85",
+        "preference" : "fastest",
+        "recommendedRouteID" : "93E0F99C-FE70-4C9A-8B58-AD2D77570B28",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "93E0F99C-FE70-4C9A-8B58-AD2D77570B28",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "aglomeracja-7",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "droga-krajowa",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 135847.31413731427,
+              "observedDistance" : 0,
+              "routeDistance" : 135847.31413731427
+            },
+            "distance" : 135847.31413731427,
+            "eta" : 6800.000000000001,
+            "geometry" : [
+              {
+                "latitude" : 52.07,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.087,
+                "longitude" : 21.993736507338674
+              },
+              {
+                "latitude" : 52.104,
+                "longitude" : 21
+              }
+            ],
+            "id" : "3636A80B-34CF-41A7-88D4-B08B907420D2",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.4761904761904762
+            },
+            "rankingValue" : 6800.000000000001,
+            "rawScore" : {
+              "distance" : 135847.31413731427,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 6800.000000000001
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 122262.60766646269,
+              "observedDistance" : 0,
+              "routeDistance" : 122262.60766646269
+            },
+            "distance" : 122262.60766646269,
+            "eta" : 7480.000000000001,
+            "geometry" : [
+              {
+                "latitude" : 52.07,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.087,
+                "longitude" : 21.894281731038745
+              },
+              {
+                "latitude" : 52.104,
+                "longitude" : 21
+              }
+            ],
+            "id" : "2420FD58-3825-4C1F-866A-F264E660FFEE",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.4736842613877139,
+              "time" : 0.5
+            },
+            "rankingValue" : 7480.000000000001,
+            "rawScore" : {
+              "distance" : 122262.60766646269,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 7480.000000000001
+            },
+            "reason" : "680 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "21DE831C-000D-49DE-BF38-208FE49BD185",
+        "preference" : "fastest",
+        "recommendedRouteID" : "3636A80B-34CF-41A7-88D4-B08B907420D2",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "3636A80B-34CF-41A7-88D4-B08B907420D2",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "droga-krajowa-7",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "autostrada",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 509427.0164572094,
+              "observedDistance" : 0,
+              "routeDistance" : 509427.0164572094
+            },
+            "distance" : 509427.0164572094,
+            "eta" : 17000,
+            "geometry" : [
+              {
+                "latitude" : 52.07,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.087,
+                "longitude" : 24.727850173349715
+              },
+              {
+                "latitude" : 52.104,
+                "longitude" : 21
+              }
+            ],
+            "id" : "715CDA49-106F-4863-A8AC-8513C2416F01",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 17000,
+            "rawScore" : {
+              "distance" : 509427.0164572094,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 17000
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 458484.3214629276,
+              "observedDistance" : 0,
+              "routeDistance" : 458484.3214629276
+            },
+            "distance" : 458484.3214629276,
+            "eta" : 18700.000000000004,
+            "geometry" : [
+              {
+                "latitude" : 52.07,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.087,
+                "longitude" : 24.35504353120784
+              },
+              {
+                "latitude" : 52.104,
+                "longitude" : 21
+              }
+            ],
+            "id" : "96DF593D-130F-4307-A14F-A89E2E552E2D",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.47368421414313205,
+              "time" : 0.5
+            },
+            "rankingValue" : 18700.000000000004,
+            "rawScore" : {
+              "distance" : 458484.3214629276,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 18700.000000000004
+            },
+            "reason" : "1700 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "E7637B6F-834F-4C91-B981-235BE27969DF",
+        "preference" : "fastest",
+        "recommendedRouteID" : "715CDA49-106F-4863-A8AC-8513C2416F01",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "715CDA49-106F-4863-A8AC-8513C2416F01",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "autostrada-7",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "mieszana",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 32264.206519114276,
+              "observedDistance" : 0,
+              "routeDistance" : 32264.206519114276
+            },
+            "distance" : 32264.206519114276,
+            "eta" : 3162.0000000000005,
+            "geometry" : [
+              {
+                "latitude" : 52.07,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.087,
+                "longitude" : 21.23448076918509
+              },
+              {
+                "latitude" : 52.104,
+                "longitude" : 21
+              }
+            ],
+            "id" : "D31D7749-0998-4A0D-B3C1-E4738A38FB6E",
+            "maneuverCount" : 41,
+            "normalized" : {
+              "comfort" : 0.5,
+              "distance" : 0.4634156084952851,
+              "time" : 0.484375
+            },
+            "rankingValue" : 0.48558565982297464,
+            "rawScore" : {
+              "distance" : 32264.206519114276,
+              "hasManeuverData" : true,
+              "maneuverCost" : 328,
+              "travelTime" : 3162.0000000000005
+            },
+            "reason" : "0 s względem najszybszego wariantu; 41 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 37358.40853236502,
+              "observedDistance" : 0,
+              "routeDistance" : 37358.40853236502
+            },
+            "distance" : 37358.40853236502,
+            "eta" : 3366.0000000000005,
+            "geometry" : [
+              {
+                "latitude" : 52.07,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.087,
+                "longitude" : 21.271982829674414
+              },
+              {
+                "latitude" : 52.104,
+                "longitude" : 21
+              }
+            ],
+            "id" : "A21C1E1A-0DA2-4924-AE2E-C15E66D25417",
+            "maneuverCount" : 8,
+            "normalized" : {
+              "comfort" : 0.16326530612244897,
+              "distance" : 0.5,
+              "time" : 0.5
+            },
+            "rankingValue" : 0.42076830732292914,
+            "rawScore" : {
+              "distance" : 37358.40853236502,
+              "hasManeuverData" : true,
+              "maneuverCost" : 64,
+              "travelTime" : 3366.0000000000005
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Zrównoważona; 204 s względem najszybszego wariantu; 8 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "E3B46613-238D-43B8-BDAE-E381CAA55DCD",
+        "preference" : "balanced",
+        "recommendedRouteID" : "A21C1E1A-0DA2-4924-AE2E-C15E66D25417",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "A21C1E1A-0DA2-4924-AE2E-C15E66D25417",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Mniej złożonych manewrów przy małej różnicy czasu",
+      "id" : "mieszana-7",
+      "measured" : "easy=true",
+      "passed" : true
+    },
+    {
+      "category" : "korki",
+      "expected" : "50% pomiaru i wzrost ETA",
+      "id" : "korki-7",
+      "measured" : "coverage=0.5",
+      "passed" : true
+    },
+    {
+      "category" : "zamkniecie",
+      "expected" : "Odrzucenie przejazdu przez środek blokady",
+      "id" : "zamkniecie-7",
+      "measured" : "intersection=true",
+      "passed" : true
+    },
+    {
+      "category" : "alternatywy",
+      "expected" : "Jeden wariant identycznej drogi",
+      "id" : "alternatywy-7",
+      "measured" : "count=1",
+      "passed" : true
+    },
+    {
+      "category" : "poi",
+      "expected" : "Hierarchia dostępu i blokująca bariera",
+      "id" : "poi-7",
+      "measured" : "denied=true, override=true",
+      "passed" : true
+    },
+    {
+      "category" : "ev",
+      "expected" : "Dodatni postój ładowania",
+      "id" : "ev-7",
+      "measured" : "chargingSeconds=1199.1855203619907",
+      "passed" : true
+    },
+    {
+      "category" : "gps",
+      "expected" : "Pewne dopasowanie na drodze",
+      "id" : "gps-7",
+      "measured" : "quality=1.0",
+      "passed" : true
+    },
+    {
+      "category" : "pasy-i-komunikaty",
+      "expected" : "Pas dostawcy i wcześniejsze przygotowanie do złożonego węzła",
+      "id" : "pasy-i-komunikaty-7",
+      "measured" : "lanes=[1], early=1100.0",
+      "passed" : true
+    },
+    {
+      "category" : "miasto",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 5397.267737809156,
+              "observedDistance" : 0,
+              "routeDistance" : 5397.267737809156
+            },
+            "distance" : 5397.267737809156,
+            "eta" : 1080,
+            "geometry" : [
+              {
+                "latitude" : 52.08,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.098,
+                "longitude" : 21.026499422255725
+              },
+              {
+                "latitude" : 52.116,
+                "longitude" : 21
+              }
+            ],
+            "id" : "BE07F5E1-EFB7-4CD7-BED6-59B5A86350F0",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 1080,
+            "rawScore" : {
+              "distance" : 5397.267737809156,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 1080
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 4858.24473466468,
+              "observedDistance" : 0,
+              "routeDistance" : 4858.24473466468
+            },
+            "distance" : 4858.24473466468,
+            "eta" : 1188,
+            "geometry" : [
+              {
+                "latitude" : 52.08,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.098,
+                "longitude" : 21.0201504196061
+              },
+              {
+                "latitude" : 52.116,
+                "longitude" : 21
+              }
+            ],
+            "id" : "0FDC722F-AACD-4292-8625-A355D76B1D8D",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.4737203282336581,
+              "time" : 0.5
+            },
+            "rankingValue" : 1188,
+            "rawScore" : {
+              "distance" : 4858.24473466468,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 1188
+            },
+            "reason" : "108 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "B177C2CE-2461-44EE-9B54-30B6FFF7BE91",
+        "preference" : "fastest",
+        "recommendedRouteID" : "BE07F5E1-EFB7-4CD7-BED6-59B5A86350F0",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "BE07F5E1-EFB7-4CD7-BED6-59B5A86350F0",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "miasto-8",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "aglomeracja",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 35960.05223144553,
+              "observedDistance" : 0,
+              "routeDistance" : 35960.05223144553
+            },
+            "distance" : 35960.05223144553,
+            "eta" : 3240,
+            "geometry" : [
+              {
+                "latitude" : 52.08,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.098,
+                "longitude" : 21.261582189120748
+              },
+              {
+                "latitude" : 52.116,
+                "longitude" : 21
+              }
+            ],
+            "id" : "B17E18F6-E381-49E4-ACA7-2268411BF976",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 3240,
+            "rawScore" : {
+              "distance" : 35960.05223144553,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 3240
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 32364.152647472594,
+              "observedDistance" : 0,
+              "routeDistance" : 32364.152647472594
+            },
+            "distance" : 32364.152647472594,
+            "eta" : 3564.0000000000005,
+            "geometry" : [
+              {
+                "latitude" : 52.08,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.098,
+                "longitude" : 21.23507804546875
+              },
+              {
+                "latitude" : 52.116,
+                "longitude" : 21
+              }
+            ],
+            "id" : "E0384BA1-7F9E-4A66-B5BD-4D943A495F2A",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.47368502428717996,
+              "time" : 0.5
+            },
+            "rankingValue" : 3564.0000000000005,
+            "rawScore" : {
+              "distance" : 32364.152647472594,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 3564.0000000000005
+            },
+            "reason" : "324 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "96AFC131-638A-43BF-93E1-3EF9143AC713",
+        "preference" : "fastest",
+        "recommendedRouteID" : "B17E18F6-E381-49E4-ACA7-2268411BF976",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "B17E18F6-E381-49E4-ACA7-2268411BF976",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "aglomeracja-8",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "droga-krajowa",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 143838.33242467575,
+              "observedDistance" : 0,
+              "routeDistance" : 143838.33242467575
+            },
+            "distance" : 143838.33242467575,
+            "eta" : 7200,
+            "geometry" : [
+              {
+                "latitude" : 52.08,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.098,
+                "longitude" : 22.05245104642579
+              },
+              {
+                "latitude" : 52.116,
+                "longitude" : 21
+              }
+            ],
+            "id" : "8E0E9EF8-F3E4-4051-BE74-FE3E245306CA",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 7200,
+            "rawScore" : {
+              "distance" : 143838.33242467575,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 7200
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 129454.52559240666,
+              "observedDistance" : 0,
+              "routeDistance" : 129454.52559240666
+            },
+            "distance" : 129454.52559240666,
+            "eta" : 7920,
+            "geometry" : [
+              {
+                "latitude" : 52.08,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.098,
+                "longitude" : 21.9471200229443
+              },
+              {
+                "latitude" : 52.116,
+                "longitude" : 21
+              }
+            ],
+            "id" : "F48259B3-80DC-43C3-AF09-8387EE0C4C9B",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.47368426138788805,
+              "time" : 0.5
+            },
+            "rankingValue" : 7920,
+            "rawScore" : {
+              "distance" : 129454.52559240666,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 7920
+            },
+            "reason" : "720 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "90BE213F-E0CD-4695-B735-00D0B339C6EC",
+        "preference" : "fastest",
+        "recommendedRouteID" : "8E0E9EF8-F3E4-4051-BE74-FE3E245306CA",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "8E0E9EF8-F3E4-4051-BE74-FE3E245306CA",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "droga-krajowa-8",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "autostrada",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 539393.3108241945,
+              "observedDistance" : 0,
+              "routeDistance" : 539393.3108241945
+            },
+            "distance" : 539393.3108241945,
+            "eta" : 18000,
+            "geometry" : [
+              {
+                "latitude" : 52.08,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.098,
+                "longitude" : 24.948108766143328
+              },
+              {
+                "latitude" : 52.116,
+                "longitude" : 21
+              }
+            ],
+            "id" : "15F4243B-EBC5-46DF-A759-67E358F73BD8",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 18000,
+            "rawScore" : {
+              "distance" : 539393.3108241945,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 18000
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 485453.98678448726,
+              "observedDistance" : 0,
+              "routeDistance" : 485453.98678448726
+            },
+            "distance" : 485453.98678448726,
+            "eta" : 19800,
+            "geometry" : [
+              {
+                "latitude" : 52.08,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.098,
+                "longitude" : 24.5532749870287
+              },
+              {
+                "latitude" : 52.116,
+                "longitude" : 21
+              }
+            ],
+            "id" : "E795160E-BC80-426F-BFB7-6E12043DE9B2",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.47368421414313816,
+              "time" : 0.5
+            },
+            "rankingValue" : 19800,
+            "rawScore" : {
+              "distance" : 485453.98678448726,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 19800
+            },
+            "reason" : "1800 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "85313A0B-19CB-406D-A695-15E2D3B963BD",
+        "preference" : "fastest",
+        "recommendedRouteID" : "15F4243B-EBC5-46DF-A759-67E358F73BD8",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "15F4243B-EBC5-46DF-A759-67E358F73BD8",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "autostrada-8",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "mieszana",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 34162.10097635951,
+              "observedDistance" : 0,
+              "routeDistance" : 34162.10097635951
+            },
+            "distance" : 34162.10097635951,
+            "eta" : 3348,
+            "geometry" : [
+              {
+                "latitude" : 52.08,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.098,
+                "longitude" : 21.248334975190225
+              },
+              {
+                "latitude" : 52.116,
+                "longitude" : 21
+              }
+            ],
+            "id" : "9FB4F9C9-FADA-4C64-AFBB-8472FEB3F71B",
+            "maneuverCount" : 41,
+            "normalized" : {
+              "comfort" : 0.5,
+              "distance" : 0.4634156084983719,
+              "time" : 0.484375
+            },
+            "rankingValue" : 0.4855856598233379,
+            "rawScore" : {
+              "distance" : 34162.10097635951,
+              "hasManeuverData" : true,
+              "maneuverCost" : 328,
+              "travelTime" : 3348
+            },
+            "reason" : "0 s względem najszybszego wariantu; 41 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 39555.96192414707,
+              "observedDistance" : 0,
+              "routeDistance" : 39555.96192414707
+            },
+            "distance" : 39555.96192414707,
+            "eta" : 3564,
+            "geometry" : [
+              {
+                "latitude" : 52.08,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.098,
+                "longitude" : 21.288052830490535
+              },
+              {
+                "latitude" : 52.116,
+                "longitude" : 21
+              }
+            ],
+            "id" : "EBB93BEF-FD32-46AA-8956-D62C3F2DF096",
+            "maneuverCount" : 8,
+            "normalized" : {
+              "comfort" : 0.16326530612244897,
+              "distance" : 0.5,
+              "time" : 0.5
+            },
+            "rankingValue" : 0.42076830732292914,
+            "rawScore" : {
+              "distance" : 39555.96192414707,
+              "hasManeuverData" : true,
+              "maneuverCost" : 64,
+              "travelTime" : 3564
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Zrównoważona; 216 s względem najszybszego wariantu; 8 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "67DCBB66-B5B3-47DA-95AE-5985724E9D94",
+        "preference" : "balanced",
+        "recommendedRouteID" : "EBB93BEF-FD32-46AA-8956-D62C3F2DF096",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "EBB93BEF-FD32-46AA-8956-D62C3F2DF096",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Mniej złożonych manewrów przy małej różnicy czasu",
+      "id" : "mieszana-8",
+      "measured" : "easy=true",
+      "passed" : true
+    },
+    {
+      "category" : "korki",
+      "expected" : "50% pomiaru i wzrost ETA",
+      "id" : "korki-8",
+      "measured" : "coverage=0.5",
+      "passed" : true
+    },
+    {
+      "category" : "zamkniecie",
+      "expected" : "Odrzucenie przejazdu przez środek blokady",
+      "id" : "zamkniecie-8",
+      "measured" : "intersection=true",
+      "passed" : true
+    },
+    {
+      "category" : "alternatywy",
+      "expected" : "Jeden wariant identycznej drogi",
+      "id" : "alternatywy-8",
+      "measured" : "count=1",
+      "passed" : true
+    },
+    {
+      "category" : "poi",
+      "expected" : "Hierarchia dostępu i blokująca bariera",
+      "id" : "poi-8",
+      "measured" : "denied=true, override=true",
+      "passed" : true
+    },
+    {
+      "category" : "ev",
+      "expected" : "Dodatni postój ładowania",
+      "id" : "ev-8",
+      "measured" : "chargingSeconds=1199.1855203619907",
+      "passed" : true
+    },
+    {
+      "category" : "gps",
+      "expected" : "Pewne dopasowanie na drodze",
+      "id" : "gps-8",
+      "measured" : "quality=1.0",
+      "passed" : true
+    },
+    {
+      "category" : "pasy-i-komunikaty",
+      "expected" : "Pas dostawcy i wcześniejsze przygotowanie do złożonego węzła",
+      "id" : "pasy-i-komunikaty-8",
+      "measured" : "lanes=[1], early=1100.0",
+      "passed" : true
+    },
+    {
+      "category" : "miasto",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 5697.115945163036,
+              "observedDistance" : 0,
+              "routeDistance" : 5697.115945163036
+            },
+            "distance" : 5697.115945163036,
+            "eta" : 1140,
+            "geometry" : [
+              {
+                "latitude" : 52.09,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.109,
+                "longitude" : 21.027978512380916
+              },
+              {
+                "latitude" : 52.128,
+                "longitude" : 21
+              }
+            ],
+            "id" : "15793893-A8CB-4463-93A5-5C39F2741EC9",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 1140,
+            "rawScore" : {
+              "distance" : 5697.115945163036,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 1140
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 5128.147220218445,
+              "observedDistance" : 0,
+              "routeDistance" : 5128.147220218445
+            },
+            "distance" : 5128.147220218445,
+            "eta" : 1254,
+            "geometry" : [
+              {
+                "latitude" : 52.09,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.109,
+                "longitude" : 21.02127513418932
+              },
+              {
+                "latitude" : 52.128,
+                "longitude" : 21
+              }
+            ],
+            "id" : "171E3C46-FF5C-41C5-B9ED-9C8C3C4534D5",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.4737203282612049,
+              "time" : 0.5
+            },
+            "rankingValue" : 1254,
+            "rawScore" : {
+              "distance" : 5128.147220218445,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 1254
+            },
+            "reason" : "114 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "98722371-23E7-40AB-94B5-FA15F723513A",
+        "preference" : "fastest",
+        "recommendedRouteID" : "15793893-A8CB-4463-93A5-5C39F2741EC9",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "15793893-A8CB-4463-93A5-5C39F2741EC9",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "miasto-9",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "aglomeracja",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 37957.83285924645,
+              "observedDistance" : 0,
+              "routeDistance" : 37957.83285924645
+            },
+            "distance" : 37957.83285924645,
+            "eta" : 3420,
+            "geometry" : [
+              {
+                "latitude" : 52.09,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.109,
+                "longitude" : 21.2761826445238
+              },
+              {
+                "latitude" : 52.128,
+                "longitude" : 21
+              }
+            ],
+            "id" : "19144635-DE17-4818-956D-D98CCFFBA465",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 3420,
+            "rawScore" : {
+              "distance" : 37957.83285924645,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 3420
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 34162.16108169246,
+              "observedDistance" : 0,
+              "routeDistance" : 34162.16108169246
+            },
+            "distance" : 34162.16108169246,
+            "eta" : 3762.0000000000005,
+            "geometry" : [
+              {
+                "latitude" : 52.09,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.109,
+                "longitude" : 21.24819914721746
+              },
+              {
+                "latitude" : 52.128,
+                "longitude" : 21
+              }
+            ],
+            "id" : "23B3462D-1548-4789-B2A9-300BBB256887",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.4736850242897804,
+              "time" : 0.5
+            },
+            "rankingValue" : 3762.0000000000005,
+            "rawScore" : {
+              "distance" : 34162.16108169246,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 3762.0000000000005
+            },
+            "reason" : "342 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "A4E624DC-4C83-49FB-90DB-E2F2041A57AB",
+        "preference" : "fastest",
+        "recommendedRouteID" : "19144635-DE17-4818-956D-D98CCFFBA465",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "19144635-DE17-4818-956D-D98CCFFBA465",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "aglomeracja-9",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "droga-krajowa",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 151829.3506792535,
+              "observedDistance" : 0,
+              "routeDistance" : 151829.3506792535
+            },
+            "distance" : 151829.3506792535,
+            "eta" : 7600,
+            "geometry" : [
+              {
+                "latitude" : 52.09,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.109,
+                "longitude" : 22.111194589397442
+              },
+              {
+                "latitude" : 52.128,
+                "longitude" : 21
+              }
+            ],
+            "id" : "D5EA0651-A7C5-4669-B406-3A7D6AF98486",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 7600,
+            "rawScore" : {
+              "distance" : 151829.3506792535,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 7600
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 136646.4434888436,
+              "observedDistance" : 0,
+              "routeDistance" : 136646.4434888436
+            },
+            "distance" : 136646.4434888436,
+            "eta" : 8360,
+            "geometry" : [
+              {
+                "latitude" : 52.09,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.109,
+                "longitude" : 21.99998441597815
+              },
+              {
+                "latitude" : 52.128,
+                "longitude" : 21
+              }
+            ],
+            "id" : "DE76406E-41AD-43C9-B0EF-D4D8B5A9BF4E",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.47368426138804093,
+              "time" : 0.5
+            },
+            "rankingValue" : 8360,
+            "rawScore" : {
+              "distance" : 136646.4434888436,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 8360
+            },
+            "reason" : "760 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "D74A21DC-6FC9-45C3-8BFA-C9021E8A1B31",
+        "preference" : "fastest",
+        "recommendedRouteID" : "D5EA0651-A7C5-4669-B406-3A7D6AF98486",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "D5EA0651-A7C5-4669-B406-3A7D6AF98486",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "droga-krajowa-9",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "autostrada",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 569359.6050679414,
+              "observedDistance" : 0,
+              "routeDistance" : 569359.6050679414
+            },
+            "distance" : 569359.6050679414,
+            "eta" : 19000,
+            "geometry" : [
+              {
+                "latitude" : 52.09,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.109,
+                "longitude" : 25.168476162563643
+              },
+              {
+                "latitude" : 52.128,
+                "longitude" : 21
+              }
+            ],
+            "id" : "5C8FDA6E-BD6B-4FB9-9624-FC3EE0277965",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.5,
+              "time" : 0.47619047619047616
+            },
+            "rankingValue" : 19000,
+            "rawScore" : {
+              "distance" : 569359.6050679414,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 19000
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Najszybsza; 0 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 512423.651995163,
+              "observedDistance" : 0,
+              "routeDistance" : 512423.651995163
+            },
+            "distance" : 512423.651995163,
+            "eta" : 20900,
+            "geometry" : [
+              {
+                "latitude" : 52.09,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.109,
+                "longitude" : 24.751604365482432
+              },
+              {
+                "latitude" : 52.128,
+                "longitude" : 21
+              }
+            ],
+            "id" : "955769B9-F71E-4F0F-A39A-80C5D1735118",
+            "maneuverCount" : 0,
+            "normalized" : {
+              "distance" : 0.47368421414315853,
+              "time" : 0.5
+            },
+            "rankingValue" : 20900,
+            "rawScore" : {
+              "distance" : 512423.651995163,
+              "hasManeuverData" : false,
+              "maneuverCost" : 0,
+              "travelTime" : 20900
+            },
+            "reason" : "1900 s względem najszybszego wariantu; Brak danych manewrów; 0 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "7F2E1B24-1D77-4C8F-B652-E4BF5528DF66",
+        "preference" : "fastest",
+        "recommendedRouteID" : "5C8FDA6E-BD6B-4FB9-9624-FC3EE0277965",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "5C8FDA6E-BD6B-4FB9-9624-FC3EE0277965",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Czas i dystans wybierają właściwe warianty",
+      "id" : "autostrada-9",
+      "measured" : "fastest=true, shortest=true",
+      "passed" : true
+    },
+    {
+      "category" : "mieszana",
+      "decision" : {
+        "candidates" : [
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 36059.99542608953,
+              "observedDistance" : 0,
+              "routeDistance" : 36059.99542608953
+            },
+            "distance" : 36059.99542608953,
+            "eta" : 3534,
+            "geometry" : [
+              {
+                "latitude" : 52.09,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.109,
+                "longitude" : 21.2621960249141
+              },
+              {
+                "latitude" : 52.128,
+                "longitude" : 21
+              }
+            ],
+            "id" : "0E43B96A-46DA-4692-9E7F-A578A73FC268",
+            "maneuverCount" : 41,
+            "normalized" : {
+              "comfort" : 0.5,
+              "distance" : 0.463415608501652,
+              "time" : 0.484375
+            },
+            "rankingValue" : 0.4855856598237237,
+            "rawScore" : {
+              "distance" : 36059.99542608953,
+              "hasManeuverData" : true,
+              "maneuverCost" : 328,
+              "travelTime" : 3534
+            },
+            "reason" : "0 s względem najszybszego wariantu; 41 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          },
+          {
+            "coverage" : {
+              "freshDistance" : 0,
+              "monitoredDistance" : 41753.5153071403,
+              "observedDistance" : 0,
+              "routeDistance" : 41753.5153071403
+            },
+            "distance" : 41753.5153071403,
+            "eta" : 3762,
+            "geometry" : [
+              {
+                "latitude" : 52.09,
+                "longitude" : 21
+              },
+              {
+                "latitude" : 52.109,
+                "longitude" : 21.304130769586603
+              },
+              {
+                "latitude" : 52.128,
+                "longitude" : 21
+              }
+            ],
+            "id" : "B26D39A9-6A56-4A54-8757-9EA1003063E8",
+            "maneuverCount" : 8,
+            "normalized" : {
+              "comfort" : 0.16326530612244897,
+              "distance" : 0.5,
+              "time" : 0.5
+            },
+            "rankingValue" : 0.42076830732292914,
+            "rawScore" : {
+              "distance" : 41753.5153071403,
+              "hasManeuverData" : true,
+              "maneuverCost" : 64,
+              "travelTime" : 3762
+            },
+            "reason" : "Aktywny wariant; Rekomendacja: Zrównoważona; 228 s względem najszybszego wariantu; 8 manewrów kierunkowych; Nawierzchnia nieporównywalna lub nieznana"
+          }
+        ],
+        "id" : "8F2AF011-0D12-4994-98B3-A4DAAA769544",
+        "preference" : "balanced",
+        "recommendedRouteID" : "B26D39A9-6A56-4A54-8757-9EA1003063E8",
+        "schemaVersion" : 1,
+        "selectedRouteID" : "B26D39A9-6A56-4A54-8757-9EA1003063E8",
+        "source" : "synthetic-benchmark",
+        "timestamp" : "2026-10-12T17:41:35Z"
+      },
+      "expected" : "Mniej złożonych manewrów przy małej różnicy czasu",
+      "id" : "mieszana-9",
+      "measured" : "easy=true",
+      "passed" : true
+    },
+    {
+      "category" : "korki",
+      "expected" : "50% pomiaru i wzrost ETA",
+      "id" : "korki-9",
+      "measured" : "coverage=0.5",
+      "passed" : true
+    },
+    {
+      "category" : "zamkniecie",
+      "expected" : "Odrzucenie przejazdu przez środek blokady",
+      "id" : "zamkniecie-9",
+      "measured" : "intersection=true",
+      "passed" : true
+    },
+    {
+      "category" : "alternatywy",
+      "expected" : "Jeden wariant identycznej drogi",
+      "id" : "alternatywy-9",
+      "measured" : "count=1",
+      "passed" : true
+    },
+    {
+      "category" : "poi",
+      "expected" : "Hierarchia dostępu i blokująca bariera",
+      "id" : "poi-9",
+      "measured" : "denied=true, override=true",
+      "passed" : true
+    },
+    {
+      "category" : "ev",
+      "expected" : "Dodatni postój ładowania",
+      "id" : "ev-9",
+      "measured" : "chargingSeconds=1199.1855203619907",
+      "passed" : true
+    },
+    {
+      "category" : "gps",
+      "expected" : "Pewne dopasowanie na drodze",
+      "id" : "gps-9",
+      "measured" : "quality=1.0",
+      "passed" : true
+    },
+    {
+      "category" : "pasy-i-komunikaty",
+      "expected" : "Pas dostawcy i wcześniejsze przygotowanie do złożonego węzła",
+      "id" : "pasy-i-komunikaty-9",
+      "measured" : "lanes=[1], early=1100.0",
+      "passed" : true
+    }
+  ],
+  "createdAt" : "2026-10-12T17:41:35Z",
+  "dataset" : "120 syntetycznych scenariuszy krytycznych; brak zapytań sieciowych",
+  "elapsedSeconds" : 0.034382708333396295
+}

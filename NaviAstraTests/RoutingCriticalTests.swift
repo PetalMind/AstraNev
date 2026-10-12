@@ -5,6 +5,47 @@ import Testing
 /// Regressions in navigation decisions and EV reachability, not UI behavior.
 @MainActor
 struct RoutingCriticalTests {
+    @Test func detailedRoadEventsPreserveEvidenceAndSeparateSafetyFromRouting() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let json = #"""
+        {"incidents":[{"geometry":{"type":"LineString","coordinates":[[21,52],[21,52.01]]},
+        "properties":{"id":"closure","iconCategory":"roadClosed","magnitudeOfDelay":"major",
+        "events":[{"code":401,"description":"Droga zamknięta","iconCategory":"roadClosed"},
+        {"code":99999,"description":"Przedmioty na jezdni","iconCategory":"dangerousConditions"}],
+        "startTime":"2020-01-01T00:00:00Z","endTime":"2040-01-01T00:00:00.000Z",
+        "numberOfReports":3,"lastReportTime":"2020-01-01T00:00:00Z","probabilityOfOccurrence":"probable"}}]}
+        """#
+        let closure = try #require(TomTomTrafficProvider.decodeIncidents(Data(json.utf8), observedAt: now).first)
+        #expect(closure.events.map(\.code) == [401, 99999])
+        #expect(closure.detailDescriptions == ["Przedmioty na jezdni"])
+        #expect(closure.isRoadClosure)
+        #expect(closure.community?.numberOfReports == 3)
+        #expect(closure.expiresAt != nil)
+        #expect(try TomTomTrafficProvider.decodeIncidents(Data(json.utf8),
+            observedAt: Date(timeIntervalSince1970: 2_300_000_000)).isEmpty)
+        let route = NavigationRoute(coordinates: closure.geometry, distance: 1_112,
+            expectedTravelTime: 100, maneuvers: [])
+        let matched = try #require(RouteTrafficMonitor.matching([closure], to: route, from: 0,
+            through: 1_112, routeGeometry: RouteProgressGeometry(route)).first)
+        #expect(matched.events.map(\.code) == closure.events.map(\.code))
+        #expect(matched.expiresAt == closure.expiresAt)
+        #expect(matched.community?.numberOfReports == 3)
+        // Explicit informational causes must never turn into a closure or ETA penalty.
+        let police = TrafficIncident(id: "police", description: "Kontrola policyjna",
+            coordinate: route.coordinates.last!, delaySeconds: 900,
+            category: .roadClosed, severity: .major, cause: .policeCheckpoint)
+        #expect(!police.isRoadClosure)
+        #expect(police.routingDelaySeconds == nil)
+        #expect(SafetyAlertEngine.alerts(in: [police], at: now).count == 1)
+        let snapshot = TrafficSnapshot(flow: nil, incidents: [police], updatedAt: .now,
+            partialError: nil, incidentDataAvailable: true)
+        #expect(abs(RoadRouteETA.estimate(route, from: 0, traffic: snapshot) - 100) < 0.001)
+        let expired = TrafficIncident(id: "expired", description: "Wypadek", coordinate: police.coordinate,
+            delaySeconds: 900, category: .accident, severity: .major, expiresAt: .distantPast)
+        #expect(SafetyAlertEngine.alerts(in: [expired], at: now).isEmpty)
+        #expect(RouteTrafficMonitor.incidentProjection(expired, geometry: RouteProgressGeometry(route)) == nil)
+    }
+
     @Test func osmRestrictionsPreserveEmbeddedValuesAndConditionalMeaning() throws {
         let height = try #require(OSMHeightRestriction.parse(["traffic_sign": "PL:B-16[3,5];B-18[12]" ]))
         #expect(height.value == "3,5 m")
@@ -48,6 +89,42 @@ struct RoutingCriticalTests {
                                     updatedAt: Date().addingTimeInterval(-300), partialError: nil,
                                     incidentDataAvailable: true)
         #expect(abs(RoadRouteETA.estimate(route, from: half, traffic: stale) - 900) < 0.001)
+        // The navigation cache must preserve the same decisions throughout a trip,
+        // including stale measurements, closures, a replaced route, and a reset.
+        var tracker = RouteProgressTracker()
+        for distance in [0, half / 2, half, length - 10] {
+            for snapshot in [nil, traffic, stale] {
+                let expected = RoadRouteETA.estimate(route, from: distance, traffic: snapshot, paceMultiplier: 1.2)
+                let cached = tracker.estimateRoadETA(route: route, from: distance,
+                    traffic: snapshot, paceMultiplier: 1.2)
+                #expect(abs(cached - expected) < 0.001)
+            }
+        }
+        let closed = RouteTrafficSegment(id: "closed", routeID: route.id, startDistance: half,
+            endDistance: length, coordinates: Array(coordinates.suffix(2)), colorHex: 0,
+            isRoadClosure: true, currentSpeedKph: nil, freeFlowSpeedKph: nil)
+        let closure = TrafficSnapshot(flow: nil, incidents: [], routeFlowSegments: [closed],
+            updatedAt: .now, partialError: nil, incidentDataAvailable: true)
+        #expect(!tracker.estimateRoadETA(route: route, from: 0, traffic: closure).isFinite)
+        #expect(tracker.estimateRoadETA(route: route, from: 0, traffic: nil).isFinite)
+        let replacement = NavigationRoute(coordinates: coordinates, distance: length,
+            expectedTravelTime: 250, maneuvers: [])
+        #expect(abs(tracker.estimateRoadETA(route: replacement, from: 0, traffic: nil) - 250) < 0.001)
+        route.travelSegments = []
+        tracker.invalidateRoadGeometry()
+        #expect(abs(tracker.estimateRoadETA(route: route, from: half, traffic: nil) - 500) < 0.001)
+
+        // Cropping colored geometry must keep the GPS boundary and every road bend.
+        let geometry = RouteProgressGeometry(route)
+        let parts = RouteTrafficMapGeometry.coloredLine(geometry, from: half / 2, through: length,
+            segments: [segment], defaultColor: 0x123456)
+        #expect(parts.map(\.colorHex) == [0x123456, segment.colorHex])
+        #expect(parts.first?.coordinates.first == geometry.coordinate(at: half / 2))
+        #expect(parts.first?.coordinates.last == parts.last?.coordinates.first)
+        #expect(parts.last?.coordinates.last == coordinates.last)
+        #expect(geometry.corridor(from: half, through: length) == Array(coordinates.suffix(2)))
+        #expect(geometry.corridor(from: length, through: length).isEmpty)
+        #expect(geometry.firstVertex(after: length) == coordinates.count)
         let reverse = RouteProjection(coordinate: coordinates[0], distanceFromRoute: 0, alongRoute: 0, segment: 0)
         #expect(!RoadRouteETA.canFollow(route, projection: reverse, heading: 180))
     }
@@ -135,18 +212,17 @@ struct RoutingCriticalTests {
         #expect(snapshot.matchedAlerts(on: Array(road.reversed())).map(\.id) == ["stop-1"])
     }
 
-    @Test func carSelectionBalancesTimeAndSignalsWithoutRewardingMissingData() {
+    @Test func carSelectionHonorsDistanceAndDoesNotInventSignalDelays() {
         let points = [Coordinate(latitude: 52, longitude: 21), Coordinate(latitude: 52.01, longitude: 21)]
-        let urban = NavigationRoute(coordinates: points, distance: 1_112, expectedTravelTime: 600,
+        let short = NavigationRoute(coordinates: points, distance: 1_112, expectedTravelTime: 1_000,
                                     maneuvers: [], trafficSignalCount: 10)
-        var mainRoad = NavigationRoute(coordinates: points, distance: 1_300, expectedTravelTime: 660,
-                                       maneuvers: [], trafficSignalCount: 1)
-        #expect(CarRouteRanking.ranked([urban, mainRoad]).first?.id == mainRoad.id)
-        mainRoad.expectedTravelTime = 1_000
-        #expect(CarRouteRanking.ranked([urban, mainRoad]).first?.id == urban.id)
-        mainRoad.expectedTravelTime = 660
-        mainRoad.trafficSignalCount = nil
-        #expect(CarRouteRanking.ranked([urban, mainRoad]).first?.id == urban.id)
+        let fast = NavigationRoute(coordinates: points, distance: 1_300, expectedTravelTime: 660,
+                                   maneuvers: [], trafficSignalCount: nil)
+        #expect(RouteScoringEngine.ranked([short, fast], preference: .fastest).first?.id == fast.id)
+        #expect(RouteScoringEngine.ranked([fast, short], preference: .shortest).first?.id == short.id)
+        #expect(RouteScoringEngine.score(short).travelTime == short.expectedTravelTime)
+        #expect(RouteScoringEngine.score(short).tollCost == nil)
+        #expect(RouteScoringEngine.score(short).reliabilityCost == nil)
     }
 
     @Test func lateOptimizationCannotRewriteANewTrip() async throws {

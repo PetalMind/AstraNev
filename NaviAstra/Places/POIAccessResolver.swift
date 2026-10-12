@@ -11,6 +11,8 @@ nonisolated struct POINavigationTarget: Equatable, Sendable {
     var coordinate: Coordinate
     var type: POINavigationTargetType
     var confidence: Double
+    var accessFeatureID: String? = nil
+    var reasons: [String] = []
 }
 
 /// Resolves a map/search POI to an OSM access point before routing.
@@ -39,7 +41,8 @@ actor POIAccessResolver {
         return cached.value
     }
 
-    func resolve(for destination: Destination, mode: TransportMode) async -> POINavigationTarget? {
+    func resolve(for destination: Destination, mode: TransportMode,
+                 approach: POIAccessApproach? = nil, purpose: POIAccessPurpose = .arrival) async -> POINavigationTarget? {
         guard let poi = destination.poi else { return nil }
         let resolvedMode: TransportMode
         switch mode {
@@ -47,8 +50,8 @@ actor POIAccessResolver {
         case .transit, .parkRide: resolvedMode = .walking
         }
 
-        let key = cacheKey(destination, poi: poi, mode: resolvedMode)
-        if let cached = cache[key], cached.expiresAt > Date() { return cached.value }
+        let key = cacheKey(destination, poi: poi, mode: resolvedMode) + (purpose == .departure ? "/departure" : "")
+        if approach == nil, let cached = cache[key], cached.expiresAt > Date() { return cached.value }
         let featuresKey = cacheKey(destination, poi: poi, mode: .walking)
         guard let features = await fetchFeatures(near: destination.coordinate, poi: poi,
                                                  cacheKey: featuresKey) else {
@@ -59,15 +62,18 @@ actor POIAccessResolver {
         }
         guard !Task.isCancelled, RoadRoutingContext.cancellationToken?.isCancelled != true else { return nil }
         let target = resolvedMode == .car
-            ? carTarget(for: destination, poi: poi, features: features)
+            ? carTarget(for: destination, poi: poi, features: features, approach: approach, purpose: purpose)
             : activeEntranceTarget(for: destination, poi: poi, mode: resolvedMode, features: features)
-        cache[key] = CachedTarget(value: target, expiresAt: Date().addingTimeInterval(
-            target == nil ? 60 : 6 * 60 * 60))
+        if approach == nil {
+            cache[key] = CachedTarget(value: target, expiresAt: Date().addingTimeInterval(
+                target == nil ? 60 : 6 * 60 * 60))
+        }
         return target
     }
 
     func resolveMany(for destinations: [Destination], mode: TransportMode,
-                     maximumConcurrentRequests: Int = 3) async -> [POINavigationTarget?] {
+                     maximumConcurrentRequests: Int = 3,
+                     approaches: [POIAccessApproach?] = []) async -> [POINavigationTarget?] {
         guard !destinations.isEmpty else { return [] }
         var resolved = Array<POINavigationTarget?>(repeating: nil, count: destinations.count)
         await withTaskGroup(of: (Int, POINavigationTarget?).self) { group in
@@ -76,7 +82,8 @@ actor POIAccessResolver {
             while nextIndex < limit {
                 let index = nextIndex
                 group.addTask { [self] in
-                    (index, await resolve(for: destinations[index], mode: mode))
+                    (index, await resolve(for: destinations[index], mode: mode,
+                        approach: approaches.indices.contains(index) ? approaches[index] : nil))
                 }
                 nextIndex += 1
             }
@@ -85,7 +92,8 @@ actor POIAccessResolver {
                 guard nextIndex < destinations.count else { continue }
                 let next = nextIndex
                 group.addTask { [self] in
-                    (next, await resolve(for: destinations[next], mode: mode))
+                    (next, await resolve(for: destinations[next], mode: mode,
+                        approach: approaches.indices.contains(next) ? approaches[next] : nil))
                 }
                 nextIndex += 1
             }
@@ -116,7 +124,9 @@ actor POIAccessResolver {
         let around = "around:\(radius),\(center.latitude),\(center.longitude)"
         selectors += [
             "nwr(\(around))[\"amenity\"=\"parking\"];",
-            "nwr(\(around))[\"entrance\"=\"main\"];",
+            "nwr(\(around))[\"entrance\"];",
+            "nwr(\(around))[\"amenity\"=\"parking_entrance\"];",
+            "node(\(around))[\"barrier\"];",
             "way(\(around))[\"highway\"];",
             "way(\(around))[\"service\"=\"parking_aisle\"];",
             "node(\(around))[\"highway\"=\"service\"];",
@@ -180,7 +190,7 @@ actor POIAccessResolver {
     }
 
     private func carTarget(for destination: Destination, poi: POIMetadata,
-                           features: [Feature]) -> POINavigationTarget? {
+                           features: [Feature], approach: POIAccessApproach?, purpose: POIAccessPurpose) -> POINavigationTarget? {
         let matchedPlace = matchPlace(destination, poi: poi, features: features)
         let placeGeometry = matchedPlace?.polygon ?? []
         let placeCoordinate = matchedPlace?.coordinate ?? destination.coordinate
@@ -212,6 +222,14 @@ actor POIAccessResolver {
         var parkingAreaFallback: POINavigationTarget?
         for (parking, associationScore, _) in parkingChoices {
             let reference = entrance ?? placeCoordinate
+            let accessFeatures = features.map { DestinationAccessFeature(id: "\($0.type):\($0.id)",
+                coordinate: $0.coordinate, geometry: $0.geometry, tags: $0.tags) }
+            let entries = DestinationIntelligenceEngine.candidates(parking: parking.polygon, features: accessFeatures, purpose: purpose)
+            if let entry = DestinationIntelligenceEngine.best(entries, reference: reference, approach: approach) {
+                return POINavigationTarget(coordinate: entry.coordinate, type: .parkingAccess,
+                    confidence: entry.directionVerified ? 0.85 : 0.65, accessFeatureID: entry.featureID,
+                    reasons: entry.reasons)
+            }
             let accessRoads = serviceRoadPoints(in: parking.polygon, features: features)
                 .filter { !$0.deliveryArea && $0.coordinate.distance(to: reference) >= 10 }
             if let access = accessRoads.min(by: {
@@ -304,7 +322,12 @@ actor POIAccessResolver {
 
     private func serviceRoadPoints(in polygon: [Coordinate], features: [Feature]) -> [RoadPoint] {
         features.filter { isServiceRoad($0.tags) }.flatMap { feature -> [RoadPoint] in
-            guard !isRestricted(feature.tags) else { return [] }
+            let road = DestinationAccessFeature(id: "\(feature.type):\(feature.id)", coordinate: feature.coordinate,
+                geometry: feature.geometry, tags: feature.tags)
+            let barriers = features.map { DestinationAccessFeature(id: "\($0.type):\($0.id)",
+                coordinate: $0.coordinate, geometry: $0.geometry, tags: $0.tags) }
+            guard DestinationIntelligenceEngine.motorAccessAllowed(feature.tags), !isDeliveryRoad(feature.tags),
+                  !DestinationIntelligenceEngine.roadIsBlocked(road, by: barriers) else { return [] }
             let path = feature.geometry.isEmpty ? [feature.coordinate].compactMap { $0 } : feature.geometry
             guard !path.isEmpty else { return [] }
             var points: [Coordinate] = []
@@ -398,9 +421,7 @@ actor POIAccessResolver {
     }
 
     private func isRestricted(_ tags: [String: String]) -> Bool {
-        ["access", "motor_vehicle"].contains { key in
-            ["private", "no"].contains(tags[key] ?? "")
-        }
+        !DestinationIntelligenceEngine.motorAccessAllowed(tags)
     }
 
     private func isDeliveryRoad(_ tags: [String: String]) -> Bool {

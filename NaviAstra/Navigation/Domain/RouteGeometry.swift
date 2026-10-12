@@ -118,17 +118,24 @@ enum RouteGeometrySplitter {
 
 /// Route colors use measured TomTom intervals only; completed intervals stay gray.
 enum RouteTrafficMapGeometry {
-    static func visibleSegments(in state: NavigationState) -> [RouteTrafficSegment] {
+    /// Stable measurements for render invalidation; moving the car does not change traffic data.
+    static func measuredSegments(in state: NavigationState) -> [RouteTrafficSegment] {
         let navigating = state.status == .navigating || state.status == .rerouting
         let preview = state.status == .routePreview && state.journeyTimeMode == .now
         guard state.transportMode == .car, navigating || preview,
               let route = state.route, let traffic = state.traffic,
               Date().timeIntervalSince(traffic.updatedAt) <= 240 else { return [] }
+        let measured = traffic.routeColorSegments.isEmpty ? traffic.routeFlowSegments : traffic.routeColorSegments
+        return measured.filter { $0.routeID == route.id }
+    }
+
+    static func visibleSegments(in state: NavigationState) -> [RouteTrafficSegment] {
+        guard let route = state.route else { return [] }
+        let navigating = state.status == .navigating || state.status == .rerouting
         let completedDistance = navigating
             ? RouteGeometrySplitter.length(of: route.coordinates) * state.routeGeometryProgress : 0
-        let measured = traffic.routeColorSegments.isEmpty ? traffic.routeFlowSegments : traffic.routeColorSegments
-        return measured.compactMap { segment in
-            guard segment.routeID == route.id, segment.endDistance > completedDistance else { return nil }
+        return measuredSegments(in: state).compactMap { segment in
+            guard segment.endDistance > completedDistance else { return nil }
             let start = max(segment.startDistance, completedDistance)
             let coordinates = RouteGeometrySplitter.split(segment.coordinates,
                 atDistance: start - segment.startDistance).remaining
@@ -146,10 +153,9 @@ enum RouteTrafficMapGeometry {
     }
 
     /// Partition the base line itself: no blue geometry beneath measured colors.
-    static func coloredLine(_ coordinates: [Coordinate], startingAt start: Double,
+    static func coloredLine(_ geometry: RouteProgressGeometry, from start: Double, through end: Double,
                             segments: [RouteTrafficSegment], defaultColor: UInt32) -> [ColoredLine] {
-        let end = start + RouteGeometrySplitter.length(of: coordinates)
-        guard coordinates.count > 1 else { return [] }
+        guard geometry.coordinates.count > 1, end > start else { return [] }
         let boundaries = Set([start, end] + segments.flatMap {
             [max(start, min(end, $0.startDistance)), max(start, min(end, $0.endDistance))]
         }).sorted()
@@ -159,8 +165,7 @@ enum RouteTrafficMapGeometry {
             let color = segments.last(where: {
                 $0.startDistance <= midpoint && $0.endDistance >= midpoint
             })?.colorHex ?? defaultColor
-            let prefix = RouteGeometrySplitter.split(coordinates, atDistance: upper - start).completed
-            let points = RouteGeometrySplitter.split(prefix, atDistance: lower - start).remaining
+            let points = geometry.corridor(from: lower, through: upper)
             return points.count > 1 ? ColoredLine(coordinates: points, colorHex: color) : nil
         }
     }

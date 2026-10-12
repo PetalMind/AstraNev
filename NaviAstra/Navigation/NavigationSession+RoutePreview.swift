@@ -18,6 +18,7 @@ extension NavigationSession {
     }
 
     private func performPreview(_ destination: Destination) async {
+        let calculationStarted = ProcessInfo.processInfo.systemUptime
         let generation = requestGeneration
         let mode = state.transportMode
         let transitCancellationToken = mode == .transit || mode == .parkRide
@@ -61,7 +62,7 @@ extension NavigationSession {
         }
         // The destination camera stays in place until route geometry is available.
         do {
-            let accessTargets = await resolveAccessTargets(for: destination, mode: state.transportMode)
+            let accessTargets = await resolveAccessTargets(for: destination, mode: state.transportMode, from: origin)
             guard generation == requestGeneration else { return }
             state.navigationTarget = accessTargets.navigation
             state.parkRideCarTarget = accessTargets.parkRideCar
@@ -107,6 +108,12 @@ extension NavigationSession {
             guard let firstRoute = routes.first else { throw RoutingError.invalidResponse }
             state.route = firstRoute
             state.routeOptions = routes
+            if state.transportMode == .car {
+                RoutingDiagnostics.shared.publish(.make(routes: routes,
+                    preference: state.routingPreferences.advanced.effectiveRoutePreference,
+                    selected: firstRoute.id, source: "preview-complete",
+                    calculationSeconds: ProcessInfo.processInfo.systemUptime - calculationStarted))
+            }
             state.status = .routePreview
             refreshEnergyPolicy()
             state.cameraState = .routeOverview
@@ -131,6 +138,11 @@ extension NavigationSession {
             state.transitPlanningPhase = nil
             state.status = .error
             state.errorMessage = error.localizedDescription
+            if state.transportMode == .car, !(error is CancellationError) {
+                RoutingDiagnostics.shared.publish(.make(routes: [], preference: state.routingPreferences.advanced.effectiveRoutePreference,
+                    selected: nil, source: "preview-error", calculationSeconds: ProcessInfo.processInfo.systemUptime - calculationStarted,
+                    failure: error.localizedDescription))
+            }
         }
     }
 
@@ -150,7 +162,7 @@ extension NavigationSession {
         }
         guard origin.poi != nil else { return origin.coordinate }
         let destination = origin.destination
-        return await POIAccessResolver.shared.resolve(for: destination, mode: mode)?.coordinate
+        return await POIAccessResolver.shared.resolve(for: destination, mode: mode, purpose: .departure)?.coordinate
             ?? origin.coordinate
     }
 
