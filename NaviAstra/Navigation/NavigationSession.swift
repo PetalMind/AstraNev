@@ -630,6 +630,18 @@ final class NavigationSession {
     }
     func refreshSpeedLimit(for location: NavigationLocation, force: Bool = false) {
         refreshNearbySpeedLimits(for: location)
+        if let speed = MapDisplayPriorityEngine.passedSpeedLimit(in: state) {
+            state.speedLimitKph = speed
+            state.speedLimitSource = .explicitSign
+            state.speedLimitMessage = nil
+            speedLimitObservationLocation = location.coordinate
+            return
+        }
+        if state.speedLimitSource == .explicitSign {
+            state.speedLimitKph = nil
+            state.speedLimitSource = nil
+            speedLimitObservationLocation = nil
+        }
         if let snapshot = activeSpeedLimitSnapshot(at: location) {
             if let result = snapshot.speedLimit(at: location) {
                 state.speedLimitKph = result.speedKph
@@ -666,6 +678,10 @@ final class NavigationSession {
                 let value = try await provider.limit(at: location.coordinate, heading: location.course)
                 guard generation == speedLimitGeneration, state.status == .navigating || state.status == .rerouting else { return }
                 guard let currentLocation = state.location else { return }
+                if MapDisplayPriorityEngine.passedSpeedLimit(in: state) != nil {
+                    refreshSpeedLimit(for: currentLocation)
+                    return
+                }
                 // OSM may have become available while locate was in flight.
                 if let snapshot = activeSpeedLimitSnapshot(at: currentLocation),
                    snapshot.speedLimit(at: currentLocation) != nil || snapshot.shouldSuppressRoutingFallback(at: currentLocation) {
@@ -697,6 +713,7 @@ final class NavigationSession {
     }
 
     private func drivingSpeedLimit(at location: NavigationLocation) -> Int? {
+        if let speed = MapDisplayPriorityEngine.passedSpeedLimit(in: state) { return speed }
         if let snapshot = activeSpeedLimitSnapshot(at: location) {
             if let result = snapshot.speedLimit(at: location) { return result.speedKph }
             if snapshot.shouldSuppressRoutingFallback(at: location) { return nil }
@@ -801,7 +818,11 @@ final class NavigationSession {
         if !isRetry {
             roadDataSnapshot = nil
             state.roadSafetyAlerts = []
+            state.roadAlertRoadSegments = nil
             state.roadSafetyStatus = .loading
+            state.lastPassedRoadZoneID = nil
+            state.roadZoneNotice = nil
+            state.roadZoneNoticeExpiresAt = nil
             invalidateSpeedLimit()
         }
         if let location = state.location,
@@ -817,6 +838,7 @@ final class NavigationSession {
                       self.usesRoadVoiceGuidance else { return }
                 self.roadDataSnapshot = snapshot
                 self.state.roadSafetyAlerts = snapshot.matchedAlerts(on: roadCoordinates)
+                self.state.roadAlertRoadSegments = snapshot.roadSegments ?? snapshot.speedSegments
                 self.state.roadSafetyStatus = snapshot.unavailableSources.flatMap { sources in
                     sources.isEmpty ? nil : .partial("Niedostępne źródło: " + sources.joined(separator: ", "))
                 } ?? .available
@@ -839,6 +861,7 @@ final class NavigationSession {
                       self.usesRoadVoiceGuidance else { return }
                 self.roadDataSnapshot = nil
                 self.state.roadSafetyAlerts = []
+                self.state.roadAlertRoadSegments = nil
                 self.state.roadSafetyStatus = .unavailable(error.localizedDescription)
             }
         }
@@ -850,7 +873,11 @@ final class NavigationSession {
         roadDataGeneration &+= 1
         roadDataSnapshot = nil
         state.roadSafetyAlerts = []
+        state.roadAlertRoadSegments = nil
         state.roadSafetyStatus = .idle
+        state.lastPassedRoadZoneID = nil
+        state.roadZoneNotice = nil
+        state.roadZoneNoticeExpiresAt = nil
         invalidateSpeedLimit()
     }
     func finishTrip(arrived: Bool) {

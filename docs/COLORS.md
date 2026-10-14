@@ -63,13 +63,19 @@ Panel manewru, ETA, odległość i nazwa ulicy mają stabilne, nieprzezroczyste 
 | Tło | `#EEF1F3` | `#0E1620` |
 | Zabudowa i budynki | `#E2E7EA` | `#1A2531` |
 | Parki i podstawowe pokrycie zielenią | `#D3E6D0` | `#1B3630` |
-| Woda | `#BCD9EA` | `#12324A` |
+| Woda | `#BFD9DE` | `#223A46` |
 | Drogi lokalne | `#FFFFFF` | `#26343F` |
 | Drogi główne — eksploracja | `#FFFFFF` z obrysem `#C3CCD2` | `#3A4B58` |
 | Drogi główne — aktywna nawigacja | `#FFFFFF` z obrysem `#C3CCD2` | `#2F3D49` |
 | Etykiety | `#2B3640` | `#C5D0D8` |
 
 Podczas aktywnej nawigacji MapLibre przyciemnia drogi bazowe i ich etykiety, aby aktywna trasa pozostała najczytelniejsza. W eksploracji zachowuje jaśniejsze drogi główne. Dekoracyjne wzory lasu i fal wody dodają teksturę, ale nie wprowadzają nowego kodu znaczeniowego.
+
+### Łagodniejsza prezentacja wód na iOS — 14 października 2026 r.
+
+Woda korzysta z przygaszonego błękitu z domieszką zieleni. Brzegi zachowują geometrię kafli oraz natywne wygładzanie krawędzi, bez kontrastowego obrysu. Delikatna, rozmyta linia w kolorze wody znajduje się pod jej wypełnieniem: łagodzi przejście na ląd, a wypełnienie przykrywa wewnętrzną część linii i krawędzie podziału kafli. Linie rzek i kanałów mają zaokrąglone połączenia i końce oraz niewielkie rozmycie zależne od powiększenia.
+
+Jedna tekstura krótkich, jasnych refleksów pojawia się płynnie między zoomem 12 a 17, bez przełączenia wzoru przy zoomie 15. Podczas prowadzenia jej intensywność spada do 55%. Refleksy respektują filtr bazowej warstwy wody i pomijają zbiorniki okresowe. To statyczna dekoracja, bez symulacji fal ani głębokości. Nazwy akwenów i cieków mają stonowany kolor i delikatne halo; preferowane jest `name:pl`, a w razie jego braku oryginalna nazwa.
 
 ## Źródła w kodzie
 

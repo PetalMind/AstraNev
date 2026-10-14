@@ -62,10 +62,9 @@ extension NavigationSession {
                   let provider = routeProvider as? AdvancedRouteProvider else { return }
             let destinationCoordinate = destinationRouteCoordinate(for: destination)
             let pendingStops = await routedDestinations(pendingStopDestinations, mode: .car).map(\.coordinate)
-            let selected = Array(candidates.prefix(8))
+            let selected = Array(candidates.prefix(25))
             for index in selected.indices { state.nearbySuggestions[index].estimateStatus = .calculating }
-            let resolvedSelected = await POIAccessResolver.shared.resolveMany(
-                for: selected.map(\.destination), mode: .car)
+            let resolvedSelected = await cachedNearbyAccessTargets(for: selected)
             try Task.checkCancellation()
             guard nearbySearchID == searchID else { return }
             let routedSelected: [(selectedIndex: Int, candidate: NearbyPlaceCandidate, coordinate: Coordinate)] =
@@ -89,6 +88,9 @@ extension NavigationSession {
                     guard nearbySearchID == searchID else { return }
                     if let baseline = first[0][targets.count].time {
                         for (rowIndex, routed) in routedSelected.enumerated() {
+                            state.nearbySuggestions[routed.selectedIndex].travelTime = first[0][rowIndex].time
+                            state.nearbySuggestions[routed.selectedIndex].travelDistance =
+                                first[0][rowIndex].distance.map { $0 * 1_000 }
                             if let arrival = first[0][rowIndex].time,
                                let continuation = second[rowIndex][0].time {
                                 state.nearbySuggestions[routed.selectedIndex].detourSeconds =
@@ -155,6 +157,7 @@ extension NavigationSession {
     func estimateNearbyTravel(for candidateID: String) async {
         guard let origin = state.location?.coordinate,
               let suggestion = state.nearbySuggestions.first(where: { $0.id == candidateID }),
+              suggestion.estimateStatus != .calculating,
               (suggestion.travelTime == nil || suggestion.travelDistance == nil) else { return }
         await estimateNearbyTravel(for: [suggestion.candidate], from: origin,
                                    preferences: state.routingPreferences, searchID: nearbySearchID)
@@ -173,20 +176,13 @@ extension NavigationSession {
             state.nearbySuggestions[index].estimateStatus = .calculating
         }
         do {
-            let poiIndexes = candidates.indices.filter { candidates[$0].destination.poi != nil }
-            let poiDestinations = poiIndexes.map { candidates[$0].destination }
-            let resolvedPOIs = await POIAccessResolver.shared.resolveMany(for: poiDestinations, mode: .car)
+            let resolvedPOIs = await cachedNearbyAccessTargets(for: candidates)
             try Task.checkCancellation()
             guard nearbySearchID == searchID else { return }
-            var poiCoordinates: [Int: Coordinate] = [:]
-            for (offset, index) in poiIndexes.enumerated() {
-                poiCoordinates[index] = resolvedPOIs[offset]?.coordinate
-                    ?? candidates[index].destination.coordinate
-            }
             let routedCandidates: [(index: Int, candidate: NearbyPlaceCandidate, coordinate: Coordinate)] =
                 candidates.indices.compactMap { index in
                     if candidates[index].destination.poi != nil {
-                        return (index, candidates[index], poiCoordinates[index]
+                        return (index, candidates[index], resolvedPOIs[index]?.coordinate
                                 ?? candidates[index].destination.coordinate)
                     }
                     return (index, candidates[index], candidates[index].destination.coordinate)
@@ -229,6 +225,8 @@ extension NavigationSession {
                             }) else { continue }
                             state.nearbySuggestions[suggestionIndex].travelTime = travelTime
                             state.nearbySuggestions[suggestionIndex].travelDistance = travelDistance
+                            state.nearbySuggestions[suggestionIndex].estimateStatus = travelTime != nil && travelDistance != nil
+                                ? .notRequested : .unavailable
                         }
                     }
                 }
@@ -243,6 +241,17 @@ extension NavigationSession {
             state.nearbySuggestions[index].estimateStatus = suggestion.travelTime != nil && suggestion.travelDistance != nil
                 ? .notRequested : .unavailable
         }
+    }
+
+    private func cachedNearbyAccessTargets(for candidates: [NearbyPlaceCandidate]) async -> [POINavigationTarget?] {
+        // A list estimate uses Valhalla's road snapping or an already known access
+        // point. Fetch full entrance geometry only for the place selected for routing.
+        var targets: [POINavigationTarget?] = []
+        for candidate in candidates {
+            guard !Task.isCancelled else { break }
+            targets.append(await POIAccessResolver.shared.cachedTarget(for: candidate.destination, mode: .car))
+        }
+        return targets
     }
 
     func selectNearbyPlace(_ destination: Destination, asFinalParking: Bool) async {

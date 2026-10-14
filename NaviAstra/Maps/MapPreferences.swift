@@ -82,7 +82,7 @@ enum ActiveMapProvider {
                                 supportsApplicationDarkMode: true, supportsMapDarkStyle: true,
                                 supportsTrafficOverlay: true, supports3DCamera: true)
         #else
-        MapProviderCapabilities(supportsSatellite: false, supportsTerrain: false,
+        MapProviderCapabilities(supportsSatellite: true, supportsTerrain: false,
                                 supportsPOIToggle: true, supports3DBuildings: true,
                                 supportsTransitOverlay: true, supportsCyclingOverlay: true,
                                 supportsApplicationDarkMode: true, supportsMapDarkStyle: true,
@@ -126,12 +126,12 @@ enum MapPOICategory: Int, CaseIterable, Identifiable {
 }
 
 enum MapDisplayContext: String, Equatable, Sendable {
-    case browse, driving, walking, cycling, transit, approachingDestination
-    var isNavigating: Bool { self != .browse }
+    case browse, routePreview, driving, walking, cycling, transit, approachingDestination
+    var isNavigating: Bool { self != .browse && self != .routePreview }
     var relevantCategories: Set<MapPOICategory> {
         switch self {
         case .browse: Set(MapPOICategory.allCases)
-        case .driving: [.fuel, .parking, .charging, .health]
+        case .routePreview, .driving: [.fuel, .parking, .charging]
         case .walking: [.food, .shopping, .attractions, .transit, .health, .lodging]
         case .cycling: [.food, .attractions, .health]
         case .transit: [.transit, .food]

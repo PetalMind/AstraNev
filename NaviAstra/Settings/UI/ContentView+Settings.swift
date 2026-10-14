@@ -106,6 +106,19 @@ extension ContentView {
                                  icon: "info.circle.fill") {
                     settingsPage("Dane i prywatność") {
                         Section("Dostępność i dane") { settingsDisclaimer }
+                        #if os(iOS)
+                        Section("Źródła mapy i licencje") {
+                            SatelliteMapCredits()
+                            Link("OpenFreeMap · mapa bazowa", destination: URL(string: "https://openfreemap.org")!)
+                            Link("OpenStreetMap · autorzy i licencja ODbL", destination: URL(string: "https://www.openstreetmap.org/copyright")!)
+                            Link("MapLibre · silnik mapy", destination: URL(string: "https://maplibre.org")!)
+                            if MapTilerEnvironmentStyle.configuredURL != nil {
+                                Link("MapTiler · szczegóły otoczenia", destination: URL(string: "https://www.maptiler.com/copyright/")!)
+                                Text("Otoczenie pochodzi z MapTiler Planet v4. Szczegóły pojawiają się wraz ze zbliżeniem i zależą od danych w danym miejscu. Symbole przejść nie określają rodzaju oznakowania ani pierwszeństwa.")
+                                    .font(.footnote).foregroundStyle(Color.naviTextSecondary)
+                            }
+                        }
+                        #endif
                         settingsShopLogoCredits
                         Section("Ikonografia nawigacji") {
                             Link("Mapbox Directions Icons · CC0 1.0",
@@ -242,6 +255,12 @@ extension ContentView {
             if !mapCapabilities.supportsSatellite {
                 unavailableReason("Mapa satelitarna", reason: "Obecne źródło mapy nie udostępnia zdjęć satelitarnych.")
             }
+            #if os(iOS)
+            if mapStore.mapBase == BaseMap.satellite.rawValue {
+                Text(SatelliteMapStyle.description)
+                    .font(.footnote).foregroundStyle(Color.naviTextSecondary)
+            }
+            #endif
             if !mapCapabilities.supportsTerrain {
                 unavailableReason("Mapa terenowa", reason: "Obecne źródło mapy nie udostępnia terenu.")
             }
@@ -359,11 +378,12 @@ extension ContentView {
     private var settingsSafetyPOISection: some View {
         Group {
             Section {
+                Toggle("Znaki drogowe", isOn: $mapStore.mapRoadSignsVisible)
                 settingsSafetyCategoryToggles
             } header: {
-                Text("Widoczność na mapie")
+                Text("Szczegóły drogowe")
             } footer: {
-                Text("Te przełączniki dotyczą mapy. Komunikaty głosowe ustawisz w kategorii Głos i ostrzeżenia.")
+                Text("Znaki, sygnalizacja, przejścia, progi, przejazdy i ograniczenia pojawiają się przy dużym zbliżeniu mapy (zoom 17+). Podczas jazdy mapa pokazuje tylko ważne ostrzeżenia przypisane do Twojej trasy i kierunku. Komunikaty głosowe ustawisz w kategorii Głos i ostrzeżenia.")
             }
             Section("Dane drogowe") {
                 roadPOIStatusLabel

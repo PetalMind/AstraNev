@@ -424,6 +424,7 @@ struct EnergyEntryEditor: View {
     @State private var quantity = ""
     @State private var price = ""
     @State private var total = ""
+    @State private var quantityFromTotal = false
     @State private var odometer = ""
     @State private var full = false
     @State private var station = ""
@@ -439,18 +440,22 @@ struct EnergyEntryEditor: View {
                 EnergySection(vehicle.name, symbol: kind.symbol) {
                     DatePicker("Data", selection: $date, in: ...Date())
                     Picker("Rodzaj energii", selection: $kind) { ForEach(vehicle.kinds) { Text($0.title).tag($0) } }
-                    TextField("Ilość (\(kind.unit))", text: Binding(get: { quantity }, set: { quantity = $0; recalculate() }))
+                    TextField("Ilość (\(kind.unit))", text: Binding(get: { quantity }, set: {
+                        quantityFromTotal = false; quantity = $0; recalculate()
+                    }))
                     TextField("Cena za \(kind.unit) (zł)", text: Binding(get: { price }, set: {
                         appliedSuggestedPrice = nil; price = $0; recalculate()
                     }))
                     TextField("Kwota (zł)", text: Binding(get: { total }, set: {
-                        appliedSuggestedPrice = nil
                         total = $0
-                        if let quantity = parsedQuantity, quantity > 0, let total = parsedTotal {
+                        if price.isEmpty, let quantity = parsedQuantity, quantity > 0, let total = parsedTotal, total > 0 {
+                            appliedSuggestedPrice = nil
                             price = EnergyNumber.text(total / quantity, digits: 6)
                         }
+                        quantityFromTotal = true
+                        recalculate()
                     }))
-                    Text("Ilość i cena przeliczają kwotę. Zmiana kwoty przelicza cenę jednostkową.")
+                    Text("Kwota i cena wyliczają ilość. Ręcznie wpisana ilość i cena przeliczają kwotę.")
                         .font(.caption).foregroundStyle(Color.naviTextSecondary)
                 }
                 if suggestedStation != nil { stationPriceSuggestion }
@@ -542,7 +547,10 @@ struct EnergyEntryEditor: View {
     private func loadStationPrice() async {
         guard let suggestedStation else { return }
         // Only remove a previously supplied price, never a manually edited value.
-        if price == appliedSuggestedPrice { price = ""; total = "" }
+        if price == appliedSuggestedPrice {
+            price = ""
+            if quantityFromTotal { quantity = "" } else { total = "" }
+        }
         appliedSuggestedPrice = nil
         quote = nil; priceFailure = false
         guard kind.stationFuel != nil else { priceLoading = false; return }
@@ -563,6 +571,16 @@ struct EnergyEntryEditor: View {
     }
 
     private func recalculate() {
+        if quantityFromTotal {
+            guard let price = parsedPrice, price > 0, let total = parsedTotal, total >= 0 else {
+                quantity = ""
+                return
+            }
+            let calculated = total / price
+            guard calculated.isFinite else { quantity = ""; return }
+            quantity = EnergyNumber.text(calculated, digits: 6)
+            return
+        }
         guard let quantity = parsedQuantity, let price = parsedPrice else { return }
         let calculated = (quantity * price * 100).rounded() / 100
         guard calculated.isFinite else { return }

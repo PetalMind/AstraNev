@@ -36,8 +36,8 @@ nonisolated enum NaviAstraColorPalette {
     static let mapBuildingNight: UInt32 = 0x272F39
     static let mapParkDay: UInt32 = 0xD8E8CD
     static let mapParkNight: UInt32 = 0x253D32
-    static let mapWaterDay: UInt32 = 0xB4DDF2
-    static let mapWaterNight: UInt32 = 0x183B52
+    static let mapWaterDay: UInt32 = 0xBFD9DE
+    static let mapWaterNight: UInt32 = 0x223A46
     static let mapLocalRoadNight: UInt32 = 0x36414D
     static let mapMainRoadNightExploration: UInt32 = 0x536170
     static let mapMainRoadNightNavigation: UInt32 = 0x465565

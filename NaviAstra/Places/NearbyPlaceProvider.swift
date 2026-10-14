@@ -2,7 +2,7 @@ import Foundation
 import MapKit
 
 enum NearbyPlaceCategory: String, CaseIterable, Identifiable {
-    case fuel, food, parking, charging, parkRide
+    case fuel, food, parking, charging, parkRide, restArea
 
     var id: Self { self }
     var title: String {
@@ -12,6 +12,7 @@ enum NearbyPlaceCategory: String, CaseIterable, Identifiable {
         case .parking: "Parkingi"
         case .charging: "Ładowarki EV"
         case .parkRide: "Parkingi P+R"
+        case .restArea: "MOP"
         }
     }
     var markerKind: PlacePOIMapMarkerKind {
@@ -21,9 +22,10 @@ enum NearbyPlaceCategory: String, CaseIterable, Identifiable {
         case .parking: .parking
         case .charging: .charging
         case .parkRide: .parkRide
+        case .restArea: .parking
         }
     }
-    var symbol: String { markerKind.symbolName }
+    var symbol: String { self == .restArea ? "cup.and.saucer.fill" : markerKind.symbolName }
     var fallbackName: String {
         switch self {
         case .fuel: "Stacja paliw"
@@ -31,6 +33,7 @@ enum NearbyPlaceCategory: String, CaseIterable, Identifiable {
         case .parking: "Parking"
         case .charging: "Stacja ładowania"
         case .parkRide: "Parking P+R"
+        case .restArea: "Miejsce obsługi podróżnych"
         }
     }
 
@@ -41,6 +44,7 @@ enum NearbyPlaceCategory: String, CaseIterable, Identifiable {
         case .parking: "[amenity=parking]"
         case .charging: "[amenity=charging_station]"
         case .parkRide: "[amenity=parking][park_ride=yes]"
+        case .restArea: "[highway~\"^(services|rest_area)$\"]"
         }
     }
 }
@@ -127,11 +131,12 @@ struct OpenStreetMapNearbyPlaceProvider {
     func search(_ category: NearbyPlaceCategory, around coordinate: Coordinate, radius: Double = 2_000,
                 resultLimit: Int = 25) async throws -> [NearbyPlaceCandidate] {
         try await load(category, around: [coordinate], radius: radius,
-                       referenceRoute: nil, resultLimit: resultLimit)
+                       referenceRoute: nil, resultLimit: resultLimit, maximumDuration: 6)
     }
 
     private func load(_ category: NearbyPlaceCategory, around centers: [Coordinate], radius: Double,
-                      referenceRoute: [Coordinate]?, resultLimit: Int) async throws -> [NearbyPlaceCandidate] {
+                      referenceRoute: [Coordinate]?, resultLimit: Int,
+                      maximumDuration: TimeInterval? = nil) async throws -> [NearbyPlaceCandidate] {
         let area: String
         if let referenceRoute {
             area = RouteSearchCorridor.around(referenceRoute, radius: radius)
@@ -149,7 +154,8 @@ struct OpenStreetMapNearbyPlaceProvider {
         request.httpBody = components.percentEncodedQuery?.data(using: .utf8)
         let data: Data
         do {
-            let (responseData, response) = try await OSMRequestTransport.shared.data(for: request, priority: true)
+            let (responseData, response) = try await OSMRequestTransport.shared.data(
+                for: request, priority: true, maximumDuration: maximumDuration)
             guard let http = response as? HTTPURLResponse else { throw NearbyPlaceError.invalidResponse }
             guard (200...299).contains(http.statusCode) else { throw NearbyPlaceError.unavailable }
             data = responseData
@@ -205,7 +211,7 @@ struct OpenStreetMapNearbyPlaceProvider {
                                                chargingStation: category == .charging
                                                    ? Self.chargingCapabilities(from: tags) : nil))
         }
-        var unique: [NearbyPlaceCandidate]
+        let unique: [NearbyPlaceCandidate]
         if category == .charging, let referenceRoute, resultLimit > 25 {
             let routeLength = zip(referenceRoute, referenceRoute.dropFirst())
                 .reduce(0.0) { $0 + $1.0.distance(to: $1.1) }
@@ -224,20 +230,7 @@ struct OpenStreetMapNearbyPlaceProvider {
             }
             unique = nearby
         }
-        if unique.contains(where: { $0.openingHours != nil }) {
-            let timezoneCoordinate = referenceRoute == nil ? centers.first : unique.first(where: { $0.openingHours != nil })?.destination.coordinate
-            let timezoneReuseRadius = referenceRoute == nil ? min(radius, 5_000) : 1_000
-            if let timezoneCoordinate,
-               let timeZoneIdentifier = await PlaceTimeZoneResolver.identifier(for: timezoneCoordinate) {
-                unique = unique.map { candidate in
-                    guard candidate.openingHours != nil,
-                          candidate.destination.coordinate.distance(to: timezoneCoordinate) <= timezoneReuseRadius else { return candidate }
-                    var value = candidate
-                    value.timeZoneIdentifier = timeZoneIdentifier
-                    return value
-                }
-            }
-        }
+        // Resolving opening hours must not delay publishing places or requesting travel times.
         let namesByID = Dictionary(uniqueKeysWithValues: unique.map { ($0.id, $0.destination.name) })
         await OpenStreetMapPlaceDetailsProvider.cacheSearchDetails(decoded.elements.compactMap { element in
             guard let type = element.type, let tags = element.tags,
@@ -371,27 +364,49 @@ struct OpenStreetMapNearbyPlaceProvider {
 struct NearbyPlaceSearchProvider {
     func search(_ category: NearbyPlaceCategory, around coordinate: Coordinate,
                 radius: Double, resultLimit: Int) async throws -> [NearbyPlaceCandidate] {
-        var openStreetMapError: Error?
-        do {
-            let candidates = try await OpenStreetMapNearbyPlaceProvider()
-                .search(category, around: coordinate, radius: radius, resultLimit: resultLimit)
-            if !candidates.isEmpty { return candidates }
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            openStreetMapError = error
+        if category == .restArea {
+            return try await OpenStreetMapNearbyPlaceProvider().search(category, around: coordinate,
+                                                                       radius: radius, resultLimit: resultLimit)
         }
-
-        try Task.checkCancellation()
-        do {
-            let candidates = try await MapKitNearbyPlaceProvider()
-                .search(category, around: coordinate, radius: radius, resultLimit: resultLimit)
-            if candidates.isEmpty, let openStreetMapError { throw openStreetMapError }
-            return candidates
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            if let openStreetMapError { throw openStreetMapError }
+        return try await withThrowingTaskGroup(of: [NearbyPlaceCandidate]?.self) { group in
+            group.addTask {
+                do {
+                    return try await OpenStreetMapNearbyPlaceProvider().search(
+                        category, around: coordinate, radius: radius, resultLimit: resultLimit)
+                } catch {
+                    try Task.checkCancellation()
+                    return nil
+                }
+            }
+            group.addTask {
+                // Give OSM a short head start for its richer tags, but do not wait
+                // for its shared map queue, retries and failover before trying Apple.
+                try await Task.sleep(for: .seconds(1))
+                do {
+                    return try await MapKitNearbyPlaceProvider().search(
+                        category, around: coordinate, radius: radius, resultLimit: resultLimit)
+                } catch {
+                    try Task.checkCancellation()
+                    return nil
+                }
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(8))
+                throw NearbyPlaceError.unavailable
+            }
+            defer { group.cancelAll() }
+            var completedSources = 0
+            var failed = false
+            while let candidates = try await group.next() {
+                try Task.checkCancellation()
+                if let candidates, !candidates.isEmpty { return candidates }
+                failed = failed || candidates == nil
+                completedSources += 1
+                if completedSources == 2 {
+                    if failed { throw NearbyPlaceError.unavailable }
+                    return []
+                }
+            }
             throw NearbyPlaceError.unavailable
         }
     }
@@ -474,6 +489,7 @@ fileprivate extension NearbyPlaceCategory {
         case .parking: "parking"
         case .charging: "EV charging station"
         case .parkRide: "park and ride"
+        case .restArea: "motorway services"
         }
     }
 
@@ -483,6 +499,7 @@ fileprivate extension NearbyPlaceCategory {
         case .food: [.restaurant, .cafe, .bakery]
         case .parking, .parkRide: [.parking]
         case .charging: [.evCharger]
+        case .restArea: [.parking]
         }
     }
 }

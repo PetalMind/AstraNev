@@ -49,6 +49,20 @@ extension ContentView {
         return routes
     }
 
+#if os(iOS)
+    private func routeVariantDescription(_ route: NavigationRoute) -> RouteVariantDescriptions.Description {
+        RouteVariantDescriptions.describe(routePlanningCarouselRoutes, mode: navigationStore.state.transportMode)[route.id]
+            ?? .init()
+    }
+
+    private func routeVariantCaption(_ description: RouteVariantDescriptions.Description, compact: Bool) -> some View {
+        Text(compact ? description.compactTitle : description.title)
+            .font(.system(size: compact ? 12 : 13, weight: .semibold, design: .rounded))
+            .foregroundStyle(Color.accentColor)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+#endif
+
     private var routeStopIdentifiers: [String] {
         ["route-origin"] + navigationStore.state.waypoints.map { $0.id.uuidString } + ["route-destination"]
     }
@@ -664,11 +678,17 @@ extension ContentView {
     private func routePlanningExpandedRouteCard(_ route: NavigationRoute, index: Int,
                                                 isSelected: Bool,
                                                 isFastest: Bool) -> some View {
-        HStack(spacing: 12) {
+#if os(iOS)
+        let description = routeVariantDescription(route)
+#endif
+        return HStack(spacing: 12) {
             Button {
                 withAnimation(.easeInOut(duration: 0.25)) { navigationStore.select(route) }
             } label: {
                 VStack(alignment: .leading, spacing: 4) {
+#if os(iOS)
+                    routeVariantCaption(description, compact: false)
+#endif
                     Text(time(route.expectedTravelTime))
                         .font(.system(size: 21, weight: .bold, design: .rounded).monospacedDigit())
                         .foregroundStyle(Color.naviTextPrimary)
@@ -682,17 +702,27 @@ extension ContentView {
                     if let journey = route.journey {
                         routePlanningJourneyOverview(journey, darkStyle: false, compact: true)
                     }
+#if os(iOS)
+                    Text(description.explanation)
+                        .font(.caption)
+                        .foregroundStyle(Color.naviTextSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+#else
                     if isFastest {
                         Text("Najszybsza")
                             .font(.system(size: 13, weight: .semibold, design: .rounded))
                             .foregroundStyle(Color(naviHex: NaviAstraColorPalette.success))
                     }
+#endif
                 }
                 .frame(maxWidth: .infinity, minHeight: 84, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Trasa \(index + 1), \(time(route.expectedTravelTime)), \(distance(route.distance))\(routePlanningAccessibilitySummary(route))")
+#if os(iOS)
+            .accessibilityHint("\(description.title). \(description.explanation) Wybierz ten wariant trasy.")
+#endif
             .accessibilityAddTraits(isSelected ? .isSelected : [])
 
             routePlanningStartAction(compact: true, expandedCard: true) {
@@ -1127,9 +1157,15 @@ extension ContentView {
                                                 medium: Bool) -> some View {
         let routes = routePlanningCarouselRoutes
         let selectedIndex = routes.firstIndex(where: { $0.id == route.id }) ?? 0
+#if os(iOS)
+        let description = routeVariantDescription(route)
+#endif
 
         return HStack(spacing: medium ? 14 : (compact ? 12 : 16)) {
             VStack(alignment: .leading, spacing: medium ? 5 : (compact ? 3 : 7)) {
+#if os(iOS)
+                routeVariantCaption(description, compact: compact || medium)
+#endif
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(time(route.expectedTravelTime))
                         .font(.system(size: medium ? 26 : (compact ? 23 : 34), weight: .bold, design: .rounded).monospacedDigit())
@@ -1192,7 +1228,11 @@ extension ContentView {
         })
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Wybrana trasa, \(time(route.expectedTravelTime)), przyjazd \(routePlanningArrivalTime(route)), \(distance(route.distance))")
+#if os(iOS)
+        .accessibilityValue("\(description.title). Trasa \(selectedIndex + 1) z \(routes.count)")
+#else
         .accessibilityValue(routes.isEmpty ? "Wybrana trasa" : "Trasa \(selectedIndex + 1) z \(routes.count)")
+#endif
         .accessibilityHint(routes.count > 1 ? "Przesuń w lewo lub prawo, aby wybrać inną trasę. Możesz też użyć regulacji VoiceOver." : "")
         .accessibilityAdjustableAction { direction in
             switch direction {

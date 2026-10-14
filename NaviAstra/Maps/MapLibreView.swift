@@ -132,6 +132,7 @@ private struct TrafficMapEvent {
     let categoryLabel: String
     let presentation: TrafficMapPresentation
     let isMapPOI: Bool
+    let displayPriority: Int
 
     init(_ incident: TrafficIncident) {
         id = "incident:\(incident.id)"
@@ -141,6 +142,7 @@ private struct TrafficMapEvent {
         categoryLabel = incident.category.mapLabel
         presentation = TrafficMapPresentation(incident)
         isMapPOI = false
+        displayPriority = incident.isRoadClosure ? 950 : 850
     }
 
     init(_ alert: RoadSafetyAlert, routeDistance: Double) {
@@ -151,6 +153,7 @@ private struct TrafficMapEvent {
         categoryLabel = alert.type.title
         presentation = TrafficMapPresentation(alert)
         isMapPOI = false
+        displayPriority = MapDisplayPriorityEngine.priority(of: alert)
     }
 
     init(_ poi: MapRoadPOI) {
@@ -161,6 +164,7 @@ private struct TrafficMapEvent {
         categoryLabel = poi.category.title
         presentation = TrafficMapPresentation(poi)
         isMapPOI = true
+        displayPriority = poi.category == .speedCameras ? 700 : 300
     }
 }
 
@@ -203,7 +207,12 @@ struct MapLibreView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> MLNMapView {
         let map = MLNMapView(frame: .zero, styleURL: styleURL)
-        map.attributionButton.isHidden = true
+        map.attributionButton.isHidden = false
+        map.attributionButton.removeTarget(nil, action: nil, for: .allEvents)
+        map.attributionButton.accessibilityLabel = "Źródła mapy i licencje"
+        map.attributionButton.addAction(UIAction { [weak map] _ in
+            if let map { MapSourceAttributionView.present(from: map) }
+        }, for: .touchUpInside)
         map.logoView.isHidden = true
         map.automaticallyAdjustsContentInset = false
         map.preferredFramesPerSecond = MLNMapViewPreferredFramesPerSecond(rawValue: 1)
@@ -245,6 +254,7 @@ struct MapLibreView: UIViewRepresentable {
         coordinator.stopBuildingLightingUpdates()
         coordinator.stopCyclingPathUpdates()
         coordinator.stopMapRoadPOIUpdates()
+        coordinator.stopDetailedRoadUpdates()
         coordinator.stopShopLogoUpdates()
         coordinator.stopDeferredAnnotationUpdates()
         NotificationCenter.default.removeObserver(coordinator,
@@ -273,6 +283,7 @@ struct MapLibreView: UIViewRepresentable {
         private var transitVehiclePins: [String: MLNPointAnnotation] = [:]
         private let weatherRenderer = WeatherMapRenderer()
         private let routeLayerRenderer = RouteLayerRenderer()
+        private let detailedRoadRenderer = DetailedRoadRenderer()
         private let transitStopRenderer = TransitStopLayerRenderer()
         private var transitLine: MLNPolyline?
         private var cyclingPathLines: [MLNPolyline] = []
@@ -308,6 +319,7 @@ struct MapLibreView: UIViewRepresentable {
         private var tileShopIdentities: [String: PlaceIdentity] = [:]
         private var lastShopLogosEnabled: Bool?
         private var lastPOIMarkerDark: Bool?
+        private let poiOverviewClusters = POIOverviewClusterRenderer()
         private var lastStyleURL: URL?
         private var lastViewportPadding: CameraPadding?
         private var lastMapSize: CGSize = .zero
@@ -443,6 +455,7 @@ struct MapLibreView: UIViewRepresentable {
             let point = recognizer.location(in: map)
             guard !routeLayerRenderer.containsETAMarker(at: point, on: map) else { return }
             let tappedCoordinate = map.convert(point, toCoordinateFrom: map)
+            if poiOverviewClusters.handleTap(at: point, on: map) { return }
             let tappedLocation = CLLocation(latitude: tappedCoordinate.latitude, longitude: tappedCoordinate.longitude)
             let appAnnotations = searchPins + trafficEventPins + Array(transitVehiclePins.values)
                 + transitStopRenderer.annotations + [destinationPin, vehiclePin, closurePin, parkedCarPin].compactMap { $0 }
@@ -462,7 +475,8 @@ struct MapLibreView: UIViewRepresentable {
             guard let style = map.style else { return }
             let layerIDs = Set(style.layers.compactMap { layer -> String? in
                 guard let symbolLayer = layer as? MLNSymbolStyleLayer,
-                      symbolLayer.sourceLayerIdentifier == "poi" else { return nil }
+                      (symbolLayer.sourceLayerIdentifier == "poi"
+                       || symbolLayer.identifier == "naviastra-poi-overview-points") else { return nil }
                 return symbolLayer.identifier
             })
             guard !layerIDs.isEmpty else { return }
@@ -529,6 +543,11 @@ struct MapLibreView: UIViewRepresentable {
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                                shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool { true }
 
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            guard let button = map?.attributionButton, let touchedView = touch.view else { return true }
+            return touchedView !== button && !touchedView.isDescendant(of: button)
+        }
+
         func mapViewDidBecomeIdle(_ mapView: MLNMapView) {
             updatePOIDensity(on: mapView)
             updateCyclingPaths(on: mapView)
@@ -564,6 +583,10 @@ struct MapLibreView: UIViewRepresentable {
             mapLogger.error("Map loading failed: \(error.localizedDescription, privacy: .private)")
         }
 
+        func mapView(_ mapView: MLNMapView, didFailToLoadImage imageName: String) -> UIImage? {
+            detailedRoadRenderer.image(for: imageName)
+        }
+
         func mapViewRendererDidError(_ mapView: MLNMapView) {
             mapLogger.error("Map renderer reported an error")
         }
@@ -582,6 +605,7 @@ struct MapLibreView: UIViewRepresentable {
         func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
             mapLogger.info("Map style loaded: \(style.layers.count) layers, \(style.sources.count) sources")
             navigationStyle.reset()
+            detailedRoadRenderer.didLoadStyle(on: mapView)
             buildingGlowNeedsUpdate = true
             buildingGlowKey = ""
             streetLabels.reset()
@@ -593,7 +617,7 @@ struct MapLibreView: UIViewRepresentable {
             weatherRenderer.update(map: mapView, configuration: parent.scene.weather, samples: parent.scene.weatherSamples)
             routeLayerRenderer.didLoadStyle(on: mapView,
                                             context: RouteLayerRenderContext(state: parent.state, settings: parent.settings,
-                                                                            colorScheme: parent.colorScheme, previousStatus: lastStatus))
+                                                                            colorScheme: mapColorScheme, previousStatus: lastStatus))
         }
 
         func update(_ map: MLNMapView) {
@@ -609,7 +633,10 @@ struct MapLibreView: UIViewRepresentable {
                 minimum: displayLinkRate, maximum: displayLinkRate, preferred: displayLinkRate)
             puckDisplayLink?.isPaused = !energyPolicy.mapRenderingEnabled
             updateStreetLabels(on: map)
-            guard energyPolicy.mapRenderingEnabled else { return }
+            guard energyPolicy.mapRenderingEnabled else {
+                detailedRoadRenderer.stop()
+                return
+            }
 
             let results = parent.scene.placeMarkers
             shownPlaceResults = results
@@ -655,7 +682,7 @@ struct MapLibreView: UIViewRepresentable {
             updateCyclingPaths(on: map)
             updateMapRoadPOIs(on: map)
             let routeLayerContext = RouteLayerRenderContext(state: parent.state, settings: parent.settings,
-                                                           colorScheme: parent.colorScheme, previousStatus: lastStatus)
+                                                           colorScheme: mapColorScheme, previousStatus: lastStatus)
             weatherRenderer.update(map: map, configuration: parent.scene.weather, samples: parent.scene.weatherSamples)
             routeLayerRenderer.updateRoutes(on: map, context: routeLayerContext)
             updateTrafficLine(on: map)
@@ -697,14 +724,15 @@ struct MapLibreView: UIViewRepresentable {
             let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
             let showsRoadAlerts = !showsOnlyRouteEndpoints || isNavigating
             let roadAlertDistance = parent.state.roadAlertRouteDistance
-            let roadAlerts = (showsRoadAlerts ? parent.state.roadSafetyAlerts : [])
+            let roadAlerts = (showsRoadAlerts && (!isNavigating || MapDisplayPriorityEngine.canPresentRouteAlerts(parent.state))
+                              ? parent.state.roadSafetyAlerts : [])
                 .filter { alert in
                     if let category = alert.mapSafetyPOICategory,
                        !parent.settings.safetyPOICategories.contains(category) { return false }
                     guard let distance = alert.distanceAlongRoute else { return false }
                     guard isNavigating else { return true }
-                    return distance >= roadAlertDistance - 60 && distance <= roadAlertDistance + 20_000
-                        && alert.type.isImportantDuringNavigation
+                    return distance >= roadAlertDistance && distance <= roadAlertDistance + 3_000
+                        && MapDisplayPriorityEngine.priority(of: alert) >= 800
                 }
                 .sorted { ($0.distanceAlongRoute ?? .infinity) < ($1.distanceAlongRoute ?? .infinity) }
                 .prefix(40)
@@ -718,7 +746,7 @@ struct MapLibreView: UIViewRepresentable {
 
             applyCameraIntent(to: map)
 
-            if lastStatus != parent.state.status || lastColorScheme != parent.colorScheme {
+            if lastStatus != parent.state.status || lastColorScheme != mapColorScheme {
                 if parent.state.route != nil {
                     routeLayerRenderer.refreshStyle(on: map, context: routeLayerContext)
                 }
@@ -728,7 +756,7 @@ struct MapLibreView: UIViewRepresentable {
                 routeLayerRenderer.animateNavigationStart(on: map, context: routeLayerContext)
             }
             lastStatus = parent.state.status
-            lastColorScheme = parent.colorScheme
+            lastColorScheme = mapColorScheme
         }
 
         private func updateTransitVehiclePins(on map: MLNMapView) {
@@ -865,10 +893,15 @@ struct MapLibreView: UIViewRepresentable {
 
         private func updatePOIDensity(on map: MLNMapView) {
             guard let style = map.style else { return }
+            detailedRoadRenderer.update(on: map, dark: usesDarkMapAppearance,
+                                        enabled: parent.scene.energyPolicy.mapRenderingEnabled
+                                            && parent.settings.baseMap != .satellite)
             let activelyNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
+            navigationStyle.updatePOIRouteContext(parent.state, context: parent.settings.context)
             navigationStyle.apply(to: style, settings: parent.settings, dark: usesDarkMapAppearance,
                                   activelyNavigating: activelyNavigating, zoom: map.zoomLevel,
                                   coordinate: map.centerCoordinate)
+            poiOverviewClusters.update(on: map, settings: parent.settings, dark: usesDarkMapAppearance)
             updateShopLogos(on: map)
             let lighting = MapBuildingLighting.resolve(appearance: parent.settings.appearance, coordinate: map.centerCoordinate)
             let glowKey = "\(parent.settings.overlays.buildings3D)-\(parent.settings.cameraMode)-\(lighting.intensity > 0)-\(lighting.quiet)"
@@ -895,7 +928,7 @@ struct MapLibreView: UIViewRepresentable {
                 return symbol.identifier
             })
             let wantsTiles = parent.settings.shopLogosEnabled && parent.settings.visiblePOICategories.contains(.shopping)
-                && map.zoomLevel >= 14 && !layerIDs.isEmpty
+                && map.zoomLevel >= 17 && !layerIDs.isEmpty
             if force || lastShopTileEnabled != wantsTiles || Date().timeIntervalSince(lastShopTileQuery) >= 1 {
                 lastShopTileEnabled = wantsTiles
                 lastShopTileQuery = Date()
@@ -956,6 +989,8 @@ struct MapLibreView: UIViewRepresentable {
             guard let style = map.style else { return }
             navigationStyle.updatePOIDensity(to: style, zoom: map.zoomLevel)
         }
+
+        private var mapColorScheme: ColorScheme { usesDarkMapAppearance ? .dark : .light }
 
         private var usesDarkMapAppearance: Bool {
             parent.settings.appearance == .night ||
@@ -1520,6 +1555,8 @@ struct MapLibreView: UIViewRepresentable {
                 let longitudeSpan = bounds.ne.longitude - bounds.sw.longitude
                 let longitudeMargin = abs(longitudeSpan) * 0.5
                 for poi in mapRoadPOIs where !routePOIIDs.contains(poi.id) {
+                    guard MapDisplayPriorityEngine.showsRoadDetail(poi.category, zoom: map.zoomLevel,
+                                                                   navigating: isNavigating) else { continue }
                     // Reject distant downloaded POIs before crossing into MapLibre's
                     // projection API. The screen-space pass below applies the exact margin.
                     guard poi.coordinate.latitude >= bounds.sw.latitude - latitudeMargin,
@@ -1583,6 +1620,33 @@ struct MapLibreView: UIViewRepresentable {
             on map: MLNMapView,
             isNavigating: Bool
         ) -> [[TrafficMapEvent]] {
+            if isNavigating {
+                // Navigation resolves collisions by priority; browse retains expandable clusters.
+                let sorted = events.sorted {
+                    if $0.displayPriority != $1.displayPriority { return $0.displayPriority > $1.displayPriority }
+                    return $0.id < $1.id
+                }
+                var occupied: [CGPoint] = []
+                if let location = parent.state.location {
+                    occupied.append(map.convert(location.coordinate.cl, toPointTo: map))
+                }
+                if let destination = parent.state.destination {
+                    occupied.append(map.convert(destination.coordinate.cl, toPointTo: map))
+                }
+                if let maneuver = parent.state.progress?.nextManeuver,
+                   let route = parent.state.route, route.coordinates.indices.contains(maneuver.shapeIndex) {
+                    occupied.append(map.convert(route.coordinates[maneuver.shapeIndex].cl, toPointTo: map))
+                }
+                var visible: [[TrafficMapEvent]] = []
+                for event in sorted {
+                    let point = map.convert(event.coordinate.cl, toPointTo: map)
+                    guard point.x.isFinite, point.y.isFinite, map.bounds.insetBy(dx: -40, dy: -40).contains(point),
+                          !occupied.contains(where: { hypot($0.x - point.x, $0.y - point.y) < 44 }) else { continue }
+                    occupied.append(point)
+                    visible.append([event])
+                }
+                return visible
+            }
             let overviewClustering = map.zoomLevel < 13.2 && !isNavigating
             let groupingDistance: CGFloat = overviewClustering ? 44 : 22
             let visibleArea = map.bounds.insetBy(dx: -64, dy: -64)
@@ -1672,7 +1736,7 @@ struct MapLibreView: UIViewRepresentable {
                 return UIColor(naviHex: RouteColorPalette.activeLight)
             }
             let context = RouteLayerRenderContext(state: parent.state, settings: parent.settings,
-                                                  colorScheme: parent.colorScheme, previousStatus: lastStatus)
+                                                  colorScheme: mapColorScheme, previousStatus: lastStatus)
             guard let style = routeLinePresentation(for: line, context: context) else {
                 return UIColor(naviHex: RouteColorPalette.activeLight)
             }
@@ -1683,8 +1747,12 @@ struct MapLibreView: UIViewRepresentable {
             if cyclingPathLines.contains(where: { $0 === annotation }) { return 4 }
             if let transitLine, transitLine === annotation { return 5 }
             let context = RouteLayerRenderContext(state: parent.state, settings: parent.settings,
-                                                  colorScheme: parent.colorScheme, previousStatus: lastStatus)
+                                                  colorScheme: mapColorScheme, previousStatus: lastStatus)
             return routeLinePresentation(for: annotation, context: context)?.width ?? 2
+        }
+
+        func stopDetailedRoadUpdates() {
+            detailedRoadRenderer.stop()
         }
 
         func stopCyclingPathUpdates() {
@@ -1774,7 +1842,10 @@ struct MapLibreView: UIViewRepresentable {
                 center: center,
                 latitudeDelta: visibleBounds.ne.latitude - visibleBounds.sw.latitude,
                 longitudeDelta: visibleBounds.ne.longitude - visibleBounds.sw.longitude,
-                categories: parent.settings.roadPOICategories
+                categories: Set(parent.settings.roadPOICategories.filter {
+                    MapDisplayPriorityEngine.showsRoadDetail($0, zoom: map.zoomLevel,
+                        navigating: parent.state.status == .navigating || parent.state.status == .rerouting)
+                })
             ) else {
                 stopMapRoadPOIUpdates()
                 setMapRoadPOIStatus(parent.settings.roadPOICategories.isEmpty ? .disabled : .zoomIn)

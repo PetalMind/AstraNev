@@ -130,6 +130,16 @@ extension NavigationSession {
             locationTimestamp: location.timestamp,
             match: routeMatch ?? RouteMatch(projection: projection, confidence: 0),
             isAmbiguous: measurement.matching?.ambiguous ?? true)
+        if MapDisplayPriorityEngine.canPresentRouteAlerts(state),
+           let zone = state.roadSafetyAlerts.last(where: {
+               $0.type == .trafficZoneSign && ($0.distanceAlongRoute ?? .infinity) <= projection.alongRoute
+           }), state.lastPassedRoadZoneID != zone.id {
+            state.lastPassedRoadZoneID = zone.id
+            if projection.alongRoute - (zone.distanceAlongRoute ?? 0) <= 40 {
+                state.roadZoneNotice = zone
+                state.roadZoneNoticeExpiresAt = .now.addingTimeInterval(3)
+            }
+        }
         let fraction = measurement.fraction
         let geometryProgress = routeProgressTracker.displayedGeometryProgress(
             routeID: route.id,
@@ -190,9 +200,20 @@ extension NavigationSession {
         }
         guard let targetCoordinate = state.destination.map({ destinationRouteCoordinate(for: $0) })
                 ?? route.coordinates.last else { return }
-        let destinationDistance = location.coordinate.distance(to: targetCoordinate)
+        var destinationDistance = location.coordinate.distance(to: targetCoordinate)
+        let isCarArrival = state.transportMode == .car
+        if isCarArrival, let destination = state.destination {
+            // Accept the place itself as well as its selected access point.
+            destinationDistance = min(destinationDistance,
+                                      location.coordinate.distance(to: destination.coordinate))
+        }
+        // Keep intermediate stops mandatory, but do not require the car to
+        // follow the planned final approach to recognize arrival.
+        let requiresRouteCompletion = !isCarArrival || !unvisitedStops(from: location.coordinate).isEmpty
         if arrivalDetector.observe(location, destinationDistance: destinationDistance,
-                                   remainingDistance: state.progress?.remainingDistance ?? .infinity) {
+                                   remainingDistance: requiresRouteCompletion
+                                       ? state.progress?.remainingDistance ?? .infinity : nil,
+                                   destinationRadius: isCarArrival ? 100 : 50) {
             arriveAtDestination()
             return
         }
@@ -205,8 +226,8 @@ extension NavigationSession {
                            distance: max(0, maneuverDistance), speed: max(0, location.speed),
                            quality: state.guidanceQuality, lanes: state.laneGuidance)
         }
-        if state.voiceEnabled, isOnParkRideCarLeg {
-            for alert in state.roadSafetyAlerts {
+        if state.voiceEnabled, isOnParkRideCarLeg, MapDisplayPriorityEngine.canPresentRouteAlerts(state) {
+            for alert in MapDisplayPriorityEngine.upcomingAlerts(in: state) {
                 guard let alongRoute = alert.distanceAlongRoute else { continue }
                 let distance = alongRoute - projection.alongRoute
                 if distance >= 0 && distance <= 1_200 {

@@ -225,6 +225,87 @@ struct RoutingCriticalTests {
         #expect(RouteScoringEngine.score(short).reliabilityCost == nil)
     }
 
+    @Test func enforcementRequiresTheMeasuredRoadAndTravelDirection() {
+        let road = [Coordinate(latitude: 52, longitude: 21), Coordinate(latitude: 52.01, longitude: 21)]
+        let device = Coordinate(latitude: 52.005, longitude: 21)
+        let serviceRoad = road.map { Coordinate(latitude: $0.latitude, longitude: $0.longitude + 0.00008) }
+        let expressway = OSMRoadSpeedSegment(id: 1, coordinates: road, tags: ["oneway": "yes"])
+        let service = OSMRoadSpeedSegment(id: 2, coordinates: serviceRoad, tags: ["highway": "service"])
+        let context = RoadSignRouteContext(road: road, forward: true, travelBearing: nil, roadID: 1)
+        let types: [RoadAlertType] = [.speedCamera, .redLightCamera, .averageSpeedStart, .stopSign]
+        for type in types {
+            let alert = RoadSafetyAlert(id: type.rawValue, type: type, coordinate: device,
+                                        source: .openStreetMap, signRouteContext: context)
+            let snapshot = RoadDataSnapshot(speedSegments: [], alerts: [alert], fetchedAt: .now,
+                                            roadSegments: [expressway, service])
+            #expect(snapshot.matchedAlerts(on: road).count == 1)
+            #expect(snapshot.matchedAlerts(on: serviceRoad).isEmpty)
+            #expect(snapshot.matchedAlerts(on: Array(road.reversed())).isEmpty)
+        }
+        let unknown = RoadSafetyAlert(id: "official", type: .speedCamera, coordinate: device, source: .canard)
+        #expect(RoadDataSnapshot(speedSegments: [], alerts: [unknown], fetchedAt: .now).matchedAlerts(on: road).isEmpty)
+        let bidirectional = OSMRoadSpeedSegment(id: 1, coordinates: road, tags: [:])
+        #expect(RoadDataSnapshot(speedSegments: [], alerts: [unknown], fetchedAt: .now,
+                                roadSegments: [bidirectional]).matchedAlerts(on: road).isEmpty)
+        let official = RoadDataSnapshot(speedSegments: [], alerts: [unknown], fetchedAt: .now,
+                                        roadSegments: [expressway, service])
+        #expect(official.matchedAlerts(on: road).count == 1)
+        #expect(official.matchedAlerts(on: serviceRoad).isEmpty)
+        let sectionStart = Coordinate(latitude: 52.002, longitude: 21)
+        let sectionEnd = Coordinate(latitude: 52.008, longitude: 21)
+        let section = [RoadSafetyAlert(id: "section-a", type: .averageSpeedStart, coordinate: sectionStart,
+                                       source: .canard, sectionOtherEnd: sectionEnd),
+                       RoadSafetyAlert(id: "section-b", type: .averageSpeedEnd, coordinate: sectionEnd,
+                                       source: .canard, sectionOtherEnd: sectionStart)]
+        let snapshot = RoadDataSnapshot(speedSegments: [], alerts: section, fetchedAt: .now,
+                                        roadSegments: [expressway, service])
+        #expect(snapshot.matchedAlerts(on: road).map(\.type) == [.averageSpeedStart, .averageSpeedEnd])
+        #expect(snapshot.matchedAlerts(on: serviceRoad).isEmpty)
+        #expect(snapshot.matchedAlerts(on: [device, road[1]]).map(\.type) == [.averageSpeedEnd])
+    }
+
+    @Test func safetyPresentationRejectsUncertainGPSAndAppliesLimitsAfterTheSign() throws {
+        let state = NavigationState()
+        let road = [Coordinate(latitude: 52, longitude: 21), Coordinate(latitude: 52.01, longitude: 21)]
+        let route = NavigationRoute(coordinates: road, distance: 1_112, expectedTravelTime: 100, maneuvers: [])
+        let location = NavigationLocation(coordinate: Coordinate(latitude: 52.005, longitude: 21),
+                                          speed: 15, course: 0, accuracy: 5, timestamp: .now)
+        let projection = try #require(MapMatcher.project(location.coordinate, onto: road))
+        state.route = route
+        state.status = .navigating
+        state.location = location
+        state.routeMatch = NavigationRouteMatch(routeID: route.id, locationTimestamp: location.timestamp,
+                                                match: RouteMatch(projection: projection, confidence: 0.95))
+        let context = RoadSignRouteContext(road: road, forward: true, travelBearing: nil)
+        state.roadSafetyAlerts = [RoadSafetyAlert(id: "limit", type: .speedLimitSign,
+            coordinate: location.coordinate, source: .openStreetMap, speedLimitKph: 70,
+            distanceAlongRoute: projection.alongRoute + 100, signRouteContext: context)]
+        #expect(MapDisplayPriorityEngine.upcomingAlerts(in: state).count == 1)
+        #expect(MapDisplayPriorityEngine.passedSpeedLimit(in: state) == nil)
+        state.roadSafetyAlerts[0].distanceAlongRoute = projection.alongRoute - 10
+        #expect(MapDisplayPriorityEngine.upcomingAlerts(in: state).isEmpty)
+        #expect(MapDisplayPriorityEngine.passedSpeedLimit(in: state) == 70)
+        state.roadSafetyAlerts[0].signCode = "B-34"
+        #expect(MapDisplayPriorityEngine.passedSpeedLimit(in: state) == nil)
+        let nearbyRoad = road.map { Coordinate(latitude: $0.latitude, longitude: $0.longitude + 0.00008) }
+        state.roadAlertRoadSegments = [OSMRoadSpeedSegment(id: 1, coordinates: road, tags: ["oneway": "yes"]),
+                                       OSMRoadSpeedSegment(id: 2, coordinates: nearbyRoad, tags: [:])]
+        #expect(MapDisplayPriorityEngine.canPresentRouteAlerts(state))
+        state.location?.coordinate.longitude += 0.00008
+        #expect(!MapDisplayPriorityEngine.canPresentRouteAlerts(state))
+        state.location = location
+        state.location?.course = 180
+        #expect(!MapDisplayPriorityEngine.canPresentRouteAlerts(state))
+        state.location = location
+        for (ambiguous, confidence, age) in [(true, 0.95, 0.0), (false, 0.2, 0.0), (false, 0.95, 30.0)] {
+            state.routeMatch = NavigationRouteMatch(routeID: route.id, locationTimestamp: location.timestamp,
+                match: RouteMatch(projection: projection, confidence: confidence), isAmbiguous: ambiguous)
+            state.location?.timestamp = location.timestamp.addingTimeInterval(-age)
+            #expect(!MapDisplayPriorityEngine.canPresentRouteAlerts(state))
+            #expect(MapDisplayPriorityEngine.upcomingAlerts(in: state).isEmpty)
+        }
+    }
+
     @Test func lateOptimizationCannotRewriteANewTrip() async throws {
         let session = NavigationSession(dependencies: .live(
             routeEndpoint: URL(string: "https://routing.invalid")!, trafficAPIKey: nil))

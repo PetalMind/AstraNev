@@ -45,6 +45,7 @@ struct MapBuildingLighting {
 /// No fabricated POI, heights, traffic, or elevation data are introduced here.
 final class NaviAstraMapStyle {
     private var lastKey = ""
+    private var satelliteStyle = SatelliteMapStyle()
     private var shopLogoNames: [String: String] = [:]
     private var shopLogoImages: [String: UIImage] = [:]
     private var shopLogoDark: Bool?
@@ -53,6 +54,8 @@ final class NaviAstraMapStyle {
     private var poiLayerIDs: [String] = []
     private var poiCategories: [MapPOICategory] = []
     private var poiDensity: Int?
+    private var poiRouteFilterKey = ""
+    private var poiRoutePredicate = NSPredicate(value: true)
     private var configured = false
     private let windowLayerID = "naviastra-building-windows"
     private let roofLayerID = "naviastra-building-window-roofs"
@@ -60,9 +63,12 @@ final class NaviAstraMapStyle {
     private let glowLayerIDs = ["naviastra-building-light-halo", "naviastra-building-light-edge"]
     private let glowSourceID = "naviastra-building-light-segments"
     private var buildingQueryLayerID: String?
+    private var buildingHeightKey = "render_height"
+    private var buildingBaseKey = "render_min_height"
 
     func reset() {
         lastKey = ""
+        satelliteStyle = SatelliteMapStyle()
         shopLogoNames = [:]
         shopLogoImages = [:]
         shopLogoDark = nil
@@ -70,8 +76,12 @@ final class NaviAstraMapStyle {
         poiLayerIDs.removeAll()
         poiCategories = []
         poiDensity = nil
+        poiRouteFilterKey = ""
+        poiRoutePredicate = NSPredicate(value: true)
         configured = false
         buildingQueryLayerID = nil
+        buildingHeightKey = "render_height"
+        buildingBaseKey = "render_min_height"
     }
 
     func apply(to style: MLNStyle, settings: MapSettings, dark: Bool,
@@ -80,17 +90,19 @@ final class NaviAstraMapStyle {
             configure(style)
             configured = true
         }
-        shopLogosEnabled = settings.shopLogosEnabled
+        shopLogosEnabled = settings.shopLogosEnabled && zoom >= 17
         let density = densityLevel(for: zoom)
         let categories = settings.visiblePOICategories.sorted { $0.rawValue < $1.rawValue }
         let lighting = MapBuildingLighting.resolve(appearance: settings.appearance, coordinate: coordinate)
         let quietNight = lighting.quiet
         let brightness = (lighting.intensity * 20).rounded() / 20
-        let key = "\(settings.shopLogosEnabled)-\(dark)-\(brightness)-\(quietNight)-\(activelyNavigating)-\(settings.context)-\(categories.map(\.rawValue))-\(settings.overlays.buildings3D)-\(settings.cameraMode)-\(settings.overlays.transit)"
+        let key = "\(settings.baseMap)-\(shopLogosEnabled)-\(dark)-\(brightness)-\(quietNight)-\(activelyNavigating)-\(settings.context)-\(categories.map(\.rawValue))-\(settings.overlays.buildings3D)-\(settings.cameraMode)-\(settings.overlays.transit)-\(settings.overlays.poi)"
         guard key != lastKey else {
             updatePOIDensity(to: style, zoom: zoom)
+            satelliteStyle.apply(to: style, enabled: settings.baseMap == .satellite)
             return
         }
+        satelliteStyle.restoreStandard(in: style)
         lastKey = key
         poiCategories = categories
         let navigating = settings.context.isNavigating
@@ -100,8 +112,8 @@ final class NaviAstraMapStyle {
         let lightPosition = MLNSphericalPositionMake(1.15, dark ? 220 : 225, dark ? 55 : 50)
         light.anchor = NSExpression(forConstantValue: "map")
         light.position = NSExpression(forConstantValue: NSValue(mlnSphericalPosition: lightPosition))
-        light.intensity = NSExpression(forConstantValue: dark ? 0.34 : 0.56)
-        light.color = NSExpression(forConstantValue: color(dark ? NaviAstraColorPalette.mapLabelNight : 0xF2F5F8))
+        light.intensity = NSExpression(forConstantValue: dark ? 0.30 : 0.52)
+        light.color = NSExpression(forConstantValue: color(dark ? 0xC3D2E2 : 0xFFF3E4))
         light.positionTransition = MLNTransition(duration: transitionDuration, delay: 0)
         light.intensityTransition = MLNTransition(duration: transitionDuration, delay: 0)
         light.colorTransition = MLNTransition(duration: transitionDuration, delay: 0)
@@ -114,12 +126,13 @@ final class NaviAstraMapStyle {
             ? (activelyNavigating ? NaviAstraColorPalette.mapMainRoadNightNavigation
                                   : NaviAstraColorPalette.mapMainRoadNightExploration)
             : NaviAstraColorPalette.mapMainRoadDay)
-        let minorRoad = color(dark ? NaviAstraColorPalette.mapLocalRoadNight : 0xFFFFFF)
+        let minorRoad = color(dark ? 0x26282D : 0xE8E9EC)
         let roadOutline = color(dark ? NaviAstraColorPalette.mapBackgroundNight
                                      : NaviAstraColorPalette.mapMainRoadOutlineDay)
 
         for layer in style.layers {
             if layer.identifier.hasPrefix("naviastra-weather-") { continue }
+            if layer.identifier.hasPrefix(MapEnvironmentStyle.prefix) { continue }
             let id = layer.identifier
             if let layer = layer as? MLNBackgroundStyleLayer {
                 layer.backgroundColor = NSExpression(forConstantValue: background)
@@ -128,19 +141,20 @@ final class NaviAstraMapStyle {
             if id == "natural_earth" { layer.isVisible = !dark }
             if let layer = layer as? MLNFillStyleLayer {
                 if id == "naviastra-forest-tree-pattern" {
-                    layer.fillPattern = NSExpression(forConstantValue: forestPatternName(dark: dark, dense: false))
+                    layer.fillPattern = forestPatternExpression(dark: dark, dense: false)
                     continue
                 }
                 if id == "naviastra-forest-tree-pattern-dense" {
-                    layer.fillPattern = NSExpression(forConstantValue: forestPatternName(dark: dark, dense: true))
+                    layer.fillPattern = forestPatternExpression(dark: dark, dense: true)
                     continue
                 }
                 if id == "naviastra-water-wave-pattern" {
-                    layer.fillPattern = NSExpression(forConstantValue: waterPatternName(dark: dark, dense: false))
-                    continue
-                }
-                if id == "naviastra-water-wave-pattern-dense" {
-                    layer.fillPattern = NSExpression(forConstantValue: waterPatternName(dark: dark, dense: true))
+                    layer.fillPattern = NSExpression(forConstantValue: waterPatternName(dark: dark))
+                    let strength = navigating ? 0.55 : 1.0
+                    layer.fillOpacity = NSExpression(mglJSONObject: [
+                        "interpolate", ["linear"], ["zoom"],
+                        12, 0, 14, 0.10 * strength, 17, 0.16 * strength
+                    ])
                     continue
                 }
                 let source = layer.sourceLayerIdentifier ?? ""
@@ -148,6 +162,10 @@ final class NaviAstraMapStyle {
                 switch source {
                 case "water":
                     layer.fillColor = waterColorExpression(dark: dark)
+                    // Use the native antialiased edge in the fill color,
+                    // wit  hout a contrasting outline.
+                    layer.fillAntialiased = NSExpression(forConstantValue: true)
+                    layer.fillOutlineColor = nil
                     layer.fillOpacity = NSExpression(mglJSONObject: [
                         "case", ["==", ["get", "intermittent"], 1], 0.82, 1
                     ])
@@ -156,9 +174,16 @@ final class NaviAstraMapStyle {
                 case "park": fill = color(dark ? NaviAstraColorPalette.mapParkNight : NaviAstraColorPalette.mapParkDay)
                 case "landcover":
                     layer.fillColor = landcoverColorExpression(dark: dark)
+                    if id == "landcover_grass" {
+                        layer.fillOpacity = NSExpression(mglJSONObject: [
+                            "interpolate", ["linear"], ["zoom"],
+                            13, ["match", ["get", "subclass"], "park", 1, 0], 15, 1
+                        ])
+                    }
                     continue
-                case "landuse": fill = color(dark ? NaviAstraColorPalette.mapBuildingNight
-                                                  : NaviAstraColorPalette.mapBuildingDay)
+                case "landuse":
+                    layer.fillColor = MapEnvironmentStyle.landuseColor(dark: dark)
+                    continue
                 case "building": fill = color(dark ? NaviAstraColorPalette.mapBuildingNight
                                                    : NaviAstraColorPalette.mapBuildingDay)
                 case "aeroway": fill = color(dark ? 0x2B3C48 : 0xDCE4E8)
@@ -166,10 +191,9 @@ final class NaviAstraMapStyle {
                 }
                 layer.fillColor = NSExpression(forConstantValue: fill)
                 if source == "building" {
-                    let neutralColor = hexColor(dark ? NaviAstraColorPalette.mapBuildingNight : NaviAstraColorPalette.mapBuildingDay)
-                    layer.fillColor = buildingColorExpression(neutralColor: neutralColor)
-                    layer.fillOpacity = NSExpression(forConstantValue: navigating ? 0.42 : 0.75)
-                    layer.fillOutlineColor = NSExpression(forConstantValue: roadOutline)
+                    layer.fillColor = MapBuildingAppearance.color(dark: dark, heightKey: "render_height")
+                    layer.fillOpacity = NSExpression(forConstantValue: navigating ? 0.50 : 0.88)
+                    layer.fillOutlineColor = NSExpression(forConstantValue: color(dark ? 0x48515B : 0xBAB8B2))
                 }
             }
             if let layer = layer as? MLNFillExtrusionStyleLayer,
@@ -180,36 +204,35 @@ final class NaviAstraMapStyle {
                         layer.fillExtrusionPattern = buildingPatternExpression(dark: dark, quiet: quietNight, roof: false, level: lighting.level)
                         layer.fillExtrusionOpacity = NSExpression(mglJSONObject: [
                             "interpolate", ["linear"], ["zoom"],
-                            16, 0, 17, navigating ? 0.18 : (dark ? 0.46 : 0.30),
-                            18, navigating ? 0.26 : (dark ? 0.62 : 0.42)
+                            16, 0, 17, navigating ? 0.22 : (dark ? 0.58 : 0.40),
+                            18, navigating ? 0.32 : (dark ? 0.70 : 0.56)
                         ])
                     } else if id == roofDetailLayerID {
                         layer.fillExtrusionPattern = buildingPatternExpression(dark: dark, quiet: false, roof: true)
                         layer.fillExtrusionOpacity = NSExpression(mglJSONObject: [
                             "interpolate", ["linear"], ["zoom"], 16, 0,
-                            17, navigating ? 0.08 : (dark ? 0.14 : 0.22),
-                            19, navigating ? 0.12 : (dark ? 0.20 : 0.32)
+                            17, navigating ? 0.10 : (dark ? 0.16 : 0.24),
+                            19, navigating ? 0.16 : (dark ? 0.24 : 0.34)
                         ])
                     } else {
                         // Native extrusion patterns also cover roofs. An untextured,
                         // thin cap hides those marks without inventing roof geometry.
-                        layer.fillExtrusionColor = buildingColorExpression(neutralColor: hexColor(dark ? NaviAstraColorPalette.mapBuildingNight : NaviAstraColorPalette.mapBuildingDay))
+                        layer.fillExtrusionColor = MapBuildingAppearance.color(dark: dark, roof: true, heightKey: buildingHeightKey)
                         layer.fillExtrusionOpacity = NSExpression(mglJSONObject: [
-                            "interpolate", ["linear"], ["zoom"], 16, 0, 17, navigating ? 0.42 : 0.85
+                            "interpolate", ["linear"], ["zoom"], 16, 0, 17, navigating ? 0.68 : 0.98
                         ])
                     }
                     continue
                 }
                 layer.isVisible = settings.overlays.buildings3D && settings.cameraMode == .threeD
-                layer.fillExtrusionColor = buildingColorExpression(neutralColor: hexColor(dark ? NaviAstraColorPalette.mapBuildingNight : NaviAstraColorPalette.mapBuildingDay))
+                layer.fillExtrusionColor = MapBuildingAppearance.color(dark: dark, heightKey: "render_height")
                 layer.fillExtrusionOpacity = NSExpression(mglJSONObject: [
                     "interpolate", ["linear"], ["zoom"],
-                    14, navigating ? 0.28 : 0.48,
-                    16, navigating ? 0.28 : 0.48,
-                    17, navigating ? 0.42 : 0.72
+                    16, navigating ? 0.42 : (dark ? 0.60 : 0.68),
+                    17, navigating ? 0.58 : (dark ? 0.90 : 0.94)
                 ])
                 layer.fillExtrusionHasVerticalGradient = NSExpression(forConstantValue: true)
-                layer.fillExtrusionRoundedCornerDistance = NSExpression(forConstantValue: 0.45)
+                layer.fillExtrusionRoundedCornerDistance = NSExpression(forConstantValue: MapBuildingAppearance.cornerDistance)
             }
             if let layer = layer as? MLNLineStyleLayer {
                 if glowLayerIDs.contains(id) {
@@ -225,6 +248,10 @@ final class NaviAstraMapStyle {
                     continue
                 }
                 let source = layer.sourceLayerIdentifier ?? ""
+                if id == "naviastra-water-soft-shore" {
+                    layer.lineColor = NSExpression(forConstantValue: water)
+                    continue
+                }
                 if source == "transportation" {
                     let casing = id.contains("casing")
                     let rail = id.contains("rail")
@@ -248,6 +275,11 @@ final class NaviAstraMapStyle {
                     }
                 } else if source == "waterway" {
                     layer.lineColor = NSExpression(forConstantValue: water)
+                    layer.lineJoin = NSExpression(forConstantValue: "round")
+                    layer.lineCap = NSExpression(forConstantValue: "round")
+                    layer.lineBlur = NSExpression(mglJSONObject: [
+                        "interpolate", ["linear"], ["zoom"], 9, 0.2, 16, 0.65
+                    ])
                     layer.lineWidth = NSExpression(mglJSONObject: [
                         "interpolate", ["linear"], ["zoom"],
                         9, ["match", ["get", "class"], "river", 1.0, "canal", 0.8, 0.55],
@@ -279,6 +311,13 @@ final class NaviAstraMapStyle {
                     layer.isVisible = !categories.isEmpty
                     layer.textOpacity = NSExpression(forConstantValue: 1)
                     layer.iconOpacity = NSExpression(forConstantValue: 1)
+                } else if source == "water_name" || source == "waterway" {
+                    layer.text = NSExpression(mglJSONObject: [
+                        "coalesce", ["get", "name:pl"], ["get", "name"], ["get", "name:latin"], ""
+                    ])
+                    layer.textColor = NSExpression(forConstantValue: color(dark ? 0x8AA9B5 : 0x567B86))
+                    layer.textHaloColor = NSExpression(forConstantValue: water.withAlphaComponent(0.65))
+                    layer.textHaloWidth = NSExpression(forConstantValue: 0.6)
                 } else if id.contains("highway-name-minor") || id.contains("highway-name-path") {
                     layer.textOpacity = NSExpression(forConstantValue: navigating && settings.context == .driving ? 0.4 : 1.0)
                 } else if source == "place" {
@@ -286,6 +325,8 @@ final class NaviAstraMapStyle {
                 }
             }
         }
+        MapEnvironmentStyle.apply(to: style, settings: settings, dark: dark)
+        satelliteStyle.apply(to: style, enabled: settings.baseMap == .satellite)
         poiDensity = density
     }
 
@@ -296,36 +337,64 @@ final class NaviAstraMapStyle {
         for id in poiLayerIDs {
             guard let layer = style.layer(withIdentifier: id) as? MLNSymbolStyleLayer else { continue }
             layer.predicate = poiPredicate(for: id, categories: poiCategories, density: density)
+            layer.isVisible = !poiCategories.isEmpty
         }
         poiDensity = density
     }
 
-    private func densityLevel(for zoom: Double) -> Int {
-        // Keep the current density until zoom moves clearly past the boundary.
-        // This also applies when appearance or travel context changes.
-        switch poiDensity {
-        case 2:
-            return zoom >= 16.7 ? 2 : (zoom >= 14.7 ? 1 : 0)
-        case 1:
-            return zoom >= 17 ? 2 : (zoom >= 14.7 ? 1 : 0)
-        default:
-            return zoom >= 17 ? 2 : (zoom >= 15 ? 1 : 0)
+    func updatePOIRouteContext(_ state: NavigationState, context: MapDisplayContext) {
+        let filtered = context == .driving || context == .routePreview || context == .approachingDestination
+        let traveling = state.status == .navigating || state.status == .rerouting
+        let confirmed = !traveling || MapDisplayPriorityEngine.canPresentRouteAlerts(state)
+        let bucket = Int(state.roadAlertRouteDistance / 100)
+        let key = "\(filtered)-\(confirmed)-\(state.route?.id.uuidString ?? "none")-\(traveling ? bucket : 0)"
+        guard key != poiRouteFilterKey else { return }
+        poiRouteFilterKey = key
+        poiDensity = nil
+        guard filtered else { poiRoutePredicate = NSPredicate(value: true); return }
+        guard confirmed, let route = state.route else { poiRoutePredicate = NSPredicate(value: false); return }
+        let geometry = RouteProgressGeometry(route)
+        let start = traveling ? max(0, Double(bucket) * 100) : 0
+        let end = min(geometry.length, start + (traveling ? 5_000 : 20_000))
+        var polygons: [[[[Double]]]] = []
+        for distance in stride(from: start, through: end, by: 100.0) {
+            guard let center = geometry.coordinate(at: distance) else { continue }
+            let dy = 125.0 / 111_320
+            let dx = dy / max(0.1, cos(center.latitude * .pi / 180))
+            let x = center.longitude, y = center.latitude
+            polygons.append([[[x - dx, y - dy], [x + dx, y - dy], [x + dx, y + dy],
+                              [x - dx, y + dy], [x - dx, y - dy]]])
         }
+        poiRoutePredicate = polygons.isEmpty ? NSPredicate(value: false) : NSPredicate(mglJSONObject: [
+            "within", ["type": "MultiPolygon", "coordinates": polygons]
+        ])
+    }
+
+    private func densityLevel(for zoom: Double) -> Int {
+        Int(max(0, min(24, zoom)).rounded(.down))
     }
 
     private func poiPredicate(for layerID: String, categories: [MapPOICategory], density: Int) -> NSPredicate {
-        let values = categories.flatMap(\.tileValues)
-        let categoryPredicate = values.isEmpty ? NSPredicate(value: false) :
-            NSPredicate(format: "class IN %@ OR subclass IN %@", values, values)
+        let eligible = categories.filter { density >= MapDisplayPriorityEngine.minimumZoom(for: $0) }
+        let categoryPredicates = eligible.map { category -> NSPredicate in
+            // At overview zoom only the provider's most prominent attractions and airports remain.
+            let values = density < 12 && category == .transit ? ["airport"] : category.tileValues
+            let rank = density < 12 ? 1 : (density < 13 ? 3 : (density < 15 ? 19 : 1_000))
+            return NSCompoundPredicate(andPredicateWithSubpredicates: [
+                NSPredicate(format: "class IN %@ OR subclass IN %@", values, values),
+                NSPredicate(format: "rank <= %d", rank)
+            ])
+        }
+        let categoryPredicate = categoryPredicates.isEmpty ? NSPredicate(value: false)
+            : NSCompoundPredicate(orPredicateWithSubpredicates: categoryPredicates)
         let providerTransitValues = MapPOICategory.transit.tileValues.filter { $0 != "airport" }
         let hideProviderTransitPredicate = NSPredicate(
             format: "NOT (class IN %@ OR subclass IN %@)", providerTransitValues, providerTransitValues)
-        let rankLimit = density == 0 ? 3 : (density == 1 ? 19 : 1000)
         return NSCompoundPredicate(andPredicateWithSubpredicates: [
             originalPredicates[layerID] ?? NSPredicate(value: true),
             categoryPredicate,
             hideProviderTransitPredicate,
-            NSPredicate(format: "rank <= %d", rankLimit)
+            poiRoutePredicate
         ])
     }
 
@@ -335,23 +404,22 @@ final class NaviAstraMapStyle {
             style.setImage(kind.makeMapStyleImage(dark: true), forName: poiImageName(kind, dark: true))
         }
         for dark in [false, true] {
-            style.setImage(forestTreePattern(dark: dark, dense: false),
-                           forName: forestPatternName(dark: dark, dense: false))
-            style.setImage(forestTreePattern(dark: dark, dense: true),
-                           forName: forestPatternName(dark: dark, dense: true))
-            style.setImage(waterWavePattern(dark: dark, dense: false),
-                           forName: waterPatternName(dark: dark, dense: false))
-            style.setImage(waterWavePattern(dark: dark, dense: true),
-                           forName: waterPatternName(dark: dark, dense: true))
+            for leaf in ["unknown", "broadleaved", "needleleaved", "mixed"] {
+                for dense in [false, true] {
+                    style.setImage(forestTreePattern(dark: dark, dense: dense, leaf: leaf),
+                                   forName: forestPatternName(dark: dark, dense: dense, leaf: leaf))
+                }
+            }
+            style.setImage(waterWavePattern(dark: dark), forName: waterPatternName(dark: dark))
         }
         for layer in style.layers {
             if let layer = layer as? MLNSymbolStyleLayer, layer.sourceLayerIdentifier == "poi" {
                 poiLayerIDs.append(layer.identifier)
                 if let predicate = layer.predicate { originalPredicates[layer.identifier] = predicate }
                 switch layer.identifier {
-                case "poi_r1": layer.minimumZoomLevel = 12
-                case "poi_r7": layer.minimumZoomLevel = 14.7
-                case "poi_r20": layer.minimumZoomLevel = 16.7
+                case "poi_r1": layer.minimumZoomLevel = 10
+                case "poi_r7": layer.minimumZoomLevel = 13
+                case "poi_r20": layer.minimumZoomLevel = 15
                 case "poi_transit": layer.minimumZoomLevel = 14
                 default: break
                 }
@@ -361,18 +429,24 @@ final class NaviAstraMapStyle {
                 // compete with labels, so newly appearing text cannot displace a POI.
                 layer.textAllowsOverlap = NSExpression(forConstantValue: false)
                 layer.textOptional = NSExpression(forConstantValue: true)
-                layer.iconAllowsOverlap = NSExpression(forConstantValue: true)
-                layer.iconIgnoresPlacement = NSExpression(forConstantValue: true)
+                layer.iconAllowsOverlap = NSExpression(forConstantValue: false)
+                layer.iconIgnoresPlacement = NSExpression(forConstantValue: false)
+                let priorities: [Any] = MapPOICategory.allCases.flatMap { category -> [Any] in
+                    [category.tileValues, -MapDisplayPriorityEngine.priority(for: category)]
+                }
+                layer.symbolSortKey = NSExpression(mglJSONObject:
+                    ["match", ["coalesce", ["get", "subclass"], ["get", "class"]]] + priorities + [0])
             }
             if let layer = layer as? MLNFillStyleLayer, layer.sourceLayerIdentifier == "building" {
+                layer.minimumZoomLevel = 15
                 layer.maximumZoomLevel = 24 // Retain footprints when extrusion is disabled.
             }
             if let layer = layer as? MLNFillExtrusionStyleLayer,
                layer.sourceLayerIdentifier == "building" {
                 // OpenMapTiles omits hide_3d unless an outline must be hidden.
                 // Include that missing value explicitly in the native style filter.
-                layer.minimumZoomLevel = 14
-                layer.predicate = NSPredicate(format: "hide_3d == nil OR hide_3d != true")
+                layer.minimumZoomLevel = 16
+                layer.predicate = NSPredicate(format: "(hide_3d == nil OR hide_3d != true) AND render_height > 0")
                 // Keep the provider's height and base in meters at every zoom.
                 // Scaling them to zero at zoom 15 made the 3D view look flat.
                 layer.fillExtrusionHeight = NSExpression(mglJSONObject: [
@@ -395,7 +469,9 @@ final class NaviAstraMapStyle {
             }
         }
         installForestTreePatternLayers(in: style)
+        installWaterShorelineLayer(in: style)
         installWaterWavePatternLayers(in: style)
+        MapEnvironmentStyle.configure(in: style)
         installBuildingWindowLayers(in: style)
         if style.layer(withIdentifier: "naviastra-house-numbers") == nil,
            let source = style.source(withIdentifier: "openmaptiles") {
@@ -412,12 +488,16 @@ final class NaviAstraMapStyle {
 
     private func installBuildingWindowLayers(in style: MLNStyle) {
         guard style.layer(withIdentifier: windowLayerID) == nil,
-              let building = style.layers.compactMap({ $0 as? MLNFillExtrusionStyleLayer })
-                .last(where: { $0.sourceLayerIdentifier == "building" }),
+              let building = (style.layer(withIdentifier: MapTilerEnvironmentStyle.buildingLayerID) as? MLNFillExtrusionStyleLayer)
+                ?? style.layers.compactMap({ $0 as? MLNFillExtrusionStyleLayer })
+                    .last(where: { $0.sourceLayerIdentifier == "building" }),
               let sourceID = building.sourceIdentifier,
               let source = style.source(withIdentifier: sourceID) else { return }
 
         buildingQueryLayerID = building.identifier
+        let planet = building.identifier == MapTilerEnvironmentStyle.buildingLayerID
+        buildingHeightKey = planet ? "height" : "render_height"
+        buildingBaseKey = planet ? "height_min" : "render_min_height"
         for variant in 0..<12 {
             for dark in [false, true] {
                 for level in 0...4 {
@@ -437,7 +517,7 @@ final class NaviAstraMapStyle {
         windows.minimumZoomLevel = 16
         windows.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
             building.predicate ?? NSPredicate(value: true),
-            NSPredicate(format: "render_height >= 3")
+            NSPredicate(format: "%K >= 3", buildingHeightKey)
         ])
         windows.fillExtrusionHeight = building.fillExtrusionHeight
         windows.fillExtrusionBase = building.fillExtrusionBase
@@ -450,7 +530,7 @@ final class NaviAstraMapStyle {
         roof.sourceLayerIdentifier = "building"
         roof.minimumZoomLevel = windows.minimumZoomLevel
         roof.predicate = windows.predicate
-        let height: [Any] = ["coalesce", ["get", "render_height"], 0]
+        let height: [Any] = ["coalesce", ["get", buildingHeightKey], 0]
         roof.fillExtrusionBase = NSExpression(mglJSONObject: height)
         roof.fillExtrusionHeight = NSExpression(mglJSONObject: ["+", height, 0.02])
         roof.fillExtrusionRoundedCornerDistance = building.fillExtrusionRoundedCornerDistance
@@ -513,8 +593,8 @@ final class NaviAstraMapStyle {
             else if let multi = feature as? MLNMultiPolygon { polygons = multi.polygons }
             else { continue }
             let attributes = feature.attributes
-            let height = (attributes["render_height"] as? NSNumber)?.doubleValue ?? 0
-            let base = (attributes["render_min_height"] as? NSNumber)?.doubleValue ?? 0
+            let height = (attributes[buildingHeightKey] as? NSNumber)?.doubleValue ?? 0
+            let base = (attributes[buildingBaseKey] as? NSNumber)?.doubleValue ?? 0
             guard height >= 3, base < 1 else { continue }
             for polygon in polygons.prefix(8) {
                 guard patches.count < 480 else { break }
@@ -555,12 +635,8 @@ final class NaviAstraMapStyle {
     }
 
     private func buildingPatternExpression(dark: Bool, quiet: Bool, roof: Bool, level: Int = 0) -> NSExpression {
-        // Prefer a stable tile feature ID, with provider height as a fallback.
-        // Never infer surveyed materials or occupancy from these variants.
-        let heightSeed: [Any] = ["*", ["coalesce", ["get", "render_height"], 0], 13]
-        let seed: [Any] = ["to-number", ["coalesce", ["id"], heightSeed], heightSeed]
         let count = roof ? 4 : 12
-        let variant: [Any] = ["%", ["abs", ["floor", seed]], count]
+        let variant = MapBuildingAppearance.variant(heightKey: buildingHeightKey, count: count)
         var expression: [Any] = ["match", variant]
         for index in 0..<(count - 1) {
             expression.append(index)
@@ -572,19 +648,17 @@ final class NaviAstraMapStyle {
 
     private func buildingFacadePattern(variant: Int, dark: Bool, quiet: Bool, level: Int) -> UIImage {
         let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
+        format.scale = 2
         format.opaque = true
         return UIGraphicsImageRenderer(size: CGSize(width: 64, height: 64), format: format).image { renderer in
             let context = renderer.cgContext
-            let dayMaterials: [UInt32] = [0xB8A99A, 0xD7D3C9, 0xBDC4C6, 0xA4BAC4]
-            let nightMaterials: [UInt32] = [0x302D30, 0x2C3036, 0x293139, 0x24323E]
             let material = variant % 4
             let layout = variant / 4
-            let base = color((dark ? nightMaterials : dayMaterials)[material])
+            let base = color((dark ? MapBuildingAppearance.nightFacades : MapBuildingAppearance.dayFacades)[material])
             context.setFillColor(base.cgColor)
             context.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
-            context.setStrokeColor(UIColor(white: dark ? 0.65 : 0.25, alpha: dark ? 0.06 : 0.10).cgColor)
-            context.setLineWidth(0.6)
+            context.setStrokeColor(UIColor(white: dark ? 0.65 : 0.25, alpha: dark ? 0.045 : 0.065).cgColor)
+            context.setLineWidth(0.5)
             if material == 0 {
                 // Staggered brick joints, kept much weaker than the windows.
                 for row in 0..<16 {
@@ -619,30 +693,53 @@ final class NaviAstraMapStyle {
             let quietWindows: [Set<Int>] = [[3, 10], [5], [7, 12], [1, 11]]
             let illuminated = (quiet ? quietWindows : eveningWindows)[material]
             for row in 0..<4 {
+                // Fine floor seams give the facade depth without strong striping.
+                let floorY = CGFloat(row * 16)
+                context.setFillColor(UIColor(white: 1, alpha: dark ? 0.025 : 0.16).cgColor)
+                context.fill(CGRect(x: 0, y: floorY, width: 64, height: 0.5))
+                context.setFillColor(UIColor(white: 0, alpha: dark ? 0.04 : 0.055).cgColor)
+                context.fill(CGRect(x: 0, y: floorY + 15.5, width: 64, height: 0.5))
                 for column in 0..<4 {
                     let index = row * 4 + column
                     let width: CGFloat = material == 3 ? 9 : (material == 1 ? 5 : 4)
                     let rect = CGRect(x: CGFloat(column * 16) + (16 - width) / 2,
                                       y: CGFloat(row * 16 + 5), width: width, height: material == 2 ? 5 : 6)
                     let lit = illuminated.contains((index + layout * 5) % 16) && level > 0
+                    // Recessed opening, slim frame and sill remain legible at close zoom.
+                    context.setFillColor(UIColor(white: 0, alpha: dark ? 0.18 : 0.12).cgColor)
+                    context.fill(rect.insetBy(dx: -0.75, dy: -0.75).offsetBy(dx: 0.4, dy: 0.6))
+                    context.setFillColor(color(dark ? 0x617080 : 0xF1EEE7).withAlphaComponent(dark ? 0.42 : 0.75).cgColor)
+                    context.fill(rect.insetBy(dx: -0.4, dy: -0.4))
                     if lit {
                         let strength = CGFloat(level) / 4
                         context.setFillColor(color(0xD6B782).withAlphaComponent(0.10 * strength).cgColor)
-                        context.fill(rect.insetBy(dx: -1.5, dy: -1.5))
-                        context.setFillColor(color((index + layout).isMultiple(of: 3) ? 0xD8D1B2 : 0xE2BD82)
+                        context.fill(rect.insetBy(dx: -1.25, dy: -1.25))
+                        context.setFillColor(color((index + layout).isMultiple(of: 3) ? 0xDCD6BC : 0xE8C797)
                             .withAlphaComponent(0.35 + 0.65 * strength).cgColor)
                     } else {
-                        context.setFillColor(color(dark ? 0x202833 : (material == 3 ? 0x7899A9 : 0x8C9FA9)).cgColor)
+                        context.setFillColor(color(dark ? 0x202C38 : (material == 3 ? 0x728F9E : 0x859AA5)).cgColor)
                     }
-                    context.fill(rect)
+                    context.addPath(UIBezierPath(roundedRect: rect, cornerRadius: 0.5).cgPath)
+                    context.fillPath()
                     if lit {
                         // Bright center and a softer border suggest an illuminated
                         // interior while remaining within the native texture shader.
                         context.setFillColor(color(0xF5DFB5).withAlphaComponent(CGFloat(level) / 4 * 0.28).cgColor)
                         context.fill(rect.insetBy(dx: 0.8, dy: 0.8))
+                    } else {
+                        // A restrained glass reflection, strongest along the upper edge.
+                        context.setFillColor(UIColor(white: 1, alpha: dark ? 0.045 : 0.24).cgColor)
+                        context.fill(CGRect(x: rect.minX + 0.5, y: rect.minY + 0.5, width: rect.width - 1, height: 0.7))
+                        context.setFillColor(UIColor(white: 1, alpha: dark ? 0.025 : 0.10).cgColor)
+                        context.fill(CGRect(x: rect.minX + 0.5, y: rect.minY + 1.2, width: rect.width * 0.35, height: rect.height - 1.7))
                     }
                     context.setFillColor(base.withAlphaComponent(0.65).cgColor)
                     context.fill(CGRect(x: rect.midX - 0.25, y: rect.minY, width: 0.5, height: rect.height))
+                    if material != 3 {
+                        context.fill(CGRect(x: rect.minX, y: rect.midY - 0.2, width: rect.width, height: 0.4))
+                    }
+                    context.setFillColor(UIColor(white: dark ? 0.6 : 1, alpha: dark ? 0.12 : 0.42).cgColor)
+                    context.fill(CGRect(x: rect.minX - 0.75, y: rect.maxY + 0.5, width: rect.width + 1.5, height: 0.6))
                 }
             }
         }
@@ -650,25 +747,38 @@ final class NaviAstraMapStyle {
 
     private func buildingRoofPattern(variant: Int, dark: Bool) -> UIImage {
         let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
+        format.scale = 2
         format.opaque = true
         return UIGraphicsImageRenderer(size: CGSize(width: 64, height: 64), format: format).image { renderer in
             let context = renderer.cgContext
-            let dayRoofs: [UInt32] = [0xA7998A, 0xC4C1B7, 0xADB5B8, 0xA1AFB4]
-            let nightRoofs: [UInt32] = [0x302D30, 0x2B3035, 0x293138, 0x26323B]
-            context.setFillColor(color((dark ? nightRoofs : dayRoofs)[variant]).cgColor)
+            context.setFillColor(color((dark ? MapBuildingAppearance.nightRoofs : MapBuildingAppearance.dayRoofs)[variant]).cgColor)
             context.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
-            context.setStrokeColor(UIColor(white: dark ? 0.65 : 0.25, alpha: dark ? 0.10 : 0.16).cgColor)
-            context.setLineWidth(0.7)
-            let spacing = variant == 0 ? 8 : (variant == 1 ? 16 : 32)
-            for offset in stride(from: 0, to: 64, by: spacing) {
-                let position = CGFloat(offset)
-                context.move(to: CGPoint(x: 0, y: position))
-                context.addLine(to: CGPoint(x: 64, y: position))
-                context.move(to: CGPoint(x: position, y: 0))
-                context.addLine(to: CGPoint(x: position, y: 64))
+            context.setStrokeColor(UIColor(white: dark ? 0.7 : 0.2, alpha: dark ? 0.07 : 0.10).cgColor)
+            context.setLineWidth(0.5)
+            // Quiet seams replace the prominent checkerboard; no invented roof objects.
+            let spacing = variant == 0 ? 8 : (variant == 1 ? 32 : 16)
+            for row in 0..<(64 / spacing) {
+                let position = CGFloat(row * spacing) + 0.25
+                if variant == 2 {
+                    context.move(to: CGPoint(x: position, y: 0))
+                    context.addLine(to: CGPoint(x: position, y: 64))
+                } else {
+                    context.move(to: CGPoint(x: 0, y: position))
+                    context.addLine(to: CGPoint(x: 64, y: position))
+                    if variant == 0 || variant == 3 {
+                        for column in 0..<4 {
+                            let x = CGFloat(column * 16 + (row.isMultiple(of: 2) ? 0 : 8)) + 0.25
+                            context.move(to: CGPoint(x: x, y: position))
+                            context.addLine(to: CGPoint(x: x, y: position + CGFloat(spacing)))
+                        }
+                    }
+                }
             }
             context.strokePath()
+            context.setFillColor(UIColor(white: dark ? 0.8 : 0.2, alpha: 0.025).cgColor)
+            for index in 0..<64 {
+                context.fill(CGRect(x: CGFloat((index * 19) % 64), y: CGFloat((index * 37) % 64), width: 0.5, height: 0.5))
+            }
         }
     }
 
@@ -677,10 +787,15 @@ final class NaviAstraMapStyle {
               let lastLandcoverFill = style.layers.compactMap({ $0 as? MLNFillStyleLayer })
                 .last(where: { $0.sourceLayerIdentifier == "landcover" }) else { return }
 
-        let forestFilter = NSPredicate(format: "subclass IN %@", ["forest", "wood"])
+        let forestFilter = NSPredicate(format: "class == %@ OR subclass IN %@", "wood", ["forest", "wood"])
+        let waterAnchor = style.layers.first {
+            guard $0 is MLNFillStyleLayer || $0 is MLNLineStyleLayer,
+                  let layer = $0 as? MLNVectorStyleLayer else { return false }
+            return layer.sourceLayerIdentifier == "water" || layer.sourceLayerIdentifier == "waterway"
+        }
         let layers: [(String, Float, Float, Bool)] = [
-            ("naviastra-forest-tree-pattern", 13, 15, false),
-            ("naviastra-forest-tree-pattern-dense", 15, 24, true)
+            ("naviastra-forest-tree-pattern", 16, 18, false),
+            ("naviastra-forest-tree-pattern-dense", 18, 24, true)
         ]
         for (identifier, minimumZoom, maximumZoom, dense) in layers
             where style.layer(withIdentifier: identifier) == nil {
@@ -689,44 +804,76 @@ final class NaviAstraMapStyle {
             layer.predicate = forestFilter
             layer.minimumZoomLevel = minimumZoom
             layer.maximumZoomLevel = maximumZoom
-            layer.fillPattern = NSExpression(forConstantValue: forestPatternName(dark: false, dense: dense))
-            layer.fillOpacity = NSExpression(forConstantValue: 0.18)
-            style.insertLayer(layer, above: lastLandcoverFill)
+            layer.fillPattern = forestPatternExpression(dark: false, dense: dense)
+            layer.fillOpacity = NSExpression(mglJSONObject: [
+                "interpolate", ["linear"], ["zoom"], 16, 0, 17, 0.10, 18, 0.12
+            ])
+            if let waterAnchor { style.insertLayer(layer, below: waterAnchor) }
+            else { style.insertLayer(layer, above: lastLandcoverFill) }
         }
+    }
+
+    private func installWaterShorelineLayer(in style: MLNStyle) {
+        let identifier = "naviastra-water-soft-shore"
+        guard style.layer(withIdentifier: identifier) == nil,
+              let waterFill = style.layers.compactMap({ $0 as? MLNFillStyleLayer })
+                .first(where: { $0.sourceLayerIdentifier == "water" }),
+              let sourceID = waterFill.sourceIdentifier,
+              let source = style.source(withIdentifier: sourceID) else { return }
+
+        let shore = MLNLineStyleLayer(identifier: identifier, source: source)
+        shore.sourceLayerIdentifier = "water"
+        shore.predicate = waterFill.predicate
+        shore.minimumZoomLevel = waterFill.minimumZoomLevel
+        shore.maximumZoomLevel = waterFill.maximumZoomLevel
+        shore.lineJoin = NSExpression(forConstantValue: "round")
+        shore.lineCap = NSExpression(forConstantValue: "round")
+        shore.lineWidth = NSExpression(mglJSONObject: [
+            "interpolate", ["linear"], ["zoom"], 8, 0.6, 12, 2.0, 16, 3.5
+        ])
+        shore.lineBlur = NSExpression(mglJSONObject: [
+            "interpolate", ["linear"], ["zoom"], 8, 0.5, 12, 1.2, 16, 2.0
+        ])
+        shore.lineOpacity = NSExpression(mglJSONObject: [
+            "case", ["==", ["get", "intermittent"], 1], 0.12, 0.24
+        ])
+        // The opaque water fill masks the inner half and clipped tile edges.
+        // Only a faint feather remains on land along the real shoreline.
+        style.insertLayer(shore, below: waterFill)
     }
 
     private func installWaterWavePatternLayers(in style: MLNStyle) {
-        guard let source = style.source(withIdentifier: "openmaptiles"),
+        let identifier = "naviastra-water-wave-pattern"
+        guard style.layer(withIdentifier: identifier) == nil,
               let lastWaterFill = style.layers.compactMap({ $0 as? MLNFillStyleLayer })
-                .last(where: { $0.sourceLayerIdentifier == "water" }) else { return }
+                .last(where: { $0.sourceLayerIdentifier == "water" }),
+              let sourceID = lastWaterFill.sourceIdentifier,
+              let source = style.source(withIdentifier: sourceID) else { return }
 
-        let waterFilter = NSPredicate(format: "class IN %@", ["ocean", "lake", "river", "pond", "dock"])
-        let layers: [(String, Float, Float, Bool)] = [
-            ("naviastra-water-wave-pattern", 12, 15, false),
-            ("naviastra-water-wave-pattern-dense", 15, 24, true)
-        ]
-        for (identifier, minimumZoom, maximumZoom, dense) in layers
-            where style.layer(withIdentifier: identifier) == nil {
-            let layer = MLNFillStyleLayer(identifier: identifier, source: source)
-            layer.sourceLayerIdentifier = "water"
-            layer.predicate = waterFilter
-            layer.minimumZoomLevel = minimumZoom
-            layer.maximumZoomLevel = maximumZoom
-            layer.fillPattern = NSExpression(forConstantValue: waterPatternName(dark: false, dense: dense))
-            layer.fillOpacity = NSExpression(forConstantValue: dense ? 0.08 : 0.05)
-            style.insertLayer(layer, above: lastWaterFill)
-        }
+        let layer = MLNFillStyleLayer(identifier: identifier, source: source)
+        layer.sourceLayerIdentifier = "water"
+        layer.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+            lastWaterFill.predicate ?? NSPredicate(value: true),
+            NSPredicate(format: "class IN %@", ["ocean", "lake", "river", "pond", "dock"]),
+            NSPredicate(format: "intermittent == nil OR intermittent != 1")
+        ])
+        layer.minimumZoomLevel = 12
+        layer.maximumZoomLevel = 24
+        layer.fillPattern = NSExpression(forConstantValue: waterPatternName(dark: false))
+        layer.fillOpacity = NSExpression(forConstantValue: 0)
+        // One texture fades in continuously instead of switching at zoom 15.
+        style.insertLayer(layer, above: lastWaterFill)
     }
 
     private func landcoverColorExpression(dark: Bool) -> NSExpression {
-        let vegetation = hexColor(dark ? NaviAstraColorPalette.mapParkNight : NaviAstraColorPalette.mapParkDay)
-        let forest = vegetation
-        let scrub = vegetation
-        let grass = vegetation
-        let meadow = vegetation
-        let cultivated = vegetation
-        let garden = vegetation
-        let wetland = vegetation
+        let park = hexColor(dark ? 0x293E32 : 0xD3E3C6)
+        let forest = hexColor(dark ? 0x21362B : 0xB9D3B2)
+        let scrub = hexColor(dark ? 0x2D4032 : 0xC5D8B9)
+        let grass = hexColor(dark ? 0x324437 : 0xDCE8CF)
+        let meadow = hexColor(dark ? 0x344638 : 0xE0E9D2)
+        let cultivated = hexColor(dark ? 0x3A4130 : 0xE6E7C9)
+        let garden = hexColor(dark ? 0x304334 : 0xD6E3C7)
+        let wetland = hexColor(dark ? 0x2B4140 : 0xC6DCD2)
         let sand = hexColor(dark ? 0x3D3B30 : 0xEDE4C7)
         let rock = hexColor(dark ? 0x3D4142 : 0xDFDDD3)
         let ice = hexColor(dark ? 0x30434B : 0xE6F0F1)
@@ -738,6 +885,7 @@ final class NaviAstraMapStyle {
         let expression: [Any] = [
             "match", ["get", "subclass"],
             ["forest", "wood"], forest,
+            "park", park,
             ["scrub", "shrubbery", "heath", "fell", "mangrove"], scrub,
             ["grass", "grassland", "golf_course", "wet_meadow"], grass,
             ["meadow"], meadow,
@@ -767,15 +915,25 @@ final class NaviAstraMapStyle {
         return NSExpression(mglJSONObject: expression)
     }
 
-    private func forestPatternName(dark: Bool, dense: Bool) -> String {
-        "naviastra-forest-\(dense ? "dense-" : "")\(dark ? "dark" : "light")"
+    private func forestPatternName(dark: Bool, dense: Bool, leaf: String = "unknown") -> String {
+        "naviastra-forest-\(dense ? "dense-" : "")\(dark ? "dark" : "light")-\(leaf)"
     }
 
-    private func waterPatternName(dark: Bool, dense: Bool) -> String {
-        "naviastra-water-\(dense ? "dense-" : "")\(dark ? "dark" : "light")"
+    private func forestPatternExpression(dark: Bool, dense: Bool) -> NSExpression {
+        NSExpression(mglJSONObject: [
+            "match", ["get", "leaf_type"],
+            "broadleaved", forestPatternName(dark: dark, dense: dense, leaf: "broadleaved"),
+            "needleleaved", forestPatternName(dark: dark, dense: dense, leaf: "needleleaved"),
+            "mixed", forestPatternName(dark: dark, dense: dense, leaf: "mixed"),
+            forestPatternName(dark: dark, dense: dense)
+        ])
     }
 
-    private func forestTreePattern(dark: Bool, dense: Bool) -> UIImage {
+    private func waterPatternName(dark: Bool) -> String {
+        "naviastra-water-\(dark ? "dark" : "light")"
+    }
+
+    private func forestTreePattern(dark: Bool, dense: Bool, leaf: String) -> UIImage {
         let tileSize: CGFloat = 64
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
@@ -789,45 +947,56 @@ final class NaviAstraMapStyle {
                 : [(12, 12, 10), (43, 17, 11), (28, 36, 10), (54, 48, 10), (5, 53, 9)]
             let canopy = color(dark ? 0x5C846D : 0x729A7C).withAlphaComponent(0.78).cgColor
             let highlight = color(dark ? 0x426B56 : 0x91B398).withAlphaComponent(0.74).cgColor
-            let trunk = color(dark ? 0xB4A27D : 0x897653).withAlphaComponent(0.62).cgColor
 
             for (index, tree) in positions.enumerated() {
                 let (x, y, size) = tree
                 let half = size / 2
-                let path = CGMutablePath()
-                path.move(to: CGPoint(x: x, y: y - half))
-                path.addLine(to: CGPoint(x: x - half * 0.85, y: y + half * 0.62))
-                path.addLine(to: CGPoint(x: x + half * 0.85, y: y + half * 0.62))
-                path.closeSubpath()
-                context.addPath(path)
                 context.setFillColor(index.isMultiple(of: 2) ? canopy : highlight)
-                context.fillPath()
-
-                let trunkRect = CGRect(x: x - 0.55, y: y + half * 0.48, width: 1.1, height: 1.7)
-                context.setFillColor(trunk)
-                context.fill(trunkRect)
+                if leaf == "needleleaved" || (leaf == "mixed" && index.isMultiple(of: 2)) {
+                    let path = CGMutablePath()
+                    path.move(to: CGPoint(x: x, y: y - half))
+                    path.addLine(to: CGPoint(x: x - half * 0.8, y: y + half * 0.7))
+                    path.addLine(to: CGPoint(x: x + half * 0.8, y: y + half * 0.7))
+                    path.closeSubpath()
+                    context.addPath(path)
+                    context.fillPath()
+                } else {
+                    // Unknown leaf types get neutral grain, never an inferred species.
+                    let diameter = leaf == "unknown" ? size * 0.4 : size * 0.85
+                    context.fillEllipse(in: CGRect(x: x - diameter / 2, y: y - diameter / 2,
+                                                   width: diameter, height: diameter * 0.9))
+                }
             }
         }
     }
 
-    private func waterWavePattern(dark: Bool, dense: Bool) -> UIImage {
-        let tileSize: CGFloat = 64
+    private func waterWavePattern(dark: Bool) -> UIImage {
+        let tileSize: CGFloat = 128
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         format.opaque = false
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: tileSize, height: tileSize), format: format)
         return renderer.image { rendererContext in
             let context = rendererContext.cgContext
-            let rows: [CGFloat] = dense ? [8, 24, 40, 56] : [16, 48]
-            context.setStrokeColor(color(dark ? 0x74AFC3 : 0x4B98B0).withAlphaComponent(0.72).cgColor)
-            context.setLineWidth(dense ? 0.9 : 0.75)
-            for (index, y) in rows.enumerated() {
-                let offset = index.isMultiple(of: 2) ? CGFloat(0) : CGFloat(5)
+            // Short, staggered highlights stay inside the tile so repeats have
+            // no cut wave ends or visible seams. This is decorative texture.
+            let ripples: [(CGFloat, CGFloat, CGFloat)] = [
+                (14, 22, 27), (76, 43, 33), (29, 78, 31), (83, 108, 22)
+            ]
+            context.setAllowsAntialiasing(true)
+            context.setShouldAntialias(true)
+            context.setLineCap(.round)
+            context.setStrokeColor(color(dark ? 0xA3C4CA : 0xEDF6F5)
+                .withAlphaComponent(dark ? 0.20 : 0.32).cgColor)
+            context.setLineWidth(1.2)
+            context.setShadow(offset: .zero, blur: 1.5,
+                              color: color(dark ? 0xA3C4CA : 0xEDF6F5).withAlphaComponent(0.10).cgColor)
+            for (x, y, length) in ripples {
                 let path = CGMutablePath()
-                path.move(to: CGPoint(x: -4, y: y + offset))
-                path.addCurve(to: CGPoint(x: 68, y: y + offset),
-                              control1: CGPoint(x: 18, y: y - 5 + offset),
-                              control2: CGPoint(x: 46, y: y + 5 + offset))
+                path.move(to: CGPoint(x: x, y: y))
+                path.addCurve(to: CGPoint(x: x + length, y: y),
+                              control1: CGPoint(x: x + length * 0.33, y: y - 1.8),
+                              control2: CGPoint(x: x + length * 0.67, y: y + 1.8))
                 context.addPath(path)
                 context.strokePath()
             }
@@ -905,15 +1074,6 @@ final class NaviAstraMapStyle {
         for key in shopLogoNames.keys.sorted() { logos += [key, shopLogoNames[key]!] }
         logos.append(fallback)
         return NSExpression(mglJSONObject: logos)
-    }
-
-    private func buildingColorExpression(neutralColor: String) -> NSExpression {
-        // OpenMapTiles has an explicit `colour` tag but no building class; keep OSM color as a restrained 22% tint.
-        NSExpression(mglJSONObject: [
-            "interpolate", ["linear"], 0.22,
-            0, neutralColor,
-            1, ["to-color", ["get", "colour"], neutralColor]
-        ])
     }
 
     private func color(_ hex: UInt32) -> UIColor {

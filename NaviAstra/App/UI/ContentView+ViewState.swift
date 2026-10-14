@@ -213,7 +213,7 @@ extension ContentView {
             navigationStore.energyPolicy.enables3DBuildings
         if navigationStore.state.destination != nil && navigationStore.state.status != .idle {
             let shouldShowContextualPOI = isNavigating || navigationStore.state.status == .arrived
-            if !shouldShowContextualPOI { settings.overlays.poi = false }
+            if !shouldShowContextualPOI { settings.context = .routePreview }
         }
         if isNavigating || navigationStore.state.status == .arrived {
             if navigationStore.state.status == .arrived || (navigationStore.state.progress?.remainingDistance ?? .infinity) < 500 {
@@ -269,9 +269,9 @@ extension ContentView {
     var activeJourneyNearbyCategories: [NearbyPlaceCategory] {
         switch navigationStore.state.transportMode {
         case .car:
-            [.fuel, .parking, .charging, .food]
+            [.fuel, .parking, .charging, .restArea]
         case .parkRide where parkRideIsDrivingLeg:
-            [.fuel, .parking, .charging, .food]
+            [.fuel, .parking, .charging, .restArea]
         case .walking, .bicycle, .transit, .parkRide:
             [.food]
         }

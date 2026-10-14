@@ -8,10 +8,14 @@ struct ArrivalDetector {
     private var sampleCount = 0
 
     mutating func observe(_ location: NavigationLocation, destinationDistance: Double,
-                          remainingDistance: Double, now: Date = Date()) -> Bool {
+                          remainingDistance: Double?, destinationRadius: Double = 50,
+                          now: Date = Date()) -> Bool {
+        // A car can arrive from another access road while map matching still
+        // reports a long detour. Only require route completion when supplied.
+        let routeIsComplete = remainingDistance.map { $0 >= 0 && $0 < 75 } ?? true
         guard location.accuracy >= 0, location.accuracy <= 30,
               location.speed.isFinite, location.speed >= 0, location.speed < 5 / 3.6,
-              destinationDistance < 50, remainingDistance < 75,
+              destinationDistance >= 0, destinationDistance <= destinationRadius, routeIsComplete,
               abs(now.timeIntervalSince(location.timestamp)) <= 5 else {
             reset()
             return false

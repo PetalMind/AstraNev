@@ -8,6 +8,9 @@ nonisolated enum MapSafetyPOICategory: Int, CaseIterable, Identifiable, Codable,
     case weightLimits
     case truckRestrictions
     case trafficSigns
+    case pedestrianCrossings
+    case speedBumps
+    case railwayCrossings
 
     var id: Int { rawValue }
     var mask: Int { 1 << rawValue }
@@ -22,6 +25,9 @@ nonisolated enum MapSafetyPOICategory: Int, CaseIterable, Identifiable, Codable,
         case .weightLimits: "Ograniczenia masy (B-18)"
         case .truckRestrictions: "Zakaz wjazdu ciężarówek (B-5)"
         case .trafficSigns: "Znaki drogowe"
+        case .pedestrianCrossings: "Przejścia dla pieszych"
+        case .speedBumps: "Progi zwalniające"
+        case .railwayCrossings: "Przejazdy kolejowe"
         }
     }
 
@@ -34,12 +40,16 @@ nonisolated enum MapSafetyPOICategory: Int, CaseIterable, Identifiable, Codable,
         case .weightLimits: "scalemass.fill"
         case .truckRestrictions: "truck.box.fill"
         case .trafficSigns: "signpost.right.fill"
+        case .pedestrianCrossings: "figure.walk"
+        case .speedBumps: "road.lanes"
+        case .railwayCrossings: "tram.fill"
         }
     }
 
     var colorHex: UInt32 {
         switch self {
-        case .speedCameras, .trafficSignals, .heightLimits, .weightLimits, .truckRestrictions, .trafficSigns: NaviAstraColorPalette.warning
+        case .speedCameras, .trafficSignals, .heightLimits, .weightLimits, .truckRestrictions, .trafficSigns,
+             .pedestrianCrossings, .speedBumps, .railwayCrossings: NaviAstraColorPalette.warning
         case .surveillanceCameras: NaviAstraColorPalette.transitFallback
         }
     }
@@ -96,6 +106,8 @@ extension RoadAlertType {
             .heightLimits
         case .weightLimitSign:
             .weightLimits
+        case .railwayCrossing:
+            .railwayCrossings
         default:
             nil
         }
@@ -163,6 +175,15 @@ nonisolated struct MapRoadPOIQuery: Hashable, Codable, Sendable {
             selectors.append("node[\"highway\"=\"traffic_signals\"](\(bounds));")
             selectors.append("node[\"highway\"=\"crossing\"][\"crossing\"=\"traffic_signals\"](\(bounds));")
             selectors.append("node[\"highway\"=\"crossing\"][\"crossing:signals\"=\"yes\"](\(bounds));")
+        }
+        if categories.contains(.pedestrianCrossings) {
+            selectors.append("node[\"highway\"=\"crossing\"](\(bounds));")
+        }
+        if categories.contains(.speedBumps) {
+            selectors.append("node[\"traffic_calming\"~\"^(bump|hump|table|cushion)$\"](\(bounds));")
+        }
+        if categories.contains(.railwayCrossings) {
+            selectors.append("node[\"railway\"=\"level_crossing\"](\(bounds));")
         }
         var restrictionSelectors: [String] = []
         if categories.contains(.heightLimits) {
@@ -615,6 +636,10 @@ actor MapRoadPOIProvider {
                                  categories: Set<MapSafetyPOICategory>) -> MapSafetyPOICategory? {
         if OSMSafetyTags.enforcementType(tags) != nil, categories.contains(.speedCameras) { return .speedCameras }
         if OSMSafetyTags.isTrafficSignal(tags), categories.contains(.trafficSignals) { return .trafficSignals }
+        if tags["railway"] == "level_crossing", categories.contains(.railwayCrossings) { return .railwayCrossings }
+        if ["bump", "hump", "table", "cushion"].contains(tags["traffic_calming"] ?? ""),
+           categories.contains(.speedBumps) { return .speedBumps }
+        if tags["highway"] == "crossing", categories.contains(.pedestrianCrossings) { return .pedestrianCrossings }
         guard categories.contains(.surveillanceCameras), OSMSafetyTags.enforcementType(tags) == nil else { return nil }
         if tags["man_made"] == "surveillance" {
             let surveillanceType = tags["surveillance:type"]?.lowercased()
@@ -645,6 +670,9 @@ actor MapRoadPOIProvider {
         case .weightLimits: "Ograniczenie masy"
         case .truckRestrictions: "Zakaz wjazdu samochodów ciężarowych"
         case .trafficSigns: "Znak drogowy"
+        case .pedestrianCrossings: "Przejście dla pieszych"
+        case .speedBumps: "Próg zwalniający"
+        case .railwayCrossings: "Przejazd kolejowy"
         }
     }
 }

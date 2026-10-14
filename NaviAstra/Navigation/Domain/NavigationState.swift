@@ -81,6 +81,10 @@ final class NavigationState {
     var speedLimitMessage: String?
     var roadSafetyAlerts: [RoadSafetyAlert] = []
     var roadSafetyStatus: RoadSafetyStatus = .idle
+    var roadAlertRoadSegments: [OSMRoadSpeedSegment]?
+    var lastPassedRoadZoneID: String?
+    var roadZoneNotice: RoadSafetyAlert?
+    var roadZoneNoticeExpiresAt: Date?
     // Alert positions are measured on the polyline, independently of provider route distance.
     var roadAlertRouteDistance: Double {
         guard status == .navigating || status == .rerouting,

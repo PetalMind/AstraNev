@@ -24,6 +24,21 @@ Ten dokument opisuje bieżącą implementację routingu. Głównym koordynatorem
 
 Pozycje GPS przechodzą przez `LocationFilter`. Akceptowane są pomiary z dokładnością poziomą do 70 m, nie starsze niż 15 sekund ani pochodzące z przyszłości o więcej niż 15 sekund. Kolejny pomiar musi mieć późniejszy czas. Granica prędkości skoku zależy od trybu: 10 m/s pieszo, 40 m/s rowerem, 75 m/s samochodem i P+R oraz 90 m/s komunikacją miejską. Dopiero zaakceptowany pomiar aktualizuje początek trasy i postęp nawigacji.
 
+## Opisy wariantów w podglądzie iOS
+
+Od wersji 1.1.97 (build 99) karta wybranego wariantu oraz rozwinięta lista tras pokazują cechy porównane z pozostałymi dostępnymi wariantami. Rozwinięta karta wyjaśnia podstawę oceny; opisy są też dostępne dla VoiceOver.
+
+- **Najszybszy** — najkrótszy szacowany czas widoczny w podglądzie, łącznie z zaplanowanymi postojami EV.
+- **Najkrótszy** — najmniejszy dystans.
+- **Najwygodniejszy** dla samochodu — najlepsza ocena istniejącego profilu wygodnego na podstawie czasu z podglądu, dystansu i kosztu manewrów. Koszt manewru wynosi 45 dla zawracania, 18 dla ostrego skrętu, 8 dla zwykłego skrętu lub wjazdu na rondo i 4 dla łagodnego skrętu, zmiany pasa kierunkowego, rampy, zjazdu lub włączenia do ruchu. Nawierzchnia jest porównywana wyłącznie przy kompletnych danych dla wszystkich wariantów; nierówne odcinki otrzymują wagę 30 na kilometr. Etykieta wymaga rzeczywistej różnicy w koszcie manewrów lub nawierzchni.
+- **Zrównoważony** dla samochodu — najlepsza ocena istniejącego profilu zrównoważonego, z większą wagą czasu niż w profilu wygodnym. Obie oceny pomijają pokrycie ruchem, ponieważ podgląd nie ma porównywalnych pomiarów dla każdej alternatywy.
+- **Najmniej przesiadek**, **Najmniej pieszo**, **Najwcześniej u celu** dla komunikacji i P+R — odpowiednio najmniejsza liczba przesiadek, najkrótszy planowany czas dojścia oraz najwcześniejsza godzina przyjazdu. Krótsza podróż i wcześniejszy przyjazd to osobne cechy, ponieważ połączenia mogą odjeżdżać o różnych porach.
+- **Najwygodniejszy** dla komunikacji i P+R — najmniejsza suma: 720 × liczba przesiadek + 1,9 × czas dojścia + 0,15 × czas oczekiwania + 0,45 × czas całej podróży. Czasy są wyrażone w sekundach. Jest to porównanie planu podróży, bez oceny miejsc siedzących, zatłoczenia czy dostępności parkingu.
+
+Jedna trasa może mieć kilka cech. Remis otrzymuje wspólną etykietę; wybór karty i kolejność wyników nie rozstrzygają oceny. Brakujące lub niepoprawne dane wyłączają dane porównanie dla całego zestawu. Jednakowy wynik wszystkich wariantów nie otrzymuje etykiety porównawczej. Minimalna różnica to sekunda dla czasu, metr dla dystansu, przesiadka dla ich liczby oraz minuta dla dojścia i przyjazdu. Gdy dostępna jest tylko jedna trasa, karta wyjaśnia brak innych wariantów do porównania.
+
+Te opisy dotyczą otrzymanych wariantów. Nie zmieniają wyznaczania, kolejności, personalizacji, wybranej trasy ani ETA. Nie oceniają marszu lub roweru jako wygodniejszych na podstawie samej liczby skrętów; dla tych trybów opisują czas i dystans. Karta w mniejszym panelu pokazuje dwie najważniejsze cechy; rozwinięta lista i VoiceOver przedstawiają wszystkie.
+
 ## Trasy samochodem, pieszo i rowerem
 
 `ValhallaRouteProvider` wysyła żądania HTTPS `POST /route` oraz `POST /sources_to_targets` dla macierzy dojść pieszych. Przekazuje:

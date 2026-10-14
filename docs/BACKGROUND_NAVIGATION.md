@@ -10,7 +10,7 @@ Zapis TripRecord jest podłączony w AppDependencies, niezależnie od widoku.
 - Podgląd: odczyt GPS na żądanie, bez aktualizacji w tle.
 - Prowadzenie/rerouting: ciągły GPS, map matching, postęp, głos, wykrywanie zjazdu i utrudnień. Samochód używa automotiveNavigation, pieszy/rower/komunikacja otherNavigation.
 - Ekran nieaktywny: mapa jest usuwana z drzewa widoków. Dismantle anuluje zadania POI/ścieżek rowerowych i display link. Sesja anuluje zadania kamery, ale zachowuje prowadzenie.
-- Dojazd: co najmniej trzy różne świeże próbki przez minimum 5 sekund, prędkość poniżej 5 km/h, dokładność do 30 m, cel poniżej 50 m i pozostała trasa poniżej 75 m. Pojedynczy punkt, punkt stary lub przejazd obok celu nie kończą podróży.
+- Dojazd: co najmniej trzy różne świeże próbki przez minimum 5 sekund, prędkość poniżej 5 km/h i dokładność do 30 m. Samochód rozpoznaje cel w promieniu 100 m od wskazanego miejsca lub wybranego punktu dojazdu, również z drugiej strony i poza końcowym przebiegiem trasy. Jeśli pozostały przystanki pośrednie lub ładowania, nadal wymaga mniej niż 75 m pozostałej trasy. Pozostałe tryby wymagają celu w promieniu 50 m i mniej niż 75 m pozostałej trasy. Pojedynczy punkt, punkt stary lub przejazd obok celu z prędkością co najmniej 5 km/h nie kończą podróży.
 - Koniec: zatrzymanie GPS nawigacyjnego, anulowanie reroutingu, zakończenie Live Activity i jeden zapis TripRecord. Przy dojeździe samochodem punkt zatrzymania jest zachowany dla istniejącego, opcjonalnego zapisu parkingu.
 
 UIBackgroundModes zawiera location i audio. LocationManager utrzymuje

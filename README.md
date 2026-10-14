@@ -2,6 +2,8 @@
 
 Natywna aplikacja nawigacyjna dla iOS w SwiftUI. Mapa używa MapLibre Native i kafli OpenFreeMap.
 
+Tryb „Satelitarna” łączy bezpłatne zdjęcia lotnicze GUGiK w Polsce z globalną mozaiką Sentinel‑2 EOX z 2016 roku (CC BY 4.0), bez klucza API. Zdjęcia wymagają internetu. Wybór znajduje się w ustawieniach mapy; [źródła, licencje i ograniczenia](docs/MAPA_SATELITARNA.md).
+
 ## Dostępne funkcje
 
 - Wyszukiwanie miejsc przez Photon i Apple MapKit, z GUGiK UUG do zatwierdzonych polskich adresów i reverse geocodingu wskazanego punktu w Polsce; pole obsługuje też wyszukiwanie głosem po polsku. Osobny zakres wyszukuje przystanki w obszarach z danymi Transitous oraz lokalne stacje i linie kolejowe i MPK Łódź. Tryby podróży to Auto, Pieszo, Rower, Komunikacja publiczna i P+R. Dotknięcie POI na mapie otwiera kartę bez zmiany celu; jeśli pod dotknięciem jest kilka obiektów, można wybrać właściwy. Karta pokazuje od razu podstawowe dane, a adres, godziny, telefon, stronę, dostępność dla wózków i oznaczenia parkingu dociąga z OpenStreetMap. Szczegóły są cache'owane do 24 godzin. Podczas nawigacji karta proponuje dodanie miejsca jako przystanku i szacuje czas objazdu. Valhalla wyznacza trasy samochodowe, piesze i rowerowe; GPS, rerouting i komunikaty głosowe działają dla tych tras.
@@ -25,11 +27,21 @@ Szczegółowy opis algorytmu i danych używanych do wyznaczania tras komunikacj�
 
 Podstawy wyznaczania tras samochodowych, preferencje kierowcy, wpływ ruchu na ETA i wybór wariantu, objazdy, planowanie EV oraz ograniczenia opisuje [docs/CAR_ROUTING.md](docs/CAR_ROUTING.md).
 
+Zakres integracji TomTom, używane API i dane, odświeżanie, wpływ na trasę oraz konfigurację klucza opisuje [docs/TOMTOM.md](docs/TOMTOM.md).
+
 Opis palety barw interfejsu, tras, zdarzeń oraz mapy znajduje się w [docs/COLORS.md](docs/COLORS.md).
 
 Personalizowane modele pozycji, ekran „Twój znacznik” oraz zasady kierunku i jakości GPS opisano w [docs/NAVIGATION_MARKERS.md](docs/NAVIGATION_MARKERS.md).
 
 Do kompilacji iOS wymagany jest pełny Xcode z obsługą iOS 27.
+
+Jeżeli Xcode zgłasza `Missing package product 'MapLibre'` lub `Missing package product 'Valhalla'`, a log rozwiązywania pakietów zawiera błąd HTTP 400 przy pobieraniu podmodułów Valhalli, uruchom z katalogu projektu:
+
+```sh
+bash scripts/resolve-ios-packages.sh
+```
+
+Polecenie pobiera zależności do standardowej pamięci pakietów Xcode przez systemowy Git z HTTP/1.1 i protokołem Git 0. Ustawienia obowiązują tylko podczas jego działania; nie zmienia globalnej konfiguracji Git ani wersji bibliotek. Po zakończeniu pakiety są dostępne dla zwykłego budowania iOS w Xcode.
 
 
 ## Interfejs mapy i kontekst podróży

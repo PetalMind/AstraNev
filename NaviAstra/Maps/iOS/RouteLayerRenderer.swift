@@ -415,8 +415,9 @@ final class RouteLayerRenderer {
     }
 
     private func activeRouteLegs(for route: NavigationRoute) -> RouteLegGeometry {
+        let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
         return RouteMapGeometry.activeLeg(in: route.coordinates,
-                                          from: parent.state.location?.coordinate,
+                                          from: isNavigating ? parent.state.location?.coordinate : nil,
                                           through: parent.state.waypoints + parent.state.evChargingStops)
     }
 
@@ -511,7 +512,8 @@ final class RouteLayerRenderer {
             completedCasing.lineJoin = NSExpression(forConstantValue: "round")
             completedCasing.lineColorTransition = MLNTransitionMake(0.3, 0)
             completedCasing.lineWidthTransition = MLNTransitionMake(0.3, 0)
-            style.addLayer(completedCasing)
+            // Previously traveled geometry must not cover the remaining route at crossings or loops.
+            style.insertLayer(completedCasing, below: casing)
         }
         let completedLine: MLNLineStyleLayer
         if let existing = style.layer(withIdentifier: completedLineID) as? MLNLineStyleLayer {
@@ -522,7 +524,7 @@ final class RouteLayerRenderer {
             completedLine.lineJoin = NSExpression(forConstantValue: "round")
             completedLine.lineColorTransition = MLNTransitionMake(0.3, 0)
             completedLine.lineWidthTransition = MLNTransitionMake(0.3, 0)
-            style.addLayer(completedLine)
+            style.insertLayer(completedLine, below: casing)
         }
         for (id, sourceLayer) in [("naviastra-completed-route-tail-casing", completedCasing),
                                   ("naviastra-completed-route-tail-line", completedLine)] {

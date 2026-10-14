@@ -218,6 +218,25 @@ extension ContentView {
 
     @ViewBuilder
     var navigationRoadSafetyBanner: some View {
+        if let zone = navigationStore.state.roadZoneNotice,
+           MapDisplayPriorityEngine.canPresentRouteAlerts(navigationStore.state) {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                if context.date < (navigationStore.state.roadZoneNoticeExpiresAt ?? .distantPast) {
+                    Label(zone.title, systemImage: "signpost.right.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(12)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 15))
+                } else {
+                    upcomingRoadSafetyBanner
+                }
+            }
+        } else {
+            upcomingRoadSafetyBanner
+        }
+    }
+
+    @ViewBuilder
+    private var upcomingRoadSafetyBanner: some View {
         if let alert = nextNavigationRoadSafetyAlert {
             let remainingDistance = max(0, (alert.distanceAlongRoute ?? navigationStore.state.roadAlertRouteDistance)
                                         - navigationStore.state.roadAlertRouteDistance)
@@ -240,14 +259,7 @@ extension ContentView {
     }
 
     var nextNavigationRoadSafetyAlert: RoadSafetyAlert? {
-        let routeDistance = navigationStore.state.roadAlertRouteDistance
-        return navigationStore.state.roadSafetyAlerts
-            .filter { alert in
-                guard alert.type.isTrafficSign || alert.type.isEnforcement || alert.type == .speedLimitChange,
-                      let distance = alert.distanceAlongRoute else { return false }
-                return distance >= routeDistance && distance <= routeDistance + 2_000
-            }
-            .min { ($0.distanceAlongRoute ?? .infinity) < ($1.distanceAlongRoute ?? .infinity) }
+        MapDisplayPriorityEngine.upcomingAlerts(in: navigationStore.state).first
     }
 
     @ViewBuilder
@@ -262,7 +274,7 @@ extension ContentView {
                 .overlay(RoadStopSignShape().stroke(.white, lineWidth: 1.5).padding(3))
         case .speedLimitSign:
             Text(alert.signCode?.hasSuffix("B-34") == true
-                 ? "END" : (alert.speedLimitKph.map(String.init) ?? "?"))
+                 ? "KONIEC" : (alert.speedLimitKph.map(String.init) ?? "?"))
                 .font(.system(size: alert.speedLimitKph == nil ? 9 : 13, weight: .bold, design: .rounded))
                 .foregroundStyle(Color(naviHex: NaviAstraColorPalette.roadSignRed))
                 .frame(width: 38, height: 38)

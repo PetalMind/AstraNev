@@ -203,10 +203,12 @@ struct CombinedRoadDataProvider: RoadDataProvider {
         switch (osmData, canardData) {
         case (.success(let base), .success(let official)):
             return RoadDataSnapshot(speedSegments: base.speedSegments,
-                                    alerts: Self.merge(base.alerts, official.alerts), fetchedAt: min(base.fetchedAt, official.fetchedAt))
+                                    alerts: Self.merge(base.alerts, official.alerts), fetchedAt: min(base.fetchedAt, official.fetchedAt),
+                                    roadSegments: base.roadSegments)
         case (.success(let base), .failure):
             return RoadDataSnapshot(speedSegments: base.speedSegments, alerts: base.alerts,
-                                    fetchedAt: base.fetchedAt, unavailableSources: ["CANARD"])
+                                    fetchedAt: base.fetchedAt, unavailableSources: ["CANARD"],
+                                    roadSegments: base.roadSegments)
         case (.failure, .success(let official)):
             return RoadDataSnapshot(speedSegments: [], alerts: official.alerts,
                                     fetchedAt: official.fetchedAt, unavailableSources: ["OpenStreetMap"])
