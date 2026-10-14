@@ -9,7 +9,7 @@ niebieski, czarny, biały, czerwony, srebrny i fioletowy.
 Klasyczna strzałka ma osobny wybór tych samych sześciu kolorów, widoczny po
 wybraniu „Strzałka”. Jej kolor jest zapisywany niezależnie od kolorów modeli;
 starszy zapis ustawień bez koloru strzałki zachowuje pozostałe wybory i przyjmuje
-niebieską strzałkę. Podgląd oraz mapy iOS i macOS używają wybranego koloru.
+niebieską strzałkę. Podgląd oraz mapa używają wybranego koloru.
 
 Wielkość znacznika można zwiększyć. Wybór modelu nie zmienia profilu wyznaczania trasy.
 Dotychczasowy przełącznik `transportPositionIconsEnabled` zachowuje znaczenie:
@@ -38,7 +38,7 @@ profile trasy ani jako opcje wyglądu nieobsługiwanego sposobu podróży.
   próbkowane co 5 stopni. Cache obrazów ma budżet kosztu 12 MiB; geometria
   jest współdzielona między ujęciami. Modele nie wymagają sieci ani silnika 3D.
 - `NavigationMarkerNativeView` rysuje model, ring, kierunek i jakość jako
-  warstwy natywne. iOS/MapLibre i macOS/MapKit korzystają z tego samego widoku;
+  warstwy natywne. Mapa MapLibre korzysta z tego widoku;
   SwiftUI nie otrzymuje klatek pozycji do ponownego budowania interfejsu.
 
 Kotwica podłoża i środek ringu leżą na współrzędnych użytkownika. Wysokość

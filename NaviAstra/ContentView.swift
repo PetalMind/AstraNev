@@ -9,6 +9,16 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) var reduceMotion
     @Environment(\.scenePhase) var scenePhase
     @Namespace var transportSelectionNamespace
+#if os(iOS)
+    @State var iosTripPresentation: IOSPlannedTripPresentation?
+    @State var pendingIOSTripPresentation: IOSPlannedTripPresentation?
+    @State var iosReturnToTripLibrary = false
+    @State var iosTripLibraryFocusID: UUID?
+#endif
+    @State var plannedTripDraft: PlannedTrip?
+    @State var pendingPlannedTripID: UUID?
+    @State var pendingPlannedTripOccurrence: Date?
+    @State var tripPlanning: TripPlanningService
     @State var navigationStore: NavigationStore
     @State var appRouter: AppRouter
     @State var searchStore: SearchStore
@@ -105,6 +115,7 @@ struct ContentView: View {
     }
 
     init(dependencies: AppDependencies) {
+        _tripPlanning = State(initialValue: dependencies.tripPlanning)
         _energyStore = State(initialValue: dependencies.energyStore)
         _navigationStore = State(initialValue: dependencies.navigationStore)
         _appRouter = State(initialValue: dependencies.router)

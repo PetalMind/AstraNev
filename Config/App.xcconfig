@@ -1,2 +1,2 @@
-// Shared app configuration for iOS and macOS, Debug and Release.
+// Konfiguracja aplikacji iOS dla Debug i Release.
 #include "Secrets.local.xcconfig"

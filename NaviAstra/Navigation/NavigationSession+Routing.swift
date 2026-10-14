@@ -63,7 +63,10 @@ extension NavigationSession {
             state.route = firstRoute; state.routeOptions = routes
             if state.transportMode == .car {
                 RoutingDiagnostics.shared.publish(.make(routes: routes, preference: state.routingPreferences.advanced.effectiveRoutePreference,
-                    selected: firstRoute.id, source: "reroute-complete", calculationSeconds: ProcessInfo.processInfo.systemUptime - calculationStarted))
+                    selected: firstRoute.id, source: "reroute-complete", calculationSeconds: ProcessInfo.processInfo.systemUptime - calculationStarted,
+                    personalOrder: DrivingLearningEngine.shared.settings.enabled ? routes.map(\.id) : nil,
+                    personalEvidence: DrivingLearningEngine.shared.diagnosticAssessments(routes,
+                        preference: state.routingPreferences.advanced.effectiveRoutePreference)))
             }
             state.pendingWaypointIDs = []
             if usesRoadVoiceGuidance { loadRoadData(for: firstRoute) }
@@ -125,10 +128,13 @@ extension NavigationSession {
             try await calculateRoutesForCurrentPlan(from: from, to: to, through: through,
                                                     commitEVStops: commitEVStops)
         }
-        if mode == .car, generation == requestGeneration, preferences == state.routingPreferences {
+        if mode == .car, RoadRoutingContext.allowsPersonalization, generation == requestGeneration, preferences == state.routingPreferences {
             RoutingDiagnostics.shared.publish(.make(routes: routes, preference: preferences.advanced.effectiveRoutePreference,
                 selected: routes.first?.id, source: preferences.evPlanningEnabled ? "ev-plan" : "road-plan",
-                calculationSeconds: ProcessInfo.processInfo.systemUptime - started))
+                calculationSeconds: ProcessInfo.processInfo.systemUptime - started,
+                personalOrder: DrivingLearningEngine.shared.settings.enabled ? routes.map(\.id) : nil,
+                    personalEvidence: DrivingLearningEngine.shared.diagnosticAssessments(routes,
+                        preference: state.routingPreferences.advanced.effectiveRoutePreference)))
         }
         return routes
     }
@@ -537,8 +543,10 @@ extension NavigationSession {
         guard generation == requestGeneration, rerouteGeneration == rerouteController.generation,
               state.routingPreferences == preferences else { throw CancellationError() }
         guard !feasible.isEmpty else { throw lastPlanningError ?? EVPlanningError.chargersUnavailable }
-        let ranked = Array(RouteSimilarity.diverse(RouteScoringEngine.ranked(feasible,
-            preference: preferences.advanced.effectiveRoutePreference)).prefix(3))
+        let ordered = RoadRoutingContext.allowsPersonalization
+            ? DrivingLearningEngine.shared.ranked(feasible, preference: preferences.advanced.effectiveRoutePreference)
+            : RouteScoringEngine.ranked(feasible, preference: preferences.advanced.effectiveRoutePreference)
+        let ranked = Array(RouteSimilarity.diverse(ordered).prefix(3))
         if commitChargingStops {
             state.evChargingStops = ranked[0].chargingStops.map(\.destination)
             _ = await routedDestinations(state.evChargingStops, mode: .car)
@@ -659,7 +667,7 @@ extension NavigationSession {
                               self.state.route?.id == routeID,
                               self.state.destination?.id == destinationID else { return }
                         let safeRoutes = routes.filter { !avoidance.intersects($0) }
-                        let ranked = RouteScoringEngine.ranked(safeRoutes,
+                        let ranked = DrivingLearningEngine.shared.ranked(safeRoutes,
                             preference: self.state.routingPreferences.advanced.effectiveRoutePreference)
                         guard let alternative = ranked.first else { throw RoutingError.invalidResponse }
                         if self.state.routingPreferences.evPlanningEnabled {
@@ -679,7 +687,11 @@ extension NavigationSession {
                         }
                         RoutingDiagnostics.shared.publish(.make(routes: ranked,
                             preference: self.state.routingPreferences.advanced.effectiveRoutePreference,
-                            selected: alternative.id, source: "validated-closure-detour", calculationSeconds: nil))
+                            selected: alternative.id, source: "validated-closure-detour", calculationSeconds: nil,
+                            personalOrder: DrivingLearningEngine.shared.settings.enabled ? ranked.map(\.id) : nil,
+                    personalEvidence: DrivingLearningEngine.shared.diagnosticAssessments(ranked,
+                        preference: self.state.routingPreferences.advanced.effectiveRoutePreference)))
+                        self.learningAllowsDeviations = false
                         self.state.route = alternative
                         self.state.routeOptions = ranked
                         self.state.pendingWaypointIDs = []

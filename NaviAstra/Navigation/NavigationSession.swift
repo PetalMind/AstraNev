@@ -4,6 +4,7 @@ import Foundation
 @MainActor
 final class NavigationSession {
     let state = NavigationState()
+    var plannedTripCalculation = false
     var selectedVehicleID: (() -> UUID?)?
     lazy var mapCameraController = MapCameraController(
         state: state,
@@ -121,6 +122,15 @@ final class NavigationSession {
     var lastTransitRideDistance = 0.0
     var tripSession: TripSession?
     var onTripFinished: ((TripRecord) -> Void)?
+    var learningOriginalRoute: NavigationRoute?
+    var learningContext: DrivingPreferenceContext?
+    var learningCosting = "auto"
+    var learningAllowsDeviations = true
+    var learningRecordingGeneration: Int?
+    var learningOfferedRoutes: [NavigationRoute] = []
+    var learningSelectedRouteID: UUID?
+    var learningExplicitlySelectedRouteID: UUID?
+    var learningSelectedAgainstAlternative = false
 
     init(dependencies: NavigationSessionDependencies) {
         routeProvider = dependencies.routeProvider
@@ -190,6 +200,9 @@ final class NavigationSession {
         didStartLocation = true
         locationStartedAt = Date()
         locationManager.prepareAuthorization()
+        if let provider = routeProvider as? ValhallaRouteProvider {
+            DrivingLearningEngine.shared.processPending(endpoint: provider.endpoint)
+        }
         refreshEnergyPolicy()
     }
 
@@ -353,6 +366,7 @@ final class NavigationSession {
         state.laterTransitRoutes = []
         state.didSearchLaterTransitRoutes = false
         state.route = selectedRoute
+        learningExplicitlySelectedRouteID = selectedRoute.id
         state.evChargingStops = selectedRoute.chargingStops.map(\.destination)
         if usesRoadVoiceGuidance { loadRoadData(for: selectedRoute) }
         state.transitProgress = nil
@@ -445,6 +459,18 @@ final class NavigationSession {
                                       tracksDriving: state.transportMode == .car,
                                       transportMode: state.transportMode,
                                       vehicleID: state.transportMode == .car ? selectedVehicleID?() : nil)
+            let learningEnabled = state.transportMode == .car && DrivingLearningEngine.shared.settings.enabled
+                && state.waypoints.isEmpty && route.chargingStops.isEmpty
+            learningOfferedRoutes = learningEnabled ? Array(state.routeOptions.filter { $0.chargingStops.isEmpty }.prefix(5)) : []
+            learningOriginalRoute = learningEnabled ? learningOfferedRoutes.first ?? route : nil
+            learningSelectedRouteID = learningEnabled ? route.id : nil
+            learningSelectedAgainstAlternative = learningExplicitlySelectedRouteID == route.id
+                && learningOfferedRoutes.count > 1 && learningOfferedRoutes.first?.id != route.id
+            learningRecordingGeneration = DrivingLearningEngine.shared.recordingGeneration
+            learningContext = DrivingPreferenceContext(date: Date(),
+                trafficLevel: DrivingPreferenceContext.measuredTrafficLevel(state.traffic))
+            learningCosting = state.routingPreferences.advanced.costing(for: state.transportMode)
+            learningAllowsDeviations = state.traffic?.incidents.isEmpty != false
         }
         invalidateSpeedLimit(preservingRoadBuffer: true)
         if usesRoadVoiceGuidance, let location = state.location {
@@ -535,6 +561,9 @@ final class NavigationSession {
         tripSession?.record(navigationLocation,
                             speedLimitKph: state.transportMode == .car
                                 ? drivingSpeedLimit(at: navigationLocation) : nil)
+        if state.traffic?.incidents.contains(where: { $0.affectsRouting && $0.isActive() }) == true {
+            learningAllowsDeviations = false
+        }
         updateProgress()
         if appIsForeground, state.transportMode == .walking,
            (state.status == .navigating || state.status == .rerouting) {
@@ -839,6 +868,21 @@ final class NavigationSession {
                                 vehicleID: session.vehicleID)
         state.lastTrip = record
         onTripFinished?(record)
+        DrivingLearningEngine.shared.enqueue(record, proposed: learningOriginalRoute, costing: learningCosting,
+            context: learningContext ?? DrivingPreferenceContext(date: record.startedAt),
+            allowAutomaticDeviations: learningAllowsDeviations,
+            recordingGeneration: learningRecordingGeneration, offeredRoutes: learningOfferedRoutes,
+            selectedRouteID: learningSelectedRouteID, selectedAgainstAlternative: learningSelectedAgainstAlternative)
+        learningOriginalRoute = nil
+        learningContext = nil
+        learningRecordingGeneration = nil
+        learningOfferedRoutes = []
+        learningSelectedRouteID = nil
+        learningExplicitlySelectedRouteID = nil
+        learningSelectedAgainstAlternative = false
+        if let provider = routeProvider as? ValhallaRouteProvider {
+            DrivingLearningEngine.shared.processPending(endpoint: provider.endpoint)
+        }
     }
 
 

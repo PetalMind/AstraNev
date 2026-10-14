@@ -20,7 +20,7 @@ Planowanie tras, wyszukiwanie przystanków, tablice odjazdów i przystanki na ma
 
 `TransitousMapper` przekształca itineraria API w model podróży aplikacji, a `TransitNavigationRouteMapper` zachowuje etapy, identyfikatory kursów i przystanków, czasy, geometrię oraz opóźnienia. Identyfikatory Transitous mają prefiks `transitous/`, aby nie pomylić ich z identyfikatorami lokalnych feedów. Szczegóły i tablice rozpoznają ten prefiks i odpytują właściwe źródło.
 
-Renderery MapLibre na iOS i MapKit na macOS przekazują widoczne granice oraz poziom zbliżenia do `TransitStore`. Dane przystanków mapy łączą się z regionalnymi przystankami z feedu pojazdów, a powtórzone identyfikatory są usuwane.
+Renderer MapLibre przekazuje widoczne granice oraz poziom zbliżenia do `TransitStore`. Dane przystanków mapy łączą się z regionalnymi przystankami z feedu pojazdów, a powtórzone identyfikatory są usuwane.
 
 ## Cache i ograniczenia
 
@@ -44,5 +44,5 @@ Publiczny kontakt dla nagłówka `User-Agent` można ustawić w Ustawieniach. Sz
 - `NaviAstra/Transit/Transitous/TransitousClient.swift` — żądania API oraz cache.
 - `NaviAstra/Transit/Transitous/TransitousMapper.swift` — mapowanie itinerariów i kursów.
 - `NaviAstra/Transit/TransitStore.swift` — stan szczegółów oraz opóźnione pobieranie przystanków mapy.
-- `NaviAstra/Maps/MapLibreView.swift` i `NaviAstra/Maps/MacMapView.swift` — granice widocznego obszaru na iOS i macOS.
+- `NaviAstra/Maps/MapLibreView.swift` — granice widocznego obszaru mapy.
 - `NaviAstra/Transit/TransitRepository+Queries.swift` — lokalne wyszukiwanie, rozkłady i pozycje MPK.

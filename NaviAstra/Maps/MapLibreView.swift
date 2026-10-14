@@ -830,8 +830,9 @@ struct MapLibreView: UIViewRepresentable {
             searchMapCenterWorkItem?.cancel()
             let workItem = DispatchWorkItem { [weak self] in
                 guard let self else { return }
+                let threshold = self.parent.scene.precisePointSelection ? 1.0 : 35.0
                 if let current = self.parent.state.searchMapCenter,
-                   current.distance(to: center) < 35 { return }
+                   current.distance(to: center) < threshold { return }
                 self.parent.state.searchMapCenter = center
             }
             searchMapCenterWorkItem = workItem

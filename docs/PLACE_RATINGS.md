@@ -70,6 +70,5 @@ Publiczne API zwróciło prawdziwą opinię dla `Argentino` pod współrzędnymi
 46.0040648, 8.9514821 z oceną 25 (2/5 według standardu). Zapytanie dla Sukiennic
 w Krakowie zwróciło pusty zestaw, co potwierdza potrzebę stanu „Brak ocen”.
 Nie dodano testów jednostkowych ani testów nawigacji dla tej zmiany.
-Kontrola składni zmienionych plików, `git diff --check` oraz kompilacja Debug
-schematu `NaviAstraMac` bez podpisywania zakończyły się powodzeniem. Nie
+Kontrola składni zmienionych plików oraz `git diff --check` zakończyły się powodzeniem. Nie
 uruchamiano aplikacji ani nie weryfikowano wyglądu na iOS.

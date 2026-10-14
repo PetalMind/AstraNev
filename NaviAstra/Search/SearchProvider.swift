@@ -143,10 +143,7 @@ struct SearchResult: Identifiable {
         if merged.city == nil { merged.city = other.city }
         if merged.countryCode == nil { merged.countryCode = other.countryCode }
         if merged.destination.address == nil, let address = other.destination.address {
-            merged.destination = Destination(name: merged.destination.name,
-                                             coordinate: merged.destination.coordinate,
-                                             address: address,
-                                             poi: merged.destination.poi)
+            merged.destination.address = address
         }
         return merged
     }

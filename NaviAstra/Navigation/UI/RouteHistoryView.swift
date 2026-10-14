@@ -478,6 +478,9 @@ struct TripHistoryDetail: View {
     private var currentPoint: TripTracePoint? { trip.tracePoint(at: elapsed) }
     private var duration: Double { max(1, trip.duration) }
     private var currentTrip: TripRecord { places?.trips.first { $0.id == trip.id } ?? trip }
+    private var learningEndpoint: URL? {
+        URL(string: UserDefaults.standard.string(forKey: "routingServer") ?? "https://valhalla1.openstreetmap.de")
+    }
 
     var body: some View {
         ScrollView {
@@ -492,6 +495,18 @@ struct TripHistoryDetail: View {
                     Label(trip.arrived ? "Dotarto do celu" : "Przerwano podróż",
                           systemImage: trip.arrived ? "flag.checkered" : "stop.circle")
                         .foregroundStyle(Color.naviTextSecondary)
+                    if trip.transportMode == .car, trip.arrived, trip.trace.count >= 3,
+                       trip.waypoints.isEmpty, DrivingLearningEngine.shared.settings.enabled,
+                       let endpoint = learningEndpoint {
+                        if DrivingLearningEngine.shared.isRemembered(trip.id) {
+                            Label("Trasa zapamiętana", systemImage: "heart.fill")
+                                .foregroundStyle(Color.accentColor)
+                        } else {
+                            Button("Zapamiętaj tę trasę", systemImage: "heart") {
+                                DrivingLearningEngine.shared.rememberHistoricalTrip(trip, endpoint: endpoint)
+                            }
+                        }
+                    }
                 }
                 .font(.subheadline)
 

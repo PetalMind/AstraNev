@@ -9,6 +9,7 @@ private struct AppScene: View {
 
     var body: some View {
         ContentView(dependencies: dependencies)
+            .environment(\.locale, PolishRegionalFormat.locale)
             .task {
                 dependencies.navigationStore.setAppIsForeground(appPhase == .active)
                 dependencies.navigationStore.startLocation()
@@ -44,7 +45,10 @@ struct NaviAstraApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @State private var dependencies = AppDependencies.live()
 
-    init() { BackgroundMaintenance.register() }
+    init() {
+        TripNotificationDelegate.shared.install()
+        BackgroundMaintenance.register()
+    }
 
     var body: some Scene {
         #if os(macOS)

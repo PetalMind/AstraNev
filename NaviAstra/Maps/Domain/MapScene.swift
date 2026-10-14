@@ -41,6 +41,7 @@ struct MapScene {
     var weather = WeatherVisualConfiguration()
     var weatherSamples: [RouteWeatherSample] = []
     var selectedPlace: SearchResult? = nil
+    var precisePointSelection = false
 
     var placeMarkers: [SearchResult] {
         let showsOnlyRouteEndpoints = navigationState.destination != nil && navigationState.status != .idle

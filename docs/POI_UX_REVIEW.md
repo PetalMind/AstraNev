@@ -22,8 +22,6 @@ To panel przyczepiony do mapy, zbudowany przez `NavigationBottomSheet`, a nie sy
 
 Pierwsze informacje są częściowo dostępne z wyniku wyszukiwania lub kafla mapy. Szczegóły, czas dojazdu i zdjęcia są uzupełniane asynchronicznie. Przy aktywnej nawigacji karta opisuje szacowany objazd, a główna akcja brzmi „Dodaj przystanek”. Zdjęcia są wtedy pomijane. Gdy pozycja lub tryb transportu nie pozwala na oszacowanie dojazdu, panel pokazuje jego niedostępność.
 
-Na macOS ta sama ścieżka używa systemowego arkusza z `NavigationStack` i pełnej karty w `ScrollView`. Kod deklaruje detenty `.medium` i `.large`, ale nie wiąże ich wyboru z `selectedMapPlaceDetent`. Nie należy utożsamiać jego zachowania z trzema własnymi poziomami panelu iOS.
-
 Wyszukiwarka oraz lista miejsc w pobliżu mają jeszcze inną ścieżkę: `PlaceSearchResultRow` rozwija pełną kartę wewnątrz listy. Nie otwiera przy tym opisywanego panelu mapy. Poprawki wspólnych komponentów obejmują również te karty, ale ich mechanizm otwierania pozostaje taki sam.
 
 ## Najważniejsze problemy i ich wpływ
@@ -96,4 +94,4 @@ Po zmianie nadal możliwe są przesunięcia treści, gdy źródło dostarczy dł
 
 ## Weryfikacja
 
-Sprawdzono składnię zmienionych plików Swift i poprawność diffów. Kompilacja iOS Debug dla `generic/platform=iOS`, bez podpisywania, zakończyła się powodzeniem. Nie dodawano ani nie uruchamiano testów funkcjonalnych dla tej korekty UI. Nie wykonano oceny na uruchomionym urządzeniu ani porównania zrzutów; opisy układu i gestów wynikają z analizy kodu. Weryfikacja nie obejmuje kompilacji targetu macOS.
+Sprawdzono składnię zmienionych plików Swift i poprawność diffów. Kompilacja iOS Debug dla `generic/platform=iOS`, bez podpisywania, zakończyła się powodzeniem. Nie dodawano ani nie uruchamiano testów funkcjonalnych dla tej korekty UI. Nie wykonano oceny na uruchomionym urządzeniu ani porównania zrzutów; opisy układu i gestów wynikają z analizy kodu.

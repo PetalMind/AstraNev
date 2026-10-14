@@ -309,13 +309,18 @@ extension NavigationSession {
                 selected: currentRouteID, source: "traffic-comparison-before-switch", calculationSeconds: ProcessInfo.processInfo.systemUptime - comparisonStarted,
                 samplingCount: totalQueries,
                 samplingBudget: self.state.trafficSamplingBudget,
-                gpsMatchQuality: self.state.routeMatch?.match.confidence, starts: starts, traffic: snapshots))
+                gpsMatchQuality: self.state.routeMatch?.match.confidence, starts: starts, traffic: snapshots,
+                personalOrder: DrivingLearningEngine.shared.settings.enabled
+                    ? DrivingLearningEngine.shared.ranked(scores.map { $0.route },
+                        preference: requestedPreferences.advanced.effectiveRoutePreference, from: starts, traffic: snapshots).map(\.id) : nil,
+                personalEvidence: DrivingLearningEngine.shared.diagnosticAssessments(scores.map { $0.route },
+                    preference: requestedPreferences.advanced.effectiveRoutePreference, starts: starts, traffic: snapshots)))
             guard generation == self.trafficGeneration,
                   self.trafficRouteSelectionGeneration == selectionGeneration,
                   self.state.route?.id == currentRouteID, self.state.status == .navigating,
                   self.state.routingPreferences == requestedPreferences,
                   self.state.location?.coordinate.distance(to: location) ?? .infinity < 100,
-                  let recommended = RouteScoringEngine.ranked(scores.map { $0.route },
+                  let recommended = DrivingLearningEngine.shared.ranked(scores.map { $0.route },
                       preference: requestedPreferences.advanced.effectiveRoutePreference,
                       from: starts, traffic: snapshots).first,
                   let best = scores.first(where: { $0.route.id == recommended.id }),
@@ -335,9 +340,15 @@ extension NavigationSession {
                 selected: best.route.id, source: "traffic-switch", calculationSeconds: ProcessInfo.processInfo.systemUptime - comparisonStarted,
                 samplingCount: totalQueries,
                 samplingBudget: self.state.trafficSamplingBudget,
-                gpsMatchQuality: self.state.routeMatch?.match.confidence, starts: starts, traffic: snapshots))
+                gpsMatchQuality: self.state.routeMatch?.match.confidence, starts: starts, traffic: snapshots,
+                personalOrder: DrivingLearningEngine.shared.settings.enabled
+                    ? DrivingLearningEngine.shared.ranked(scores.map { $0.route },
+                        preference: requestedPreferences.advanced.effectiveRoutePreference, from: starts, traffic: snapshots).map(\.id) : nil,
+                personalEvidence: DrivingLearningEngine.shared.diagnosticAssessments(scores.map { $0.route },
+                    preference: requestedPreferences.advanced.effectiveRoutePreference, starts: starts, traffic: snapshots)))
+            self.learningAllowsDeviations = false
             self.state.route = best.route
-            self.state.routeOptions = RouteScoringEngine.ranked(scores.map { $0.route },
+            self.state.routeOptions = DrivingLearningEngine.shared.ranked(scores.map { $0.route },
                 preference: requestedPreferences.advanced.effectiveRoutePreference,
                 from: starts, traffic: snapshots)
             self.state.evChargingStops = best.route.chargingStops.map(\.destination)

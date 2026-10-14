@@ -245,7 +245,7 @@ nonisolated enum RouteColorPalette {
     static let cyclingLight: UInt32 = NaviAstraColorPalette.cyclingRouteDay
     static let cyclingDark: UInt32 = NaviAstraColorPalette.cyclingRouteNight
     static let traveled: UInt32 = 0x485563
-    static let trafficFree: UInt32 = NaviAstraColorPalette.success
+    static let trafficFree: UInt32 = NaviAstraColorPalette.navigationActiveNight
     static let trafficModerate: UInt32 = NaviAstraColorPalette.trafficModerate
     static let trafficSlow: UInt32 = NaviAstraColorPalette.trafficSlow
     static let trafficHeavy: UInt32 = NaviAstraColorPalette.danger
@@ -277,6 +277,9 @@ nonisolated enum RoadRoutingContext {
     @TaskLocal static var cancellationToken: TransitPlanningCancellationToken?
     @TaskLocal static var heading: Double?
     @TaskLocal static var planningTime: ValhallaPlanningTime?
+    @TaskLocal static var preferenceDate: Date?
+    @TaskLocal static var allowsPersonalization = true
+    @TaskLocal static var personalRoutingHints = false
     @TaskLocal static var closurePolygons: [[[Double]]] = []
 
     static func checkCancellation() throws {

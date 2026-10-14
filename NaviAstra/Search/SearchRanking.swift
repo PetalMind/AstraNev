@@ -1,6 +1,58 @@
 import Foundation
 
 enum SearchRanking {
+    static func locationMatch(_ result: SearchResult, location: String) -> Int {
+        let tokens = QueryClassifier.normalize(location)
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
+            .filter { !["ul", "ulica", "al", "aleja", "aleje"].contains($0) }
+        let address = normalizedIdentity([
+            result.destination.name, result.destination.address, result.street,
+            result.houseNumber, result.city
+        ].compactMap { $0 }.joined(separator: " "))
+        return tokens.filter { address.contains($0) }.count
+    }
+
+    static func precedes(_ lhs: SearchResult, _ rhs: SearchResult,
+                         intent: ClassifiedQuery, context: SearchContext,
+                         withTravelEstimates: Bool = false) -> Bool {
+        if lhs.isContact != rhs.isContact { return lhs.isContact }
+        if withTravelEstimates, intent.alongRoute, lhs.detour != rhs.detour {
+            return (lhs.detour ?? .infinity) < (rhs.detour ?? .infinity)
+        }
+        if intent.intent == .brand || intent.intent == .category {
+            if let location = intent.location {
+                let leftMatch = locationMatch(lhs, location: location)
+                let rightMatch = locationMatch(rhs, location: location)
+                if leftMatch != rightMatch { return leftMatch > rightMatch }
+            }
+            // Extra provider metadata must not push a nearby branch out of the top 8.
+            // Keep the same order while ETA values are being filled in.
+            if !intent.alongRoute, lhs.straightDistance != rhs.straightDistance {
+                return (lhs.straightDistance ?? .infinity) < (rhs.straightDistance ?? .infinity)
+            }
+        }
+        let leftRelevance = relevance(lhs, intent: intent)
+        let rightRelevance = relevance(rhs, intent: intent)
+        if leftRelevance != rightRelevance { return leftRelevance > rightRelevance }
+        if withTravelEstimates, !intent.alongRoute, lhs.travelTime != rhs.travelTime {
+            return (lhs.travelTime ?? .infinity) < (rhs.travelTime ?? .infinity)
+        }
+        if intent.alongRoute {
+            let leftOffset = MapMatcher.project(lhs.destination.coordinate, onto: context.route)?
+                .distanceFromRoute ?? .infinity
+            let rightOffset = MapMatcher.project(rhs.destination.coordinate, onto: context.route)?
+                .distanceFromRoute ?? .infinity
+            if leftOffset != rightOffset { return leftOffset < rightOffset }
+        }
+        if withTravelEstimates {
+            let leftLocal = context.localDestinations.contains { $0.coordinate.distance(to: lhs.destination.coordinate) < 20 }
+            let rightLocal = context.localDestinations.contains { $0.coordinate.distance(to: rhs.destination.coordinate) < 20 }
+            if leftLocal != rightLocal { return leftLocal }
+        }
+        return (lhs.straightDistance ?? .infinity) < (rhs.straightDistance ?? .infinity)
+    }
+
     static func relevance(_ result: SearchResult, intent: ClassifiedQuery) -> Double {
         let query = normalizedIdentity(intent.text)
         let name = normalizedIdentity(result.destination.name)
@@ -52,6 +104,11 @@ enum SearchDeduplicator {
         routeOrigin: Coordinate?
     ) -> [SearchResult] {
         var unique: [SearchResult] = []
+        // A street's geocoded midpoint only scopes provider requests. Rank its
+        // branches from the selected map area or the user's position, not that
+        // midpoint, which can be several kilometres down the same street.
+        let proximityCenter = intent.intent == .brand || intent.intent == .category
+            ? context.area ?? context.origin ?? searchCenter : searchCenter
         for result in candidates {
             if intent.intent == .brand {
                 let names = [result.destination.name, result.brand, result.operatorName]
@@ -68,25 +125,14 @@ enum SearchDeduplicator {
                 continue
             }
             var value = result
-            value.straightDistance = searchCenter.map { $0.distance(to: result.destination.coordinate) }
+            value.straightDistance = proximityCenter.map { $0.distance(to: result.destination.coordinate) }
             value.requiresRouteEstimate = true
             value.travelEstimateStatus = routeOrigin == nil ? .unavailable : .calculating
             unique.append(value)
         }
 
         return unique.sorted { lhs, rhs in
-            if lhs.isContact != rhs.isContact { return lhs.isContact }
-            let lhsRelevance = SearchRanking.relevance(lhs, intent: intent)
-            let rhsRelevance = SearchRanking.relevance(rhs, intent: intent)
-            if lhsRelevance != rhsRelevance { return lhsRelevance > rhsRelevance }
-            if intent.alongRoute {
-                let lhsOffset = MapMatcher.project(lhs.destination.coordinate, onto: context.route)?
-                    .distanceFromRoute ?? .infinity
-                let rhsOffset = MapMatcher.project(rhs.destination.coordinate, onto: context.route)?
-                    .distanceFromRoute ?? .infinity
-                if lhsOffset != rhsOffset { return lhsOffset < rhsOffset }
-            }
-            return (lhs.straightDistance ?? .infinity) < (rhs.straightDistance ?? .infinity)
+            SearchRanking.precedes(lhs, rhs, intent: intent, context: context)
         }
     }
 

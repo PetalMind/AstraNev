@@ -36,6 +36,10 @@ extension ContentView {
     private var settingsForm: some View {
         Form {
             Section("Nawigacja") {
+                settingsCategory("Personalizacja tras", subtitle: "Twoje trasy, skróty i preferowane drogi",
+                                 icon: "point.3.connected.trianglepath.dotted") {
+                    DrivingPersonalizationView(endpoint: URL(string: serverAddress))
+                }
                 NavigationLink("Zasięg, ślady GPS i obszary omijane") {
                     ValhallaToolsView(endpoint: URL(string: serverAddress),
                         origin: navigationStore.state.location?.coordinate,

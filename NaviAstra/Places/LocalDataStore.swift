@@ -381,6 +381,10 @@ final class LocalDataStore {
     func addTrip(_ trip: TripRecord) {
         var updated = trips
         updated.insert(trip, at: 0)
+        let cutoff = Date().addingTimeInterval(-365 * 86_400)
+        for index in updated.indices where index >= 300 || updated[index].startedAt < cutoff {
+            updated[index].trace = []
+        }
         if persist(updated, file: "trips.json") { trips = updated }
     }
     func recordSearch(_ destination: Destination) {
@@ -395,7 +399,10 @@ final class LocalDataStore {
     }
     func removeTrip(_ id: UUID) {
         let updated = trips.filter { $0.id != id }
-        if persist(updated, file: "trips.json") { trips = updated }
+        if persist(updated, file: "trips.json") {
+            trips = updated
+            DrivingLearningEngine.shared.removeTrip(id)
+        }
     }
     @discardableResult private func persist<T: Encodable>(_ value: T, file: String) -> Bool {
         do {

@@ -111,9 +111,14 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
             "admin_crossings": true
         ]
         if let heading = RoadRoutingContext.heading {
-            var locations = payload["locations"] as! [[String: Double]]
+            var locations = payload["locations"] as! [[String: Any]]
             locations[0]["heading"] = heading
             locations[0]["heading_tolerance"] = 45
+            payload["locations"] = locations
+        }
+        if RoadRoutingContext.personalRoutingHints, !through.isEmpty {
+            var locations = payload["locations"] as! [[String: Any]]
+            for index in 1..<(locations.count - 1) { locations[index]["type"] = "via" }
             payload["locations"] = locations
         }
         if !avoiding.isEmpty {
@@ -140,9 +145,30 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
         let (data, offline) = try await routeData(for: request, mode: mode)
         try RoadRoutingContext.checkCancellation()
-        let routes = try decodeRoutes(data, mode: mode, costing: preferences.advanced.costing(for: mode), offline: offline)
+        var routes = try decodeRoutes(data, mode: mode, costing: preferences.advanced.costing(for: mode), offline: offline)
         guard mode == .car else { return routes }
-        let ranked = RouteScoringEngine.ranked(routes, preference: preferences.advanced.effectiveRoutePreference)
+        if RoadRoutingContext.allowsPersonalization, through.isEmpty, !preferences.evPlanningEnabled,
+           preferences.advanced.effectiveRoutePreference != .shortest {
+            let hints = DrivingLearningEngine.shared.candidateHints(from: from, to: to,
+                context: DrivingPreferenceContext(date: RoadRoutingContext.preferenceDate ?? Date()), baseline: routes.first)
+            for points in hints {
+                try RoadRoutingContext.checkCancellation()
+                do {
+                    // Every historical variant is recalculated using today's restrictions.
+                    routes += try await RoadRoutingContext.$personalRoutingHints.withValue(true) {
+                        try await calculateRoutes(from: from, to: to, through: points, mode: mode,
+                                                  preferences: preferences, avoiding: avoiding)
+                    }
+                } catch {
+                    try RoadRoutingContext.checkCancellation()
+                    // An unavailable familiar road must never make the ordinary plan fail.
+                }
+            }
+        }
+        let ranked = RoadRoutingContext.allowsPersonalization
+            ? DrivingLearningEngine.shared.ranked(routes, preference: preferences.advanced.effectiveRoutePreference,
+                date: RoadRoutingContext.preferenceDate ?? Date())
+            : RouteScoringEngine.ranked(routes, preference: preferences.advanced.effectiveRoutePreference)
         return RouteSimilarity.diverse(ranked)
     }
 

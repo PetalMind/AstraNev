@@ -30,6 +30,7 @@ struct RoutingDiagnosticsView: View {
                 }
                 if let archiveError = diagnostics.archiveError { Text(archiveError).foregroundStyle(.orange) }
             }
+            DrivingLearningDiagnosticsView()
             if let matching = navigation.state.mapMatchingResult {
                 Section("Dopasowanie pozycji") {
                     LabeledContent("Droga", value: matching.roadName ?? "Brak nazwy")
@@ -66,6 +67,14 @@ struct RoutingDiagnosticsView: View {
                                 .font(.headline)
                             Text("\(meters(candidate.distance)) · \(candidate.eta.map { Int(ceil($0 / 60)).description + " min" } ?? "Droga zablokowana")")
                             Text(candidate.reason).font(.caption)
+                            if let personal = candidate.personalEvidence {
+                                Text("Wpływ personalizacji: \(personal.appliedWeight.formatted(.percent))")
+                                    .font(.caption)
+                                ForEach(Array(personal.contributions.prefix(8).enumerated()), id: \.offset) { _, contribution in
+                                    Text("\(contribution.reason.title): pewność \(number(contribution.metrics.confidence)), siła \(number(contribution.metrics.strength)), dopasowanie \(number(contribution.metrics.relevance)), aktualność \(number(contribution.metrics.recency))")
+                                        .font(.caption)
+                                }
+                            }
                             Text("Czas \(number(candidate.normalized.time)) · dystans \(number(candidate.normalized.distance)) · manewry \(candidate.normalized.comfort.map(number) ?? "brak danych")")
                                 .font(.caption.monospaced())
                             Text("Nawierzchnia: \(candidate.normalized.surface.map(number) ?? "brak porównywalnych danych") · ruch: \(candidate.normalized.reliability.map(number) ?? "brak porównywalnych danych")")

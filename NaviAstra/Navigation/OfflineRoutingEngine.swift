@@ -27,6 +27,30 @@ actor OfflineRoutingEngine {
     }
 
     func route(request: Data, pack: OfflineRoutingPack?, mode: TransportMode) throws -> Data {
+        try prepareEngine(pack: pack, mode: mode)
+        guard let engine, let json = String(data: request, encoding: .utf8) else { throw RoutingError.invalidResponse }
+        do {
+            let response = try engine.route(rawRequest: json)
+            try Task.checkCancellation()
+            guard let data = response.data(using: .utf8) else { throw RoutingError.invalidResponse }
+            return data
+        } catch is CancellationError { throw CancellationError() }
+        catch { throw OfflineRoutingFailure.incompleteCoverage(error.localizedDescription) }
+    }
+
+    func traceAttributes(request: Data, pack: OfflineRoutingPack) throws -> Data {
+        try prepareEngine(pack: pack, mode: .car)
+        guard let engine, let json = String(data: request, encoding: .utf8) else { throw RoutingError.invalidResponse }
+        do {
+            let response = try engine.traceAttributes(rawRequest: json)
+            try Task.checkCancellation()
+            guard let data = response.data(using: .utf8) else { throw RoutingError.invalidResponse }
+            return data
+        } catch is CancellationError { throw CancellationError() }
+        catch { throw OfflineRoutingFailure.incompleteCoverage(error.localizedDescription) }
+    }
+
+    private func prepareEngine(pack: OfflineRoutingPack?, mode: TransportMode) throws {
         try Task.checkCancellation()
         guard let pack else { throw OfflineRoutingFailure.missingPack }
         if pack.motorVehiclesOnly && mode != .car { throw OfflineRoutingFailure.unsupportedProfile }
@@ -39,14 +63,6 @@ actor OfflineRoutingEngine {
             engine = try makeEngine(archive: archive, configName: "offline-routing.json")
             enginePackID = pack.id
         }
-        guard let engine, let json = String(data: request, encoding: .utf8) else { throw RoutingError.invalidResponse }
-        do {
-            let response = try engine.route(rawRequest: json)
-            try Task.checkCancellation()
-            guard let data = response.data(using: .utf8) else { throw RoutingError.invalidResponse }
-            return data
-        } catch is CancellationError { throw CancellationError() }
-        catch { throw OfflineRoutingFailure.incompleteCoverage(error.localizedDescription) }
     }
 
     func install(file: URL, name: String, motorVehiclesOnly: Bool, expectedSHA256: String? = nil) throws -> OfflineRoutingPack {

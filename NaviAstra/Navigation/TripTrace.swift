@@ -1,7 +1,7 @@
 import Foundation
 import MapKit
 
-struct TripTracePoint: Codable {
+nonisolated struct TripTracePoint: Codable, Sendable {
     let coordinate: Coordinate
     let timestamp: Date
     let speedKph: Double?
@@ -42,6 +42,20 @@ struct TripTraceRecorder {
         points.append(TripTracePoint(coordinate: location.coordinate, timestamp: location.timestamp,
                                     speedKph: speed, startsSegment: needsSegment))
         needsSegment = false
+        if points.count > 12_000 {
+            points = points.enumerated().compactMap { index, point in
+                index == 0 || index == points.count - 1 || index.isMultiple(of: 2)
+                    || point.startsSegment || (index + 1 < points.count && points[index + 1].startsSegment)
+                    ? point : nil
+            }
+            if points.count > 12_000 {
+                points = Array(points.suffix(12_000))
+                if let first = points.first {
+                    points[0] = TripTracePoint(coordinate: first.coordinate, timestamp: first.timestamp,
+                        speedKph: first.speedKph, startsSegment: true)
+                }
+            }
+        }
     }
 }
 

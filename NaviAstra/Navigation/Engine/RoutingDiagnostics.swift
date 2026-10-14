@@ -16,6 +16,8 @@ nonisolated struct RoutingDecisionCandidate: Codable, Identifiable, Sendable {
     let coverage: TrafficCoverage
     let geometry: [Coordinate]
     let reason: String
+    var personalRank: Int? = nil
+    var personalEvidence: DrivingRouteAssessment? = nil
 }
 
 nonisolated struct RoutingDecisionRecord: Codable, Identifiable, Sendable {
@@ -44,17 +46,19 @@ nonisolated struct RoutingDecisionRecord: Codable, Identifiable, Sendable {
                 [normalized.time, normalized.distance].allSatisfy { $0.isFinite && (0...1).contains($0) } &&
                 [normalized.comfort, normalized.surface, normalized.reliability].allSatisfy { $0.map { $0.isFinite && (0...1).contains($0) } ?? true } &&
                 candidate.geometry.count <= 200_000 && candidate.geometry.allSatisfy(\.isValidValhallaCoordinate)
+                    && (candidate.personalRank.map { (0..<32).contains($0) } ?? true)
         }
     }
 
     static func make(routes: [NavigationRoute], preference: RoutePreference, selected: UUID?,
                      source: String, calculationSeconds: Double?, samplingCount: Int? = nil,
                      samplingBudget: Int? = nil, gpsMatchQuality: Double? = nil,
-                     starts: [UUID: Double] = [:], traffic: [UUID: TrafficSnapshot] = [:], failure: String? = nil) -> Self {
+                     starts: [UUID: Double] = [:], traffic: [UUID: TrafficSnapshot] = [:], failure: String? = nil,
+                     personalOrder: [UUID]? = nil, personalEvidence: [UUID: DrivingRouteAssessment]? = nil) -> Self {
         let scores = routes.map { RouteScoringEngine.score($0, from: starts[$0.id] ?? 0, traffic: traffic[$0.id]) }
         let normalized = RouteScoringEngine.normalized(scores)
         let values = RouteScoringEngine.rankingValues(scores, preference: preference)
-        let recommended = routes.indices.sorted {
+        let recommended = personalOrder?.first ?? routes.indices.sorted {
             if values[$0] != values[$1] { return values[$0] < values[$1] }
             if scores[$0].travelTime != scores[$1].travelTime { return scores[$0].travelTime < scores[$1].travelTime }
             if scores[$0].distance != scores[$1].distance { return scores[$0].distance < scores[$1].distance }
@@ -78,6 +82,9 @@ nonisolated struct RoutingDecisionRecord: Codable, Identifiable, Sendable {
             var reasons: [String] = []
             if selected == route.id { reasons.append("Aktywny wariant") }
             if recommended == route.id { reasons.append("Rekomendacja: \(preference.title)") }
+            if let position = personalOrder?.firstIndex(of: route.id) {
+                reasons.append("Pozycja po personalizacji: \(position + 1); wynik bazowy bez zmiany ETA")
+            }
             if let fastest, score.travelTime.isFinite { reasons.append("\(Int((score.travelTime - fastest).rounded())) s względem najszybszego wariantu") }
             if !score.hasManeuverData { reasons.append("Brak danych manewrów") }
             reasons.append("\(turns.filter { RouteScoringEngine.maneuverCost($0.kind) > 0 }.count) manewrów kierunkowych")
@@ -90,7 +97,8 @@ nonisolated struct RoutingDecisionRecord: Codable, Identifiable, Sendable {
                 tollDistance: !turns.isEmpty && turns.allSatisfy({ $0.information?.toll == false }) ? 0 : nil,
                 roughManeuverDistance: distance { $0.rough }, tollManeuverDistance: distance { $0.toll },
                 coverage: TrafficCoverage.measure(route: route, from: starts[route.id] ?? 0, traffic: traffic[route.id]),
-                geometry: route.coordinates, reason: reasons.joined(separator: "; "))
+                geometry: route.coordinates, reason: reasons.joined(separator: "; "),
+                personalRank: personalOrder?.firstIndex(of: route.id), personalEvidence: personalEvidence?[route.id])
         }
         return Self(schemaVersion: 1, id: UUID(), timestamp: .now, source: source,
             appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String, preference: preference,

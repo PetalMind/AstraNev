@@ -491,6 +491,28 @@ extension ContentView {
 
     private var rootPresentationContent: some View {
         rootMapContent
+            .task(id: scenePhase) {
+                guard scenePhase == .active else { return }
+                if tripPlanning.requestedTripID != nil { appRouter.present(.plannedTrips) }
+                while !Task.isCancelled {
+                    await tripPlanning.refreshUpcoming()
+                    do { try await Task.sleep(for: .seconds(300)) } catch { return }
+                }
+            }
+            .onChange(of: tripPlanning.requestedTripID) { _, id in
+                if id != nil { appRouter.present(.plannedTrips) }
+            }
+            .onChange(of: navigationStore.state.status) { _, status in
+                if status == .navigating, let id = pendingPlannedTripID, let occurrence = pendingPlannedTripOccurrence,
+                   tripPlanning.trips.first(where: { $0.id == id })?.destination.id == navigationStore.state.destination?.id {
+                    pendingPlannedTripID = nil
+                    pendingPlannedTripOccurrence = nil
+                    tripPlanning.complete(id, occurrence: occurrence)
+                } else if status == .idle {
+                    pendingPlannedTripID = nil
+                    pendingPlannedTripOccurrence = nil
+                }
+            }
             .transaction { transaction in
                 if reduceMotion { transaction.animation = nil }
             }
@@ -500,6 +522,9 @@ extension ContentView {
             }
             .preferredColorScheme(rootPreferredColorScheme)
 #if os(iOS)
+            .fullScreenCover(item: $iosTripPresentation, onDismiss: finishIOSPlanning) { presentation in
+                iosTripWorkspace(presentation)
+            }
             .fullScreenCover(isPresented: $isARNavigationPresented) {
                 if let route = navigationStore.state.route {
                     ARNavigationView(route: route,

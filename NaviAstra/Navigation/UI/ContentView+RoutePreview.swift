@@ -607,8 +607,8 @@ extension ContentView {
 
                         Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 12) {
                             GridRow {
-                                transitPreviewMetric("Odjazd", value: firstRide.departure.formatted(date: .omitted, time: .shortened), symbol: "clock")
-                                transitPreviewMetric("Przyjazd", value: journey.arrival.formatted(date: .omitted, time: .shortened), symbol: "flag.checkered")
+                                transitPreviewMetric("Odjazd", value: PolishRegionalFormat.time(firstRide.departure), symbol: "clock")
+                                transitPreviewMetric("Przyjazd", value: PolishRegionalFormat.time(journey.arrival), symbol: "flag.checkered")
                             }
                             GridRow {
                                 transitPreviewMetric("Pieszo", value: transitMetricTime(journey.walkingDuration), symbol: "figure.walk")
@@ -872,6 +872,7 @@ extension ContentView {
 
     var journeyTimeControl: some View {
         VStack(alignment: .leading, spacing: 9) {
+            planTripButton
             Text("CZAS PODRÓŻY")
                 .font(.caption2.weight(.semibold))
                 .tracking(1)
@@ -966,11 +967,7 @@ extension ContentView {
     var journeyTimeSummary: String {
         guard navigationStore.state.journeyTimeMode != .now else { return navigationStore.state.transportMode == .transit || navigationStore.state.transportMode == .parkRide
             ? "Najbliższe dostępne połączenia" : "Wyjazd teraz" }
-        let polishDateTimeFormat = Date.FormatStyle(
-            date: .abbreviated,
-            time: .shortened,
-            locale: Locale(identifier: "pl_PL"))
-        return navigationStore.state.journeyTargetTime.formatted(polishDateTimeFormat)
+        return PolishRegionalFormat.dateTime(navigationStore.state.journeyTargetTime)
     }
 
     private func transitPreviewMetric(_ title: String, value: String, symbol: String) -> some View {
@@ -997,13 +994,13 @@ extension ContentView {
                     } label: {
                         HStack(alignment: .top, spacing: 10) {
                             VStack(alignment: .leading, spacing: 3) {
-                                Text("\(firstRide.departure.formatted(date: .omitted, time: .shortened))  ·  \(time(route.expectedTravelTime))")
+                                Text("\(PolishRegionalFormat.time(firstRide.departure))  ·  \(time(route.expectedTravelTime))")
                                     .font(.subheadline.weight(.semibold).monospacedDigit())
                                     .foregroundStyle(Color.naviTextPrimary)
                                 Text(journey.legs.filter { $0.mode != "WALK" }
                                     .map { $0.line ?? "MPK" }.joined(separator: " → "))
                                     .font(.caption).foregroundStyle(Color.naviTextSecondary).lineLimit(1)
-                                Text("Przyjazd \(journey.arrival.formatted(date: .omitted, time: .shortened))")
+                                Text("Przyjazd \(PolishRegionalFormat.time(journey.arrival))")
                                     .font(.caption2.monospacedDigit()).foregroundStyle(Color.naviTextSecondary)
                             }
                             Spacer(minLength: 4)
@@ -1114,7 +1111,7 @@ extension ContentView {
                 if navigationStore.state.transportMode == .car,
                    let estimate = energyStore.estimate(vehicleID: energyStore.selectedVehicle?.id,
                        kilometers: route.distance / 1000, trips: placeStore.trips) {
-                    Text("~\(estimate.cost.formatted(.currency(code: "PLN")))")
+                    Text("~\(estimate.cost.formatted(.currency(code: "PLN").locale(PolishRegionalFormat.locale)))")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Text(routeTransitSummary(route) ?? distance(route.distance))
@@ -1122,6 +1119,12 @@ extension ContentView {
                     .foregroundStyle(Color.naviTextSecondary)
                     .lineLimit(2)
                     .minimumScaleFactor(0.82)
+                if navigationStore.state.transportMode == .car,
+                   DrivingLearningEngine.shared.isPreferred(route) {
+                    Label("Preferowana trasa", systemImage: "heart.fill")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(Color.accentColor)
+                }
             }
             .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
             .padding(.horizontal, 9)
@@ -1144,7 +1147,7 @@ extension ContentView {
         guard !lines.isEmpty else { return nil }
         let walkingMinutes = journey.legs.filter { $0.mode == "WALK" }
             .reduce(0) { $0 + max(0, Int(ceil($1.arrival.timeIntervalSince($1.departure) / 60))) }
-        let span = "\(journey.departure.formatted(date: .omitted, time: .shortened)) → \(journey.arrival.formatted(date: .omitted, time: .shortened))"
+        let span = "\(PolishRegionalFormat.time(journey.departure)) → \(PolishRegionalFormat.time(journey.arrival))"
         let walking = walkingMinutes > 0 ? "pieszo \(walkingMinutes) min" : nil
         let transfers = "\(journey.transferCount) \(transferCaption(journey.transferCount))"
         let delay = transitLegs.compactMap(\.delaySeconds).first(where: { abs($0) >= 60 })

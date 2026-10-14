@@ -101,18 +101,25 @@ extension NavigationSession {
                 let time = try await ValhallaPlanningTime.resolved(mode: requestedJourneyTimeMode,
                     date: requestedJourneyTime, coordinate: requestedJourneyTimeMode == .arriveBy ? routeDestination : origin)
                 routes = try await RoadRoutingContext.$planningTime.withValue(time) {
-                    try await calculateRoutes(from: origin, to: routeDestination)
+                    try await RoadRoutingContext.$preferenceDate.withValue(
+                        requestedJourneyTimeMode == .now ? Date() : requestedJourneyTime) {
+                        try await calculateRoutes(from: origin, to: routeDestination)
+                    }
                 }
             }
             guard generation == requestGeneration else { return }
             guard let firstRoute = routes.first else { throw RoutingError.invalidResponse }
             state.route = firstRoute
+            learningExplicitlySelectedRouteID = nil
             state.routeOptions = routes
-            if state.transportMode == .car {
+            if state.transportMode == .car, RoadRoutingContext.allowsPersonalization {
                 RoutingDiagnostics.shared.publish(.make(routes: routes,
                     preference: state.routingPreferences.advanced.effectiveRoutePreference,
                     selected: firstRoute.id, source: "preview-complete",
-                    calculationSeconds: ProcessInfo.processInfo.systemUptime - calculationStarted))
+                    calculationSeconds: ProcessInfo.processInfo.systemUptime - calculationStarted,
+                    personalOrder: DrivingLearningEngine.shared.settings.enabled ? routes.map(\.id) : nil,
+                    personalEvidence: DrivingLearningEngine.shared.diagnosticAssessments(routes,
+                        preference: state.routingPreferences.advanced.effectiveRoutePreference)))
             }
             state.status = .routePreview
             refreshEnergyPolicy()
@@ -129,8 +136,10 @@ extension NavigationSession {
             state.routeRevealProgress = 1
 #endif
             invalidateTraffic()
-            if state.transportMode == .car { refreshTraffic(force: true) }
-            if usesRoadVoiceGuidance { loadRoadData(for: firstRoute) }
+            if !plannedTripCalculation {
+                if state.transportMode == .car { refreshTraffic(force: true) }
+                if usesRoadVoiceGuidance { loadRoadData(for: firstRoute) }
+            }
         } catch {
             guard generation == requestGeneration else { return }
             state.route = nil

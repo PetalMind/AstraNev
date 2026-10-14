@@ -8,7 +8,6 @@ Ten dokument opisuje, skąd NaviAstra bierze informacje o POI (punktach zaintere
 | --- | --- | --- |
 | Wyszukiwanie tekstowe miejsca, marki lub kategorii | Photon (domyślnie `https://photon.komoot.io/api/`) oraz Apple MapKit. Dla zapytań rozpoznanych jako marka lub kategoria dochodzi lokalne wyszukiwanie OSM przez Overpass. | Wyniki są łączone, porządkowane, deduplikowane i pokazywane w wyszukiwarce. Szczegóły POI są pobierane z OSM po otwarciu karty, chyba że zostały już pobrane razem z wynikiem OSM. |
 | Dotknięcie POI na mapie iOS | Widoczny obiekt z wektorowych kafli OpenFreeMap; MapLibre odczytuje m.in. nazwę, kategorię, markę i dostępny identyfikator OSM. | Karta próbuje potwierdzić lub odnaleźć ten obiekt w OSM i pobrać jego tagi. |
-| Wybór POI na mapie macOS | Apple MapKit wyszukuje punkty zainteresowania wokół wskazanego obszaru mapy. Wynik może zawierać adres, telefon i stronę. | Karta zachowuje dostępne dane Apple i próbuje uzupełnić je danymi OSM. |
 | Szybkie wyszukiwanie w pobliżu pozycji lub celu | OpenStreetMap przez Overpass; gdy usługa nie działa albo nie zwróci miejsc, zapasowo Apple MapKit. | Wyniki OSM zawierają tagi potrzebne do filtrów i opisu. Wyniki MapKit zachowują nazwę, adres, kategorię i strefę czasową, ale nie dostarczają tagów OSM, np. typów paliwa, godzin ani złączy ładowarki. |
 | Wyszukiwanie punktu po trasie | OpenStreetMap przez Overpass. Dotyczy m.in. stacji paliw, jedzenia, parkingów, parkingów P+R i ładowarek EV. | Dane tagów z odpowiedzi służą do filtrowania i opisu kandydatów; pełne szczegóły POI trafiają również do cache. |
 
@@ -18,7 +17,7 @@ Photon i Apple MapKit obsługują bieżące podpowiedzi podczas wpisywania. [GUG
 
 Przycisk mikrofonu uruchamia polskie rozpoznawanie mowy. Rozpoznany tekst trafia do tego samego pola i uruchamia bieżące wyszukiwanie miejsc albo transportu; dotknięcie przycisku stop kończy nasłuchiwanie. System poprosi osobno o zgodę na rozpoznawanie mowy i mikrofon.
 
-Po wybraniu polskiego punktu adresowego z numerem budynku z wyniku Photon lub MapKit aplikacja może jeszcze pobrać dokładniejszą współrzędną z UUG. Dłuższe dotknięcie mapy na iOS, podwójne kliknięcie na macOS oraz wyszukanie współrzędnych może wywołać `GetAddressReverse`. Żądanie wysyłane jest tylko dla współrzędnych w przybliżonym prostokącie obejmującym Polskę (48–56°N, 13–25°E). Karta celu pokazuje wtedy najbliższy adres i odległość od wskazanego punktu; współrzędna celu pozostaje dokładnie tam, gdzie użytkownik ją wskazał.
+Po wybraniu polskiego punktu adresowego z numerem budynku z wyniku Photon lub MapKit aplikacja może jeszcze pobrać dokładniejszą współrzędną z UUG. Dłuższe dotknięcie mapy oraz wyszukanie współrzędnych może wywołać `GetAddressReverse`. Żądanie wysyłane jest tylko dla współrzędnych w przybliżonym prostokącie obejmującym Polskę (48–56°N, 13–25°E). Karta celu pokazuje wtedy najbliższy adres i odległość od wskazanego punktu; współrzędna celu pozostaje dokładnie tam, gdzie użytkownik ją wskazał.
 
 Aplikacja korzysta obecnie bezpośrednio z UUG. Nie ma lokalnego indeksu PRG ani backendu PostGIS; UUG nie zastępuje podpowiedzi adresowych podczas pisania.
 
@@ -32,15 +31,15 @@ Wyszukiwanie OSM używa tagów wynikających z rozpoznanej kategorii. Dla obszar
 
 Usługi publikują niepuste wyniki w miarę kończenia kolejnych żądań. Silnik scala najpierw identyczne identyfikatory OSM lub trwałe identyfikatory Apple Maps. Gdy nie ma wspólnego ID, porównuje nazwę, markę, operatora, kategorię, numer adresowy i odległość. Samo podobieństwo nazwy nie wystarcza do połączenia dwóch oddziałów; różne numery lokalu blokują takie dopasowanie. Do wyniku dopasowanego z innego źródła aplikacja może dołączyć brakujący adres, kontakt lub strefę czasową.
 
-Wstępny ranking uwzględnia zgodność nazwy, marki i operatora z zapytaniem, kategorię, kompletność identyfikatora oraz (jeśli Photon ją zwrócił) jego ocenę istotności. Odległość rozstrzyga wyniki o podobnej trafności. Dla wyszukiwania po trasie silnik nadal porównuje czas objazdu macierzą Valhalla; do obliczenia zachowuje szerszą pulę kandydatów, a następnie pokazuje do 8 wyników. Szacowanie może być niedostępne, gdy router nie zwróci czasu.
+Zapytanie o markę lub kategorię z dopisaną lokalizacją, np. „BP, Rzgowska”, trafia do Photon i MapKit razem z ulicą lub miejscowością. Obszar dla Overpass jest ustalany na podstawie odpowiedzi obu geokoderów; przy powtarzającej się nazwie preferowana jest pasująca lokalizacja blisko użytkownika lub wybranego obszaru mapy.
+
+Dla marek i kategorii ranking najpierw porównuje zgodność wyniku z dopisaną ulicą lub miejscowością, a następnie odległość od użytkownika albo wybranego obszaru mapy. Bogatsze metadane późniejszej odpowiedzi nie mają pierwszeństwa przed pobliskim oddziałem. Ta sama kolejność obowiązuje dla podpowiedzi i wyników końcowych; uzupełnianie ETA nie zmienia priorytetu pobliskich miejsc. Przy zwykłym wyszukiwaniu nazwy nadal uwzględniana jest trafność tekstowa. Dla wyszukiwania po trasie silnik porównuje czas objazdu macierzą Valhalla; do obliczenia zachowuje szerszą pulę kandydatów, a następnie pokazuje do 8 wyników. Szacowanie może być niedostępne, gdy router nie zwróci czasu.
 
 Wyniki Photon są przede wszystkim wynikami geokodera: zawierają nazwę/adres, położenie i — gdy jest dostępny — identyfikator obiektu OSM. Photon nie jest źródłem godzin otwarcia w tym przepływie. Godziny w karcie pochodzą z tagu `opening_hours` OSM albo z danych już dołączonych do wyszukiwania OSM.
 
 ## Wybór POI z mapy
 
 Na iOS aplikacja odczytuje POI, które są już widoczne w warstwach MapLibre. Z kafla wykorzystuje kategorię (`subclass` lub `class`), nazwę, markę i — jeśli kafel ją zawiera — `osm_id`. Gdy kilka punktów leży pod dotknięciem, karta pozwala wybrać właściwy obiekt.
-
-Na macOS wybór POI wywołuje `MKLocalSearch` wokół wskazanego miejsca i wybiera punkty, których pozycje ekranowe są blisko dotknięcia. MapKit może dostarczyć trwałe ID, strefę czasową, telefon i adres URL strony internetowej. Dostępne metadane są zachowywane, jeśli późniejsza odpowiedź OSM nie zawiera ich odpowiedników.
 
 ## Pobieranie szczegółów z OpenStreetMap
 
@@ -81,7 +80,7 @@ Jedno zdjęcie pojawia się wyłącznie po rozwinięciu karty wybranych atrakcji
 5. logo marki z `brand:wikidata` lub `operator:wikidata`, właściwości `P154` i Wikimedia Commons;
 6. ikony kategorii.
 
-Commons zwraca miniaturę do karty, stronę pliku, autora lub informację o atrybucji i nazwę licencji. Zdjęcie z Commons jest używane tylko wtedy, gdy odpowiedź zawiera nazwę licencji oraz autora/atrybucję (wyjątkiem są licencje CC0 i domena publiczna). Resolver próbuje kolejno dostępne źródła Commons i Wikidata, więc błędny plik nie blokuje następnego źródła. Podpis zdjęcia prowadzi do strony pliku Wikimedia Commons, a jeśli API udostępnia bezpieczny adres licencji, jej nazwa prowadzi bezpośrednio do tekstu licencji. API Wikimedia otrzymuje identyfikator aplikacji z adresem repozytorium. Wyniki pozytywne są przechowywane w pamięci aplikacji przez 7 dni, a brak zdjęcia przez 5 minut; pamięć ogranicza się do 256 ostatnio używanych wpisów. Przycisk ponowienia pomija cache zdjęcia i cache braku wyniku. Obraz ładuje się dopiero po otwarciu szczegółów. Jeżeli obraz źródłowy nie pobierze się, karta próbuje uzyskać statyczny podgląd Apple Look Around; bez dostępnej sceny pokazuje ikonę kategorii i nazwę miejsca zamiast bez końca wyświetlać wskaźnik ładowania. Na iOS przycisk „Rozejrzyj się” otwiera interaktywną scenę; na macOS pozostaje statyczny podgląd.
+Commons zwraca miniaturę do karty, stronę pliku, autora lub informację o atrybucji i nazwę licencji. Zdjęcie z Commons jest używane tylko wtedy, gdy odpowiedź zawiera nazwę licencji oraz autora/atrybucję (wyjątkiem są licencje CC0 i domena publiczna). Resolver próbuje kolejno dostępne źródła Commons i Wikidata, więc błędny plik nie blokuje następnego źródła. Podpis zdjęcia prowadzi do strony pliku Wikimedia Commons, a jeśli API udostępnia bezpieczny adres licencji, jej nazwa prowadzi bezpośrednio do tekstu licencji. API Wikimedia otrzymuje identyfikator aplikacji z adresem repozytorium. Wyniki pozytywne są przechowywane w pamięci aplikacji przez 7 dni, a brak zdjęcia przez 5 minut; pamięć ogranicza się do 256 ostatnio używanych wpisów. Przycisk ponowienia pomija cache zdjęcia i cache braku wyniku. Obraz ładuje się dopiero po otwarciu szczegółów. Jeżeli obraz źródłowy nie pobierze się, karta próbuje uzyskać statyczny podgląd Apple Look Around; bez dostępnej sceny pokazuje ikonę kategorii i nazwę miejsca zamiast bez końca wyświetlać wskaźnik ładowania. Przycisk „Rozejrzyj się” otwiera interaktywną scenę.
 
 W ramach obsługi zdjęć współrzędne są wysyłane do Apple przy próbie uzyskania Look Around. Zapytanie Wikidata używa identyfikatora encji OSM, a zapytanie Wikimedia Commons — wskazanego pliku; aplikacja nie wysyła nazwy miejsca do wyszukiwarki zdjęć. Jeśli karta użyje bezpośredniego tagu `image=*`, obraz pobiera host wskazany w tym tagu i widzi zwykłe żądanie sieciowe urządzenia; współrzędne nie są mu przekazywane osobno. Źródła płatne Google Places i Foursquare nie są używane.
 
@@ -117,7 +116,7 @@ Najważniejsze miejsca w kodzie:
 
 - `NaviAstra/Search/SearchEngine.swift` — rozpoznanie intencji wyszukiwania, łączenie wyników oraz zapytania POI do Overpass;
 - `NaviAstra/Search/SearchProvider.swift` — Photon i Apple MapKit;
-- `NaviAstra/Maps/MapLibreView.swift` i `NaviAstra/Maps/MacMapView.swift` — wybór POI na mapach iOS/macOS;
+- `NaviAstra/Maps/MapLibreView.swift` — wybór POI na mapie;
 - `NaviAstra/Places/PlaceDetailsProvider.swift` — tożsamość miejsca, dopasowanie obiektu OSM, pobranie tagów i cache;
 - `NaviAstra/Places/PlacePhotoProvider.swift` — filtrowanie zdjęć, atrybucja Wikimedia i fallback Look Around;
 - `NaviAstra/Places/PlaceOpeningHours.swift` — adapter parsera składni OSM, kalendarz lokalny i tygodniowe przedziały;

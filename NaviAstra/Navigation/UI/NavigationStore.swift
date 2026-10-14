@@ -19,7 +19,9 @@ final class NavigationStore {
         self.session = session
     }
 
-    func freshFuelLocation() async -> NavigationLocation? {
+    func freshFuelLocation() async -> NavigationLocation? { await freshDepartureLocation() }
+
+    func freshDepartureLocation() async -> NavigationLocation? {
         guard let raw = await session.locationManager.freshLocation(precise: true) else { return nil }
         return NavigationLocation(coordinate: Coordinate(latitude: raw.coordinate.latitude, longitude: raw.coordinate.longitude),
             speed: raw.speed, course: raw.course, accuracy: raw.horizontalAccuracy,

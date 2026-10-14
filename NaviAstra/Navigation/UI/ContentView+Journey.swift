@@ -1881,6 +1881,27 @@ extension ContentView {
                 .modifier(ArrivalSectionEntrance(delay: 0.34))
 
             VStack(spacing: 10) {
+                if let trip = navigationStore.state.lastTrip,
+                   DrivingLearningEngine.shared.isRemembered(trip.id) {
+                    Label("Trasa zapamiętana", systemImage: "heart.fill")
+                        .font(.subheadline).foregroundStyle(Color.accentColor)
+                }
+                if let trip = navigationStore.state.lastTrip,
+                   DrivingLearningEngine.shared.canRemember(trip.id),
+                   let endpoint = URL(string: serverAddress) {
+                    if DrivingLearningEngine.shared.shouldSuggest(trip.id) {
+                        Text("Wybrałeś inny wariant drogi. Zapamiętać go?")
+                            .font(.subheadline).foregroundStyle(Color.naviTextSecondary)
+                        Button("Nie teraz") { DrivingLearningEngine.shared.dismissSuggestion(trip.id) }
+                            .font(.caption)
+                    }
+                    Button {
+                        DrivingLearningEngine.shared.remember(trip.id, endpoint: endpoint)
+                    } label: {
+                        arrivalActionLabel(symbol: "heart", title: "Zapamiętaj tę trasę")
+                    }
+                    .buttonStyle(ArrivalActionButtonStyle())
+                }
                 HStack(spacing: 10) {
                     Button {
                         if !isDestinationFavorite, let destination = navigationStore.state.destination {

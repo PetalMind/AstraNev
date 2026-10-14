@@ -24,7 +24,9 @@ nonisolated enum RoutingBenchmarkSuite {
         let cases = records.map { record -> RoutingBenchmarkCase in
             let scores = record.candidates.map(\.rawScore)
             let values = RouteScoringEngine.rankingValues(scores, preference: record.preference)
-            let winner = scores.indices.sorted {
+            let personalizedWinner = record.candidates.filter { $0.personalRank != nil }
+                .min { ($0.personalRank ?? .max) < ($1.personalRank ?? .max) }?.id
+            let winner = personalizedWinner ?? scores.indices.sorted {
                 if values[$0] != values[$1] { return values[$0] < values[$1] }
                 if scores[$0].travelTime != scores[$1].travelTime { return scores[$0].travelTime < scores[$1].travelTime }
                 if scores[$0].distance != scores[$1].distance { return scores[$0].distance < scores[$1].distance }

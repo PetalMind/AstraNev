@@ -18,7 +18,9 @@ final class BackgroundMaintenance {
         registered = true
         BGTaskScheduler.shared.register(forTaskWithIdentifier: refreshID, using: .main) { task in
             let work = Task {
+                await TripPlanningService.shared.refreshUpcoming()
                 await OpenStreetMapPlaceDetailsProvider.maintainCache()
+                if !Task.isCancelled { schedule() }
                 task.setTaskCompleted(success: !Task.isCancelled)
             }
             task.expirationHandler = { work.cancel() }
@@ -52,7 +54,11 @@ final class BackgroundMaintenance {
         BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: refreshID)
         BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: processingID)
         let refresh = BGAppRefreshTaskRequest(identifier: refreshID)
-        refresh.earliestBeginDate = Date().addingTimeInterval(6 * 3_600)
+        let nextDeparture = TripPlanningService.shared.upcomingTrips.compactMap { trip in
+            trip.occurrences(after: Date()).first.flatMap { trip.departure(for: $0) }
+        }.min()
+        refresh.earliestBeginDate = nextDeparture.map { max(Date().addingTimeInterval(15 * 60), $0.addingTimeInterval(-3_600)) }
+            ?? Date().addingTimeInterval(6 * 3_600)
         let processing = BGProcessingTaskRequest(identifier: processingID)
         processing.earliestBeginDate = Date().addingTimeInterval(24 * 3_600)
         processing.requiresNetworkConnectivity = true

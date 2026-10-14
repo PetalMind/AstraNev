@@ -71,4 +71,4 @@ zapisanego dystansu. Przebieg licznika zachowuje pierwszeństwo.
 
 ### Wskazanie stacji na mapie
 
-W szczegółach stacji paliw na mapie przycisk „Dodaj tankowanie” otwiera formularz dla tego konkretnego miejsca. Nazwa, współrzędne i identyfikator stacji pochodzą z wybranego POI, niezależnie od bieżącej pozycji GPS. Cena podlega tym samym regułom daty raportu i ręcznej edycji co przy automatycznym rozpoznaniu postoju. Bez pojazdu spalinowego lub hybrydowego można dodać go w tym samym oknie, zachowując stację. Na macOS formularz otwiera się po zamknięciu szczegółów miejsca.
+W szczegółach stacji paliw na mapie przycisk „Dodaj tankowanie” otwiera formularz dla tego konkretnego miejsca. Nazwa, współrzędne i identyfikator stacji pochodzą z wybranego POI, niezależnie od bieżącej pozycji GPS. Cena podlega tym samym regułom daty raportu i ręcznej edycji co przy automatycznym rozpoznaniu postoju. Bez pojazdu spalinowego lub hybrydowego można dodać go w tym samym oknie, zachowując stację.

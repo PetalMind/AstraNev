@@ -5,7 +5,7 @@ Dokument opisuje semantyczny system kolorów aplikacji oraz kartografię MapLibr
 ## Zasady systemu
 
 - **Mapa jest neutralna.** Niska saturacja i różnice jasności budują obraz bazowy; kolor sygnalizuje trasę, wybraną rzecz albo stan.
-- **Kolor ma stałe znaczenie.** Fiolet oznacza markę i wybór, niebieski trasę, cyan bieżącą pozycję, a zielony, żółty, pomarańczowy i czerwony stany ruchu lub alerty.
+- **Kolor ma stałe znaczenie.** Fiolet oznacza markę i wybór, niebieski trasę i płynny ruch, cyan bieżącą pozycję, a żółty, pomarańczowy i czerwony spowolnienia lub alerty. Zielony oznacza sukces.
 - **Hierarchia trasy zależy od trybu mapy.** W dzień aktywna trasa jest ciemniejsza od białych dróg. W nocy trasa jest jaśniejsza od przygaszonych dróg. Podczas prowadzenia główne drogi MapLibre dodatkowo ciemnieją.
 - **Kolor nie jest jedynym nośnikiem informacji.** Wykorzystujemy także szerokość i wzór linii, obrys, ikonę, kształt markera i osobne badge'e.
 - **Kolor linii transportowej opisuje przewoźnika.** Opóźnienie lub punktualność jest oddzielnym stanem i badge'em.
@@ -31,7 +31,7 @@ Początek i cel odróżnia przede wszystkim kształt: `A`/okrąg dla początku, 
 
 | Znaczenie | Kolor | Dodatkowe kodowanie |
 | --- | --- | --- |
-| Płynnie | `#2BB673` | Cienka linia. |
+| Płynnie | `#5AA2FF` | Niebieska linia trasy. |
 | Wolniej | `#F5C227` | Średnia szerokość. |
 | Korek | `#FF8A1F` | Grubsza linia. |
 | Duży korek / ruch zatrzymany | `#E5383B` | Gruba, przerywana linia. |
@@ -69,14 +69,14 @@ Panel manewru, ETA, odległość i nazwa ulicy mają stabilne, nieprzezroczyste 
 | Drogi główne — aktywna nawigacja | `#FFFFFF` z obrysem `#C3CCD2` | `#2F3D49` |
 | Etykiety | `#2B3640` | `#C5D0D8` |
 
-Podczas aktywnej nawigacji MapLibre przyciemnia drogi bazowe i ich etykiety, aby aktywna trasa pozostała najczytelniejsza. W eksploracji zachowuje jaśniejsze drogi główne. Dekoracyjne wzory lasu i fal wody dodają teksturę, ale nie wprowadzają nowego kodu znaczeniowego. MacOS używa bazowej kartografii MapKit; wspólne tokeny dotyczą tam tras, markerów, alertów i własnych warstw.
+Podczas aktywnej nawigacji MapLibre przyciemnia drogi bazowe i ich etykiety, aby aktywna trasa pozostała najczytelniejsza. W eksploracji zachowuje jaśniejsze drogi główne. Dekoracyjne wzory lasu i fal wody dodają teksturę, ale nie wprowadzają nowego kodu znaczeniowego.
 
 ## Źródła w kodzie
 
 - `NaviAstra/App/ColorPalette.swift` i `NaviAstra/Assets.xcassets/AccentColor.colorset/Contents.json` — tokeny i akcent marki.
 - `NaviAstra/App/UI/NavigationChrome.swift` — szkło, stabilna powierzchnia manewru i HUD.
 - `NaviAstra/Maps/MapLibreStyle.swift` — kolorystyka bazowej mapy i jej uspokojenie podczas prowadzenia.
-- `NaviAstra/Maps/iOS/RouteLayerRenderer.swift`, `NaviAstra/Maps/macOS/MacRouteRenderer.swift`, `NaviAstra/Maps/MapLibreView.swift` — kolor, grubość, obrysy i wzory tras.
+- `NaviAstra/Maps/iOS/RouteLayerRenderer.swift`, `NaviAstra/Maps/MapLibreView.swift` — kolor, grubość, obrysy i wzory tras.
 - `NaviAstra/Traffic/TrafficProvider.swift` i `NaviAstra/Traffic/RouteTrafficMonitor.swift` — kolory ruchu, alerty i zamknięcia.
-- `NaviAstra/Maps/PlacePOIMapMarker.swift`, `NaviAstra/Maps/MacMapView.swift`, `NaviAstra/Maps/RoadSignView.swift` — wybrane POI, bieżąca pozycja i realistyczne znaki.
+- `NaviAstra/Maps/PlacePOIMapMarker.swift`, `NaviAstra/Maps/RoadSignView.swift` — wybrane POI i realistyczne znaki.
 - `NaviAstra/Transit/GTFS/GTFSDatabase.swift`, `NaviAstra/Transit/Transitous/TransitousMapper.swift` — kolory przewoźników i dane transportu.

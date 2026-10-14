@@ -617,7 +617,7 @@ extension ContentView {
             ? navigationStore.state.journeyTargetTime : Date()
         let arrival = route.journey?.arrival ?? (navigationStore.state.journeyTimeMode == .arriveBy
             ? navigationStore.state.journeyTargetTime : departure.addingTimeInterval(max(0, route.expectedTravelTime)))
-        return arrival.formatted(date: .omitted, time: .shortened)
+        return PolishRegionalFormat.time(arrival)
     }
 
     private func routePlanningTrafficSummary(for route: NavigationRoute) -> (title: String, symbol: String, color: Color)? {
@@ -641,7 +641,7 @@ extension ContentView {
             return (prefix + "umiarkowany", "car.side.fill", Color(naviHex: NaviAstraColorPalette.trafficModerate))
         }
         guard colors.contains(RouteColorPalette.trafficFree) else { return nil }
-        return (prefix + "płynny", "leaf.fill", Color(naviHex: NaviAstraColorPalette.success))
+        return (prefix + "płynny", "leaf.fill", Color(naviHex: RouteColorPalette.trafficFree))
     }
 
     @ViewBuilder
@@ -844,9 +844,9 @@ extension ContentView {
                     .minimumScaleFactor(0.75)
             }
             HStack(spacing: 4) {
-                Text("Wsiadasz \(rides.first?.departure.formatted(date: .omitted, time: .shortened) ?? journey.departure.formatted(date: .omitted, time: .shortened))")
+                Text("Wsiadasz \(rides.first.map { PolishRegionalFormat.time($0.departure) } ?? PolishRegionalFormat.time(journey.departure))")
                 Text("·")
-                Text("Przyjazd \(journey.arrival.formatted(date: .omitted, time: .shortened))")
+                Text("Przyjazd \(PolishRegionalFormat.time(journey.arrival))")
             }
             .font(.system(size: compact ? 9 : 10, weight: .medium, design: .rounded).monospacedDigit())
             .foregroundStyle(secondary)
@@ -953,7 +953,7 @@ extension ContentView {
                             .foregroundStyle(primary)
                     }
                     Spacer(minLength: 4)
-                    Text("\(leg.departure.formatted(date: .omitted, time: .shortened))–\(leg.arrival.formatted(date: .omitted, time: .shortened))")
+                    Text("\(PolishRegionalFormat.time(leg.departure))–\(PolishRegionalFormat.time(leg.arrival))")
                         .font(.system(size: 9, weight: .medium, design: .rounded).monospacedDigit())
                         .foregroundStyle(secondary)
                         .lineLimit(1)
@@ -1025,7 +1025,7 @@ extension ContentView {
             .joined(separator: " do ")
         let departure = journey.legs.first(where: { $0.mode != "WALK" })?.departure ?? journey.departure
         let lineSummary = lines.isEmpty ? "dojście pieszo" : "linie \(lines)"
-        return ", \(lineSummary), wsiadasz \(departure.formatted(date: .omitted, time: .shortened)), przyjazd \(journey.arrival.formatted(date: .omitted, time: .shortened)), pieszo \(transitMetricTime(journey.walkingDuration)), \(journey.transferCount) \(transferCaption(journey.transferCount)), \(routePlanningRealtimeSummary(for: journey).title)"
+        return ", \(lineSummary), wsiadasz \(PolishRegionalFormat.time(departure)), przyjazd \(PolishRegionalFormat.time(journey.arrival)), pieszo \(transitMetricTime(journey.walkingDuration)), \(journey.transferCount) \(transferCaption(journey.transferCount)), \(routePlanningRealtimeSummary(for: journey).title)"
     }
 
     @ViewBuilder

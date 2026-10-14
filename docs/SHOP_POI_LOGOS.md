@@ -13,12 +13,6 @@ odwracamy kodowanie OpenMapTiles (node × 10, way × 10 + 1, relation × 10 + 4)
 a dostawca szczegółów weryfikuje obiekt przez położenie i nazwę/kategorię.
 Źródło schematu: https://github.com/openmaptiles/openmaptiles/blob/master/layers/poi/poi.sql
 
-Na macOS widoczne sklepy są pobierane przez MKLocalPointsOfInterestRequest
-po zbliżeniu mapy (rozpiętość długości geograficznej poniżej 0,06°). Logotypy
-są nakładane jako własne adnotacje na bazową mapę Apple; natywne etykiety i POI
-pozostają dostępne. Adnotacje przekazują dokładny wynik Apple Maps do widoku
-szczegółów. Punkty bez logo zachowują natywne symbole.
-
 Wspólny dostawca szczegółów dopasowuje konkretny obiekt OSM. Logotyp pochodzi
 z `brand:wikidata` lub `operator:wikidata` → Wikidata P154 → Wikimedia Commons.
 Nie przypisujemy marek przez zgadywanie na podstawie nazwy. Brak identyfikacji,

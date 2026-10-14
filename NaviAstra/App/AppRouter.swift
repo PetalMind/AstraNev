@@ -9,6 +9,8 @@ enum AppSheetDestination: String, Identifiable {
     case favorites
     case energy
     case history
+    case plannedTrips
+    case planTrip
     case trafficDetails
 
     var id: String { rawValue }

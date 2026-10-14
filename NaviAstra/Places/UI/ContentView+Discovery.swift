@@ -82,6 +82,14 @@ extension ContentView {
                 }
                 .buttonStyle(.plain)
 
+                Button { appRouter.present(.plannedTrips) } label: {
+                    Label("Zaplanowane podróże", systemImage: "calendar.badge.clock")
+                        .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .modifier(NavigationGlassSurface(radius: 14))
+                }
+                .buttonStyle(.plain)
+
                 HStack(alignment: .firstTextBaseline) {
                     Text("Ostatnie miejsca")
                         .font(.headline.weight(.semibold))

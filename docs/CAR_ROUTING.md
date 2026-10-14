@@ -17,9 +17,9 @@ NaviAstra przekazuje początek, cel, punkty pośrednie i preferencje do silnika 
 | TomTom, jeśli skonfigurowany i dostępny | Prędkości ruchu i zdarzenia; korekta ETA, porównywanie istniejących wariantów, wykrywanie zamknięć |
 | Parametry EV podane przez użytkownika | Planowanie ładowania i jego szacowanego czasu |
 
-Domyślnym adresem routingu jest `https://valhalla1.openstreetmap.de`. Można skonfigurować własny serwer. Klient wymaga HTTPS; dla domyślnego hosta rozdziela żądania odstępem co najmniej 1,1 s. Zwykłe żądanie trasy ma timeout 15 s. Na macOS wyznaczanie trasy wymaga połączenia z serwerem. Na iOS zwykłe żądanie `/route` może zostać wykonane lokalnie; warunki i ograniczenia opisuje sekcja 15.
+Domyślnym adresem routingu jest `https://valhalla1.openstreetmap.de`. Można skonfigurować własny serwer. Klient wymaga HTTPS; dla domyślnego hosta rozdziela żądania odstępem co najmniej 1,1 s. Zwykłe żądanie trasy ma timeout 15 s. Na iOS zwykłe żądanie `/route` może zostać wykonane lokalnie; warunki i ograniczenia opisuje sekcja 15.
 
-Mapa wyświetlająca drogę i silnik wyznaczający trasę pełnią różne role. Użycie MapKit do renderowania na macOS nie zmienia samochodowego dostawcy tras na Apple.
+Mapa wyświetlająca drogę i silnik wyznaczający trasę pełnią różne role.
 
 ## 2. Co bierze pod uwagę silnik drogowy
 
@@ -222,7 +222,7 @@ Na iOS dostawca może uruchomić lokalną Valhallę z aktywną paczką grafu `.t
 
 Lokalny silnik otrzymuje ten sam JSON z profilem, preferencjami i wykluczeniami. Wymaga aktywnej paczki obejmującej przebieg całej drogi i ewentualnego objazdu. Nie pobiera brakujących fragmentów grafu przez internet i nie łączy automatycznie kilku paczek. Brak paczki lub pokrycia kończy się błędem. Paczka oznaczona jako przeznaczona tylko dla pojazdów silnikowych jest dopuszczana przez kod w trybie `.car`.
 
-Zwykłe planowanie i przeliczanie korzystają z tego samego dostawcy. Automatyczny dobór ładowarek wymaga internetu; przy preferowaniu offline lub wykrytym braku sieci aplikacja prosi o wyłączenie EV i ręczne dodanie postojów. Wyszukiwanie nowych miejsc, dane ruchu i planowanie na godzinę pozostają usługami sieciowymi. Na macOS ta lokalna ścieżka nie jest dostępna. Instrukcja instalacji paczek znajduje się w [OFFLINE_ROUTING.md](OFFLINE_ROUTING.md).
+Zwykłe planowanie i przeliczanie korzystają z tego samego dostawcy. Automatyczny dobór ładowarek wymaga internetu; przy preferowaniu offline lub wykrytym braku sieci aplikacja prosi o wyłączenie EV i ręczne dodanie postojów. Wyszukiwanie nowych miejsc, dane ruchu i planowanie na godzinę pozostają usługami sieciowymi. Instrukcja instalacji paczek znajduje się w [OFFLINE_ROUTING.md](OFFLINE_ROUTING.md).
 
 ## 16. Przebieg żądania od wyboru celu do mapy
 
@@ -308,7 +308,7 @@ Podobieństwo tras jest mierzone kierunkowo w komórkach co około 50 m, z toler
 
 W trakcie jazdy nadal obowiązują warunki jakości danych i minimalna oszczędność czasu przed automatycznym przełączeniem. Wygoda nie powoduje automatycznej zmiany na wolniejszą drogę podczas trwającej nawigacji. Generowanie nowych kandydatów na podstawie korków poza otrzymanymi alternatywami nie jest jeszcze zaimplementowane.
 
-Zakres P0 sprawdzono przez pięć regresji algorytmów uruchomionych na macOS w wydzielonym zestawie z rzeczywistym kodem obliczeń, kompilację aplikacji macOS oraz kompilację zestawu testowego iOS z pominięciem istniejących błędów w niezmienionych `TransitousTests.swift` i `NaviAstraTests.swift`. Nie wykonano przejazdu ani zapytań z rzeczywistą lokalizacją. W środowisku nie ma zainstalowanego runtime’u symulatora iOS. Integracja działającego serwera z wykluczaniem geometrii pozostaje niezweryfikowana w ruchu rzeczywistym.
+Zakres P0 sprawdzono przez pięć regresji algorytmów uruchomionych na macOS w wydzielonym zestawie z rzeczywistym kodem obliczeń oraz kompilację zestawu testowego iOS z pominięciem istniejących błędów w niezmienionych `TransitousTests.swift` i `NaviAstraTests.swift`. Nie wykonano przejazdu ani zapytań z rzeczywistą lokalizacją. W środowisku nie ma zainstalowanego runtime’u symulatora iOS. Integracja działającego serwera z wykluczaniem geometrii pozostaje niezweryfikowana w ruchu rzeczywistym.
 
 Parametry wykluczeń są opisane w [API Valhalli](https://valhalla.github.io/valhalla/api/route/api-reference/#other-request-options). Zakres pól zdarzeń pochodzi z [TomTom Orbis Incident Details](https://docs.tomtom.com/traffic-api/documentation/tomtom-orbis-maps/v2/traffic-incidents/incident-details), a klasy FRC i ograniczenia geometrii przepływu z [TomTom Flow Segment Data](https://docs.tomtom.com/traffic-api/documentation/tomtom-maps/v1/traffic-flow/flow-segment-data).
 

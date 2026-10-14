@@ -37,4 +37,4 @@ Przygotowane archiwum można zaimportować z Plików albo umieścić na swoim se
 
 ## Walidacja w środowisku deweloperskim
 
-Kompilacja iOS potwierdza integrację SDK i lokalnego dostawcy. Kompilacja macOS potwierdza zachowanie serwerowego trasowania na tej platformie. Brak runtime'u symulatora iOS nie pozwala uznać kompilacji za potwierdzenie uruchomienia lokalnej Valhalli. Przed wydaniem należy zweryfikować trasę i przeliczenie na urządzeniu z prawdziwą paczką oraz brak połączenia z siecią.
+Kompilacja iOS potwierdza integrację SDK i lokalnego dostawcy. Brak runtime'u symulatora iOS nie pozwala uznać kompilacji za potwierdzenie uruchomienia lokalnej Valhalli. Przed wydaniem należy zweryfikować trasę i przeliczenie na urządzeniu z prawdziwą paczką oraz brak połączenia z siecią.

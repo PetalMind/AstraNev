@@ -93,6 +93,9 @@ struct SearchEngine {
         }
         let searchCenter = center
         let routeOrigin = context.origin ?? searchCenter
+        // The suffix is part of the request, not only a geocoding hint. Searching
+        // just "BP" loses the street even when the provider knows its address.
+        let providerQuery = [intent.text, intent.location].compactMap { $0 }.joined(separator: ", ")
         // Publish provider replies before waiting for other sources or route estimates.
         let publishCandidates: ([SearchResult]) -> Void = { candidates in
             onUpdate(Array(SearchDeduplicator.mergeAndRank(
@@ -119,10 +122,10 @@ struct SearchEngine {
                 })
             }
             requests.append(.init {
-                try await photon.search(intent.text, near: searchCenter, addressesOnly: false, osmTag: photonTag)
+                try await photon.search(providerQuery, near: searchCenter, addressesOnly: false, osmTag: photonTag)
             })
             requests.append(.init {
-                try await MapKitSearchProvider().search(intent.text, near: searchCenter)
+                try await MapKitSearchProvider().search(providerQuery, near: searchCenter)
             })
             if ContactsAccessStatus.current().canReadContacts {
                 requests.append(.init {
@@ -229,19 +232,7 @@ struct SearchEngine {
         }
         try Task.checkCancellation()
         results.sort { a, b in
-            // Along-route results minimize added journey time; other searches keep text relevance first.
-            if a.isContact != b.isContact { return a.isContact }
-            let aTime = intent.alongRoute ? a.detour : a.travelTime
-            let bTime = intent.alongRoute ? b.detour : b.travelTime
-            let aRelevance = SearchRanking.relevance(a, intent: intent)
-            let bRelevance = SearchRanking.relevance(b, intent: intent)
-            if intent.alongRoute, aTime != bTime { return (aTime ?? .infinity) < (bTime ?? .infinity) }
-            if aRelevance != bRelevance { return aRelevance > bRelevance }
-            if !intent.alongRoute, aTime != bTime { return (aTime ?? .infinity) < (bTime ?? .infinity) }
-            let aLocal = context.localDestinations.contains { $0.coordinate.distance(to: a.destination.coordinate) < 20 }
-            let bLocal = context.localDestinations.contains { $0.coordinate.distance(to: b.destination.coordinate) < 20 }
-            if aLocal != bLocal { return aLocal }
-            return (a.straightDistance ?? .infinity) < (b.straightDistance ?? .infinity)
+            SearchRanking.precedes(a, b, intent: intent, context: context, withTravelEstimates: true)
         }
         let visibleResults = Array(results.prefix(8))
         onUpdate(visibleResults)
@@ -250,15 +241,29 @@ struct SearchEngine {
 
     private func resolve(_ location: String, near center: Coordinate?) async throws -> Coordinate {
         let requests: [SearchProviderBatch.Request] = [
-            .init(authoritative: true) {
+            .init {
                 try await photon.search(location, near: center, addressesOnly: false)
             },
-            .init(authoritative: true) {
+            .init {
                 try await MapKitSearchProvider().search(location, near: center)
             }
         ]
         let results = try await SearchProviderBatch.search(requests, onUpdate: { _ in })
-        guard let coordinate = results.first?.destination.coordinate else {
+        // A street name can exist in several cities. Wait for both sources and
+        // prefer matching nearby locations instead of whichever provider wins.
+        let ranked = results.sorted { lhs, rhs in
+            let leftMatch = SearchRanking.locationMatch(lhs, location: location)
+            let rightMatch = SearchRanking.locationMatch(rhs, location: location)
+            if leftMatch != rightMatch { return leftMatch > rightMatch }
+            if let center {
+                let leftDistance = center.distance(to: lhs.destination.coordinate)
+                let rightDistance = center.distance(to: rhs.destination.coordinate)
+                if leftDistance != rightDistance { return leftDistance < rightDistance }
+            }
+            return SearchRanking.normalizedIdentity(lhs.destination.name)
+                < SearchRanking.normalizedIdentity(rhs.destination.name)
+        }
+        guard let coordinate = ranked.first?.destination.coordinate else {
             throw SearchError.locationNotFound(location)
         }
         return coordinate

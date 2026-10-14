@@ -21,7 +21,7 @@ AVSpeechSynthesizer
 
 ## Głosowe wyszukiwanie
 
-Wyszukiwarka prosi system o osobne uprawnienia do rozpoznawania mowy i mikrofonu dopiero po dotknięciu przycisku mikrofonu. `SFSpeechRecognizer` używa polskiego locale, a rozpoznawane fragmenty na bieżąco uzupełniają pole zapytania i uruchamiają standardowe wyszukiwanie. Ponowne dotknięcie przycisku albo zamknięcie wyszukiwarki kończy nasłuchiwanie. Wymagane opisy prywatności są skonfigurowane dla iOS i macOS.
+Wyszukiwarka prosi system o osobne uprawnienia do rozpoznawania mowy i mikrofonu dopiero po dotknięciu przycisku mikrofonu. `SFSpeechRecognizer` używa polskiego locale, a rozpoznawane fragmenty na bieżąco uzupełniają pole zapytania i uruchamiają standardowe wyszukiwanie. Ponowne dotknięcie przycisku albo zamknięcie wyszukiwarki kończy nasłuchiwanie. Wymagane opisy prywatności są skonfigurowane dla iOS.
 
 ## Źródła i rodzaje komunikatów
 
@@ -94,7 +94,7 @@ Na iOS scheduler ustawia kategorię `AVAudioSession` na `.playback`, tryb `.spok
 
 Jeśli aktywacja sesji się nie powiedzie lub zwróci brak aktywacji, komunikat nie jest oznaczany jako wypowiedziany. Bieżąca próba jest zwalniana i może zostać ponowiona, gdy źródło zdarzenia ponownie ją zgłosi. Błąd nie ma osobnego komunikatu w interfejsie. Konfiguracja iOS deklaruje tryb audio w tle w `UIBackgroundModes`; podróże z odcinkiem komunikacji proszą też o uprawnienie lokalizacyjne „Zawsze”.
 
-Na macOS `AVSpeechSynthesizer` jest wywoływany bez `AVAudioSession`; wybór urządzenia wyjściowego pozostaje po stronie systemu. Na obu platformach systemowy głos `pl-PL` może nie być dostępny — wtedy automatyczny wybór pozostaje zależny od zainstalowanych głosów.
+Systemowy głos `pl-PL` może nie być dostępny — wtedy automatyczny wybór pozostaje zależny od zainstalowanych głosów.
 
 ## Mapa implementacji
 

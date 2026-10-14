@@ -109,6 +109,10 @@ extension ContentView {
                         Button("Zamknij") { appRouter.dismiss(.energy) }
                     } }
             }
+        case .plannedTrips:
+            plannedTripsSheet
+        case .planTrip:
+            planTripSheet
         case .history:
             historySheet
         case .trafficDetails:
@@ -117,7 +121,15 @@ extension ContentView {
     }
 
     func handleAppSheetDismissal() {
-        switch appRouter.consumeDismissedSheet() {
+        let dismissed = appRouter.consumeDismissedSheet()
+#if os(iOS)
+        if let presentation = pendingIOSTripPresentation {
+            pendingIOSTripPresentation = nil
+            iosTripPresentation = presentation
+            return
+        }
+#endif
+        switch dismissed {
         case .search:
             selectingRouteOriginInSearch = false
         case .originPicker where openOriginSearchAfterPickerDismiss:

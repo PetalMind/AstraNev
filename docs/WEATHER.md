@@ -1,6 +1,6 @@
 # Pogoda na mapie
 
-Źródło: Open-Meteo Forecast API (https://open-meteo.com/en/docs). Dane są prognozą modelową, nie pomiarem ani radarem. Provider jest oddzielony od silnika wizualnego i rendererów MapLibre (iOS) / MapKit (macOS).
+Źródło: Open-Meteo Forecast API (https://open-meteo.com/en/docs). Dane są prognozą modelową, nie pomiarem ani radarem. Provider jest oddzielony od silnika wizualnego i renderera MapLibre.
 
 Ustawienia: Ustawienia → Mapa → Efekty pogodowe. Domyślnie pogoda jest włączona, z subtelną intensywnością. Można osobno wyłączyć animacje, dopasowanie kolorów, efekty podczas nawigacji oraz prognozę trasy. Wyłączenie pogody zatrzymuje pobieranie; wyłączenie prognozy trasy ogranicza zapytanie do bieżącej lokalizacji.
 
