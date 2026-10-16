@@ -441,12 +441,11 @@ final class MapStreetFurnitureRenderer {
             if previous == .full, span >= 13 { detail = .full }
             else if previous == .standard, span >= 7, detail == .simple { detail = .standard }
             if constrained, detail == .full { detail = .standard }
-            // Detail upgrades require a stable request, preventing repeated swaps
-            // during a gesture or a small fluctuation in projected size.
-            let current = previous ?? .simple
-            if detail.rawValue > current.rawValue {
+            // Start new objects at their actual projected detail. Both upgrades
+            // and downgrades of existing models must settle before replacing geometry.
+            if let previous, detail != previous {
                 if detailRequests[candidate.key]?.0 != detail { detailRequests[candidate.key] = (detail, .now) }
-                if Date().timeIntervalSince(detailRequests[candidate.key]!.1) < 0.65 { detail = current }
+                if Date().timeIntervalSince(detailRequests[candidate.key]!.1) < 0.65 { detail = previous }
             } else { detailRequests.removeValue(forKey: candidate.key) }
             let point = CGPoint(x: rect.midX, y: rect.midY)
             var score = hypot(Double(point.x - focusPoint.x), Double(point.y - focusPoint.y))
@@ -473,20 +472,30 @@ final class MapStreetFurnitureRenderer {
             spent += cost
             selected.append((item.candidate, .simple))
         }
-        // Spend the remaining cost on detail upgrades in visibility/user/route order.
-        for index in selected.indices {
+        func allocateDetail(at index: Int, requested: Detail) {
             let candidate = selected[index].0
             let tree = candidate.kind == .tree
-            let requested = desired[candidate.key] ?? .simple
             var detail = requested
-            let baseCost = MapStreetFurnitureGeometry.cost(for: candidate.kind, detail: .simple)
+            let baseCost = MapStreetFurnitureGeometry.cost(for: candidate.kind, detail: selected[index].1)
             while MapStreetFurnitureGeometry.cost(for: candidate.kind, detail: detail) - baseCost > (tree ? treeBudget : streetBudget),
                   let cheaper = Detail(rawValue: detail.rawValue - 1) { detail = cheaper }
             let extra = MapStreetFurnitureGeometry.cost(for: candidate.kind, detail: detail) - baseCost
             if tree { treeBudget -= extra } else { streetBudget -= extra }
             spent += extra
             selected[index].1 = detail
-            if detail.rawValue < requested.rawValue { budgetSimplified += 1 }
+        }
+        // Reserve existing detail before admitting upgrades. Small ranking changes
+        // must not repeatedly take the budget away from already visible models.
+        for index in selected.indices {
+            let key = selected[index].0.key
+            let requested = desired[key] ?? .simple
+            let retained = Detail(rawValue: min(modeled[key]?.rawValue ?? 0, requested.rawValue)) ?? .simple
+            allocateDetail(at: index, requested: retained)
+        }
+        for index in selected.indices {
+            let requested = desired[selected[index].0.key] ?? .simple
+            allocateDetail(at: index, requested: requested)
+            if selected[index].1.rawValue < requested.rawValue { budgetSimplified += 1 }
         }
         modeled = Dictionary(uniqueKeysWithValues: selected.map { ($0.0.key, $0.1) })
         var signFaces: [MapSignFace] = []
@@ -575,8 +584,9 @@ final class MapStreetFurnitureRenderer {
             return kind != "tree" && kind != "street_lamp" && kind != "sign" && ($0.attributes["_service"] as? Bool != true)
         }
         lightLayer?.updateGeometry(on: map, lamps: lightCoordinates, treeFeatures: treeFeatures, furnitureFeatures: furniture)
-        detailRequests = detailRequests.filter { modeled[$0.key] != nil && Date().timeIntervalSince($0.value.1) < 0.65 }
-        if !detailRequests.isEmpty, refreshTask == nil {
+        detailRequests = detailRequests.filter { desired[$0.key] != nil }
+        let awaitingDetail = detailRequests.values.contains { Date().timeIntervalSince($0.1) < 0.65 }
+        if awaitingDetail, refreshTask == nil {
             refreshTask = Task { [weak self, weak map] in
                 do { try await Task.sleep(for: .milliseconds(700)) } catch { return }
                 guard let self, let map else { return }

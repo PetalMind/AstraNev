@@ -204,9 +204,8 @@ final class MapSurfaceNetworkRenderer {
         let key = hasher.finalize()
         guard requestedKey != key else { return }
         suspend(); requestedKey = key
-        // Never leave a replacement with old tile coverage while a new snapshot is being assembled.
-        output.shape = nil; replacePaths(false, in: style)
-        (style.layer(withIdentifier: Self.original + "point-crossing") as? MLNSymbolStyleLayer)?.predicate = nil
+        // Retain the published snapshot until its replacement is ready. Clearing
+        // it here flashes native paths on every tile update and camera gesture.
         let token = revision
         task = Task { [weak self, weak map, weak output] in
             do {

@@ -212,18 +212,18 @@ enum MapStreetFurnitureGeometry {
             simple = [cylinder(radius: 0.055, base: 0, top: 3.25, sides: 6), trafficSignals[2], trafficSignals[3]]
             standard = simple + [trafficSignals[4], trafficSignals[6], trafficSignals[8]]
         case .tree:
-            func crown(_ layers: Int) -> [Part] {
-                var parts = [cylinder(radius: 0.16, base: 0, top: 3.25, material: "bark", sides: 6)]
-                for index in 0..<layers {
-                    let relative = (Double(index) + 0.5) / Double(layers) * 2 - 1
-                    let radius = 2.05 * sqrt(max(0, 1 - relative * relative))
-                    parts.append(cylinder(radius: radius, base: 2.1 + Double(index) * 4.2 / Double(layers),
-                        top: 2.1 + Double(index + 1) * 4.2 / Double(layers), material: "foliage", sides: 8))
+            // Keep the crown profile, height and materials identical across LODs.
+            // Only ring tessellation changes; two tall cylinders used to turn
+            // abruptly into a rounded crown after the delayed detail upgrade.
+            func crown(sides: Int) -> [Part] {
+                tree.map { part in
+                    let radius = part.outline.map { sqrt($0.x * $0.x + $0.y * $0.y) }.max() ?? 0
+                    return cylinder(radius: radius, base: part.base, top: part.top,
+                                    material: part.material, sides: sides)
                 }
-                return parts
             }
-            simple = crown(2)
-            standard = crown(4)
+            simple = crown(sides: 6)
+            standard = crown(sides: 8)
         case .fountain:
             simple = [fountain[0], cylinder(radius: 1.25, base: 0.16, top: 0.48, material: "stone", sides: 8)]
             standard = Array(fountain.dropLast())
