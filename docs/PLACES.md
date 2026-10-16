@@ -9,9 +9,11 @@ Ten dokument opisuje, skąd NaviAstra bierze informacje o POI (punktach zaintere
 | Wyszukiwanie tekstowe miejsca, marki lub kategorii | Photon (domyślnie `https://photon.komoot.io/api/`) oraz Apple MapKit. Dla zapytań rozpoznanych jako marka lub kategoria dochodzi lokalne wyszukiwanie OSM przez Overpass. | Wyniki są łączone, porządkowane, deduplikowane i pokazywane w wyszukiwarce. Szczegóły POI są pobierane z OSM po otwarciu karty, chyba że zostały już pobrane razem z wynikiem OSM. |
 | Dotknięcie POI na mapie iOS | Widoczny obiekt z wektorowych kafli OpenFreeMap; MapLibre odczytuje m.in. nazwę, kategorię, markę i dostępny identyfikator OSM. | Karta próbuje potwierdzić lub odnaleźć ten obiekt w OSM i pobrać jego tagi. |
 | Szybkie wyszukiwanie w pobliżu pozycji lub celu | OpenStreetMap przez Overpass; gdy usługa nie działa albo nie zwróci miejsc, zapasowo Apple MapKit. | Wyniki OSM zawierają tagi potrzebne do filtrów i opisu. Wyniki MapKit zachowują nazwę, adres, kategorię i strefę czasową, ale nie dostarczają tagów OSM, np. typów paliwa, godzin ani złączy ładowarki. |
-| Wyszukiwanie punktu po trasie | OpenStreetMap przez Overpass. Dotyczy m.in. stacji paliw, jedzenia, parkingów, parkingów P+R i ładowarek EV. | Dane tagów z odpowiedzi służą do filtrowania i opisu kandydatów; pełne szczegóły POI trafiają również do cache. |
+| Wyszukiwanie punktu po trasie | OpenStreetMap przez Overpass. Dotyczy m.in. stacji paliw, jedzenia, parkingów i ładowarek EV. | Dane tagów z odpowiedzi służą do filtrowania i opisu kandydatów; pełne szczegóły POI trafiają również do cache. |
 
 ## Adresy, geokodowanie i wskazanie punktu
+
+Wyszukiwanie identyfikatora automatu lub punktu odbioru, np. `LOD49N`, korzysta z dokładnego dopasowania `ref`, `ref:*` i kodu w nazwie OSM, a dla InPost również z zasobu Points operatora. Nie wymaga lokalizacji i nie jest ograniczane promieniem wokół urządzenia. Jednoznaczny wynik centruje mapę, gdy nie trwa prowadzenie.
 
 Photon i Apple MapKit obsługują bieżące podpowiedzi podczas wpisywania. [GUGiK UUG](https://services.gugik.gov.pl/uug/opis.html) nie jest odpytywany przy każdym znaku: zapytanie do UUG uruchamia się po zatwierdzeniu wyszukiwania z klawiatury. Dla polskiego adresu z numerem budynku UUG ma pierwszeństwo tylko wtedy, gdy zwróci jeden jednoznaczny rekord ze zgodnym numerem, miejscowością i — jeśli podano — ulicą. Dla ulicy lub miejscowości jest źródłem uzupełniającym; w zwykłym wyszukiwaniu jest używany, gdy Photon i MapKit nic nie zwrócą. Żądania jawnie przekazują `srid=4326`, a `exact_number=1` tylko dla adresu z numerem; aplikacja nie ustawia domyślnej dokładności dopasowania ani limitu wyników.
 
@@ -43,9 +45,17 @@ Wyszukiwarka rozpoznaje InPost, DPD, DHL, ORLEN Paczkę, Allegro One, Pocztex / 
 
 OSM jest źródłem wyszukiwania pobliskich automatów i punktów. Wyszukiwanie tekstowe dodatkowo korzysta z Photon i MapKit, a wyniki są filtrowane według rodzaju punktu i operatora. Obsługiwane są `amenity=parcel_locker`, starsze automaty `amenity=vending_machine` z `vending=parcel_pickup` / `parcel_mail_in`, placówki `amenity=post_office`, punkty partnerskie `post_office=post_partner` oraz usługi `post_office:parcel_pickup` i `post_office:parcel_to` w sklepach. Dla usług w sklepach odczytywane są także marka, operator i godziny z przestrzeni `post_office:*`, niezależnie od podstawowej działalności sklepu. Dwa różne automaty z osobnymi ID OSM nie są scalane tylko dlatego, że stoją obok siebie i mają tego samego operatora.
 
-Nazwa automatu zawiera numer `ref`, jeśli jest zapisany w OSM. Punkt otrzymuje ikonę przesyłki oraz polską nazwę kategorii. Brak godzin, adresu lub numeru nie jest uzupełniany fikcyjnymi danymi. To wyszukiwanie miejsc z istniejących źródeł mapowych; aplikacja nie integruje się z systemami obsługi przesyłek operatorów i nie pokazuje dostępności skrytek ani statusu paczki. Kompletność punktów zależy od danych dostawców.
+Wpisanie samego kodu, np. `LOD49N`, `PL90052`, `AL003SH1` lub numeru punktu, uruchamia dokładne wyszukiwanie identyfikatora. Można także podać operatora: `InPost LOD49N`, `DPD PL90052`, `DHL 4591717`, `ORLEN Paczka 913099`. Wielkość liter nie ma znaczenia. Kod nie jest geokodowany jako miejscowość ani ograniczany promieniem 50 km. Jeżeli jawnie wybrano „Po trasie”, nadal obowiązuje korytarz aktywnej trasy. Polskie kody pocztowe i standardowe oznaczenia dróg zachowują dotychczasowe wyszukiwanie.
+
+OSM jest przeszukiwany po `ref`, identyfikatorach operatorów `ref:*` i pełnym kodzie w nazwie punktu. Dopasowanie ma granice kodu, więc `LOD49N` nie dopasowuje `LOD49N2`. Numery są zachowywane w metadanych wyników i nazwach punktów. Dla pasujących kodów InPost aplikacja równolegle odczytuje `GET https://api-shipx-pl.easypack24.net/v1/points/{kod}`. Poprawny, działający i fizyczny punkt operatora ma pierwszeństwo nad danymi mapowymi. Odczyt wysyła kod punktu bez współrzędnych urządzenia. Błędy usługi nie tworzą fikcyjnego wyniku; OSM pozostaje źródłem zapasowym. Szczegóły wyniku InPost są odświeżane u tego samego operatora, a jego identyfikator jest zachowywany przy wyborze celu i zapisie miejsca.
+
+Punkt otrzymuje ikonę przesyłki oraz polską nazwę kategorii. Brak godzin, adresu lub numeru nie jest uzupełniany fikcyjnymi danymi. Dla InPost automatyczny status otwarcia wykorzystuje wyłącznie jednoznaczne `24/7`; pozostałe opisy godzin z API nie są traktowane jako składnia OSM. Aplikacja nie pokazuje dostępności skrytek ani statusu paczki. Dla pozostałych firm kompletność numerów zależy od wpisów w OSM.
 
 Schematy danych: [automaty paczkowe OSM](https://wiki.openstreetmap.org/wiki/Tag:amenity%3Dparcel_locker), [punkty partnerskie i usługi pocztowe](https://wiki.openstreetmap.org/wiki/Key:post_office).
+
+Zasób operatora: [InPost Points — dokumentacja](https://dokumentacja-inpost.atlassian.net/wiki/spaces/PL/pages/18153470).
+
+Usługa odbioru przesyłek działająca w sklepie ma osobny wpis szczegółów w pamięci podręcznej, z przyrostkiem `/parcel-pickup`. Odpowiedź OSM zasila zarówno dane sklepu, jak i jego usługi pocztowej. Dzięki temu ponowne otwarcie lub odświeżenie karty punktu zachowuje operatora, kategorię i godziny usługi, a zwykłe wyszukiwanie sklepu nadal pokazuje jego podstawowe dane. Logo marki usługi korzysta z `post_office:brand:wikidata`, jeśli ten tag jest dostępny.
 
 ## Wybór POI z mapy
 

@@ -223,6 +223,7 @@ struct MapLibreView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> MLNMapView {
         let map = MLNMapView(frame: .zero, styleURL: styleURL)
+        map.showsCompassView = false
         map.attributionButton.isHidden = false
         map.attributionButton.removeTarget(nil, action: nil, for: .allEvents)
         map.attributionButton.accessibilityLabel = "Źródła mapy i licencje"
@@ -274,6 +275,7 @@ struct MapLibreView: UIViewRepresentable {
         coordinator.stopCyclingPathUpdates()
         coordinator.stopMapRoadPOIUpdates()
         coordinator.stopDetailedRoadUpdates()
+        coordinator.stopMapDetailUpdates()
         coordinator.stopShopLogoUpdates()
         coordinator.stopDeferredAnnotationUpdates()
         NotificationCenter.default.removeObserver(coordinator,
@@ -381,7 +383,7 @@ struct MapLibreView: UIViewRepresentable {
                 Task { @MainActor [weak self] in
                     guard let self, let map = self.map,
                           self.parent.scene.energyPolicy.mapRenderingEnabled,
-                          self.parent.settings.overlays.buildings3D,
+                          (self.parent.settings.overlays.buildings3D || self.parent.settings.overlays.poi),
                           self.parent.settings.cameraMode == .threeD else { return }
                     self.updatePOIDensity(on: map)
                 }
@@ -625,6 +627,10 @@ struct MapLibreView: UIViewRepresentable {
             navigationStyle.updateBuildingFacadeVisibility(on: mapView, settings: parent.settings,
                 dark: usesDarkMapAppearance, renderingEnabled: parent.scene.energyPolicy.mapRenderingEnabled)
             updatePOIZoomDensity(on: mapView)
+            navigationStyle.refreshPOIs(on: mapView, settings: parent.settings, dark: usesDarkMapAppearance,
+                selected: parent.scene.selectedPlace)
+            navigationStyle.refreshCrosswalks(on: mapView, settings: parent.settings,
+                renderingEnabled: parent.scene.energyPolicy.mapRenderingEnabled)
             updatePositionMarker(bearing: puckEngine.frame()?.bearing)
         }
 
@@ -646,6 +652,8 @@ struct MapLibreView: UIViewRepresentable {
             mapViewDidFinishRenderingFrame(mapView, fullyRendered: fullyRendered)
             // Avoid doing work on every frame or logging user coordinates.
             #if DEBUG
+            if let projection = mapView.style?.layer(withIdentifier: MapFurnitureProjectionLayer.layerID) as? MapFurnitureProjectionLayer,
+               let report = projection.diagnostics.frame(renderingStats) { mapLogger.debug("\(report, privacy: .public)") }
             guard Date().timeIntervalSince(lastRenderingLogAt) >= 10 else { return }
             lastRenderingLogAt = Date()
             mapLogger.debug("Frame: draw calls=\(renderingStats.numDrawCalls), textures=\(renderingStats.numActiveTextures), texture bytes=\(renderingStats.memTextures), buffer bytes=\(renderingStats.memBuffers)")
@@ -686,7 +694,8 @@ struct MapLibreView: UIViewRepresentable {
             navigationStyle.updateBuildingFacadeVisibility(on: map, settings: parent.settings,
                 dark: usesDarkMapAppearance, renderingEnabled: energyPolicy.mapRenderingEnabled)
             guard energyPolicy.mapRenderingEnabled else {
-                detailedRoadRenderer.stop()
+                detailedRoadRenderer.update(on: map, dark: usesDarkMapAppearance, enabled: false)
+                navigationStyle.suspendDetails()
                 return
             }
 
@@ -867,6 +876,7 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         private func updateTransitStopPins(on map: MLNMapView) {
+            updateObjectModelInputs()
             let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
             let isTransitRoutePreview = parent.state.transportMode == .transit
                 && (parent.state.status == .destinationPreview || parent.state.status == .routeCalculating
@@ -945,6 +955,7 @@ struct MapLibreView: UIViewRepresentable {
 
         private func updatePOIDensity(on map: MLNMapView) {
             guard let style = map.style else { return }
+            updateObjectModelInputs()
             detailedRoadRenderer.update(on: map, dark: usesDarkMapAppearance,
                                         enabled: parent.scene.energyPolicy.mapRenderingEnabled
                                             && parent.settings.baseMap != .satellite)
@@ -957,7 +968,6 @@ struct MapLibreView: UIViewRepresentable {
                                        selected: parent.scene.selectedPlace)
             navigationStyle.refreshCrosswalks(on: map, settings: parent.settings,
                 renderingEnabled: parent.scene.energyPolicy.mapRenderingEnabled)
-            MapTilerEnvironmentStyle.updateBuildingFallback(on: map, settings: parent.settings)
             updateShopLogos(on: map)
             let lighting = MapBuildingLighting.resolve(appearance: parent.settings.appearance, coordinate: map.centerCoordinate)
             navigationStyle.updateBuildingFacadeVisibility(on: map, settings: parent.settings,
@@ -977,7 +987,6 @@ struct MapLibreView: UIViewRepresentable {
             if fullyRendered {
                 navigationStyle.refreshPOIs(on: mapView, settings: parent.settings, dark: usesDarkMapAppearance,
                                            selected: parent.scene.selectedPlace)
-                MapTilerEnvironmentStyle.updateBuildingFallback(on: mapView, settings: parent.settings)
                 updateShopLogos(on: mapView)
             }
         }
@@ -1619,7 +1628,13 @@ struct MapLibreView: UIViewRepresentable {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
         }
 
+        private func updateObjectModelInputs() {
+            navigationStyle.refreshObjectModels(roadPOIs: mapRoadPOIs, alerts: shownRoadAlerts,
+                stops: parent.transitStops, places: shownPlaceResults)
+        }
+
         private func updateTrafficEventPins(on map: MLNMapView) {
+            updateObjectModelInputs()
             let isNavigating = parent.state.status == .navigating || parent.state.status == .rerouting
             let events = MainActor.assumeIsolated { () -> [TrafficMapEvent] in
                 var events: [TrafficMapEvent] = []
@@ -1824,6 +1839,8 @@ struct MapLibreView: UIViewRepresentable {
                                                   colorScheme: mapColorScheme, previousStatus: lastStatus)
             return routeLinePresentation(for: annotation, context: context)?.width ?? 2
         }
+
+        func stopMapDetailUpdates() { navigationStyle.suspendDetails() }
 
         func stopDetailedRoadUpdates() {
             detailedRoadRenderer.stop()

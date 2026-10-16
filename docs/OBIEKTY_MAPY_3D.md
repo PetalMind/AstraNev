@@ -1,0 +1,90 @@
+# Obiekty mapy iOS: geometria przestrzenna i płaskie symbole
+
+Audyt kodu z 16 października 2026 r. Dotyczy standardowej mapy iOS; widok satelitarny ukrywa szczegółowe otoczenie. Zestawienie opisuje implementację, a nie kompletność danych w dowolnym miejscu świata.
+
+## Wynik przeglądu i poprawki w iOS 1.1.130 (132)
+
+Największą korzyść daje obecnie poprawa zgodności obiektów z danymi i stabilności wyboru modeli. Dalsze dodawanie brył wymaga przede wszystkim potwierdzonego typu, obrysu lub wysokości. Poniższe problemy były widoczne w kodzie i zostały poprawione:
+
+| Problem | Wprowadzona zmiana | Skutek i granica |
+| --- | --- | --- |
+| Scalanie punktów bliższych niż 15 cm ignorowało sprzeczne identyfikatory; klucz obserwacji zawierał tylko rodzaj i współrzędne | Sprzeczne identyfikatory wykluczają scalanie także przy identycznej lokalizacji. Klucz obserwacji uwzględnia identyfikator, a jawne identyfikatory OSM normalizują typ i numer. | Dwa rozróżnialne obiekty nie nadpisują się w pamięci obserwacji ani wyborze modeli. Nie odgadujemy typu OSM z samego numeru. |
+| Pamięć obserwacji mogła przechowywać rekord odrzucony jako duplikat | Bieżące scalanie usuwa zastąpiony klucz z pamięci, zachowując klucze przyjętych obiektów. | Retencja 15 s nadal chroni przed chwilowym brakiem kafli; nie podtrzymuje kopii właśnie scalonego rekordu. |
+| Kontrola aktualności macierzy sprawdzała czas, zoom i rozmiar, lecz pomijała ruch kamery | Trzy niewspółliniowe punkty gruntu z przechwyconej macierzy są porównywane z aktualną projekcją mapy; dopuszczalna różnica to 2 punkty iOS. | Po przesunięciu, obrocie, zmianie pochylenia lub insetów nieaktualna projekcja ustępuje przybliżeniu. Nie jest to przenikanie poziomów szczegółów. |
+| Bryły zakotwiczone na gruncie nie miały jednolitego filtra poziomów; dopasowanie do drogi pomijało `brunnel` | Wspólny filtr odrzuca jawne wnętrza, budowę, podziemie, mosty, tunele oraz niezerowy `level` lub `layer`. Korzystają z niego punkty kafli, modele liniowe, perony i dopasowanie do otoczenia. Ściany z dodatnim `height_min` nie służą do dopasowania wejść. | Nie przenosimy znanego obiektu nadziemnego lub podziemnego na poziom gruntu. Brak informacji o wysokości nadal oznacza ograniczenie dokładności. Zewnętrzne punkty bez takich metadanych pozostają umownymi modelami. |
+| Wywołanie przed upływem interwału renderera anulowało oczekujące odświeżenie LOD | Anulowanie następuje dopiero przy faktycznym rozpoczęciu kolejnego przeliczenia. | Pominięte wywołanie nie usuwa zaplanowanego ulepszenia geometrii. Zmiana ustawień lub wstrzymanie nadal anuluje zadanie. |
+| Konwersja bardzo dużego `step_count` na `Int` mogła przerwać działanie | Wartość skończona jest ograniczana przed konwersją do zakresu 2–64. | Dane źródłowe nie przekroczą zakresu liczby całkowitej. Żebra schodów nadal są schematyczne. |
+
+Filtr gruntu jest zachowawczy: niezerowy numer warstwy nie dostarcza wysokości w metrach. Punkty wyposażenia ulicy i drzewa pominięte przez filtr modeli zachowują własne symbole zapasowe przy dotychczasowych progach zbliżenia. Pozostałe obiekty zachowują prezentację dostawcy, jeżeli ich dotychczasowa warstwa je obsługuje; nie tworzymy dla nich nowej wysokości.
+
+## Bryły i efekty już obsługiwane
+
+| Element | Sposób rysowania | Źródło i granice dokładności |
+| --- | --- | --- |
+| Budynki | Natywne bryły z obrysów i wysokości, dachy w tej samej bryle i proceduralne okna | `MapLibreStyle.swift`, `MapBuildingFacadeLayer.swift`, `MapTilerEnvironmentStyle.swift`. Geometria dostawcy; okna i ich światło są dekoracją. |
+| Ławki | Deski siedziska i oparcia, rama, nogi i podłokietniki jako bryły w metrach | `MapStreetFurnitureGeometry.swift`, `MapStreetFurnitureRenderer.swift`. Rzeczywiste punkty `street_furniture`, umowny model i orientacja. |
+| Latarnie | Wielokątny słup, podstawa, wysięgnik i oprawa jako bryły | Te same pliki. Rzeczywisty punkt, umowny model o wysokości 5,91 m. |
+| Pojedyncze drzewa | Pień i dziesięć przestrzennych segmentów zaokrąglonej korony | Rzeczywiste punkty warstwy `tree`; umowna wysokość 6,3 m, szerokość korony około 4,1 m. Domyślna korona pozostaje neutralna; jawne `leaf_type=needleleaved` wybiera koronę iglastą. Wymiary z danych, jeśli są obecne i mieszczą się w bezpiecznym zakresie, skalują model; nie rozpoznajemy gatunku. |
+| Słupki | Podstawa, słup, pas odblaskowy i zwieńczenie | `street_furniture`, `class=protection`, `subclass=bollard`; umowna wysokość 0,99 m. Pas jest jasnym materiałem, bez własnego świecenia. |
+| Sygnalizatory | Słup, wspornik, korpus, trzy wygaszone soczewki i daszki | `street_furniture`, `class=street`, `subclass=traffic_signals`; umowna wysokość 3,25 m i orientacja. Bez symulacji bieżącego sygnału. Drogowe znaczniki ostrzegawcze pozostają niezależne. |
+| Fontanny | Wielokątna misa z obrzeżem i centralnym elementem | `street_furniture/fountain`. Model umowny, bez animacji ani deklarowania przepływu wody. |
+| Wejścia | Przestrzenna rama wejścia z progiem | `street_furniture/entrance`, `door` oraz `building_entrance` ze źródła budynków. Rama jest dopasowywana do jednoznacznej ściany w odległości do 1,5 m, poza narożnikami. Przy braku pewnego dopasowania pozostaje na punkcie. |
+| Krawężniki | Niski profil wzdłuż rzeczywistej linii albo krótki blok na punkcie | `traffic_control/kerb` oraz `street_furniture/kerb`. Profil 14 cm, przy `lowered=true` 3 cm. Punkt nie wyznacza dalszego przebiegu. |
+| Mury i bariery | Ciągłe bryły wzdłuż odcinków źródłowych | `MapLinearObjectGeometry.swift`; `wall`, `city_wall`, `retaining_wall`, `barrier`, `jersey_barrier`. Umowna wysokość 1,3 m, bariera betonowa 0,8 m; bez rekonstrukcji ukształtowania terenu. |
+| Ogrodzenia i poręcze | Słupki i poziome przęsła | Linie `fence`, `guard_rail`, `handrail`, `cable_barrier`, `chain`. Typowy profil i rozstaw podpór; nie odtwarza materiału ani konstrukcji konkretnego obiektu. |
+| Znaki drogowe | Słupek i pionowa tarcza z istniejącą grafiką znaku | `MapSignFaceLayer.swift` rysuje teksturowane płaszczyzny Metal z uwzględnieniem głębokości mapy. Obsługiwane znaki korzystają z `RoadSignView`; do trzech tarcz może współdzielić słup. Nieobsługiwane znaki lub przekroczenie budżetu zachowują neutralną tablicę. Dotychczasowe znaczniki i interakcje pozostają. |
+| Fotoradary i kamery | Słup z obudową i ciemnymi soczewkami | Istniejące punkty drogowe i alerty; umowna obudowa oraz orientacja. Bez informacji o aktywności urządzenia. |
+| Przystanki i stacje | Słupek przystankowy lub pionowy nośnik informacji stacji | `poi_station` i istniejące `TransitStop`. Punkt nie tworzy wiaty ani peronu. Perony powstają osobno z rzeczywistych wielokątów `pedestrian/class=platform`, z zachowaniem otworów i umownym profilem 18 cm. Pomijamy poziomy podziemne i podwyższone, mosty, tunele oraz budowę. Nazwy i interakcje pozostają. |
+| Ładowarki | Korpus, ekran i uchwyt przewodu | Jednoznaczne `charging_station` z `poi_transport`, OpenMapTiles lub wyników miejsc. Model nie deklaruje liczby złączy ani ich dostępności. |
+| Automaty paczkowe | Szafa z podziałem na skrytki i ekranem | Wyłącznie `parcel_locker`, z `poi_public`, OpenMapTiles lub wyników miejsc. Neutralne kolory; `post_office` i `parcel_pickup` nie otrzymują szafy. |
+| Światło latarni | Metal: jasny rdzeń przy soczewce, miękka poświata oraz ciepła plama na podłożu | `MapStreetLampLightLayer.swift`. Własna maska głębokości wykorzystuje obrysy, ściany i dachy widocznych budynków, z uwzględnieniem dziedzińców, oraz najbliższe części modeli drzew i nieprzezroczystego wyposażenia ulicy. Drzewa mają osobny budżet maski do 240 części, aby nie wypierały zasłaniania przez budynki. Wyposażenie ma osobny limit 200 części, albo 80 w trybie ograniczonym; nie pomniejsza budżetu budynków i drzew. Pozycja soczewki respektuje obrót i skalę modelu latarni. To efekt wizualny, nie pomiar oświetlenia ani stan działania lampy. |
+
+Światło latarni działa przy wybranych, widocznych modelach 3D i włączonych POI od z16. Między z16 a z17 jego intensywność narasta. Budżet to 64 najbliższe uprzywilejowane latarnie, a przy oszczędzaniu energii lub wysokiej temperaturze telefonu 24; nie każda widoczna bryła otrzymuje efekt świetlny. Tryb dzienny je wyłącza, nocny włącza, a automatyczny płynnie reguluje na podstawie położenia słońca. Używa tego samego mechanizmu `MapBuildingLighting` co elewacje. Odświeżanie czasu działa co minutę także przy wyłączonych budynkach 3D. W nawigacji efekt jest słabszy. Wyłączenie POI, tryb 2D, satelita lub wstrzymanie renderowania ukrywają światło. Nie ma migania, symulowanych awarii, stożków w powietrzu ani dynamicznych cieni. Efekt rozjaśnia kolor podłoża pod lampą; nie jest pełną symulacją oświetlenia wszystkich materiałów sceny. Maksymalnie 256 obiektów wyposażenia ulicy oraz dodatkowo 128 drzew; drzewa mają osobny budżet. Światło rezerwuje do 18 MiB dodatkowych tekstur.
+
+## Widoczność i wydajność modeli
+
+Modele są dostępne od z16, a o pokazaniu decyduje przestrzenny obrys na ekranie. `MapFurnitureProjectionLayer` przechwytuje macierz kamery z kontekstu natywnego rysowania bez wydawania poleceń GPU. Renderer projektuje osiem narożników obrysu, uwzględniając wysokość, obrót i perspektywę. Przed nadejściem aktualnej macierzy używa przybliżenia zawierającego wysokość. Nie zmienia wspólnego pomiaru powierzchni boisk ani elewacji.
+
+- Wejście w model od 4 punktów iOS; utrzymanie już widocznego od 3 punktów.
+- Model prosty poniżej 9 punktów, średni od 9, pełny od 16. Histereza utrzymuje średni do 7 i pełny do 13 punktów. Ulepszenie poziomu musi być stabilne przez 0,65 s, aby ograniczyć przełączanie przy ruchu kamery. To stabilizacja wyboru geometrii, bez przenikania dwóch poziomów. Jednorazowe odświeżenie po ustabilizowaniu jest anulowane przy zmianie ustawień lub wstrzymaniu renderowania.
+- Drzewo ma 3/5/11 części, ławka 4/6/14, latarnia 3/5/7, słupek 1/3/5, sygnalizator 3/6/10. Liczby dotyczą poziomów prosty/średni/pełny.
+- Nowe modele korzystają z tych samych progów i wspólnego budżetu obiektów ulicy: fontanna ma 2/13/14 części, rama wejścia 4, znak 2, fotoradar i kamera 2/4/4, słupek przystanku 2/4/4, nośnik stacji 2, ładowarka 2/3/6, automat paczkowy 1/2/22.
+- Pierwszeństwo mają obrysy przecinające rzeczywisty obszar mapy po uwzględnieniu `contentInset`, blisko pozycji użytkownika i przebiegu trasy. Obiekty tylko w marginesie wczytania nie zużywają budżetu modeli.
+- Oprócz limitów 256 obiektów ulicy i 128 drzew obowiązuje budżet 14 000 i 12 000 wierzchołków pierścieni. W ograniczonym trybie: 96 i 48 obiektów, 6 000 i 4 000 wierzchołków oraz najwyżej średni poziom szczegółów. Renderer najpierw rezerwuje proste bryły dla widocznych obiektów, a dopiero pozostały budżet wydaje na ulepszanie szczegółów w kolejności priorytetu. Dzięki temu pełne korony bliskich drzew nie wypierają całkowicie dalszych modeli.
+- Gotowe geometrie poszczególnych poziomów pozostają w pamięci podręcznej do 30 sekund. Budżet pamięci ogranicza ją do kosztu 60 000 wierzchołków, albo 25 000 w ograniczonym trybie. Zachowanie zestawu nie powoduje ponownej publikacji źródła brył ani ikon.
+- Ikony wyposażenia ulicy, w tym fontanny i wejścia, są ukrywane dopiero dla wybranego modelu. Punkt odrzucony przez rozmiar lub budżet zachowuje ikonę przy jej dotychczasowym progu zbliżenia; drzewa mają płaskie punkty od z16, a warstwę szerokiego zasięgu poniżej z16. Znaczniki drogowe, nazwy przystanków oraz ikony usług pozostają warstwą informacji i interakcji także przy bryłach.
+- Liniowe modele działają od z18 i od 4 punktów długości odcinka na ekranie. Mają osobny limit 128 odcinków i 4 000 wierzchołków, w trybie ograniczonym 48 i 1 600. Od z19 otrzymują gęstsze słupki i drugie przęsło. Geometria jest przycinana do zasięgu widoku, a linie 2D pozostają prezentacją zapasową. Zgodne odcinki łączą się wyłącznie na identycznych wierzchołkach o dwóch połączeniach. Profile otrzymują ograniczone połączenia narożne, a słupki i podkłady wspólny rozstaw liczony wzdłuż ciągu. Warstwa nie dosuwa końców ani nie łączy luk lub skrzyżowań. Bariera betonowa ma stopniowany profil; łańcuch i bariera linowa otrzymują cieńsze przęsło.
+- Nowe modele usług respektują kategorie POI i filtr korytarza trasy; modele punktów drogowych respektują wybór kategorii drogowych i ich progi widoczności. Wyłączenie POI, tryb 2D, satelita i wstrzymanie renderowania wyłączają nowe bryły.
+- Maska światła przebudowuje geometrię najwyżej co 0,8 s, albo 1,5 s w trybie ograniczonym. Nie zmienia to reprojekcji światła wraz z kamerą w każdej klatce. Przy nieruchomym widoku odświeża dane maski co 2 s, aby uwzględnić później załadowane kafle.
+
+Diagnostyka DEBUG `FurnitureModels` podaje co 10 sekund rzeczywiste liczby punktów i modeli każdego poziomu, odrzucenia przez rozmiar/widoczność/budżet, wykorzystany koszt, liczbę świateł, dostępność natywnej macierzy i czas przygotowania w milisekundach. Czas ten nie jest pomiarem FPS ani czasu GPU. Osobna diagnostyka `MapRenderDiagnostics` zbiera czasy CPU kodowania i renderowania z SDK, rytm aktywnych klatek oraz próbki `gpuStartTime/gpuEndTime` ukończonego bufora Metal. GPU jest próbkowane najwyżej raz na sekundę; raport powstaje co 10 s i wyraźnie pokazuje brak danych. Jest to koszt współdzielonego bufora mapy, nie pomiar samego wyposażenia. Przerwy bez rysowania nie są interpretowane jako spadki FPS.
+
+## Elementy nadal uproszczone lub płaskie
+
+| Element | Obecna prezentacja | Miejsce w kodzie | Co pozwala zrobić źródło |
+| --- | --- | --- | --- |
+| Schody i progi zwalniające | Schody: płytkie przestrzenne żebra wzdłuż `pathway/steps`; progi: pięć pasów umownego profilu z `traffic_control` | `MapLinearObjectGeometry.swift` | Bez rekonstrukcji wysokości terenu i kierunku wznoszenia schodów. Domyślne wymiary są schematyczne, a linie pozostają prezentacją zapasową. |
+| Tory | Dwie przestrzenne szyny, od z19 również podkłady | `MapLinearObjectGeometry.swift`, `railway` | Rzeczywista oś toru, umowny przekrój i rozstaw. Mosty i tunele pozostają w dotychczasowej prezentacji. |
+| Punkty odbioru w placówkach | Ikony kategorii lub marki | `PlacePOIMapMarker.swift`, `MapPOIVisualRenderer.swift` | Placówka pocztowa lub punkt partnerski nie dowodzi obecności automatu. |
+
+## Płaskie elementy, które nie wymagają bryły obiektu
+
+- Przejścia dla pieszych to pasy dopasowane do płaszczyzny i orientacji jezdni (`MapCrosswalkAppearance.swift`).
+- Miejsca parkingowe to powierzchnie dostawcy, a symbol wózka jest oznaczeniem na nawierzchni (`MapTilerEnvironmentStyle.swift`).
+- Boiska zachowują płaską nawierzchnię i linie. Jednoznacznie dopasowane prostokątne boisko piłkarskie lub do piłki ręcznej otrzymuje umowne bramki, koszykówka kosze i tablice, tenis i siatkówka słupki oraz siatkę. `MapSportEquipmentGeometry.swift` korzysta z tego samego dopasowania dyscypliny i geometrii co linie. Wyposażenie działa w trybie 3D przy włączonej kategorii atrakcji i POI, od rozmiaru 45 punktów na ekranie, do 32 boisk (12 w trybie ograniczonym). Nie jest to pomiar rzeczywistego wyposażenia; niejednoznaczne i wielofunkcyjne obiekty nie otrzymują modeli.
+- Zieleń i lasy to wielokąty z fakturą drzew, nie modele poszczególnych drzew. Woda ma fakturę fal, nie przestrzenną powierzchnię fal (`MapLibreStyle.swift`).
+- Sklepy, restauracje, stacje paliw, hotele, kawiarnie, zdrowie, edukacja, atrakcje, kultura, lotniska i pozostałe usługi mają ikonę lub logo jako etykietę. Budynek pod takim punktem jest renderowany niezależnie; ikona nie jest próbą odtworzenia jego architektury (`PlacePOIMapMarker.swift`, `MapPOIVisualRenderer.swift`).
+- Pojazdy transportu publicznego, zaparkowane auto, zdarzenia, cel podróży, wyniki wyszukiwania i etykiety ETA są znacznikami interfejsu (`MapLibreView.swift`, `RouteLayerRenderer.swift`).
+- Własny znacznik pozycji użytkownika wygląda przestrzennie, ale jest projekcją autorskiej siatki do buforowanych obrazków 2,5D. Nie uczestniczy w przestrzennej scenie mapy (`NavigationMarkerArtwork.swift`, `NavigationMarkerView.swift`).
+
+## Kolejność dalszej rozbudowy
+
+Wdrożono dopasowanie wejść do ścian, ustawianie ławek, słupków przystankowych, ładowarek i automatów względem jednoznacznego pobliskiego odcinka drogi (do 8 m), a także respektowanie jawnego kierunku i wymiarów. Przy niejednoznaczności pozostaje neutralny szablon. Znaki i kamery nie otrzymują zgadywanego kierunku ruchu.
+
+Duplikaty są rozpoznawane po kanonicznych, jawnych identyfikatorach OSM, rodzaju i lokalizacji. Zbieżność nazwy dopuszcza tylko ostrożne dopasowanie do 2 m bez sprzecznych identyfikatorów; rozróżnialne sąsiednie obiekty pozostają osobne. Dodatkowe tarcze jednego słupa nie giną przy scalaniu. Budżet teksturowanych tarcz wynosi 48 (16 w trybie ograniczonym); atlas ma 1024 × 1024 piksele i jest aktualizowany przy zmianie zestawu grafik.
+
+Do dalszej rozbudowy pozostają: wiaty z rzeczywistego obrysu i potwierdzonego typu, pełny profil wysokości schodów i peronów, dokładniejsze przekroje szyn, przenikanie poziomów szczegółów oraz kolejne dyscypliny sportowe. Obecne punkty przystanków i ogólne POI schronień nie określają geometrii wiaty przystankowej. Marka, stan urządzenia i rzeczywiste wymiary wymagają danych źródłowych. Implementacja korzysta z wczytanych kafli i istniejących punktów, bez nowego dostawcy lub osobnych zapytań o modele.
+
+Weryfikacja wcześniejszych modeli obejmuje kompilację iOS i shadera tarcz. Poprawki audytu 1.1.130 obejmuje kompilacja aplikacji i widżetu dla iOS Simulator, kontrola składni projektu Xcode oraz sprawdzenie różnic i zachowania nieaktywnych konfiguracji macOS. Nie potwierdzono jeszcze wyglądu w uruchomionej scenie ani osiągniętej płynności na iPhonie; dodanie diagnostyki nie jest wynikiem pomiaru wydajności.
+
+Źródła techniczne: [schemat MapTiler Planet v4](https://docs.maptiler.com/schema/planet-v4/), [warstwy brył MapLibre](https://maplibre.org/maplibre-native/ios/latest/documentation/maplibre/mlnfillextrusionstylelayer/), [własne warstwy Metal w MapLibre](https://maplibre.org/maplibre-native/ios/latest/documentation/maplibre-native-for-ios/customstylelayerexample/).

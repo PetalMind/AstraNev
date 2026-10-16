@@ -153,7 +153,6 @@ nonisolated struct ValhallaRoutingOptions: Codable, Equatable {
         case .car: vehicle.rawValue
         case .walking: "pedestrian"
         case .bicycle: "bicycle"
-        case .parkRide: "auto"
         case .transit: "multimodal"
         }
     }
@@ -218,7 +217,7 @@ extension RoutingPreferences {
             }
             return value
         }
-        if mode == .car || mode == .parkRide {
+        if mode == .car {
             if mode == .car, evPlanningEnabled, profile.vehicle != .auto {
                 throw ValhallaFeatureError.message("Planowanie ładowania EV jest dostępne dla profilu samochodu. Wyłącz EV albo wybierz samochód.")
             }

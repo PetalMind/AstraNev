@@ -224,16 +224,6 @@ extension ContentView {
                 case .walking: settings.context = .walking
                 case .bicycle: settings.context = .cycling
                 case .transit: settings.context = .transit
-                case .parkRide:
-                    if let leg = activeParkRideLeg {
-                        switch leg.mode.uppercased() {
-                        case "CAR": settings.context = .driving
-                        case "WALK": settings.context = .walking
-                        default: settings.context = .transit
-                        }
-                    } else {
-                        settings.context = .driving
-                    }
                 }
             }
         }
@@ -244,35 +234,15 @@ extension ContentView {
         navigationStore.state.status == .navigating || navigationStore.state.status == .rerouting
     }
 
-    var activeParkRideLeg: JourneyLeg? {
-        guard let legs = navigationStore.state.route?.journey?.legs, !legs.isEmpty else { return nil }
-        if let index = navigationStore.state.transitProgress?.legIndex, legs.indices.contains(index) {
-            return legs[index]
-        }
-        return legs.first { $0.arrival > Date() } ?? legs.last
-    }
-
-    var parkRideIsUsingTransitLeg: Bool {
-        guard let activeParkRideLeg else { return false }
-        return activeParkRideLeg.mode.uppercased() != "CAR"
-    }
-
-    var parkRideIsDrivingLeg: Bool {
-        activeParkRideLeg?.mode.uppercased() == "CAR"
-    }
-
     var isOnRoadDrivingLeg: Bool {
-        navigationStore.state.transportMode == .car ||
-            (navigationStore.state.transportMode == .parkRide && parkRideIsDrivingLeg)
+        navigationStore.state.transportMode == .car
     }
 
     var activeJourneyNearbyCategories: [NearbyPlaceCategory] {
         switch navigationStore.state.transportMode {
         case .car:
             [.fuel, .parking, .charging, .restArea]
-        case .parkRide where parkRideIsDrivingLeg:
-            [.fuel, .parking, .charging, .restArea]
-        case .walking, .bicycle, .transit, .parkRide:
+        case .walking, .bicycle, .transit:
             [.food]
         }
     }
@@ -280,7 +250,7 @@ extension ContentView {
     var supportsActiveTripWaypoints: Bool {
         switch navigationStore.state.transportMode {
         case .car, .walking, .bicycle: true
-        case .transit, .parkRide: false
+        case .transit: false
         }
     }
 
@@ -294,19 +264,6 @@ extension ContentView {
 
     var supportsActiveTripRoadPreferences: Bool {
         isOnRoadDrivingLeg
-    }
-
-    var parkRideCarDistanceToTransfer: Double? {
-        guard navigationStore.state.transportMode == .parkRide,
-              parkRideIsDrivingLeg,
-              let location = navigationStore.state.location,
-              let coordinates = activeParkRideLeg?.coordinates,
-              coordinates.count > 1,
-              let projection = MapMatcher.project(location.coordinate, onto: coordinates),
-              projection.distanceFromRoute <= max(150, location.accuracy * 2) else { return nil }
-        let legLength = zip(coordinates, coordinates.dropFirst())
-            .reduce(0.0) { $0 + $1.0.distance(to: $1.1) }
-        return max(0, legLength - projection.alongRoute)
     }
 
     var activeJourneyTargetText: String {
@@ -323,11 +280,6 @@ extension ContentView {
             return leg.mode == "WALK"
                 ? "Teraz idziesz do \(leg.to)"
                 : "Teraz jedziesz linią \(leg.line ?? "MPK") do \(leg.to)"
-        case .parkRide:
-            guard let leg = activeParkRideLeg else { return "Teraz podróżujesz do \(fallback)" }
-            if leg.mode == "WALK" { return "Teraz idziesz do \(leg.to)" }
-            if leg.mode == "CAR" { return "Teraz jedziesz samochodem do \(leg.to)" }
-            return "Teraz jedziesz linią \(leg.line ?? "MPK") do \(leg.to)"
         }
     }
 
@@ -337,7 +289,6 @@ extension ContentView {
         case .walking: "Cel osiągnięty pieszo!"
         case .bicycle: "Cel osiągnięty rowerem!"
         case .transit: "Cel osiągnięty komunikacją miejską!"
-        case .parkRide: "Cel osiągnięty w systemie P+R!"
         }
     }
 
@@ -347,7 +298,6 @@ extension ContentView {
         case .walking: "pieszo"
         case .bicycle: "rowerem"
         case .transit: "komunikacją"
-        case .parkRide: "trasą P+R"
         }
     }
 
@@ -366,12 +316,6 @@ extension ContentView {
                 return ("arrow.left.arrow.right", "—", "przesiadek")
             }
             return ("arrow.left.arrow.right", "\(transfers)", transferCaption(transfers))
-        case .parkRide:
-            guard let journeyTransfers = navigationStore.state.route?.journey?.transferCount else {
-                return ("arrow.left.arrow.right", "—", "przesiadek")
-            }
-            let transfers = journeyTransfers + 1
-            return ("arrow.left.arrow.right", "\(transfers)", transferCaption(transfers))
         case .car, .bicycle:
             let symbol = navigationStore.state.transportMode == .car ? "car.side" : "bicycle"
             let speed = trip.map { "\(Int($0.averageSpeedKph.rounded())) km/h" } ?? "—"
@@ -382,7 +326,7 @@ extension ContentView {
     var navigationArrivalCaption: String {
         switch navigationStore.state.transportMode {
         case .walking, .bicycle: "dotarcie"
-        case .car, .transit, .parkRide: "przyjazd"
+        case .car, .transit: "przyjazd"
         }
     }
 
@@ -425,7 +369,7 @@ extension ContentView {
             name: "daddr",
             value: "\(destination.coordinate.latitude),\(destination.coordinate.longitude)"))
         switch navigationStore.state.transportMode {
-        case .car, .parkRide: queryItems.append(URLQueryItem(name: "dirflg", value: "d"))
+        case .car: queryItems.append(URLQueryItem(name: "dirflg", value: "d"))
         case .walking: queryItems.append(URLQueryItem(name: "dirflg", value: "w"))
         case .bicycle: break
         case .transit: queryItems.append(URLQueryItem(name: "dirflg", value: "r"))

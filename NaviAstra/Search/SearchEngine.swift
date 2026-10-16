@@ -69,6 +69,10 @@ struct QueryClassifier {
     }
 
     private func classifyParcel(_ text: String, alongRoute: Bool) -> ClassifiedQuery? {
+        if let reference = ParcelPOI.reference(in: text) {
+            return ClassifiedQuery(intent: .category, text: reference, alongRoute: alongRoute,
+                                   parcelQuery: ParcelPOI.Query(reference: reference))
+        }
         let categories: [(String, ParcelPOI.Scope)] = [
             ("paczkomaty i punkty odbioru", .all), ("automaty paczkowe", .lockers),
             ("automat paczkowy", .lockers), ("punkty odbioru", .pickup),
@@ -85,7 +89,8 @@ struct QueryClassifier {
         } ?? text
         for carrier in ParcelPOI.operators {
             guard let alias = carrier.aliases.first(where: { hasPrefix(remainder, $0) }) else { continue }
-            var suffix = String(remainder.dropFirst(alias.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            var suffix = String(remainder.dropFirst(alias.count))
+                .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ",;")))
             var scope = category?.1 ?? .all
             if category == nil {
                 if alias.range(of: "station|box|automat|locker|packstation", options: .regularExpression) != nil { scope = .lockers }
@@ -95,17 +100,20 @@ struct QueryClassifier {
                 scope = trailingCategory.1
                 suffix = String(suffix.dropFirst(trailingCategory.0.count))
             }
-            let location = locationSuffix(suffix)
+            let reference = ParcelPOI.reference(in: suffix, explicitOperator: true)
+            let location = reference == nil ? locationSuffix(suffix) : ""
             return ClassifiedQuery(intent: .brand, text: carrier.title,
                                    location: location.isEmpty ? nil : location, alongRoute: alongRoute,
-                                   parcelQuery: ParcelPOI.Query(scope: scope, operatorPattern: carrier.pattern))
+                                   parcelQuery: ParcelPOI.Query(scope: scope, operatorPattern: carrier.pattern,
+                                                               reference: reference))
         }
         guard let category else { return nil }
-        let location = locationSuffix(remainder)
+        let reference = ParcelPOI.reference(in: remainder, explicitOperator: true)
+        let location = reference == nil ? locationSuffix(remainder) : ""
         let title = category.1 == .lockers ? "Paczkomaty" : category.1 == .pickup ? "Punkty odbioru" : "Paczkomaty i punkty odbioru"
         return ClassifiedQuery(intent: .category, text: title,
                                location: location.isEmpty ? nil : location, alongRoute: alongRoute,
-                               parcelQuery: ParcelPOI.Query(scope: category.1))
+                               parcelQuery: ParcelPOI.Query(scope: category.1, reference: reference))
     }
 }
 
@@ -149,6 +157,18 @@ struct SearchEngine {
             candidates = [SearchResult(
                 destination: Destination(name: query, coordinate: coordinate),
                 street: nil, houseNumber: nil, city: nil, countryCode: nil)]
+        } else if let parcelQuery = intent.parcelQuery, let reference = parcelQuery.reference {
+            var requests: [SearchProviderBatch.Request] = []
+            if InPostPointProvider.canSearch(reference, query: parcelQuery) {
+                requests.append(.init(authoritative: true) {
+                    let results = try await InPostPointProvider().search(reference)
+                    return results.filter { parcelQuery.matches($0) }
+                })
+            }
+            requests.append(.init {
+                try await poi.search(intent, near: searchCenter, route: intent.alongRoute ? context.route : [])
+            })
+            candidates = try await SearchProviderBatch.search(requests, onUpdate: publishCandidates)
         } else if intent.intent == .address {
             candidates = try await AddressSearchProvider().search(intent.text, near: searchCenter,
                                                                   includeUUGFallback: includeUUGFallback,
@@ -189,14 +209,14 @@ struct SearchEngine {
         }
         try Task.checkCancellation()
         // Along-route road searches retain extra candidates to compare detours.
-        // Transit and P+R need a full journey plan per result, so only plan the visible rows.
-        let candidateLimit = intent.alongRoute && context.mode != .transit && context.mode != .parkRide ? 20 : 8
+        // Transit needs a full journey plan per result, so only plan the visible rows.
+        let candidateLimit = intent.alongRoute && context.mode != .transit ? 20 : 8
         var results = Array(SearchDeduplicator.mergeAndRank(
             candidates, intent: intent, context: context,
             searchCenter: searchCenter, routeOrigin: routeOrigin).prefix(candidateLimit))
         onUpdate(Array(results.prefix(8)))
         if let origin = routeOrigin, !results.isEmpty {
-            if context.mode == .transit || context.mode == .parkRide {
+            if context.mode == .transit {
                 for index in results.indices {
                     try Task.checkCancellation()
                     do {
@@ -315,10 +335,12 @@ struct SearchEngine {
 struct POISearchProvider {
     var endpoint = MapRoadPOIEndpoint.url
 
-    func search(_ intent: ClassifiedQuery, near center: Coordinate, route: [Coordinate]) async throws -> [SearchResult] {
+    func search(_ intent: ClassifiedQuery, near center: Coordinate?, route: [Coordinate]) async throws -> [SearchResult] {
         var results: [SearchResult] = []
         let radii: [Int]
-        if !route.isEmpty {
+        if intent.parcelQuery?.reference != nil {
+            radii = [0]
+        } else if !route.isEmpty {
             radii = [1500]
         } else if intent.intent == .brand {
             radii = [5000, 15000, 50000]
@@ -333,7 +355,10 @@ struct POISearchProvider {
             guard remaining >= 1 else { throw SearchError.timeout }
             let serverTimeout = max(1, min(6, Int(remaining) - 1))
             let around: String
-            if route.isEmpty {
+            if intent.parcelQuery?.reference != nil {
+                around = ""
+            } else if route.isEmpty {
+                guard let center else { throw SearchError.locationRequired }
                 around = "around:\(radius),\(center.latitude),\(center.longitude)"
             } else {
                 around = RouteSearchCorridor.around(route, radius: Double(radius))
@@ -361,7 +386,13 @@ struct POISearchProvider {
                 guard let lat = element.lat ?? element.center?.lat, let lon = element.lon ?? element.center?.lon,
                       (-90...90).contains(lat), (-180...180).contains(lon) else { return nil }
                 let coordinate = Coordinate(latitude: lat, longitude: lon)
-                if route.isEmpty {
+                if intent.parcelQuery?.reference != nil {
+                    if !route.isEmpty {
+                        guard let projection = MapMatcher.project(coordinate, onto: route),
+                              projection.distanceFromRoute <= 1_500 else { return nil }
+                    }
+                } else if route.isEmpty {
+                    guard let center else { return nil }
                     guard coordinate.distance(to: center) <= Double(radius) else { return nil }
                 } else {
                     guard let projection = MapMatcher.project(coordinate, onto: route), projection.distanceFromRoute <= Double(radius) else { return nil }
@@ -374,9 +405,13 @@ struct POISearchProvider {
                                     street: street, houseNumber: number, city: city, countryCode: tags["addr:country"],
                                     isPOI: true, osmID: "\(element.type):\(element.id)", category: ParcelPOI.category(tags: tags, includePickupServices: intent.parcelQuery != nil) ?? tags["amenity"] ?? tags["shop"] ?? tags["tourism"],
                                     brand: ParcelPOI.brand(tags: tags, includePickupServices: intent.parcelQuery != nil), operatorName: ParcelPOI.operatorName(tags: tags, includePickupServices: intent.parcelQuery != nil),
+                                    parcelReferences: ParcelPOI.category(tags: tags) == nil ? [] : ParcelPOI.references(tags: tags),
                                     openingHours: ParcelPOI.openingHours(tags: tags, includePickupServices: intent.parcelQuery != nil),
                                     phone: tags["contact:phone"] ?? tags["phone"],
                                     website: tags["contact:website"] ?? tags["website"])
+            }
+            if let parcelQuery = intent.parcelQuery {
+                results = results.filter { parcelQuery.matches($0) }
             }
             let namesByID = Dictionary(uniqueKeysWithValues: results.compactMap { result in
                 result.osmID.map { ($0, result.destination.name) }
@@ -405,7 +440,7 @@ extension ValhallaRouteProvider {
 
     func searchMatrix(sources: [Coordinate], targets: [Coordinate], mode: TransportMode,
                       preferences: RoutingPreferences) async throws -> [[MatrixCell]] {
-        guard endpoint.scheme == "https", mode != .transit, mode != .parkRide else { throw RoutingError.invalidEndpoint }
+        guard endpoint.scheme == "https", mode != .transit else { throw RoutingError.invalidEndpoint }
         var request = URLRequest(url: endpoint.appendingPathComponent("sources_to_targets"))
         request.httpMethod = "POST"
         request.timeoutInterval = 12

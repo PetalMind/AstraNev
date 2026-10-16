@@ -23,7 +23,22 @@ final class TripPlanningService {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             if FileManager.default.fileExists(atPath: fileURL.path) {
-                trips = try JSONDecoder().decode([PlannedTrip].self, from: Data(contentsOf: fileURL))
+                let data = try Data(contentsOf: fileURL)
+                // Retired plans must not prevent the remaining plans from loading or be rerouted as a different mode.
+                if let records = try JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+                   records.contains(where: { $0["transportMode"] as? String == "parkRide" }) {
+                    let supported = records.filter { $0["transportMode"] as? String != "parkRide" }
+                    let supportedData = try JSONSerialization.data(withJSONObject: supported)
+                    let decoded = try JSONDecoder().decode([PlannedTrip].self, from: supportedData)
+                    let archiveURL = directory.appendingPathComponent("planned-trips-retired-mode-\(UUID().uuidString).json")
+                    try FileManager.default.copyItem(at: fileURL, to: archiveURL)
+                    try supportedData.write(to: fileURL, options: .atomic)
+                    trips = decoded
+                    errorMessage = "Plany podróży z wycofanym trybem transportu przeniesiono do lokalnego archiwum. Pozostałe plany są dostępne."
+                    Task { await reschedule() }
+                } else {
+                    trips = try JSONDecoder().decode([PlannedTrip].self, from: data)
+                }
             }
         } catch {
             canWrite = false
@@ -133,11 +148,7 @@ final class TripPlanningService {
         session.state.journeyTimeMode = now ? .now : (trip.timing == .arrival ? .arriveBy : .departAt)
         session.state.journeyTargetTime = trip.timing == .arrival
             ? occurrence.addingTimeInterval(-Double(trip.bufferMinutes + trip.stopMinutes) * 60) : occurrence
-        if trip.transportMode == .parkRide && trip.timing == .arrival && !now {
-            // Existing P+R supports departure time only; do not manufacture an arrival timetable.
-            throw TripPlanningError.message("P+R obsługuje planowanie godziny wyjazdu. Wybierz Wyjazd lub inny środek transportu.")
-        }
-        if (trip.transportMode == .transit || trip.transportMode == .parkRide), !trip.waypoints.isEmpty {
+        if trip.transportMode == .transit, !trip.waypoints.isEmpty {
             throw TripPlanningError.message("Postoje pośrednie są obsługiwane dla auta, roweru i podróży pieszych.")
         }
         await RoadRoutingContext.$allowsPersonalization.withValue(false) { await session.preview(trip.destination) }

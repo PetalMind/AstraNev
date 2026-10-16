@@ -39,7 +39,7 @@ struct NearbyPlacesSheet: View {
     }
 
     private var categories: [NearbyPlaceCategory] {
-        nearDestination ? [.parking, .parkRide] : [.fuel, .parking, .charging, .restArea, .food, .parkRide, .parcels]
+        nearDestination ? [.parking] : [.fuel, .parking, .charging, .restArea, .food, .parcels]
     }
 
     private var nearbySearchRefreshKey: String {
@@ -689,7 +689,7 @@ struct NearbyPlacesSheet: View {
         let category: String = switch candidate.category {
         case .fuel: "fuel"
         case .food: "restaurant"
-        case .parking, .parkRide, .restArea: "parking"
+        case .parking, .restArea: "parking"
         case .charging: "charging_station"
         case .parcels: "parcel_pickup"
         }

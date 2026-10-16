@@ -12,10 +12,19 @@ enum MapBuildingAppearance {
     static let nightRoofs: [UInt32] = [0x303033, 0x2C333C, 0x283640, 0x243541]
 
     static func variant(heightKey: String, count: Int) -> [Any] {
-        // A tile ID when available, otherwise provider height. No random per-frame changes.
+        // Tile-local IDs can change across zoom levels and between providers.
+        // Keep the neutral palette tied to a building attribute instead.
         let heightSeed: [Any] = ["*", ["coalesce", ["get", heightKey], 0], 13]
-        let seed: [Any] = ["to-number", ["coalesce", ["id"], heightSeed], heightSeed]
-        return ["%", ["abs", ["floor", seed]], count]
+        return ["%", ["abs", ["floor", heightSeed]], count]
+    }
+
+    static func applySolidRendering(to layer: MLNFillExtrusionStyleLayer) {
+        // Opacity below 1 switches Metal to a depth/stencil prepass that can
+        // mask the front extrusion with geometry behind it (MapLibre #1589).
+        // Keep the opaque path active even while other style properties fade.
+        layer.fillExtrusionPattern = nil
+        layer.fillExtrusionOpacityTransition = MLNTransition(duration: 0, delay: 0)
+        layer.fillExtrusionOpacity = NSExpression(forConstantValue: 1)
     }
 
     static func color(dark: Bool, roof: Bool = false, heightKey: String) -> NSExpression {

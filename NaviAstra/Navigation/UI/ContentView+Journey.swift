@@ -57,8 +57,6 @@ extension ContentView {
                     .padding(.vertical, 4)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .modifier(NavigationGlassSurface(radius: 26))
-                } else if parkRideIsUsingTransitLeg {
-                    transitNavigationHeader
                 }
             }
             .frame(maxWidth: 560, alignment: .leading)
@@ -168,10 +166,6 @@ extension ContentView {
         if let distance = navigationStore.state.progress?.distanceToNextManeuver, distance.isFinite {
             return distance
         }
-        if navigationStore.state.transportMode == .parkRide,
-           let distance = parkRideCarDistanceToTransfer {
-            return distance
-        }
         return navigationStore.state.progress?.remainingDistance ?? .infinity
     }
 
@@ -184,11 +178,9 @@ extension ContentView {
 
     private var compactCurrentStepGuidance: some View {
         let maneuver = navigationStore.state.progress?.nextManeuver
-        let fallbackSymbol = navigationStore.state.transportMode == .parkRide
-            ? "parkingsign.circle.fill" : "arrow.up"
+        let fallbackSymbol = "arrow.up"
         let instruction = maneuver?.displayInstruction
-            ?? (navigationStore.state.transportMode == .parkRide
-                ? "Jedź do parkingu P+R" : "Kontynuuj do celu")
+            ?? "Kontynuuj do celu"
 
         return Button {
             withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
@@ -345,12 +337,6 @@ extension ContentView {
 
                     if detent == .expanded {
                         journeyDestinationRow
-                            .padding(.horizontal, 18)
-                            .padding(.top, 14)
-                    }
-
-                    if detent == .expanded, navigationStore.state.transportMode == .parkRide {
-                        parkRideJourneyTimeline
                             .padding(.horizontal, 18)
                             .padding(.top, 14)
                     }
@@ -802,7 +788,6 @@ extension ContentView {
         switch navigationStore.state.transportMode {
         case .car, .walking, .bicycle: true
         case .transit: false
-        case .parkRide: parkRideIsDrivingLeg
         }
     }
 
@@ -1037,7 +1022,7 @@ extension ContentView {
                     routePlanningStore.loadPreferences(from: navigationStore)
                     appRouter.present(.routeSettings)
                 } label: {
-                    journeyActionLabel(navigationStore.state.transportMode == .parkRide ? "Opcje jazdy" : "Opcje trasy",
+                    journeyActionLabel("Opcje trasy",
                                        symbol: "slider.horizontal.3")
                 }
             }
@@ -1128,8 +1113,6 @@ extension ContentView {
                 journeyActionsGrid
                 if navigationStore.state.transportMode == .transit {
                     transitJourneyTimeline
-                } else if navigationStore.state.transportMode == .parkRide {
-                    parkRideJourneyTimeline
                 }
                 Divider()
                 Button(role: .destructive) { navigationStore.stop() } label: {
@@ -1695,133 +1678,6 @@ extension ContentView {
         case "FERRY": "ferry.fill"
         case "BIKE": "bicycle"
         default: "bus.fill"
-        }
-    }
-
-    var parkRideJourneyTimeline: some View {
-        Group {
-            if let journey = navigationStore.state.route?.journey {
-                VStack(alignment: .leading, spacing: 11) {
-                    Text("Etapy podróży")
-                        .font(.subheadline.weight(.semibold))
-                    transitFreshnessIndicator(for: journey)
-                    if let headway = journey.frequencyEstimateHeadwaySeconds {
-                        Label("Odjazdy orientacyjne co \(max(1, Int((Double(headway) / 60).rounded()))) min",
-                              systemImage: "clock.badge.questionmark")
-                            .font(.caption).foregroundStyle(Color.naviTextSecondary)
-                    }
-                    HStack(alignment: .top, spacing: 8) {
-                        metric(value: time(journey.arrival.timeIntervalSince(journey.departure)), caption: "całość")
-                        if journey.walkingDuration > 0 {
-                            metric(value: time(journey.walkingDuration), caption: "pieszo")
-                        }
-                        if journey.waitingDuration > 0 {
-                            metric(value: time(journey.waitingDuration), caption: "oczekiwanie")
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    VStack(spacing: 0) {
-                        ForEach(Array(journey.legs.enumerated()), id: \.element.id) { index, leg in
-                            HStack(alignment: .top, spacing: 11) {
-                                Image(systemName: parkRideLegSymbol(leg.mode))
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(Color.accentColor)
-                                    .frame(width: 30, height: 30)
-                                    .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 9))
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(parkRideLegTitle(leg))
-                                        .font(.subheadline.weight(.semibold))
-                                    Text("\(leg.departure.formatted(date: .omitted, time: .shortened))–\(leg.arrival.formatted(date: .omitted, time: .shortened)) · \(time(max(0, leg.arrival.timeIntervalSince(leg.departure))))")
-                                        .font(.caption)
-                                        .foregroundStyle(Color.naviTextSecondary)
-                                    Text(leg.from)
-                                        .font(.caption)
-                                        .foregroundStyle(Color.naviTextSecondary)
-                                    if !leg.transitStops.isEmpty {
-                                        Text("\(max(1, leg.transitStops.count - 1)) przystanków")
-                                            .font(.caption2)
-                                            .foregroundStyle(Color.naviTextSecondary)
-                                    }
-                                    if let delay = displayedTransitDelay(for: leg), abs(delay) >= 30 {
-                                        Text(delayLabel(TimeInterval(delay)))
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundStyle(transitDelayColor(delay))
-                                    } else if hasLiveTransitUpdate(for: leg) {
-                                        Label("Na żywo", systemImage: "dot.radiowaves.left.and.right")
-                                            .font(.caption2)
-                                            .foregroundStyle(Color.naviTextSecondary)
-                                    }
-                                }
-                                Spacer(minLength: 0)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .accessibilityElement(children: .combine)
-
-                            if leg.mode == "CAR" {
-                                HStack(spacing: 9) {
-                                    Image(systemName: "parkingsign.circle.fill")
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .foregroundStyle(Color.accentColor)
-                                        .frame(width: 30, height: 25)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Parking P+R · \(leg.to)")
-                                            .font(.caption.weight(.semibold))
-                                        Text("Koniec odcinka autem · przesiadka na komunikację")
-                                            .font(.caption2)
-                                            .foregroundStyle(Color.naviTextSecondary)
-                                    }
-                                    Spacer(minLength: 0)
-                                }
-                                .padding(.leading, 1)
-                                .padding(.vertical, 7)
-                                .accessibilityElement(children: .combine)
-                            }
-
-                            if index < journey.legs.count - 1 {
-                                Rectangle()
-                                    .fill(Color.secondary.opacity(0.2))
-                                    .frame(width: 2, height: 10)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.leading, 14)
-                                    .padding(.vertical, 3)
-                            }
-                        }
-                    }
-                    ForEach(Array(journey.alerts.enumerated()), id: \.offset) { _, alert in
-                        Label(alert, systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption)
-                            .foregroundStyle(Color(naviHex: NaviAstraColorPalette.warning))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.accentColor.opacity(0.055), in: RoundedRectangle(cornerRadius: 16))
-            }
-        }
-    }
-
-    func parkRideLegSymbol(_ mode: String) -> String {
-        switch mode {
-        case "CAR": "car.fill"
-        case "WALK": "figure.walk"
-        case "RAIL": "train.side.front.car"
-        case "TRAM": "tram.fill"
-        case "SUBWAY", "METRO": "tram.fill"
-        case "FERRY": "ferry.fill"
-        default: "bus.fill"
-        }
-    }
-
-    func parkRideLegTitle(_ leg: JourneyLeg) -> String {
-        switch leg.mode {
-        case "CAR": "Samochodem do \(leg.to)"
-        case "WALK": "Pieszo · \(leg.to)"
-        case "RAIL": "\(leg.line ?? "Pociąg") · \(leg.to)"
-        case "TRAM": "\(leg.line.flatMap { $0.isEmpty ? nil : $0 } ?? "Tramwaj") · \(leg.to)"
-        case "SUBWAY", "METRO": "\(leg.line ?? "Metro") · \(leg.to)"
-        case "FERRY": "\(leg.line ?? "Prom") · \(leg.to)"
-        default: "\(leg.line ?? "Autobus") · \(leg.to)"
         }
     }
 

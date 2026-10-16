@@ -6,7 +6,7 @@ Rozwinięcie „Szczegóły trasy” pobiera `/trace_attributes` z oryginalną p
 
 Widok prezentuje podział dystansu według nawierzchni, klasy i rodzaju drogi, limitów prędkości, liczby pasów, infrastruktury pieszej i rowerowej oraz trudności szlaków. Każdy odcinek zawiera dodatkowe dostępne atrybuty: mosty, tunele, granice, sygnalizację, obieg ruchu, pobocza, strefę czasową, sieć rowerową, HOV, dane ciężarówek oraz wysokość i maksymalne nachylenie. Brakujące dane są jawnie oznaczone. Prędkość modelu routingu nie zastępuje limitu prędkości.
 
-Profil terenu pochodzi z próbek `elevation_interval=30`. Jeśli serwer odrzuca żądanie z wysokością, ponawiamy bez niej. Przerwy, wartości null i sentinel 32768 nie są łączone na wykresie ani zamieniane na zero. Suma podejść i zejść jest prezentowana wyłącznie przy kompletnym profilu. To szacunek terenu, a nie dokładny pomiar profilu mostów i tuneli. Nieudane części trasy nie przesuwają początku kolejnych części; ich offset pochodzi z oryginalnej geometrii. W P+R dane Valhalli są opisane jako dotyczące części samochodowej.
+Profil terenu pochodzi z próbek `elevation_interval=30`. Jeśli serwer odrzuca żądanie z wysokością, ponawiamy bez niej. Przerwy, wartości null i sentinel 32768 nie są łączone na wykresie ani zamieniane na zero. Suma podejść i zejść jest prezentowana wyłącznie przy kompletnym profilu. To szacunek terenu, a nie dokładny pomiar profilu mostów i tuneli. Nieudane części trasy nie przesuwają początku kolejnych części; ich offset pochodzi z oryginalnej geometrii.
 
 Publiczny serwer lub własna instancja mogą ograniczać długość śladu albo nie posiadać części danych. Błąd wzbogacania nie usuwa prawidłowej trasy. Informacja o opłacie nie zawiera jej kwoty; dokładne taryfy wymagają innego źródła.
 

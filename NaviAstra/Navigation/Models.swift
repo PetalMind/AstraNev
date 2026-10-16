@@ -77,6 +77,7 @@ struct POIMetadata: Codable, Equatable, Sendable {
     var category: String?
     var brand: String?
     var operatorName: String?
+    var providerID: String? = nil
 }
 
 nonisolated struct NavigationLocation {
@@ -115,13 +116,17 @@ struct EVChargingStop: Identifiable, Sendable {
 }
 
 enum TransportMode: String, Codable, CaseIterable, Identifiable, Sendable {
-    case car, walking, bicycle, transit, parkRide
+    case car, walking, bicycle, transit
 
     static var configuredDefault: Self {
         guard let rawValue = UserDefaults.standard.string(forKey: "defaultTransportMode") else {
             return .car
         }
-        return Self(rawValue: rawValue) ?? .car
+        guard let mode = Self(rawValue: rawValue) else {
+            UserDefaults.standard.removeObject(forKey: "defaultTransportMode")
+            return .car
+        }
+        return mode
     }
 
     var id: Self { self }
@@ -131,7 +136,6 @@ enum TransportMode: String, Codable, CaseIterable, Identifiable, Sendable {
         case .walking: "Pieszo"
         case .bicycle: "Rower"
         case .transit: "Komunikacja"
-        case .parkRide: "P+R"
         }
     }
     var symbol: String {
@@ -140,7 +144,6 @@ enum TransportMode: String, Codable, CaseIterable, Identifiable, Sendable {
         case .walking: "figure.walk"
         case .bicycle: "bicycle"
         case .transit: "tram.fill"
-        case .parkRide: "parkingsign.circle.fill"
         }
     }
     var valhallaCosting: String {
@@ -148,7 +151,7 @@ enum TransportMode: String, Codable, CaseIterable, Identifiable, Sendable {
         case .car: "auto"
         case .walking: "pedestrian"
         case .bicycle: "bicycle"
-        case .transit, .parkRide: ""
+        case .transit: ""
         }
     }
 }

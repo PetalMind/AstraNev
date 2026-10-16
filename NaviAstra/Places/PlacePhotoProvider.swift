@@ -33,7 +33,7 @@ enum PlacePhotoResolver {
     static func isEligible(category: String?) -> Bool {
         guard let category else { return false }
         let value = category.lowercased().filter { $0.isLetter || $0.isNumber }
-        guard !value.contains("parking"), !value.contains("parkride"),
+        guard !value.contains("parking"),
               !value.contains("evcharger"), !value.contains("atm"), !value.contains("pharmacy") else { return false }
         let usefulCategories = [
             "attraction", "museum", "castle", "theatre", "theater", "gallery", "viewpoint",

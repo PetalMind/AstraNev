@@ -35,7 +35,7 @@ enum NavigationPositionIcon: CaseIterable {
         case .car: return .car
         case .walking: return .pedestrian
         case .bicycle: return .bicycle
-        case .transit, .parkRide:
+        case .transit:
             guard let legs = state.route?.journey?.legs,
                   let progress = state.transitProgress,
                   legs.indices.contains(progress.legIndex) else {

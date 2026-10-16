@@ -74,7 +74,6 @@ final class DetailedRoadRenderer {
         let token = generation
         task = Task { [weak self, weak map] in
             do {
-                try await Task.sleep(for: .milliseconds(650))
                 guard let self, let map, self.generation == token else { return }
                 if case .roads(let cached) = await self.provider.cachedData(in: requested) {
                     try await self.render(cached, query: requested, token: token, on: map)
@@ -82,6 +81,7 @@ final class DetailedRoadRenderer {
                         self.refreshedAt = cached.fetchedAt; self.retryAfter = .distantPast; self.task = nil; return
                     }
                 }
+                try await Task.sleep(for: .milliseconds(350))
                 guard self.retryAfter <= .now else { self.scheduleRetry(on: map); return }
                 let delay = max(0, self.nextFetchAt.timeIntervalSinceNow)
                 if delay > 0 { try await Task.sleep(for: .seconds(delay)) }

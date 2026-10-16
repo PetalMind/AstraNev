@@ -7,7 +7,6 @@ Planowanie tras, wyszukiwanie przystanków, tablice odjazdów i przystanki na ma
 | Funkcja | Źródło | Zachowanie |
 | --- | --- | --- |
 | Planowanie Komunikacją | Transitous `/api/v6/plan` | Wysyła współrzędne początku, celu, czas oraz preferencje przesiadek. Odpowiedź API jest mapowana na etapy podróży używane przez podgląd i nawigację. |
-| Planowanie P+R | Transitous `/api/v6/plan` | Po dojeździe do parkingu aplikacja wyznacza dalszy odcinek tym samym dostawcą. |
 | Wyszukiwanie przystanków | Transitous `/api/v1/geocode` | Przeszukuje przystanki według nazwy i przekazuje bieżącą pozycję jako wskazówkę lokalizacji, gdy jest dostępna. Wyniki lokalnego indeksu kolejowego i MPK są scalane z odpowiedzią. |
 | Przystanki mapy | Transitous `/api/v6/map/stops` | Pobiera przystanki dla aktualnego prostokąta mapy, gdy zbliżenie osiąga co najmniej 13. Zapytanie jest opóźnione o 350 ms po zmianie widoku i używa cache. |
 | Tablica odjazdów i alerty | Transitous `/api/v6/stoptimes` | Dla wybranego przystanku pokazuje dostępne odjazdy, informacje realtime i komunikaty. |

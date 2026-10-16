@@ -490,7 +490,7 @@ struct TripHistoryDetail: View {
                         .fixedSize(horizontal: false, vertical: true)
                     Text(TripHistoryFormat.date(trip.startedAt))
                         .foregroundStyle(Color.naviTextSecondary)
-                    Label(trip.transportMode?.title ?? "Rodzaj transportu nie zapisany",
+                    Label(trip.transportMode?.title ?? "Rodzaj transportu niedostępny",
                           systemImage: trip.transportMode?.symbol ?? "map")
                     Label(trip.arrived ? "Dotarto do celu" : "Przerwano podróż",
                           systemImage: trip.arrived ? "flag.checkered" : "stop.circle")
@@ -563,14 +563,14 @@ struct TripHistoryDetail: View {
                     } else {
                         traceMap
                         playbackControls
-                        if trip.transportMode != .transit && trip.transportMode != .parkRide {
+                        if let mode = trip.transportMode, mode != .transit {
                             NavigationLink("Analizuj ślad i dopasuj do dróg") {
                                 ValhallaTraceView(endpoint: URL(string: UserDefaults.standard.string(forKey: "routingServer")
                                     ?? "https://valhalla1.openstreetmap.de") ?? URL(string: "https://valhalla1.openstreetmap.de")!,
                                     preferences: (UserDefaults.standard.data(forKey: "routingPreferences")
                                         .flatMap { try? JSONDecoder().decode(RoutingPreferences.self, from: $0) }) ?? RoutingPreferences(),
                                     initialTrace: trip.valhallaTraceSegments,
-                                    initialMode: trip.transportMode ?? .car)
+                                    initialMode: mode)
                             }
                         }
                     }

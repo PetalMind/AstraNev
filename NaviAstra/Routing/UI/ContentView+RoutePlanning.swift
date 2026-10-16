@@ -187,7 +187,7 @@ extension ContentView {
         case .car: "d"
         case .walking: "w"
         case .bicycle: "b"
-        case .transit, .parkRide: "r"
+        case .transit: "r"
         }
         var components = URLComponents(string: "https://maps.apple.com/")
         components?.queryItems = [
@@ -623,7 +623,7 @@ extension ContentView {
     }
 
     private var routePlanningTransportModes: [TransportMode] {
-        [.car, .walking, .transit, .bicycle, .parkRide]
+        [.car, .walking, .transit, .bicycle]
     }
 
     private func routePlanningArrivalTime(_ route: NavigationRoute) -> String {

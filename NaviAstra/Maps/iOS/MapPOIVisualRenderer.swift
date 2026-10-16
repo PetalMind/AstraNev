@@ -56,9 +56,11 @@ final class MapPOIVisualRenderer {
     private static let haloID = "naviastra-poi-selection-halo"
     private static let ringID = "naviastra-poi-selection-ring"
     private static let planetLayers = ["poi_shopping", "poi_food", "poi_tourism", "poi_culture",
-        "poi_healthcare", "poi_accommodation", "poi_education", "poi_sport", "poi_public", "poi_station"]
+        "poi_healthcare", "poi_accommodation", "poi_education", "poi_sport", "poi_public", "poi_station", "poi_transport"]
     private var refreshedAt = Date.distantPast
     private var refreshKey = ""
+    private let observations = MapDetailObservations<MLNPointFeature>()
+    private var observationContext = ""
     private var contentKey = ""
     private var selectionKey = ""
     private var refreshTask: Task<Void, Never>?
@@ -74,6 +76,8 @@ final class MapPOIVisualRenderer {
         refreshedAt = .distantPast
         refreshKey = ""
         contentKey = ""
+        observations.reset()
+        observationContext = ""
         selectionKey = ""
         if let planet = style.source(withIdentifier: MapTilerEnvironmentStyle.sourceID) {
             for name in Self.planetLayers {
@@ -146,6 +150,8 @@ final class MapPOIVisualRenderer {
         // Category color and images are assigned by the existing common POI style.
     }
 
+    func suspend() { refreshTask?.cancel(); refreshTask = nil }
+
     func refresh(on map: MLNMapView, settings: MapSettings, dark: Bool, selected: SearchResult?, updatesSelection: Bool = true) {
         guard let style = map.style else { return }
         if updatesSelection { updateSelection(in: style, selected: selected, dark: dark) }
@@ -157,10 +163,10 @@ final class MapPOIVisualRenderer {
         let center = map.centerCoordinate
         let key = "\(Int(center.latitude * 10_000)):\(Int(center.longitude * 10_000)):\(Int(map.zoomLevel * 2)):\(dark):\(settings.context):\(settings.visiblePOICategories.map(\.rawValue).sorted())"
         let elapsed = Date().timeIntervalSince(refreshedAt)
-        if refreshKey == key, elapsed < 0.8 {
+        if elapsed < MapDetailPolicy.refreshInterval {
             if refreshTask == nil {
                 refreshTask = Task { [weak self, weak map] in
-                    do { try await Task.sleep(for: .seconds(0.8 - elapsed)) } catch { return }
+                    do { try await Task.sleep(for: .seconds(MapDetailPolicy.refreshInterval - elapsed)) } catch { return }
                     guard let self, let map else { return }
                     self.refreshTask = nil
                     self.refresh(on: map, settings: settings, dark: dark, selected: nil, updatesSelection: false)
@@ -204,8 +210,9 @@ final class MapPOIVisualRenderer {
                 let minimumZoom = [.fuel, .parking, .charging].contains(resolved.category)
                     ? Double(MapDisplayPriorityEngine.minimumZoom(for: resolved.category))
                     : (sport == nil ? importance.minimumZoom : min(17, importance.minimumZoom))
-                guard minimumZoom <= map.zoomLevel,
-                      settings.visiblePOICategories.contains(resolved.category) else { continue }
+                // Populate future zoom levels too; a gesture can then reveal points
+                // by changing the native filter without waiting for another tile query.
+                guard settings.visiblePOICategories.contains(resolved.category) else { continue }
                 let copy = MLNPointFeature()
                 copy.coordinate = point.coordinate
                 copy.identifier = point.identifier
@@ -272,11 +279,46 @@ final class MapPOIVisualRenderer {
             if $0.coordinate.latitude != $1.coordinate.latitude { return $0.coordinate.latitude < $1.coordinate.latitude }
             return $0.coordinate.longitude < $1.coordinate.longitude
         }
+        let context = "\(dark):\(settings.context):\(settings.visiblePOICategories.map(\.rawValue).sorted())"
+        if context != observationContext { observations.reset(); observationContext = context }
         points = Array(points.prefix(1_200))
+        points = Array(observations.merge(points.map { point in
+            let identity = "\(point.attributes["_planet"] ?? false):\(point.attributes["_kind"] ?? ""):\(point.coordinate.latitude):\(point.coordinate.longitude)"
+            return (identity, point, point.coordinate)
+        }, on: map, limit: 1_200).values).sorted {
+            let left = $0.attributes["_sort"] as? Int ?? 0
+            let right = $1.attributes["_sort"] as? Int ?? 0
+            if left != right { return left < right }
+            if $0.coordinate.latitude != $1.coordinate.latitude { return $0.coordinate.latitude < $1.coordinate.latitude }
+            return $0.coordinate.longitude < $1.coordinate.longitude
+        }
+        // A newly loaded Planet point also supersedes a retained base-map copy.
+        var emitted: [String: [CLLocation]] = [:]
+        points = points.sorted {
+            let a = $0.attributes["_planet"] as? Bool == true
+            let b = $1.attributes["_planet"] as? Bool == true
+            if a != b { return a }
+            return ($0.attributes["_sort"] as? Int ?? 0) < ($1.attributes["_sort"] as? Int ?? 0)
+        }.filter { point in
+            let label = (point.attributes["_label"] as? String ?? "").folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "pl_PL"))
+            let family = String(describing: point.attributes["_sport"] ?? point.attributes["_kind"] ?? "")
+            let id = family + ":" + label
+            let location = CLLocation(latitude: point.coordinate.latitude, longitude: point.coordinate.longitude)
+            guard !(emitted[id] ?? []).contains(where: { $0.distance(from: location) < (label.isEmpty ? 2 : 25) }) else { return false }
+            emitted[id, default: []].append(location)
+            return true
+        }.sorted {
+            let a = $0.attributes["_sort"] as? Int ?? 0, b = $1.attributes["_sort"] as? Int ?? 0
+            if a != b { return a < b }
+            if $0.coordinate.latitude != $1.coordinate.latitude { return $0.coordinate.latitude < $1.coordinate.latitude }
+            return $0.coordinate.longitude < $1.coordinate.longitude
+        }
         // Stable content avoids a render -> source update -> render feedback loop.
         let nextKey = points.map { point in
-            let data = (try? JSONSerialization.data(withJSONObject: point.attributes, options: [.sortedKeys])) ?? Data()
-            return "\(point.identifier.map { String(describing: $0) } ?? ""):\(point.coordinate.latitude):\(point.coordinate.longitude):\(data.base64EncodedString())"
+            let attributes = point.attributes
+            let fields = ["_label", "_sprite", "_kind", "_color", "_selectionCategory", "_minimumZoom", "_sort", "osm_id", "brand"]
+                .map { String(describing: attributes[$0] ?? "") }.joined(separator: ":")
+            return "\(point.identifier.map { String(describing: $0) } ?? ""):\(point.coordinate.latitude):\(point.coordinate.longitude):\(fields)"
         }.joined(separator: "|")
         guard nextKey != contentKey else { return }
         contentKey = nextKey
@@ -312,8 +354,12 @@ final class MapPOIVisualRenderer {
         case "poi_accommodation": return (.lodging, .lodging)
         case "poi_education", "poi_sport": return (.attractions, .generic)
         case "poi_public":
+            if attributes["subclass"] as? String == "parcel_locker" { return (.shopping, .parcels) }
             guard attributes["class"] as? String == "service" else { return nil }
             return (.shopping, .generic)
+        case "poi_transport":
+            guard attributes["subclass"] as? String == "charging_station" else { return nil }
+            return (.charging, .charging)
         case "poi_station":
             // TransitStopRenderer owns stops and stations, including their selection.
             guard attributes["class"] as? String == "aerodrome" else { return nil }

@@ -33,9 +33,6 @@ import Testing
         #expect(draft.waypoints == stops)
         #expect(draft.stopMinutes == 20)
         #expect(draft.validationMessage != nil)
-        draft.mode = .parkRide
-        #expect(draft.timing == .arrival)
-        #expect(draft.validationMessage != nil)
         draft.mode = .car
         #expect(draft.validationMessage == nil)
         #expect(draft.waypoints == stops)

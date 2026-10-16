@@ -214,7 +214,7 @@ struct PlannedTripEditor: View {
                     Picker("Transport", selection: $mode) { ForEach(TransportMode.allCases) { Text($0.title).tag($0) } }
                     NavigationLink("Zaplanuj dojazd z kalendarza") {
                         TripCalendarPicker { eventTitle, date, location, coordinate in
-                            title = eventTitle; targetDate = date; timing = mode == .parkRide ? .departure : .arrival
+                            title = eventTitle; targetDate = date; timing = .arrival
                             if let coordinate { destination = Destination(name: eventTitle, coordinate: coordinate, address: location) }
                             else { searchQuery = location; picker = .destination }
                         }
@@ -223,7 +223,7 @@ struct PlannedTripEditor: View {
                 Section("Termin") {
                     Picker("Godzina", selection: $timing) {
                         Text("Wyjazd").tag(PlannedTrip.Timing.departure)
-                        if mode != .parkRide { Text("Przyjazd do").tag(PlannedTrip.Timing.arrival) }
+                        Text("Przyjazd do").tag(PlannedTrip.Timing.arrival)
                     }.pickerStyle(.segmented)
                     DatePicker("Data i godzina", selection: $targetDate, in: Date().addingTimeInterval(60)...)
                         .environment(\.locale, PolishRegionalFormat.locale)
@@ -251,7 +251,7 @@ struct PlannedTripEditor: View {
                         ForEach(RoutePreference.allCases) { Text($0.title).tag($0) }
                     }
                     if !(seed?.preferredRoute.isEmpty ?? true) { Toggle("Zachowaj wybrany wcześniej wariant", isOn: $keepPreferred) }
-                    if mode == .car || mode == .parkRide {
+                    if mode == .car {
                         Toggle("Unikaj opłat", isOn: $preferences.avoidTolls)
                         Toggle("Unikaj autostrad", isOn: $preferences.avoidHighways)
                     }
@@ -288,8 +288,7 @@ struct PlannedTripEditor: View {
             .onChange(of: waypoints) { _, _ in keepPreferred = false }
             .onChange(of: mode) { _, mode in
                 keepPreferred = false
-                if mode == .parkRide { timing = .departure }
-                if mode == .transit || mode == .parkRide { waypoints = []; stopMinutes = 0 }
+                if mode == .transit { waypoints = []; stopMinutes = 0 }
             }
         }.interactiveDismissDisabled(saving)
     }

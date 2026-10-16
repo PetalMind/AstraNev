@@ -41,19 +41,17 @@ Odległość we wcześniejszych etapach jest zaokrąglana w dół do 50 m. Prefi
 
 Alerty trasy (`RoadSafetyAlert`) są kwalifikowane według typu ustawieniem gadatliwości. Obsługiwane są: fotoradar, początek i koniec odcinkowego pomiaru, kamera na czerwonym świetle, zmiana i zmienny limit, wypadek, roboty drogowe, zamknięcie, korek, przejazd kolejowy, strefa szkolna i niebezpieczny zakręt. Zmiana limitu wypowiada jego wartość, jeśli dostawca ją podał.
 
-Etapy alertu: do 1200 m, do 250 m i bezpośrednio do 40 m. Alerty drogowe są dopasowane do geometrii trasy. Na trasie P+R dane te są pobierane dla odcinka samochodowego i ogłoszenia są aktywne tylko podczas tego odcinka.
+Etapy alertu: do 1200 m, do 250 m i bezpośrednio do 40 m. Alerty drogowe są dopasowane do geometrii trasy.
 
 Incydenty ruchu (`TrafficIncident`) mogą dodać wypadek, mgłę, niebezpieczne warunki, deszcz, oblodzenie, korek, zamknięty pas/drogę, roboty, wiatr, podtopienie, objazd lub unieruchomiony pojazd. Incydent musi być z aktualnego, maksymalnie 180-sekundowego obrazu ruchu i znajdować się przed użytkownikiem, w odległości do 1200 m. Gdy dostawca nie podał dystansu po trasie, geometria musi dać się dopasować do trasy z tolerancją 120 m. W trybie „Szczegółowa” komunikat o korku zawiera również opóźnienie, jeśli jest dostępne.
 
-### Komunikacja, dojście i P+R
+### Komunikacja i dojście
 
 Aktywna podróż komunikacją ogłasza dojście do kolejnego przystanku lub celu, przesiadkę, linię i kierunek oraz wysiadanie dwa przystanki przed przystankiem docelowym i na następnym przystanku. Zapowiedzi wysiadania wymagają potwierdzenia jazdy pojazdem na podstawie postępu, prędkości lub aktualnej pozycji pojazdu. Zapowiedź na następnym przystanku ma priorytet manewru bezpośredniego.
 
-P+R używa wspólnego postępu `JourneyLeg`: prowadzenie drogowe i alerty działają na pierwszym odcinku samochodowym, a odcinki piesze i komunikacyjne korzystają z tych samych wskazówek dojścia, potwierdzania jazdy i komunikatów o wysiadaniu co zwykła podróż komunikacją.
-
 ### Przyjazd i przeliczenie trasy
 
-Przyjazd przechodzi przez wspólną metodę `arriveAtDestination()` i może wypowiedzieć „Dotarłeś do celu” dla każdego trybu, o ile głos jest włączony. Komunikat ma priorytet krytyczny. Odległość wykrycia wynosi do 45 m dla komunikacji i P+R; pozostałe tryby wymagają bliskości końca trasy i niskiej prędkości.
+Przyjazd przechodzi przez wspólną metodę `arriveAtDestination()` i może wypowiedzieć „Dotarłeś do celu” dla każdego trybu, o ile głos jest włączony. Komunikat ma priorytet krytyczny. Odległość wykrycia wynosi do 45 m dla komunikacji; pozostałe tryby wymagają bliskości końca trasy i niskiej prędkości.
 
 Po udanym przeliczeniu trasy jest dodawana informacja „Trasa została przeliczona”. Reset po reroutingu zachowuje zakończone klucze semantyczne, a usuwa kolejkę i bieżącą wypowiedź. Dzięki temu ten sam manewr lub alert nie wraca tylko dlatego, że provider nadał trasie nowe ID.
 

@@ -12,7 +12,9 @@ Dla tras drogowych:
 
 `wyjazd = termin przyjazdu − czas przejazdu − łączny czas postojów − bufor`
 
-Bufor dotyczy przyjazdu. Czas postoju nie zmienia samych kilometrów ani czasu przejazdu z silnika tras. Ładowanie EV uwzględnia istniejący silnik routingu. Transport publiczny korzysta z rzeczywistych godzin odjazdu i przyjazdu połączenia. P+R korzysta z planowania wyjazdu; interfejs nie oferuje nieobsługiwanego planowania przyjazdu. Ręczne postoje są dostępne dla auta, roweru i podróży pieszych.
+Bufor dotyczy przyjazdu. Czas postoju nie zmienia samych kilometrów ani czasu przejazdu z silnika tras. Ładowanie EV uwzględnia istniejący silnik routingu. Transport publiczny korzysta z rzeczywistych godzin odjazdu i przyjazdu połączenia. Ręczne postoje są dostępne dla auta, roweru i podróży pieszych.
+
+Przy pierwszym odczycie po wycofaniu trybu P+R aplikacja zachowuje kopię pliku planów w lokalnym archiwum `planned-trips-retired-mode-<UUID>.json` i usuwa te plany z aktywnego harmonogramu. Nie zamienia ich na inny transport. Historia przejazdów pozostaje czytelna; wycofany tryb jest prezentowany jako niedostępny.
 
 `TripPlanningService` używa odrębnej sesji istniejącego `NavigationSession`, aby obliczenia nie zmieniały aktywnej nawigacji. Przed wyjazdem auta, jeśli do rekomendowanej godziny pozostała najwyżej godzina, pobierane są dostępne pomiary i zdarzenia TomTom. Zastosowanie `RoadRouteETA` zastępuje czas na zmierzonych odcinkach, unikając podwójnego doliczania opóźnień. Nieznane odcinki zachowują szacunek silnika. Brak klucza, pomiarów lub zdarzeń jest pokazany w szczegółach; bieżący ruch nie jest traktowany jako prognoza na przyszłe dni. Potwierdzone zamknięcie powoduje komunikat o konieczności wybrania innej trasy.
 
@@ -50,11 +52,11 @@ Na iOS tworzenie i edycja planu otwiera jeden ekran z mapą i wspólnym panelem 
 
 `IOSPlannedTripDraft` przechowuje wszystkie pola szkicu i posiada własną sesję nawigacji przeznaczoną wyłącznie do przeliczeń. Przejścia między wyszukiwaniem, wyborem na mapie i kalendarzem zachowują szkic. Podgląd i zmiany jego punktów nie modyfikują aktywnej nawigacji. Prezentacja zachowuje ten sam obiekt szkicu przez cały czas edycji.
 
-Wybór miejsca zawiera widoczne pole adresu, akcję wyboru na mapie, zapisane i ostatnie miejsca oraz ich lokalne dopasowania do wpisywanego tekstu. Wyniki z usług są wyświetlane stopniowo przez istniejący `SearchEngine`; opcjonalne obliczenia dojazdu nie blokują wyboru pierwszych adresów. Wysłanie zapytania uruchamia również istniejący mechanizm dokładnego adresu. Dla komunikacji i P+R dostępne jest wyszukiwanie przystanków jako startu lub celu.
+Wybór miejsca zawiera widoczne pole adresu, akcję wyboru na mapie, zapisane i ostatnie miejsca oraz ich lokalne dopasowania do wpisywanego tekstu. Wyniki z usług są wyświetlane stopniowo przez istniejący `SearchEngine`; opcjonalne obliczenia dojazdu nie blokują wyboru pierwszych adresów. Wysłanie zapytania uruchamia również istniejący mechanizm dokładnego adresu. Dla komunikacji dostępne jest wyszukiwanie przystanków jako startu lub celu.
 
 Mapa pozwala wybrać POI, przystanek lub punkt pod centralną pinezką. W nowym trybie wyboru odświeżanie środka mapy ma próg 1 m; standardowy tryb mapy zachowuje dotychczasowy próg 35 m. Dane wskazanego POI są zachowane podczas programowej animacji kamery, a ręczne przesuwanie mapy ponownie ustala punkt i jego adres. Potwierdzenie zmienia odpowiednie pole szkicu.
 
-Punkty pośrednie mają jawne opcje zmiany miejsca, przesunięcia i usunięcia. Obowiązuje limit ośmiu punktów oraz kontrola duplikatów. Zmiana transportu nie usuwa danych; ograniczenie wybranego trybu blokuje zapis i zostaje opisane przy trasie. P+R nadal obsługuje wyłącznie planowanie godziny wyjazdu.
+Punkty pośrednie mają jawne opcje zmiany miejsca, przesunięcia i usunięcia. Obowiązuje limit ośmiu punktów oraz kontrola duplikatów. Zmiana transportu nie usuwa danych; ograniczenie wybranego trybu blokuje zapis i zostaje opisane przy trasie.
 
 Klucz danych routingu unieważnia podgląd po zmianie punktów, terminu, transportu i preferencji. Zmiana nazwy lub przypomnień nie przelicza trasy, a wybór już obliczonego wariantu zachowuje jego podgląd i rzeczywisty czas obliczenia. Godziny mają dokładność minutową, aby ukryte sekundy nie pomijały pierwszego dnia powtarzanej podróży.
 

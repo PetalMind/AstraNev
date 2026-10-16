@@ -12,12 +12,26 @@ final class MapSportSurfaceRenderer {
     private var refreshedAt = Date.distantPast
     private var contentKey = ""
     private var refreshTask: Task<Void, Never>?
+    private var active = false
+    private var frames: [String: PitchFrame] = [:]
+    private struct Model {
+        let shapes: [MLNShape]
+        let coordinate: CLLocationCoordinate2D
+        let width: Double
+        var seen: Date
+    }
+    private var models: [String: Model] = [:]
+
+    func suspend() { refreshTask?.cancel(); refreshTask = nil }
 
     func configure(in style: MLNStyle) {
         refreshTask?.cancel()
         refreshTask = nil
         refreshedAt = .distantPast
         contentKey = ""
+        frames.removeAll()
+        models.removeAll()
+        active = false
         guard style.source(withIdentifier: Self.sourceID) == nil,
               let leisure = style.layers.first(where: {
                   ($0 as? MLNVectorStyleLayer)?.sourceIdentifier == MapTilerEnvironmentStyle.sourceID
@@ -26,11 +40,20 @@ final class MapSportSurfaceRenderer {
         let source = MLNShapeSource(identifier: Self.sourceID, shape: nil, options: nil)
         style.addSource(source)
         let surface = MLNFillStyleLayer(identifier: Self.prefix + "surface", source: source)
-        surface.minimumZoomLevel = 17.5
+        surface.minimumZoomLevel = 17.2
         surface.predicate = NSPredicate(format: "_part == %@", "surface")
         surface.fillColor = NSExpression(mglJSONObject: ["to-color", ["get", "_color"]])
         surface.fillAntialiased = NSExpression(forConstantValue: true)
         style.insertLayer(surface, above: leisure)
+        let equipment = MLNFillExtrusionStyleLayer(identifier: Self.prefix + "equipment", source: source)
+        equipment.minimumZoomLevel = 18
+        equipment.predicate = NSPredicate(format: "_part == %@", "equipment")
+        equipment.fillExtrusionBase = NSExpression(forKeyPath: "_base")
+        equipment.fillExtrusionHeight = NSExpression(forKeyPath: "_top")
+        equipment.fillExtrusionColor = NSExpression(mglJSONObject: ["match", ["get", "_material"],
+            "steel", "#69747B", "wood", "#BE7D4E", "#E0E6DE"])
+        equipment.fillExtrusionOpacity = NSExpression(forConstantValue: 1)
+        style.insertLayer(equipment, above: surface)
         let lines = MLNLineStyleLayer(identifier: Self.prefix + "markings", source: source)
         lines.minimumZoomLevel = 18
         lines.predicate = NSPredicate(format: "_part == %@", "markings")
@@ -42,33 +65,26 @@ final class MapSportSurfaceRenderer {
     func refresh(on map: MLNMapView, settings: MapSettings, dark: Bool, enabled: Bool) {
         guard let style = map.style,
               let output = style.source(withIdentifier: Self.sourceID) as? MLNShapeSource else { return }
-        let visible = enabled && settings.baseMap != .satellite && map.zoomLevel >= 17.5
+        let visible = enabled && settings.baseMap != .satellite && map.zoomLevel >= (active ? 17.2 : 17.5)
+        active = visible
         let surface = style.layer(withIdentifier: Self.prefix + "surface") as? MLNFillStyleLayer
         let lines = style.layer(withIdentifier: Self.prefix + "markings") as? MLNLineStyleLayer
         surface?.isVisible = visible
         lines?.isVisible = visible
+        style.layer(withIdentifier: Self.prefix + "equipment")?.isVisible = visible && settings.overlays.poi && settings.visiblePOICategories.contains(.attractions)
+            && settings.cameraMode == .threeD
         guard visible else {
             refreshTask?.cancel()
             refreshTask = nil
             return
         }
         let quiet = settings.context.isNavigating ? 0.55 : 1.0
-        surface?.fillOpacity = NSExpression(forConstantValue: 0.8 * quiet)
+        surface?.fillOpacity = NSExpression(mglJSONObject: ["interpolate", ["linear"], ["zoom"],
+            17.2, 0, 17.8, 0.8 * quiet])
         lines?.lineColor = NSExpression(forConstantValue: UIColor(naviHex: dark ? 0xDFE7DD : 0xFCFCED))
-        lines?.lineOpacity = NSExpression(mglJSONObject: ["interpolate", ["linear"], ["zoom"], 18, 0, 18.5, quiet * 0.9])
+        lines?.lineOpacity = NSExpression(mglJSONObject: ["interpolate", ["linear"], ["zoom"], 18, 0, 18.5, ["*", quiet * 0.9, ["get", "_detail"]]])
         let elapsed = Date().timeIntervalSince(refreshedAt)
-        if elapsed < 1 {
-            refreshTask?.cancel()
-            refreshTask = Task { [weak self, weak map] in
-                do { try await Task.sleep(for: .seconds(1 - elapsed)) } catch { return }
-                guard let self, let map else { return }
-                self.refreshTask = nil
-                self.refresh(on: map, settings: settings, dark: dark, enabled: enabled)
-            }
-            return
-        }
-        refreshTask?.cancel()
-        refreshTask = nil
+        guard elapsed >= MapDetailPolicy.refreshInterval else { return }
         refreshedAt = .now
         guard let planet = style.source(withIdentifier: MapTilerEnvironmentStyle.sourceID) as? MLNVectorTileSource else { return }
         // Read the original sport points, including unnamed facilities, not collision-filtered symbols.
@@ -82,7 +98,12 @@ final class MapSportSurfaceRenderer {
             else if let multi = feature as? MLNMultiPolygon { polygons = multi.polygons }
             else { continue }
             for polygon in polygons {
-                guard let frame = PitchFrame(polygon: polygon) else { continue }
+                guard polygon.pointCount >= 4, polygon.pointCount <= 32 else { continue }
+                let geometryKey = (0..<Int(polygon.pointCount)).map {
+                    "\(polygon.coordinates[$0].latitude):\(polygon.coordinates[$0].longitude)"
+                }.sorted().joined(separator: ";")
+                guard let frame = frames[geometryKey] ?? PitchFrame(polygon: polygon) else { continue }
+                frames[geometryKey] = frame
                 let screen = (0..<Int(polygon.pointCount)).map { map.convert(polygon.coordinates[$0], toPointTo: map) }
                 guard screen.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { continue }
                 let bounds = screen.reduce(CGRect.null) { $0.union(CGRect(origin: $1, size: CGSize(width: 1, height: 1))) }
@@ -94,8 +115,6 @@ final class MapSportSurfaceRenderer {
             }
             if pitches.count >= 250 { break }
         }
-        var shapes: [MLNShape] = []
-        var keys: [String] = []
         for pitch in pitches {
             let contained = points.filter { pitch.frame.contains($0.coordinate) }
             // Tile buffers may repeat the same POI. Different points, including different
@@ -109,29 +128,67 @@ final class MapSportSurfaceRenderer {
             guard unique.count == 1, let point = unique.values.first,
                   pitches.filter({ $0.frame.contains(point.coordinate) }).count == 1,
                   let sport = MapSportKind.resolve(layer: "poi_sport", attributes: point.attributes),
-                  !sport.markings.isEmpty,
-                  sport.markings.allSatisfy({ marking in
-                      zip(marking, marking.dropFirst()).allSatisfy { a, b in
-                          (0...16).allSatisfy { step in
-                              let t = CGFloat(step) / 16
-                              return pitch.frame.contains(pitch.frame.coordinate(
-                                  CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)))
-                          }
-                      }
-                  }) else { continue }
+                  !sport.markings.isEmpty else { continue }
+            let modelKey = pitch.key + ":" + sport.rawValue
+            models = models.filter { !$0.key.hasPrefix(pitch.key + ":") || $0.key == modelKey }
+            if models[modelKey] != nil { models[modelKey]?.seen = .now; continue }
+            let markings = sport.markings
+            guard markings.allSatisfy({ marking in
+                zip(marking, marking.dropFirst()).allSatisfy { a, b in
+                    (0...16).allSatisfy { step in
+                        let t = CGFloat(step) / 16
+                        return pitch.frame.contains(pitch.frame.coordinate(
+                            CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)))
+                    }
+                }
+            }) else { continue }
+            var shapes: [MLNShape] = []
             let color = String(format: "#%06X", sport.colorHex(dark: dark))
             let surface = MLNPolygonFeature(coordinates: pitch.polygon.coordinates, count: pitch.polygon.pointCount)
             surface.attributes = ["_part": "surface", "_color": color]
             shapes.append(surface)
-            for marking in sport.markings {
+            for marking in markings {
                 var coordinates = marking.map { pitch.frame.coordinate($0) }
                 let line = MLNPolylineFeature(coordinates: &coordinates, count: UInt(coordinates.count))
                 line.attributes = ["_part": "markings"]
                 shapes.append(line)
             }
-            keys.append("\(pitch.key):\(sport.rawValue):\(dark)")
+            let size = pitch.frame.high - pitch.frame.low
+            let equipment = MapSportEquipmentGeometry.parts(sport: sport, length: size.x, width: size.y)
+            for (index, part) in equipment.enumerated() {
+                var coordinates = part.outline.map {
+                    pitch.frame.coordinate(CGPoint(x: $0.x / size.x + 0.5, y: $0.y / size.y + 0.5))
+                }
+                let shape = MLNPolygonFeature(coordinates: &coordinates, count: UInt(coordinates.count))
+                shape.identifier = "\(modelKey):equipment:\(index)" as NSString
+                shape.attributes = ["_part": "equipment", "_base": part.base, "_top": part.top, "_material": part.material]
+                shapes.append(shape)
+            }
+            models[modelKey] = Model(shapes: shapes, coordinate: pitch.frame.coordinate(CGPoint(x: 0.5, y: 0.5)),
+                width: min(pitch.frame.high.x - pitch.frame.low.x, pitch.frame.high.y - pitch.frame.low.y), seen: .now)
         }
-        let key = keys.sorted().joined(separator: "|")
+        models = models.filter { Date().timeIntervalSince($0.value.seen) < MapDetailPolicy.retention
+            && MapDetailPolicy.contains($0.value.coordinate, on: map, margin: 512) }
+        if models.count > 250 { models = Dictionary(uniqueKeysWithValues: models.sorted { $0.value.seen > $1.value.seen }.prefix(250).map { ($0.key, $0.value) }) }
+        if frames.count > 512 { frames.removeAll() }
+        var shapes: [MLNShape] = []
+        var keys: [String] = []
+        var equipmentCount = 0
+        for (id, model) in models.sorted(by: { $0.key < $1.key }) {
+            let pixels = MapDetailPolicy.projectedSpan(at: model.coordinate, meters: model.width, on: map)
+            let detail = (MapDetailPolicy.smooth(pixels, from: 24, to: 72) * 10).rounded() / 10
+            let sport = id.split(separator: ":").last.flatMap { MapSportKind(rawValue: String($0)) } ?? .other
+            for shape in model.shapes {
+                if let feature = shape as? MLNPolylineFeature { feature.attributes["_detail"] = detail }
+                if let feature = shape as? MLNPolygonFeature { feature.attributes["_color"] = String(format: "#%06X", sport.colorHex(dark: dark)) }
+            }
+            let showEquipment = settings.cameraMode == .threeD && settings.overlays.poi && settings.visiblePOICategories.contains(.attractions) && pixels >= 45
+                && equipmentCount < (MapDetailPolicy.constrained ? 12 : 32)
+            if showEquipment { equipmentCount += 1 }
+            shapes += model.shapes.filter { ($0 as? MLNFeature)?.attributes["_part"] as? String != "equipment" || showEquipment }
+            keys.append("\(id):\(detail):\(dark):\(showEquipment)")
+        }
+        let key = keys.joined(separator: "|")
         guard key != contentKey else { return }
         contentKey = key
         output.shape = MLNShapeCollectionFeature(shapes: shapes)

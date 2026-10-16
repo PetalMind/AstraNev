@@ -396,6 +396,7 @@ struct DestinationSearchSheet: View {
                 let state = navigationStore.state
                 let context = await searchStore.searchContext(
                     navigation: state, places: places, recentSearches: recentSearches)
+                let isParcelReferenceSearch = QueryClassifier().classify(trimmed).parcelQuery?.reference != nil
                 let found = try await searchStore.searchPlaces(
                     trimmed, context: context, includeUUGFallback: includeUUGFallback,
                     routingServerAddress: UserDefaults.standard.string(forKey: "routingServer")
@@ -410,6 +411,11 @@ struct DestinationSearchSheet: View {
                 guard !Task.isCancelled, searchStore.isCurrentRequest(requestID) else { return }
                 results = found
                 navigationStore.state.searchResults = results
+                if isParcelReferenceSearch, found.count == 1, let point = found.first,
+                   navigationStore.state.status != .navigating,
+                   navigationStore.state.status != .rerouting {
+                    navigationStore.focusMap(on: point.destination.coordinate, zoom: 17)
+                }
                 isSearching = false
                 didCompleteSearchWithNoResults = found.isEmpty
                 var didRefreshSavedContact = false

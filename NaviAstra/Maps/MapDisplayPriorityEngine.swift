@@ -29,8 +29,7 @@ enum MapDisplayPriorityEngine {
             guard RoadGeometryAlignment.isAligned(location.coordinate, end,
                 route.coordinates[segment], route.coordinates[segment + 1], directed: true) else { return false }
         }
-        return state.transportMode == .car ||
-            (state.transportMode == .parkRide && state.transitProgress?.legIndex == 0)
+        return state.transportMode == .car
     }
 
     nonisolated static func priority(of alert: RoadSafetyAlert) -> Int {

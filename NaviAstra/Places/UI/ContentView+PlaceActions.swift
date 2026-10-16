@@ -373,7 +373,7 @@ extension ContentView {
         let origin = navigationStore.state.location?.coordinate
         let navigationActive = isNavigating
         let mode = navigationStore.state.transportMode
-        let canRequestETA = origin != nil && mode != .transit && mode != .parkRide
+        let canRequestETA = origin != nil && mode != .transit
         var selected = result
         selected.requiresRouteEstimate = true
         selected.travelEstimateStatus = canRequestETA ? .calculating : .unavailable

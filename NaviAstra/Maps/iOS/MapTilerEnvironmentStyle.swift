@@ -10,8 +10,10 @@ enum MapTilerEnvironmentStyle {
     static let sourceID = prefix + "source"
     static let buildingsSourceID = prefix + "buildings-source"
     static let buildingLayerID = prefix + "building-3d"
-    private static let fallbackBuildingID = prefix + "building-fallback-3d"
-    private static let fallbackFootprintID = prefix + "building-fallback-footprint"
+    static let fallbackBuildingID = prefix + "building-fallback-3d"
+    static let fallbackFootprintID = prefix + "building-fallback-footprint"
+
+    static let fallbackSourceID = prefix + "building-fallback-source"
 
     static var configuredURL: URL? {
         guard let raw = Bundle.main.object(forInfoDictionaryKey: "DetailedEnvironmentTileJSONURL") as? String,
@@ -69,6 +71,13 @@ enum MapTilerEnvironmentStyle {
         if let wood = style.layer(withIdentifier: prefix + "wood") {
             style.insertLayer(forestPattern, above: wood)
         } else { insert(forestPattern, into: style, below: landscape) }
+        if let grass = style.layer(withIdentifier: prefix + "grass") {
+            let pattern = MLNFillStyleLayer(identifier: prefix + "grass-pattern", source: source)
+            pattern.sourceLayerIdentifier = "grass"
+            pattern.predicate = NSPredicate(format: "class IN %@", ["grass", "grassland", "meadow", "wet_meadow"])
+            pattern.minimumZoomLevel = 15
+            style.insertLayer(pattern, above: grass)
+        }
         for (id, spaces, minZoom): (String, Bool, Float) in [("parking-edge", false, 15), ("parking-space-edge", true, 17)] {
             let line = MLNLineStyleLayer(identifier: prefix + id, source: source)
             line.sourceLayerIdentifier = "parking"
@@ -76,9 +85,11 @@ enum MapTilerEnvironmentStyle {
             line.predicate = parkingPredicate(spaces: spaces)
             insert(line, into: style, below: ground)
         }
-        // Ground paths and elevated paths preserve brunnel semantics from the provider.
+        // Ground paths belong below carriageways. This also clips native fallback
+        // ribbons at the road edge while detailed surfaces are loading or unavailable.
+        let groundApproach = MapEnvironmentStyle.groundRoadAnchor(in: style) ?? ground
         for elevated in [false, true] {
-            let anchor = elevated ? building : (bridge ?? building)
+            let anchor = elevated ? building : groundApproach
             for part in ["edge", "surface", "steps"] {
                 let line = MLNLineStyleLayer(identifier: prefix + "path-" + (elevated ? "bridge-" : "ground-") + part, source: source)
                 line.sourceLayerIdentifier = "pathway"
@@ -134,7 +145,14 @@ enum MapTilerEnvironmentStyle {
         kerbPoints.predicate = kerb.predicate
         insert(kerbPoints, into: style, below: bridge ?? building)
         installRailway(in: style, source: source, ground: bridge ?? building, elevated: building)
-        installBuildings(in: style, source: source, anchor: building, fallback: true)
+        let fallback = MLNShapeSource(identifier: fallbackSourceID, shape: nil, options: [.maximumZoomLevel: 18, .buffer: 128])
+        style.addSource(fallback)
+        installBuildings(in: style, source: fallback, anchor: building, fallback: true)
+        let buildingProbe = MLNFillStyleLayer(identifier: prefix + "building-load", source: source)
+        buildingProbe.sourceLayerIdentifier = "building"
+        buildingProbe.minimumZoomLevel = 15
+        buildingProbe.fillOpacity = NSExpression(forConstantValue: 0)
+        insert(buildingProbe, into: style, below: building)
         if let url = buildingsURL {
             let buildings = MLNVectorTileSource(identifier: buildingsSourceID, configurationURL: url)
             style.addSource(buildings)
@@ -146,8 +164,23 @@ enum MapTilerEnvironmentStyle {
             guard let vector = layer as? MLNVectorStyleLayer, vector.sourceIdentifier == "openmaptiles" else { continue }
             if layer.identifier == "landcover_wood" || layer.identifier.hasPrefix("naviastra-forest-tree-pattern") {
                 layer.isVisible = false
+            } else if layer.identifier == "naviastra-low-vegetation-grass" {
+                // Use the precise grass polygons for texture when Planet is enabled.
+                layer.isVisible = false
             } else if vector.sourceLayerIdentifier == "building" {
                 layer.maximumZoomLevel = 15
+            } else if vector.sourceLayerIdentifier == "transportation",
+                      layer.identifier.contains("path") || layer.identifier.contains("pedestrian")
+                        || layer.identifier == MapEnvironmentStyle.prefix + "paving" {
+                // Planet supplies these paths/areas from z15. Retaining Liberty's
+                // copy creates offset edges and old rounded caps over the new joins.
+                layer.maximumZoomLevel = min(layer.maximumZoomLevel, 15)
+            } else if vector.sourceLayerIdentifier == "transportation", layer.identifier == "road_area_pattern" {
+                // This base layer also contains vehicle-road polygons; retain those.
+                vector.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+                    vector.predicate,
+                    NSPredicate(format: "NOT (class IN %@)", ["path", "pedestrian"])
+                ].compactMap { $0 })
             } else if vector.sourceLayerIdentifier == "transportation", layer.identifier.contains("rail") {
                 // Keep existing subway / monorail / funicular presentation; these
                 // are outside the railway classes added from Planet in this change.
@@ -240,6 +273,7 @@ enum MapTilerEnvironmentStyle {
 
     static func apply(to style: MLNStyle, settings: MapSettings, dark: Bool) {
         let driving = settings.context == .driving
+        let navigating = settings.context.isNavigating
         let quiet = driving ? 0.72 : 1.0
         let cycleFocus = settings.context == .cycling
         let pavedPathColor: [Any] = ["match", ["get", "class"],
@@ -248,10 +282,10 @@ enum MapTilerEnvironmentStyle {
         // `paved` distinguishes unpaved paths, without claiming a specific material.
         let pathColor: [Any] = ["case", ["==", ["get", "paved"], false],
             rgb(dark ? 0x3B3932 : 0xE5DFD0), pavedPathColor]
-        for layer in style.layers where [sourceID, buildingsSourceID, MapCrosswalkRenderer.sourceID]
+        for layer in style.layers where [sourceID, buildingsSourceID, fallbackSourceID, MapCrosswalkRenderer.sourceID]
             .contains((layer as? MLNVectorStyleLayer)?.sourceIdentifier ?? "") {
             let id = layer.identifier
-            if id.hasPrefix("naviastra-poi-load-") || id == prefix + "crossing-geometry"
+            if MapStreetFurnitureRenderer.isSourceProbe(id) || id == prefix + "building-load" || id.hasPrefix("naviastra-poi-load-") || id == prefix + "crossing-geometry"
                 || id == prefix + "crossing-road-geometry" { continue }
             if let fill = layer as? MLNFillStyleLayer {
                 if id == prefix + "wood" || id == prefix + "forest" {
@@ -260,9 +294,17 @@ enum MapTilerEnvironmentStyle {
                 } else if id == prefix + "wood-pattern" {
                     fill.fillPattern = NSExpression(forConstantValue: "naviastra-forest-" + (dark ? "dark" : "light") + "-unknown")
                     fill.fillOpacity = fade(16, 17, maximum: 0.10 * quiet)
+                } else if id == prefix + "grass-pattern" {
+                    let suffix = dark ? "dark" : "light"
+                    fill.fillPattern = NSExpression(mglJSONObject: ["match", ["get", "class"],
+                        "wet_meadow", "naviastra-low-vegetation-sprite-wetland-" + suffix,
+                        "naviastra-low-vegetation-sprite-grass-" + suffix])
+                    fill.fillOpacity = NSExpression(mglJSONObject: ["interpolate", ["linear"], ["zoom"],
+                        15, 0, 17, navigating ? 0.16 : 0.30, 19, navigating ? 0.22 : 0.42])
                 } else if id == prefix + "grass" {
                     fill.fillColor = NSExpression(mglJSONObject: ["match", ["get", "class"],
                         ["park", "garden"], rgb(dark ? 0x293E32 : 0xD3E3C6),
+                        "wet_meadow", rgb(dark ? 0x2B4140 : 0xC6DCD2),
                         ["allotments", "golf_course", "heath", "fell", "shrubbery", "tundra"], rgb(dark ? 0x304334 : 0xD6E3C7),
                         rgb(dark ? 0x344638 : 0xE0E9D2)])
                     fill.fillOpacity = NSExpression(mglJSONObject: ["interpolate", ["linear"], ["zoom"],
@@ -291,9 +333,7 @@ enum MapTilerEnvironmentStyle {
             } else if let extrusion = layer as? MLNFillExtrusionStyleLayer {
                 extrusion.isVisible = settings.overlays.buildings3D && settings.cameraMode == .threeD
                 extrusion.fillExtrusionColor = MapBuildingAppearance.color(dark: dark, heightKey: "height")
-                extrusion.fillExtrusionOpacity = NSExpression(mglJSONObject: ["interpolate", ["linear"], ["zoom"],
-                    16, settings.context.isNavigating ? 0.42 : (dark ? 0.60 : 0.68),
-                    17, settings.context.isNavigating ? 0.58 : (dark ? 0.90 : 0.94)])
+                MapBuildingAppearance.applySolidRendering(to: extrusion)
             } else if let line = layer as? MLNLineStyleLayer {
                 if line.sourceLayerIdentifier == "railway" {
                     applyRailway(line, settings: settings, dark: dark)
@@ -327,6 +367,13 @@ enum MapTilerEnvironmentStyle {
                 circle.circleRadius = NSExpression(mglJSONObject: ["interpolate", ["linear"], ["zoom"],
                     15, tree ? 1 : 1.5, 17, tree ? 2 : 1.5, 20, tree ? 5 : 2.5])
                 circle.circleOpacity = fade(tree ? 15 : 18, tree ? 16 : 18.5, maximum: (tree ? 0.45 : 0.7) * quiet)
+                if tree, MapStreetFurnitureRenderer.replacesTrees(in: style, settings: settings) {
+                    circle.maximumZoomLevel = Float(MapStreetFurnitureRenderer.minimumZoom)
+                    circle.isVisible = true
+                } else if tree {
+                    circle.maximumZoomLevel = 24
+                    circle.isVisible = true
+                }
                 circle.circleStrokeWidth = NSExpression(forConstantValue: tree ? 0.5 : 0)
                 circle.circleStrokeColor = color(dark ? 0x405F48 : 0x8FAC82)
                 circle.circlePitchAlignment = NSExpression(forConstantValue: "map")
@@ -351,33 +398,27 @@ enum MapTilerEnvironmentStyle {
                 symbol.iconScale = NSExpression(forConstantValue: 0.5)
                 let start = Double(symbol.minimumZoomLevel)
                 symbol.iconOpacity = fade(start, start + 0.5, maximum: 0.8 * quiet)
-                symbol.isVisible = settings.overlays.poi
+                let replacedByModel = MapStreetFurnitureRenderer.replacesSymbol(kind, in: style, settings: settings)
+                symbol.isVisible = settings.overlays.poi && !replacedByModel
+
             }
         }
     }
 
-    static func updateBuildingFallback(on map: MLNMapView, settings: MapSettings) {
-        guard settings.baseMap != .satellite, map.zoomLevel >= 15, let style = map.style,
-              let fallback = style.layer(withIdentifier: fallbackFootprintID) else { return }
-        let hasDetailedBuildings = !map.visibleFeatures(in: map.bounds,
-            styleLayerIdentifiers: [prefix + "building-footprint"]).isEmpty
-        let visible = !hasDetailedBuildings
-        if fallback.isVisible != visible { fallback.isVisible = visible }
-        if let extrusion = style.layer(withIdentifier: fallbackBuildingID) {
-            let shows3D = visible && settings.overlays.buildings3D && settings.cameraMode == .threeD
-            if extrusion.isVisible != shows3D { extrusion.isVisible = shows3D }
-        }
+    static func isBuildingLayer(_ layer: MLNVectorStyleLayer) -> Bool {
+        layer.sourceLayerIdentifier == "building" || layer.identifier == fallbackBuildingID
+            || layer.identifier == fallbackFootprintID
     }
 
     private static func installBuildings(in style: MLNStyle, source: MLNSource, anchor: MLNStyleLayer?, fallback: Bool = false) {
         let footprint = MLNFillStyleLayer(identifier: fallback ? fallbackFootprintID : prefix + "building-footprint", source: source)
-        footprint.sourceLayerIdentifier = "building"
+        footprint.sourceLayerIdentifier = fallback ? nil : "building"
         footprint.minimumZoomLevel = 15
         footprint.predicate = NSPredicate(format: "underground == nil OR underground != true")
         footprint.fillAntialiased = NSExpression(forConstantValue: true)
         insert(footprint, into: style, below: anchor)
         let building = MLNFillExtrusionStyleLayer(identifier: fallback ? fallbackBuildingID : buildingLayerID, source: source)
-        building.sourceLayerIdentifier = "building"
+        building.sourceLayerIdentifier = fallback ? nil : "building"
         building.minimumZoomLevel = 16
         building.predicate = NSPredicate(format: "(underground == nil OR underground != true) AND height > 0 AND (height_min == nil OR height_min < height)")
         building.fillExtrusionHeight = NSExpression(mglJSONObject: ["coalesce", ["get", "height"], 0])
@@ -461,7 +502,7 @@ enum MapTilerEnvironmentStyle {
     private static func rgb(_ value: UInt32) -> [Any] {
         ["rgb", (value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF]
     }
-    private static func imageName(_ kind: String, dark: Bool) -> String { prefix + kind + (dark ? "-night" : "-day") }
+    static func imageName(_ kind: String, dark: Bool) -> String { prefix + kind + (dark ? "-night" : "-day") }
     private static func accessibleParkingIcon(dark: Bool) -> UIImage {
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1

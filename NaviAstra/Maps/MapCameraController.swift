@@ -24,9 +24,6 @@ final class MapCameraController {
     private var transferOverviewStartDistance: Double?
     private var transferOverviewConsumedLegID: UUID?
     private var transferOverviewTask: Task<Void, Never>?
-    private var parkRideCameraGeometry: RouteProgressGeometry?
-    private var parkRideGeometryRouteID: UUID?
-    private var parkRideGeometryLegID: UUID?
 
     init(state: NavigationState,
          routeMatchProvider: @escaping @MainActor () -> (routeID: UUID, projection: RouteProjection, timestamp: Date)?,
@@ -117,9 +114,6 @@ final class MapCameraController {
             navigationIntentSmoother.reset()
             lastNavigationCameraFix = nil
             headingRouteID = routeID
-            parkRideCameraGeometry = nil
-            parkRideGeometryRouteID = nil
-            parkRideGeometryLegID = nil
             resetTransferOverview()
         }
         if lastSmoothingTransportMode != state.transportMode {
@@ -140,7 +134,7 @@ final class MapCameraController {
                 case .walking: intent.anchorFraction = 0.58
                 case .bicycle: intent.anchorFraction = 0.64
                 case .car: intent.anchorFraction = 0.68
-                case .transit, .parkRide:
+                case .transit:
                     let activeLeg = state.transitProgress.flatMap { progress in
                         state.route?.journey?.legs.indices.contains(progress.legIndex) == true
                             ? state.route?.journey?.legs[progress.legIndex] : nil
@@ -220,7 +214,7 @@ final class MapCameraController {
     }
 
     private func transitNavigationCameraPlan(location: NavigationLocation?) -> TransitCameraPlan? {
-        guard state.transportMode == .transit || state.transportMode == .parkRide,
+        guard state.transportMode == .transit,
               (state.status == .navigating || state.status == .rerouting),
               state.cameraState.usesNavigationPerspective,
               let route = state.route, let journey = route.journey else {
@@ -299,16 +293,10 @@ final class MapCameraController {
     private func carNavigationCameraIntent(location: NavigationLocation?,
                                            routeProjection: RouteProjection?,
                                            cameraState: NavigationCameraState) -> CameraIntent? {
-        let activeJourneyLeg = state.transitProgress.flatMap { progress in
-            state.route?.journey?.legs.indices.contains(progress.legIndex) == true
-                ? state.route?.journey?.legs[progress.legIndex] : nil
-        }
-        let isParkRideCarLeg = state.transportMode == .parkRide &&
-            state.transitProgress?.legIndex == 0 && activeJourneyLeg?.mode.uppercased() == "CAR"
-        guard state.transportMode == .car || isParkRideCarLeg,
+        guard state.transportMode == .car,
               (state.status == .navigating || state.status == .rerouting),
               cameraState.usesNavigationPerspective,
-              let route = state.route, route.journey == nil || isParkRideCarLeg,
+              let route = state.route, route.journey == nil,
               let location else {
             if state.transportMode != .car || state.route?.journey != nil {
                 navigationCameraEngine.clearRoute()
@@ -316,30 +304,12 @@ final class MapCameraController {
             return nil
         }
 
-        let geometry: RouteProgressGeometry
-        if isParkRideCarLeg, let leg = activeJourneyLeg {
-            if parkRideGeometryRouteID != route.id || parkRideGeometryLegID != leg.id {
-                var carLegRoute = route
-                carLegRoute.coordinates = leg.coordinates
-                navigationCameraEngine.clearRoute()
-                parkRideCameraGeometry = RouteProgressGeometry(carLegRoute)
-                parkRideGeometryRouteID = route.id
-                parkRideGeometryLegID = leg.id
-            }
-            guard let parkRideCameraGeometry else { return nil }
-            geometry = parkRideCameraGeometry
-        } else {
-            geometry = routeGeometryProvider(route)
-        }
+        let geometry = routeGeometryProvider(route)
         navigationCameraEngine.setRouteGeometry(geometry)
-        let projection = isParkRideCarLeg
-            ? state.transitProgress?.routeProjection ?? routeProjection ?? matchedRouteProjection(for: route)
-            : routeProjection ?? matchedRouteProjection(for: route)
+        let projection = routeProjection ?? matchedRouteProjection(for: route)
         let progressIsForRoute = state.progress?.geometryRouteID == route.id
-        let baseDistance = isParkRideCarLeg
-            ? state.transitProgress?.legDistance ?? projection?.alongRoute ?? 0
-            : projection?.alongRoute ??
-                (progressIsForRoute ? state.progress?.traveledDistance : nil) ?? 0
+        let baseDistance = projection?.alongRoute ??
+            (progressIsForRoute ? state.progress?.traveledDistance : nil) ?? 0
         let speed = CameraPlanner.usableSpeed(from: location)
         let fixTimestamp = state.location?.timestamp ?? location.timestamp
         let age = max(0, Date().timeIntervalSince(fixTimestamp))

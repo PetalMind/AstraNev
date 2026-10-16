@@ -5,7 +5,7 @@ import MetalKit
 import OSLog
 import simd
 
-private struct BuildingWallInstance {
+struct BuildingWallInstance {
     var origin: SIMD4<Float> // local x/y in meters, base, top
     var edge: SIMD4<Float> // local dx/dy, wall length, floor spacing
     var layout: SIMD4<Float> // window width/height, columns, floors
@@ -13,7 +13,7 @@ private struct BuildingWallInstance {
     var spill: SIMD4<Float> // outward normal, ground width, ground-level facade
 }
 
-private struct BuildingFacadeMesh {
+struct BuildingFacadeMesh {
     var origin = SIMD2<Double>(repeating: 0) // normalized Mercator, retained in double precision
     var metersPerWorld = 1.0
     var walls: [BuildingWallInstance] = []
@@ -23,7 +23,7 @@ private struct BuildingFacadeMesh {
 
 /// One instance per wall. Window cells and soft halos are evaluated on the GPU,
 /// so a tall building does not allocate a separate mesh for every window.
-private enum BuildingMeshGenerator {
+enum BuildingMeshGenerator {
     static let circumference = 40_075_016.68557849
 
     static func mercator(_ coordinate: CLLocationCoordinate2D) -> SIMD2<Double> {
@@ -32,17 +32,49 @@ private enum BuildingMeshGenerator {
                      (1 - log(tan(.pi / 4 + latitude / 2)) / .pi) / 2)
     }
 
-    static func make(features: [MLNFeature], map: MLNMapView, heightKey: String, baseKey: String) -> BuildingFacadeMesh {
+    @MainActor private static var cache: [Int: BuildingFacadeMesh] = [:]
+
+    @MainActor static func make(features: [MLNFeature], map: MLNMapView, heightKey: String, baseKey: String) -> BuildingFacadeMesh {
         var mesh = BuildingFacadeMesh()
-        mesh.origin = mercator(map.centerCoordinate)
-        mesh.metersPerWorld = circumference * cos(map.centerCoordinate.latitude * .pi / 180)
+        let center = mercator(map.centerCoordinate)
+        mesh.origin = SIMD2((floor(center.x * 32_768) + 0.5) / 32_768,
+                            (floor(center.y * 32_768) + 0.5) / 32_768)
+        let latitude = atan(sinh(.pi * (1 - 2 * mesh.origin.y)))
+        mesh.metersPerWorld = circumference * cos(latitude)
+        var input = Hasher()
+        input.combine(MapDetailPolicy.viewportKey(on: map))
+        input.combine(heightKey); input.combine(baseKey)
+        // Stable geometry keys also let the lamp mask reuse the facade mask.
+        let identities = features.map { feature -> Int in
+            var hash = Hasher()
+            hash.combine(feature.identifier.map { String(describing: $0) } ?? "")
+            for key in [heightKey, baseKey, "height", "render_height", "class", "subclass", "levels", "building:levels", "building:min_level"] {
+                hash.combine(String(describing: feature.attributes[key] ?? ""))
+            }
+            let parts: [MLNPolygon]
+            if let polygon = feature as? MLNPolygon { parts = [polygon] }
+            else if let multi = feature as? MLNMultiPolygon { parts = multi.polygons }
+            else { parts = [] }
+            for polygon in parts {
+                for ring in [polygon] + (polygon.interiorPolygons ?? []) {
+                    for index in 0..<Int(ring.pointCount) {
+                        hash.combine(ring.coordinates[index].latitude)
+                        hash.combine(ring.coordinates[index].longitude)
+                    }
+                }
+            }
+            return hash.finalize()
+        }.sorted()
+        for identity in identities { input.combine(identity) }
+        let inputKey = input.finalize()
+        if let retained = cache[inputKey] { return retained }
         var seen = Set<String>()
         var signature = Hasher()
         signature.combine(mesh.origin.x)
         signature.combine(mesh.origin.y)
-        let sorted = features.prefix(320).sorted { a, b in
-            simd_length_squared(mercator(a.coordinate) - mesh.origin)
-                < simd_length_squared(mercator(b.coordinate) - mesh.origin)
+        let sorted = features.sorted { a, b in
+            simd_length_squared(mercator(a.coordinate) - center)
+                < simd_length_squared(mercator(b.coordinate) - center)
         }
         var detailedBuildings = 0
         for feature in sorted.prefix(240) {
@@ -102,12 +134,14 @@ private enum BuildingMeshGenerator {
                 let screen = map.convert(polygon.coordinate, toPointTo: map)
                 let radius = hypot(screen.x - map.bounds.midX, screen.y - map.bounds.midY)
                     / max(1, hypot(map.bounds.width, map.bounds.height) / 2)
-                let detail = Float(max(0, min(1, (1.05 - radius) / 0.45)))
+                let projected = MapDetailPolicy.projectedSpan(at: polygon.coordinate, meters: 3, on: map)
+                let detail = Float(max(0, min(1, (1.05 - radius) / 0.45))
+                    * MapDetailPolicy.smooth(projected, from: 2, to: 6))
                 let eligible = facade.hasWindows && height - base >= 3 && floorHeight >= 2.4
                     && (facade != .neutral || height - base >= 9)
                     && floorHeight >= Double(facade.windowHeight) + 0.9
                     && detailedBuildings < 90 && radius < 1.15
-                    && (map.zoomLevel >= 18 || (height - base >= 9 && seed % 3 == 0))
+                    && detail > 0.02
                 // All sampled buildings occlude, including those without window detail.
                 for (ringIndex, ring) in rings.enumerated() {
                     let area = ring.indices.reduce(0.0) { sum, index in
@@ -150,6 +184,8 @@ private enum BuildingMeshGenerator {
         }
         for vertex in mesh.roofs { for index in 0..<4 { signature.combine(vertex[index]) } }
         mesh.signature = signature.finalize()
+        if cache.count >= 4 { cache.removeAll() }
+        cache[inputKey] = mesh
         return mesh
     }
 
@@ -215,14 +251,17 @@ final class MapBuildingFacadeLayer: MLNCustomStyleLayer {
 
     func updateVisibility(on map: MLNMapView, settings: MapSettings, dark: Bool, renderingEnabled: Bool) {
         let lighting = MapBuildingLighting.resolve(appearance: settings.appearance, coordinate: map.centerCoordinate)
-        let visible = renderingEnabled && settings.overlays.buildings3D && settings.cameraMode == .threeD
-            && settings.baseMap != .satellite && map.zoomLevel >= 17.5 && map.camera.pitch > 35
         lock.lock()
-        let changed = enabled != visible || self.dark != dark || intensity != Float(lighting.intensity)
+        let wasEnabled = enabled
+        lock.unlock()
+        let visible = renderingEnabled && settings.overlays.buildings3D && settings.cameraMode == .threeD
+            && settings.baseMap != .satellite && map.zoomLevel >= (wasEnabled ? 17.2 : 17.5) && map.camera.pitch > (wasEnabled ? 30 : 35)
+        lock.lock()
+        let changed = enabled != visible || self.dark != dark || intensity != (dark ? Float((lighting.intensity * 20).rounded() / 20) : 0)
             || quiet != lighting.quiet || navigating != settings.context.isNavigating
         enabled = visible
         self.dark = dark
-        intensity = dark ? Float(lighting.intensity) : 0
+        intensity = dark ? Float((lighting.intensity * 20).rounded() / 20) : 0
         quiet = lighting.quiet
         navigating = settings.context.isNavigating
         lock.unlock()
@@ -320,7 +359,7 @@ final class MapBuildingFacadeLayer: MLNCustomStyleLayer {
         let dark = self.dark, quiet = self.quiet, navigating = self.navigating
         lock.unlock()
         // MapLibre 6.29 passes pitch in radians through the native drawing context.
-        guard enabled, context.zoomLevel >= 17.5, context.pitch > 35 * .pi / 180, !mesh.walls.isEmpty else {
+        guard enabled, context.zoomLevel >= 17.2, context.pitch > 30 * .pi / 180, !mesh.walls.isEmpty else {
             colorTarget = nil
             depthTarget = nil
             return
@@ -368,7 +407,8 @@ final class MapBuildingFacadeLayer: MLNCustomStyleLayer {
         var matrix = Self.localMatrix(context.projectionMatrix, mesh: mesh, zoom: context.zoomLevel,
                                       longitude: context.centerCoordinate.longitude)
         var lighting = SIMD4<Float>(dark ? 1 : 0, intensity * (quiet ? 0.55 : 1),
-                                     navigating ? 0.55 : 1, Float(min(1, max(0, (context.zoomLevel - 17.5) / 0.5))))
+                                     navigating ? 0.55 : 1, Float(min(1, max(0, (context.zoomLevel - 17.2) / 0.8))
+                                        * min(1, max(0, (context.pitch * 180 / .pi - 30) / 10))))
         encoder.setCullMode(.none)
         encoder.setVertexBytes(&matrix, length: MemoryLayout<simd_float4x4>.stride, index: 1)
         encoder.setVertexBuffer(wallsBuffer, offset: 0, index: 0)
@@ -404,7 +444,7 @@ final class MapBuildingFacadeLayer: MLNCustomStyleLayer {
         renderEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
     }
 
-    private static func localMatrix(_ value: MLNMatrix4, mesh: BuildingFacadeMesh, zoom: Double,
+    static func localMatrix(_ value: MLNMatrix4, mesh: BuildingFacadeMesh, zoom: Double,
                                     longitude: Double) -> simd_float4x4 {
         let projection = simd_double4x4(columns: (
             SIMD4(value.m00, value.m01, value.m02, value.m03),

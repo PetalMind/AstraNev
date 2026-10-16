@@ -152,9 +152,6 @@ extension NavigationSession {
             return try await transitProvider.calculateRoutes(from: from, to: to,
                                                             departingAt: Date())
         }
-        if state.transportMode == .parkRide {
-            return try await calculateParkRideRoutes(from: from, to: to)
-        }
         let waypoints = state.waypoints
         let evStops = state.evChargingStops
         let mode = state.transportMode
@@ -236,19 +233,14 @@ extension NavigationSession {
         return routed
     }
 
-    func resolveAccessTargets(for destination: Destination, mode: TransportMode, from origin: Coordinate? = nil) async ->
-        (navigation: POINavigationTarget?, parkRideCar: POINavigationTarget?) {
-        guard destination.poi != nil else { return (nil, nil) }
-        if mode == .parkRide {
-            let walkingTarget = await POIAccessResolver.shared.resolve(for: destination, mode: .walking)
-            let carTarget = await POIAccessResolver.shared.resolve(for: destination, mode: .car)
-            return (walkingTarget, carTarget)
-        }
+    func resolveAccessTarget(for destination: Destination, mode: TransportMode, from origin: Coordinate? = nil) async ->
+        POINavigationTarget? {
+        guard destination.poi != nil else { return nil }
         let approach = (origin ?? routeOriginCoordinate).flatMap { coordinate in
             mode == .car ? POIAccessApproach(origin: coordinate, bearing: routingHeading(from: coordinate)) : nil
         }
         let target = await POIAccessResolver.shared.resolve(for: destination, mode: mode, approach: approach)
-        return (target, nil)
+        return target
     }
 
     func estimatedSearchRoute(from origin: Coordinate, to destination: Destination,
@@ -269,179 +261,11 @@ extension NavigationSession {
                 arriveBy: state.journeyTimeMode == .arriveBy,
                 preferences: .init(), cancellationToken: nil)
             route = TransitNavigationRouteMapper.routes(from: journeys).first
-        case .parkRide:
-            let targets = await resolveAccessTargets(for: destination, mode: .parkRide)
-            route = try await calculateParkRideRoutes(
-                from: origin, to: targets.navigation?.coordinate ?? destination.coordinate,
-                departingAt: departure, destination: destination,
-                parkRideCarTarget: targets.parkRideCar?.coordinate).first
         case .car, .walking, .bicycle:
             return nil
         }
         guard let route, route.expectedTravelTime.isFinite, route.distance.isFinite else { return nil }
         return SearchRouteEstimate(travelTime: route.expectedTravelTime, distanceMeters: route.distance)
-    }
-
-    func calculateParkRideRoutes(from: Coordinate, to: Coordinate,
-                                 departingAt requestedDeparture: Date = Date(),
-                                 destination: Destination? = nil,
-                                 parkRideCarTarget: Coordinate? = nil,
-                                 cancellationToken: TransitPlanningCancellationToken? = nil) async throws -> [NavigationRoute] {
-        try cancellationToken?.checkCancellation()
-        guard let provider = routeProvider as? AdvancedRouteProvider else {
-            throw TransitRoutingError.noParkRide
-        }
-        let carDestination: Coordinate
-        let selectedDestination = destination ?? state.destination
-        if selectedDestination?.poi != nil {
-            carDestination = parkRideCarTarget ?? state.parkRideCarTarget?.coordinate
-                ?? selectedDestination?.coordinate ?? to
-        } else {
-            carDestination = to
-        }
-        let baseRoute: NavigationRoute
-        do {
-            guard let route = try await provider.calculateRoutes(
-                from: from, to: carDestination, through: [], mode: .car,
-                preferences: state.routingPreferences, avoiding: []).first else {
-                throw TransitRoutingError.noParkRide
-            }
-            baseRoute = route
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            throw TransitRoutingError.noParkRide
-        }
-        let finalApproach = routeSuffix(baseRoute.coordinates, length: 40_000)
-        async let corridorSearch = try? OpenStreetMapNearbyPlaceProvider()
-            .search(.parkRide, along: finalApproach, radius: 5_000)
-        async let destinationSearch = try? OpenStreetMapNearbyPlaceProvider()
-            .search(.parkRide, around: to, radius: 15_000)
-        let parkings: [NearbyPlaceCandidate]
-        let (corridorCandidates, destinationCandidates) = await (corridorSearch, destinationSearch)
-        try Task.checkCancellation()
-        try cancellationToken?.checkCancellation()
-        var uniqueParkings: [String: NearbyPlaceCandidate] = [:]
-        for parking in (corridorCandidates ?? []) + (destinationCandidates ?? []) {
-            uniqueParkings[parking.id] = parking
-        }
-        parkings = Array(uniqueParkings.values).sorted {
-            to.distance(to: $0.destination.coordinate) < to.distance(to: $1.destination.coordinate)
-        }
-        guard !parkings.isEmpty else { throw TransitRoutingError.noParkRide }
-        var selectedParkings = Array(parkings.prefix(4))
-        let corridor = (corridorCandidates ?? []).sorted { $0.distanceFromRoute < $1.distanceFromRoute }
-        for fraction in [0.0, 0.33, 0.66, 1.0] where !corridor.isEmpty {
-            let parking = corridor[Int(Double(corridor.count - 1) * fraction)]
-            if !selectedParkings.contains(where: { $0.id == parking.id }) { selectedParkings.append(parking) }
-        }
-        let parkingTargets = await POIAccessResolver.shared.resolveMany(
-            for: selectedParkings.map(\.destination), mode: .car)
-        try Task.checkCancellation()
-        try cancellationToken?.checkCancellation()
-        let departure = requestedDeparture
-        var combined: [NavigationRoute] = []
-        for index in selectedParkings.indices {
-            try Task.checkCancellation()
-            try cancellationToken?.checkCancellation()
-            let parking = selectedParkings[index]
-            let parkingTarget = parkingTargets[index]?.coordinate ?? parking.destination.coordinate
-            let carRoutes: [NavigationRoute]
-            do {
-                carRoutes = try await provider.calculateRoutes(
-                    from: from, to: parkingTarget, through: [], mode: .car,
-                    preferences: state.routingPreferences, avoiding: [])
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                continue
-            }
-            try cancellationToken?.checkCancellation()
-            guard let carRoute = carRoutes.first else { continue }
-            let parkingArrival = departure.addingTimeInterval(carRoute.expectedTravelTime)
-            let transitDeparture = parkingArrival.addingTimeInterval(5 * 60)
-            let transitRoutes: [NavigationRoute]
-            do {
-                transitRoutes = try await transitProvider.calculateRoutes(
-                    from: parkingTarget, to: to, departingAt: transitDeparture,
-                    cancellationToken: cancellationToken)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch let error as TransitRouteError {
-                guard case .noRoute = error else { throw error }
-                continue
-            } catch {
-                continue
-            }
-            try cancellationToken?.checkCancellation()
-            for transitRoute in transitRoutes.prefix(2) {
-                guard let journey = transitRoute.journey else { continue }
-                let carLeg = JourneyLeg(mode: "CAR", line: "P+R", from: "Początek",
-                                        to: parking.destination.name, departure: departure,
-                                        arrival: parkingArrival, realTime: false,
-                                        coordinates: carRoute.coordinates)
-                var coordinates = carRoute.coordinates
-                coordinates.append(contentsOf: transitRoute.coordinates.dropFirst())
-                combined.append(NavigationRoute(
-                    coordinates: coordinates,
-                    distance: carRoute.distance + transitRoute.distance,
-                    expectedTravelTime: journey.arrival.timeIntervalSince(departure),
-                    maneuvers: carRoute.maneuvers,
-                    journey: Journey(departure: departure, arrival: journey.arrival,
-                                     legs: [carLeg] + journey.legs,
-                                     scheduleIsCached: journey.scheduleIsCached,
-                                     realtimeFeedAvailable: journey.realtimeFeedAvailable,
-                                     realtimeFeedUpdatedAt: journey.realtimeFeedUpdatedAt,
-                                     alertsFeedAvailable: journey.alertsFeedAvailable,
-                                     alerts: journey.alerts,
-                                     walkingDuration: journey.walkingDuration,
-                                     waitingDuration: journey.waitingDuration + 5 * 60 +
-                                        max(0, journey.departure.timeIntervalSince(transitDeparture)),
-                                     transferCount: journey.transferCount,
-                                     realtimeFreshness: journey.realtimeFreshness,
-                                     frequencyEstimateHeadwaySeconds: journey.frequencyEstimateHeadwaySeconds),
-                    travelSegments: carRoute.travelSegments,
-                    information: carRoute.information.map {
-                        var information = $0
-                        information.scopeDescription = "Odcinek samochodowy P+R"
-                        return information
-                    }
-                ))
-            }
-        }
-        guard !combined.isEmpty else { throw TransitRoutingError.noParkRide }
-        return combined.sorted { parkRideCost($0) < parkRideCost($1) }.prefix(3).map { $0 }
-    }
-
-    private func routeSuffix(_ route: [Coordinate], length: Double) -> [Coordinate] {
-        guard route.count > 1, length > 0, let last = route.last else { return route }
-        var reversed = [last]
-        var remaining = length
-        for index in stride(from: route.count - 2, through: 0, by: -1) {
-            let start = route[index]
-            let end = route[index + 1]
-            let segmentLength = start.distance(to: end)
-            if segmentLength >= remaining, segmentLength > 0 {
-                let fraction = 1 - remaining / segmentLength
-                reversed.append(Coordinate(
-                    latitude: start.latitude + (end.latitude - start.latitude) * fraction,
-                    longitude: start.longitude + (end.longitude - start.longitude) * fraction))
-                return Array(reversed.reversed())
-            }
-            reversed.append(start)
-            remaining -= segmentLength
-        }
-        return Array(reversed.reversed())
-    }
-
-    private func parkRideCost(_ route: NavigationRoute) -> Double {
-        guard let journey = route.journey else { return route.expectedTravelTime }
-        let carTime = journey.legs.filter { $0.mode == "CAR" }
-            .reduce(0.0) { $0 + $1.arrival.timeIntervalSince($1.departure) }
-        let rideTime = journey.legs.filter { $0.mode != "CAR" && $0.mode != "WALK" }
-            .reduce(0.0) { $0 + $1.arrival.timeIntervalSince($1.departure) }
-        return carTime + rideTime + journey.walkingDuration * 1.6
-            + journey.waitingDuration * 1.25 + Double(journey.transferCount) * 240
     }
 
     private func calculateEVRoutes(from: Coordinate, to: Coordinate, explicitStops: [Destination],

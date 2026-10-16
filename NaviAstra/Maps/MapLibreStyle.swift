@@ -1,6 +1,7 @@
 #if os(iOS)
 import Foundation
 import MapLibre
+import OSLog
 import UIKit
 
 /// Approximate geometric solar elevation, sufficient for decorative lighting.
@@ -52,8 +53,22 @@ final class NaviAstraMapStyle {
     private var shopLogosEnabled = true
     private var poiLayerIDs: [String] = []
     private let poiVisualRenderer = MapPOIVisualRenderer()
+    private let buildingFallbackRenderer = MapBuildingFallbackRenderer()
+    private var detailWork: DispatchWorkItem?
+    private var lastDetailRefresh = Date.distantPast
+    private weak var detailMap: MLNMapView?
+    private var detailSettings: MapSettings?
+    private var detailSelected: SearchResult?
+    private var detailFocus: CLLocationCoordinate2D?
+    private var detailRoute: [CLLocationCoordinate2D] = []
+    private var detailEnabled = false
+    private var detailGeneration = 0
+    private var lastDetailLog = Date.distantPast
+    private let detailLogger = Logger(subsystem: "NaviAstra", category: "MapDetails")
     private let crosswalkRenderer = MapCrosswalkRenderer()
+    private let surfaceNetworkRenderer = MapSurfaceNetworkRenderer()
     private let sportSurfaceRenderer = MapSportSurfaceRenderer()
+    private let streetFurnitureRenderer = MapStreetFurnitureRenderer()
     private var poiSettings: MapSettings?
     private var poiDark = false
     private var poiDensity: Int?
@@ -61,11 +76,15 @@ final class NaviAstraMapStyle {
     private var poiRouteFilter: MapPOIRouteFilter = .unrestricted
     private var configured = false
     private var buildingFacadeLayer: MapBuildingFacadeLayer?
-    private var buildingRoofLayers: [String: String] = [:]
     private var buildingHeightKey = "render_height"
     private var buildingBaseKey = "render_min_height"
 
     func reset() {
+        suspendDetails()
+        detailFocus = nil
+        detailRoute = []
+        buildingFallbackRenderer.reset()
+        streetFurnitureRenderer.reset()
         lastKey = ""
         satelliteStyle = SatelliteMapStyle()
         shopLogoNames = [:]
@@ -77,7 +96,6 @@ final class NaviAstraMapStyle {
         poiRouteFilter = .unrestricted
         configured = false
         buildingFacadeLayer = nil
-        buildingRoofLayers = [:]
         buildingHeightKey = "render_height"
         buildingBaseKey = "render_min_height"
     }
@@ -156,6 +174,12 @@ final class NaviAstraMapStyle {
                     ])
                     continue
                 }
+                if id.hasPrefix("naviastra-low-vegetation-") {
+                    let wetland = id.hasSuffix("wetland")
+                    layer.fillPattern = NSExpression(forConstantValue: vegetationPatternName(dark: dark, wetland: wetland))
+                    layer.fillOpacity = vegetationPatternOpacity(navigating: navigating)
+                    continue
+                }
                 let source = layer.sourceLayerIdentifier ?? ""
                 let fill: UIColor
                 switch source {
@@ -172,6 +196,9 @@ final class NaviAstraMapStyle {
                 case "waterway": fill = water
                 case "park": fill = color(dark ? NaviAstraColorPalette.mapParkNight : NaviAstraColorPalette.mapParkDay)
                 case "landcover":
+                    // A sprite fill takes precedence over fillColor. Remove the
+                    // provider's opaque daytime texture before applying our palette.
+                    layer.fillPattern = nil
                     layer.fillColor = landcoverColorExpression(dark: dark)
                     if id == "landcover_grass" {
                         layer.fillOpacity = NSExpression(mglJSONObject: [
@@ -199,11 +226,7 @@ final class NaviAstraMapStyle {
                layer.sourceLayerIdentifier == "building" {
                 layer.isVisible = settings.overlays.buildings3D && settings.cameraMode == .threeD
                 layer.fillExtrusionColor = MapBuildingAppearance.color(dark: dark, heightKey: "render_height")
-                layer.fillExtrusionOpacity = NSExpression(mglJSONObject: [
-                    "interpolate", ["linear"], ["zoom"],
-                    16, navigating ? 0.42 : (dark ? 0.60 : 0.68),
-                    17, navigating ? 0.58 : (dark ? 0.90 : 0.94)
-                ])
+                MapBuildingAppearance.applySolidRendering(to: layer)
                 layer.fillExtrusionHasVerticalGradient = NSExpression(forConstantValue: true)
                 layer.fillExtrusionRoundedCornerDistance = NSExpression(forConstantValue: MapBuildingAppearance.cornerDistance)
             }
@@ -290,14 +313,7 @@ final class NaviAstraMapStyle {
             }
         }
         MapEnvironmentStyle.apply(to: style, settings: settings, dark: dark)
-        for (roofID, bodyID) in buildingRoofLayers {
-            guard let roof = style.layer(withIdentifier: roofID) as? MLNFillExtrusionStyleLayer,
-                  let body = style.layer(withIdentifier: bodyID) as? MLNFillExtrusionStyleLayer else { continue }
-            let heightKey = body.sourceIdentifier == "openmaptiles" ? "render_height" : "height"
-            roof.fillExtrusionColor = MapBuildingAppearance.color(dark: dark, roof: true, heightKey: heightKey)
-            roof.fillExtrusionOpacity = NSExpression(forConstantValue: navigating ? 0.68 : 0.98)
-            roof.isVisible = body.isVisible
-        }
+        streetFurnitureRenderer.apply(to: style, settings: settings, dark: dark)
         poiVisualRenderer.apply(to: style, settings: settings, zoom: zoom, dark: dark, routeFilter: poiRouteFilter)
         satelliteStyle.apply(to: style, enabled: settings.baseMap == .satellite)
         poiDensity = density
@@ -314,6 +330,7 @@ final class NaviAstraMapStyle {
     }
 
     func updatePOIRouteContext(_ state: NavigationState, context: MapDisplayContext) {
+        detailFocus = (state.cameraLocation ?? state.location)?.coordinate.cl
         let filtered = context == .driving || context == .routePreview || context == .approachingDestination
         let traveling = state.status == .navigating || state.status == .rerouting
         let confirmed = !traveling || MapDisplayPriorityEngine.canPresentRouteAlerts(state)
@@ -321,12 +338,16 @@ final class NaviAstraMapStyle {
         let key = "\(filtered)-\(confirmed)-\(state.route?.id.uuidString ?? "none")-\(traveling ? bucket : 0)"
         guard key != poiRouteFilterKey else { return }
         poiRouteFilterKey = key
+        detailRoute = []
         poiDensity = nil
         guard filtered else { poiRouteFilter = .unrestricted; return }
         guard confirmed, let route = state.route else { poiRouteFilter = .hidden; return }
         let geometry = RouteProgressGeometry(route)
         let start = traveling ? max(0, Double(bucket) * 100) : 0
         let end = min(geometry.length, start + (traveling ? 5_000 : 20_000))
+        detailRoute = stride(from: start, through: min(end, start + 1_000), by: 40.0).compactMap {
+            geometry.coordinate(at: $0)?.cl
+        }
         var polygons: [[[[Double]]]] = []
         for distance in stride(from: start, through: end, by: 100.0) {
             guard let center = geometry.coordinate(at: distance) else { continue }
@@ -356,6 +377,10 @@ final class NaviAstraMapStyle {
                     style.setImage(forestTreePattern(dark: dark, dense: dense, leaf: leaf),
                                    forName: forestPatternName(dark: dark, dense: dense, leaf: leaf))
                 }
+            }
+            for wetland in [false, true] {
+                style.setImage(vegetationPattern(dark: dark, wetland: wetland),
+                               forName: vegetationPatternName(dark: dark, wetland: wetland))
             }
             style.setImage(waterWavePattern(dark: dark), forName: waterPatternName(dark: dark))
         }
@@ -394,12 +419,15 @@ final class NaviAstraMapStyle {
                     10, (major ? 1.5 : 0.4) + casing * 0.3, 15, width * 0.45 + casing, 18, width + casing])
             }
         }
+        installVegetationPatternLayers(in: style)
         installForestTreePatternLayers(in: style)
         installWaterShorelineLayer(in: style)
         installWaterWavePatternLayers(in: style)
         MapEnvironmentStyle.configure(in: style)
         sportSurfaceRenderer.configure(in: style)
+        surfaceNetworkRenderer.configure(in: style)
         installBuildingFacadeLayer(in: style)
+        streetFurnitureRenderer.configure(in: style)
         MapOverlayDepthLayer.install(in: style)
         poiVisualRenderer.configure(in: style)
         poiLayerIDs = [MapPOIVisualRenderer.pointsID]
@@ -424,30 +452,13 @@ final class NaviAstraMapStyle {
         let planet = building.identifier == MapTilerEnvironmentStyle.buildingLayerID
         buildingHeightKey = planet ? "height" : "render_height"
         buildingBaseKey = planet ? "height_min" : "render_min_height"
-        // Retain the existing roof palette and provider roof_color without facade textures.
-        let bodies = style.layers.compactMap { $0 as? MLNFillExtrusionStyleLayer }
-            .filter { $0.sourceLayerIdentifier == "building" }
-        for body in bodies {
-            guard let sourceID = body.sourceIdentifier, let source = style.source(withIdentifier: sourceID) else { continue }
-            let roofID = "naviastra-building-roof-color-" + body.identifier
-            let roof = MLNFillExtrusionStyleLayer(identifier: roofID, source: source)
-            roof.sourceLayerIdentifier = body.sourceLayerIdentifier
-            roof.predicate = body.predicate
-            roof.minimumZoomLevel = body.minimumZoomLevel
-            roof.maximumZoomLevel = body.maximumZoomLevel
-            roof.fillExtrusionBase = body.fillExtrusionHeight
-            let heightKey = sourceID == "openmaptiles" ? "render_height" : "height"
-            roof.fillExtrusionHeight = NSExpression(mglJSONObject:
-                ["+", ["coalesce", ["get", heightKey], 0], 0.02])
-            roof.fillExtrusionRoundedCornerDistance = body.fillExtrusionRoundedCornerDistance
-            roof.isVisible = false
-            style.insertLayer(roof, above: body)
-            buildingRoofLayers[roofID] = body.identifier
-        }
+        // The native extrusion already includes its roof. A second extrusion only
+        // 2 cm above it competes for depth during camera movement and flashes
+        // between the two palettes. Keep one surface for both body and roof.
         let layer = MapBuildingFacadeLayer(identifier: MapBuildingFacadeLayer.layerID)
         // Road-arrow symbols precede buildings in Liberty. Anchoring to the first
         // symbol puts the lights underneath the bodies that they decorate.
-        // Use the last body/roof instead; place labels and route overlays stay above.
+        // Use the last body instead; place labels and route overlays stay above.
         let topBuilding = style.layers.last {
             ($0 as? MLNFillExtrusionStyleLayer)?.sourceLayerIdentifier == "building"
         } ?? building
@@ -457,12 +468,6 @@ final class NaviAstraMapStyle {
 
     func updateBuildingFacadeVisibility(on map: MLNMapView, settings: MapSettings, dark: Bool,
                                         renderingEnabled: Bool) {
-        for (roofID, bodyID) in buildingRoofLayers {
-            guard let roof = map.style?.layer(withIdentifier: roofID),
-                  let body = map.style?.layer(withIdentifier: bodyID) else { continue }
-            let visible = body.isVisible && settings.baseMap != .satellite
-            if roof.isVisible != visible { roof.isVisible = visible }
-        }
         buildingFacadeLayer?.updateVisibility(on: map, settings: settings, dark: dark,
                                              renderingEnabled: renderingEnabled)
     }
@@ -472,12 +477,79 @@ final class NaviAstraMapStyle {
         guard let style = map.style else { return }
         let visibleBuildings = Set(style.layers.compactMap { layer -> String? in
             guard let extrusion = layer as? MLNFillExtrusionStyleLayer,
-                  extrusion.sourceLayerIdentifier == "building", extrusion.isVisible,
-                  buildingRoofLayers[extrusion.identifier] == nil else { return nil }
+                  MapTilerEnvironmentStyle.isBuildingLayer(extrusion), extrusion.isVisible else { return nil }
             return extrusion.identifier
         })
         buildingFacadeLayer?.updateGeometry(on: map, layerIDs: visibleBuildings,
                                            heightKey: buildingHeightKey, baseKey: buildingBaseKey)
+    }
+
+    private func installVegetationPatternLayers(in style: MLNStyle) {
+        guard let source = style.source(withIdentifier: "openmaptiles"),
+              let land = style.layers.compactMap({ $0 as? MLNFillStyleLayer })
+                .last(where: { $0.sourceLayerIdentifier == "landcover" }) else { return }
+        let water = style.layers.first {
+            guard $0 is MLNFillStyleLayer || $0 is MLNLineStyleLayer,
+                  let vector = $0 as? MLNVectorStyleLayer else { return false }
+            return vector.sourceLayerIdentifier == "water" || vector.sourceLayerIdentifier == "waterway"
+        }
+        for wetland in [false, true] {
+            let id = "naviastra-low-vegetation-" + (wetland ? "wetland" : "grass")
+            guard style.layer(withIdentifier: id) == nil else { continue }
+            let layer = MLNFillStyleLayer(identifier: id, source: source)
+            layer.sourceLayerIdentifier = "landcover"
+            layer.predicate = wetland
+                ? NSPredicate(format: "class == %@ OR subclass IN %@", "wetland",
+                              ["marsh", "reedbed", "swamp", "bog", "wetland", "saltmarsh", "tidalflat", "wet_meadow"])
+                : NSPredicate(format: "subclass IN %@", ["grass", "grassland", "meadow"])
+            layer.minimumZoomLevel = 15
+            layer.fillPattern = NSExpression(forConstantValue: vegetationPatternName(dark: false, wetland: wetland))
+            layer.fillOpacity = vegetationPatternOpacity(navigating: false)
+            // Water, paths and roads remain above the terrain symbols.
+            if let water { style.insertLayer(layer, below: water) }
+            else { style.insertLayer(layer, above: land) }
+        }
+    }
+
+    private func vegetationPatternName(dark: Bool, wetland: Bool) -> String {
+        "naviastra-low-vegetation-sprite-\(wetland ? "wetland" : "grass")-\(dark ? "dark" : "light")"
+    }
+
+    private func vegetationPatternOpacity(navigating: Bool) -> NSExpression {
+        NSExpression(mglJSONObject: ["interpolate", ["linear"], ["zoom"],
+            15, 0, 17, navigating ? 0.16 : 0.30, 19, navigating ? 0.22 : 0.42])
+    }
+
+    /// Decorative cartographic marks inside provider polygons, not individual plants.
+    private func vegetationPattern(dark: Bool, wetland: Bool) -> UIImage {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = false
+        return UIGraphicsImageRenderer(size: CGSize(width: 96, height: 96), format: format).image { output in
+            let context = output.cgContext
+            context.setLineCap(.round)
+            context.setLineJoin(.round)
+            context.setLineWidth(1.1)
+            context.setStrokeColor(color(dark ? 0x85A99A : 0x668C72).cgColor)
+            let positions: [(CGFloat, CGFloat)] = [(15, 18), (63, 12), (40, 49), (79, 69), (18, 82)]
+            for (x, y) in positions {
+                let height: CGFloat = wetland ? 7 : 3.5
+                context.move(to: CGPoint(x: x - 3, y: y))
+                context.addLine(to: CGPoint(x: x - 5, y: y - height * 0.7))
+                context.move(to: CGPoint(x: x, y: y))
+                context.addLine(to: CGPoint(x: x, y: y - height))
+                context.move(to: CGPoint(x: x + 3, y: y))
+                context.addLine(to: CGPoint(x: x + 5, y: y - height * 0.8))
+                context.strokePath()
+                if wetland {
+                    context.setStrokeColor(color(dark ? 0x719CA4 : 0x739CA0).cgColor)
+                    context.move(to: CGPoint(x: x - 6, y: y + 3))
+                    context.addLine(to: CGPoint(x: x + 5, y: y + 3))
+                    context.strokePath()
+                    context.setStrokeColor(color(dark ? 0x85A99A : 0x668C72).cgColor)
+                }
+            }
+        }
     }
 
     private func installForestTreePatternLayers(in style: MLNStyle) {
@@ -585,11 +657,11 @@ final class NaviAstraMapStyle {
             ["forest", "wood"], forest,
             "park", park,
             ["scrub", "shrubbery", "heath", "fell", "mangrove"], scrub,
-            ["grass", "grassland", "golf_course", "wet_meadow"], grass,
+            ["grass", "grassland", "golf_course"], grass,
             ["meadow"], meadow,
             ["orchard", "vineyard", "farm", "farmland", "plant_nursery"], cultivated,
             ["garden", "flowerbed", "allotments", "recreation_ground", "village_green"], garden,
-            ["marsh", "reedbed", "swamp", "bog", "wetland", "saltmarsh", "tidalflat"], wetland,
+            ["marsh", "reedbed", "swamp", "bog", "wetland", "saltmarsh", "tidalflat", "wet_meadow"], wetland,
             ["sand", "beach", "dune"], sand,
             ["bare_rock", "scree"], rock,
             ["glacier"], ice,
@@ -773,13 +845,87 @@ final class NaviAstraMapStyle {
         return NSExpression(mglJSONObject: ["to-color", ["get", "_color"], fallback])
     }
 
+    func refreshObjectModels(roadPOIs: [MapRoadPOI], alerts: [RoadSafetyAlert], stops: [TransitStop], places: [SearchResult]) {
+        var points = roadPOIs.compactMap { poi -> MapObjectModelPoint? in
+            guard let kind = MapObjectModelInput.roadKind(category: poi.category) else { return nil }
+            return .init(coordinate: poi.coordinate.cl, kind: kind, safetyCategory: poi.category,
+                         identity: poi.id, label: poi.title, sign: kind == .sign ? RoadSignSymbol(poi) : nil, priority: 3)
+        }
+        points += alerts.compactMap { alert -> MapObjectModelPoint? in
+            guard let category = MapObjectModelInput.roadCategory(alert: alert),
+                  let kind = MapObjectModelInput.roadKind(category: category) else { return nil }
+            return .init(coordinate: alert.coordinate.cl, kind: kind, safetyCategory: category,
+                         identity: alert.mapPOIID ?? alert.id, label: alert.title,
+                         sign: kind == .sign ? RoadSignSymbol(alert) : nil, priority: 3)
+        }
+        points += stops.map {
+            .init(coordinate: $0.coordinate.cl, kind: $0.mapModes.contains(.rail) || $0.mapModes.contains(.metro) ? .station : .stop,
+                  category: .transit, identity: "transit:\($0.id)", label: $0.name)
+        }
+        points += places.compactMap { place -> MapObjectModelPoint? in
+            guard place.isPOI, let kind = MapObjectModelInput.serviceKind(category: place.category) else { return nil }
+            return .init(coordinate: place.destination.coordinate.cl, kind: kind, category: kind == .charger ? .charging : .shopping,
+                         identity: place.osmID ?? "", label: place.destination.name, priority: 3)
+        }
+        streetFurnitureRenderer.additionalPoints = points
+        scheduleDetails()
+    }
+
     func refreshPOIs(on map: MLNMapView, settings: MapSettings, dark: Bool, selected: SearchResult?) {
-        poiVisualRenderer.refresh(on: map, settings: settings, dark: dark, selected: selected)
+        poiDark = dark
+        detailSelected = selected
+        detailMap = map
+        detailSettings = settings
+        scheduleDetails()
     }
 
     func refreshCrosswalks(on map: MLNMapView, settings: MapSettings, renderingEnabled: Bool) {
-        crosswalkRenderer.refresh(on: map, enabled: renderingEnabled && settings.baseMap != .satellite)
-        sportSurfaceRenderer.refresh(on: map, settings: settings, dark: poiDark, enabled: renderingEnabled)
+        detailMap = map
+        detailSettings = settings
+        detailEnabled = renderingEnabled
+        if !renderingEnabled { suspendDetails(); return }
+        scheduleDetails()
+    }
+
+    func suspendDetails() {
+        detailGeneration &+= 1
+        detailEnabled = false
+        detailWork?.cancel()
+        detailWork = nil
+        crosswalkRenderer.suspend()
+        surfaceNetworkRenderer.suspend()
+        sportSurfaceRenderer.suspend()
+        streetFurnitureRenderer.suspend()
+        poiVisualRenderer.suspend()
+    }
+
+    private func scheduleDetails() {
+        guard detailEnabled, detailWork == nil else { return }
+        let delay = max(0, MapDetailPolicy.refreshInterval - Date().timeIntervalSince(lastDetailRefresh))
+        let generation = detailGeneration
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.detailGeneration == generation else { return }
+            self.detailWork = nil
+            guard self.detailEnabled, let map = self.detailMap, let settings = self.detailSettings else { return }
+            let started = Date()
+            self.lastDetailRefresh = .now
+            self.buildingFallbackRenderer.refresh(on: map, settings: settings)
+            self.crosswalkRenderer.refresh(on: map, enabled: settings.baseMap != .satellite)
+            self.surfaceNetworkRenderer.refresh(on: map, settings: settings, dark: self.poiDark)
+            self.sportSurfaceRenderer.refresh(on: map, settings: settings, dark: self.poiDark, enabled: true)
+            self.streetFurnitureRenderer.refresh(on: map, settings: settings, enabled: true,
+                focus: self.detailFocus, route: self.detailRoute, routeFilter: self.poiRouteFilter)
+            self.poiVisualRenderer.refresh(on: map, settings: settings, dark: self.poiDark, selected: self.detailSelected)
+            #if DEBUG
+            if Date().timeIntervalSince(self.lastDetailLog) >= 10 {
+                self.lastDetailLog = .now
+                let milliseconds = Date().timeIntervalSince(started) * 1_000
+                self.detailLogger.debug("Map detail update: \(milliseconds) ms")
+            }
+            #endif
+        }
+        detailWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     private func color(_ hex: UInt32) -> UIColor {

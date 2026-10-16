@@ -21,7 +21,7 @@ extension NavigationSession {
         let calculationStarted = ProcessInfo.processInfo.systemUptime
         let generation = requestGeneration
         let mode = state.transportMode
-        let transitCancellationToken = mode == .transit || mode == .parkRide
+        let transitCancellationToken = mode == .transit
             ? TransitPlanningCancellationToken() : nil
         transitPlanningCancellationToken = transitCancellationToken
         defer {
@@ -34,7 +34,6 @@ extension NavigationSession {
         let requestedJourneyTime = state.journeyTargetTime
         state.destination = destination
         state.navigationTarget = nil
-        state.parkRideCarTarget = nil
         state.evChargingStops = []
         state.status = .routeCalculating
         refreshEnergyPolicy()
@@ -62,11 +61,10 @@ extension NavigationSession {
         }
         // The destination camera stays in place until route geometry is available.
         do {
-            let accessTargets = await resolveAccessTargets(for: destination, mode: state.transportMode, from: origin)
+            let accessTargets = await resolveAccessTarget(for: destination, mode: state.transportMode, from: origin)
             guard generation == requestGeneration else { return }
-            state.navigationTarget = accessTargets.navigation
-            state.parkRideCarTarget = accessTargets.parkRideCar
-            let routeDestination = accessTargets.navigation?.coordinate ?? destination.coordinate
+            state.navigationTarget = accessTargets
+            let routeDestination = accessTargets?.coordinate ?? destination.coordinate
             let routes: [NavigationRoute]
             if state.transportMode == .transit {
                 let onProgress: TransitPlanningProgressHandler = { [weak self] phase in
@@ -92,11 +90,6 @@ extension NavigationSession {
                         },
                         cancellationToken: transitCancellationToken)
                 }
-            } else if state.transportMode == .parkRide {
-                let departure = requestedJourneyTimeMode == .departAt ? requestedJourneyTime : Date()
-                routes = try await calculateParkRideRoutes(from: origin, to: routeDestination,
-                                                            departingAt: departure,
-                                                            cancellationToken: transitCancellationToken)
             } else {
                 let time = try await ValhallaPlanningTime.resolved(mode: requestedJourneyTimeMode,
                     date: requestedJourneyTime, coordinate: requestedJourneyTimeMode == .arriveBy ? routeDestination : origin)

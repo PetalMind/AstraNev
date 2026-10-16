@@ -9,7 +9,7 @@ Ten dokument opisuje bieżącą implementację routingu. Głównym koordynatorem
 ## W skrócie
 
 - Początek trasy to ręcznie wybrany punkt albo ostatnia zaakceptowana pozycja GPS. Cel pochodzi z wyszukiwania, mapy albo wybranego miejsca.
-- Wybrany tryb transportu decyduje o silniku: Valhalla dla samochodu, marszu i roweru; Transitous dla komunikacji publicznej i jej odcinka w P+R.
+- Wybrany tryb transportu decyduje o silniku: Valhalla dla samochodu, marszu i roweru; Transitous dla komunikacji publicznej.
 - Dla tras drogowych warianty zwraca serwer Valhalla. Podczas nawigacji TomTom może zmienić wybór na szybszy z już zwróconych wariantów; serwer Valhalla nadal dostarcza geometrię i podstawowe czasy.
 - Transitous wyznacza połączenia w regionach objętych jego feedami. Pokrycie zależy od dostępnych danych, a rzeczywiste pozycje pojazdów są obecnie dostępne wyłącznie z feedu MPK Łódź.
 - Dane TomTom wpływają na pozostały czas i wybór wśród wariantów Valhalli. Zdarzenie zamknięcia jest rozpoznawane po polu kategorii, a nie po tekście opisu.
@@ -22,7 +22,7 @@ Ten dokument opisuje bieżącą implementację routingu. Głównym koordynatorem
 4. Po otrzymaniu niepustej listy tras pierwszy element staje się początkowo wybraną trasą, a cała lista pozostaje dostępna jako warianty. Podczas jazdy traffic może zmienić wybór wśród tych wariantów.
 5. Zmiana celu, przystanku pośredniego albo trybu wywołuje kolejne obliczenie. Identyfikator żądania zapobiega nadpisaniu nowszego podglądu spóźnioną odpowiedzią.
 
-Pozycje GPS przechodzą przez `LocationFilter`. Akceptowane są pomiary z dokładnością poziomą do 70 m, nie starsze niż 15 sekund ani pochodzące z przyszłości o więcej niż 15 sekund. Kolejny pomiar musi mieć późniejszy czas. Granica prędkości skoku zależy od trybu: 10 m/s pieszo, 40 m/s rowerem, 75 m/s samochodem i P+R oraz 90 m/s komunikacją miejską. Dopiero zaakceptowany pomiar aktualizuje początek trasy i postęp nawigacji.
+Pozycje GPS przechodzą przez `LocationFilter`. Akceptowane są pomiary z dokładnością poziomą do 70 m, nie starsze niż 15 sekund ani pochodzące z przyszłości o więcej niż 15 sekund. Kolejny pomiar musi mieć późniejszy czas. Granica prędkości skoku zależy od trybu: 10 m/s pieszo, 40 m/s rowerem, 75 m/s samochodem oraz 90 m/s komunikacją miejską. Dopiero zaakceptowany pomiar aktualizuje początek trasy i postęp nawigacji.
 
 ## Opisy wariantów w podglądzie iOS
 
@@ -32,8 +32,8 @@ Od wersji 1.1.97 (build 99) karta wybranego wariantu oraz rozwinięta lista tras
 - **Najkrótszy** — najmniejszy dystans.
 - **Najwygodniejszy** dla samochodu — najlepsza ocena istniejącego profilu wygodnego na podstawie czasu z podglądu, dystansu i kosztu manewrów. Koszt manewru wynosi 45 dla zawracania, 18 dla ostrego skrętu, 8 dla zwykłego skrętu lub wjazdu na rondo i 4 dla łagodnego skrętu, zmiany pasa kierunkowego, rampy, zjazdu lub włączenia do ruchu. Nawierzchnia jest porównywana wyłącznie przy kompletnych danych dla wszystkich wariantów; nierówne odcinki otrzymują wagę 30 na kilometr. Etykieta wymaga rzeczywistej różnicy w koszcie manewrów lub nawierzchni.
 - **Zrównoważony** dla samochodu — najlepsza ocena istniejącego profilu zrównoważonego, z większą wagą czasu niż w profilu wygodnym. Obie oceny pomijają pokrycie ruchem, ponieważ podgląd nie ma porównywalnych pomiarów dla każdej alternatywy.
-- **Najmniej przesiadek**, **Najmniej pieszo**, **Najwcześniej u celu** dla komunikacji i P+R — odpowiednio najmniejsza liczba przesiadek, najkrótszy planowany czas dojścia oraz najwcześniejsza godzina przyjazdu. Krótsza podróż i wcześniejszy przyjazd to osobne cechy, ponieważ połączenia mogą odjeżdżać o różnych porach.
-- **Najwygodniejszy** dla komunikacji i P+R — najmniejsza suma: 720 × liczba przesiadek + 1,9 × czas dojścia + 0,15 × czas oczekiwania + 0,45 × czas całej podróży. Czasy są wyrażone w sekundach. Jest to porównanie planu podróży, bez oceny miejsc siedzących, zatłoczenia czy dostępności parkingu.
+- **Najmniej przesiadek**, **Najmniej pieszo**, **Najwcześniej u celu** dla komunikacji — odpowiednio najmniejsza liczba przesiadek, najkrótszy planowany czas dojścia oraz najwcześniejsza godzina przyjazdu. Krótsza podróż i wcześniejszy przyjazd to osobne cechy, ponieważ połączenia mogą odjeżdżać o różnych porach.
+- **Najwygodniejszy** dla komunikacji — najmniejsza suma: 720 × liczba przesiadek + 1,9 × czas dojścia + 0,15 × czas oczekiwania + 0,45 × czas całej podróży. Czasy są wyrażone w sekundach. Jest to porównanie planu podróży, bez oceny miejsc siedzących, zatłoczenia czy dostępności parkingu.
 
 Jedna trasa może mieć kilka cech. Remis otrzymuje wspólną etykietę; wybór karty i kolejność wyników nie rozstrzygają oceny. Brakujące lub niepoprawne dane wyłączają dane porównanie dla całego zestawu. Jednakowy wynik wszystkich wariantów nie otrzymuje etykiety porównawczej. Minimalna różnica to sekunda dla czasu, metr dla dystansu, przesiadka dla ich liczby oraz minuta dla dojścia i przyjazdu. Gdy dostępna jest tylko jedna trasa, karta wyjaśnia brak innych wariantów do porównania.
 
@@ -51,7 +51,7 @@ Od wersji 1.1.54 przy wyjeździe „Teraz” i bez przystanków aplikacja przeka
 
 Odpowiedź może więc zawierać trasę podstawową i do dwóch alternatyw. Dostawca dekoduje geometrię polyline6, instrukcje manewrów, dystans i czas z podsumowania Valhalli. Dla samochodu sortuje warianty według czasu bazowego. Zwraca je od razu po odpowiedzi Valhalli, bez oczekiwania na dodatkowe zapytanie Overpass o światła. Inne profile zachowują kolejność serwera. W podglądzie `NavigationSession` wybiera `routes.first`; użytkownik może wybrać inny wariant. W trakcie jazdy TomTom może zmienić wybrany wariant po porównaniu opóźnień i zamknięć na tych trasach.
 
-Dla wybranego POI `POIAccessResolver` przed żądaniem trasy pobiera z Overpass parkingi, główne wejścia i drogi do 250 m od miejsca. Samochód dostaje najlepiej powiązany punkt drogi serwisowej wewnątrz parkingu, a pieszy, rowerzysta i transport publiczny — `entrance=main`, gdy taki punkt jest opisany; w przeciwnym razie resolver wybiera najbliższą drogę dostępną dla danego trybu. P+R używa wejścia do końcowego dojścia pieszego oraz osobnego celu samochodowego do obliczenia odcinka bazowego. Ocena parkingu uwzględnia geometrię budynku, odległość od głównego wejścia, zgodność nazwy/marki i dostęp dla klientów; wjazdy prywatne i strefy dostaw są pomijane. Wybrany punkt i poziom pewności są osobne od współrzędnych POI używanych do etykiety i karty miejsca. Jeśli OSM nie zwróci wiarygodnego punktu albo Overpass jest niedostępny, NaviAstra kontynuuje trasę, wysyłając do Valhalli oryginalną współrzędną POI; Valhalla może wtedy przypiąć cel do pobliskiej krawędzi sieci drogowej, co nie zawsze wskaże właściwy parking lub wejście. Wynik resolvera jest cache'owany lokalnie przez 6 godzin.
+Dla wybranego POI `POIAccessResolver` przed żądaniem trasy pobiera z Overpass parkingi, główne wejścia i drogi do 250 m od miejsca. Samochód dostaje najlepiej powiązany punkt drogi serwisowej wewnątrz parkingu, a pieszy, rowerzysta i transport publiczny — `entrance=main`, gdy taki punkt jest opisany; w przeciwnym razie resolver wybiera najbliższą drogę dostępną dla danego trybu. Ocena parkingu uwzględnia geometrię budynku, odległość od głównego wejścia, zgodność nazwy/marki i dostęp dla klientów; wjazdy prywatne i strefy dostaw są pomijane. Wybrany punkt i poziom pewności są osobne od współrzędnych POI używanych do etykiety i karty miejsca. Jeśli OSM nie zwróci wiarygodnego punktu albo Overpass jest niedostępny, NaviAstra kontynuuje trasę, wysyłając do Valhalli oryginalną współrzędną POI; Valhalla może wtedy przypiąć cel do pobliskiej krawędzi sieci drogowej, co nie zawsze wskaże właściwy parking lub wejście. Wynik resolvera jest cache'owany lokalnie przez 6 godzin.
 
 ### Ścieżki rowerowe na mapie
 
@@ -84,17 +84,6 @@ Szczegóły źródeł, endpointów, wyszukiwania, tablic odjazdów, danych mapy,
 
 Lokalne indeksy GTFS pozostają źródłem uzupełniającego wyszukiwania i lokalnych szczegółów. Feed pozycji pojazdów MPK jest niezależny od globalnego routingu i ograniczony do jego zasięgu. Aplikacja nie wyświetla pozycji pojazdu tam, gdzie nie ma odpowiedniego feedu.
 
-## P+R
-
-Tryb P+R łączy trasę samochodem do parkingu i dalszą podróż komunikacją publiczną:
-
-1. Valhalla liczy bazową trasę samochodową do celu. OpenStreetMap/Overpass wyszukuje parkingi w korytarzu ostatnich 40 km trasy oraz w promieniu 15 km od celu. Kandydaci muszą mieć tag `amenity=parking` i `park_ride=yes`.
-2. Dla czterech parkingów blisko celu i do czterech dodatkowych rozmieszczonych wzdłuż korytarza Valhalla liczy trasę samochodową. Używany jest pierwszy wariant samochodowy.
-3. Transitous szuka połączenia z parkingu do celu, z czasem odjazdu ustawionym na przewidywany przyjazd samochodem plus pięć minut na zaparkowanie. Bufor i oczekiwanie na rozpoczęcie połączenia wchodzą do czasu oraz rankingu.
-4. Wyniki są sortowane według łącznego kosztu jazdy, chodzenia, oczekiwania i przesiadek; zwracane są maksymalnie trzy warianty.
-
-Wynik zawiera odcinek samochodowy oraz odcinki piesze i komunikacyjne z Transitous. Dostępność parkingu i wolnych miejsc nie są sprawdzane. Czas parkowania jest stałym szacunkiem. W trybie P+R automatyczne przeliczanie po zejściu z geometrii trasy jest wyłączone.
-
 ## Szczegóły parkingu
 
 Karta parkingu dociąga z OpenStreetMap status opłat (`fee` i `fee:conditional`), opis taryfy (`charge` i `charge:conditional`), godziny (`opening_hours`), limit postoju (`maxstay` i `maxstay:conditional`), dostęp (`access`) oraz pojemność (`capacity`). Proste zasady darmowego czasu w warunku postoju są pokazywane dodatkowo w minutach lub godzinach; treść warunku OSM pozostaje widoczna. Dla tagów `parking:left/right/both:*`, `parking:condition:*` i `parking:lane:*` karta pokazuje osobne warunki stron ulicy.
@@ -119,7 +108,7 @@ Podczas nawigacji `MapMatcher` ocenia kandydackie odcinki geometrii według odle
 - `RouteTrafficMonitor` wybiera pozostały odcinek o horyzoncie do 25 minut, z limitem zależnym od średniej prędkości (18 km dla ruchu miejskiego, 35 km dla dróg krajowych i 100 km dla szybkich tras). Orbis pobiera zdarzenia wzdłuż korytarza. Dopasowanie wymaga ciągłego wspólnego odcinka i zgodności osi drogi do 30°, z tolerancją 10 m dla zamknięć i 20 m dla innych zdarzeń. Punktowe zamknięcia bez odcinka nie uruchamiają objazdu. Wyniki odświeżają ETA i wybór wariantu, a dopasowane zamknięcia przed kierowcą uruchamiają trasę omijającą.
 - Odświeżanie danych pobliskich odbywa się co 120 s poza nawigacją i co 60 s podczas jazdy. Dla zdarzeń do 10 km skraca się do 30 s, a dla zamknięcia do 3 km do 20 s. Po przeliczeniu trasy pobieranie korytarza rusza ponownie od razu.
 - Aplikacja nie zapisuje feedu TomTom do kafli live traffic Valhalli. Wybór ruchowy działa na wariantach zwróconych przez skonfigurowany serwer; pełna optymalizacja drogi wymaga serwera Valhalla z aktualnymi kaflami ruchu.
-- Automatyczny mechanizm „poza trasą” nie działa dla P+R. Połączenia MPK korzystają z osobnego śledzenia etapu podróży i danych realtime.
+- Połączenia MPK korzystają z osobnego śledzenia etapu podróży i danych realtime.
 
 ## ETA i ruch
 
@@ -143,7 +132,7 @@ Publiczny Overpass służy tu jako źródło prototypowe. Repozytorium nie zawie
 
 ## Co wpływa na wynik, a czego aplikacja nie gwarantuje
 
-Jakość tras drogowych zależy od danych i konfiguracji serwera Valhalla. Routing komunikacją publiczną zależy od pokrycia, dostępności oraz aktualności danych Transitous. Rzeczywiste pozycje pojazdów zależą od feedu MPK Łódź. P+R i ładowarki EV zależą od oznaczeń i metadanych OpenStreetMap. Aplikacja wymaga internetu do wyznaczania tras i nie ma trybu routingu offline.
+Jakość tras drogowych zależy od danych i konfiguracji serwera Valhalla. Routing komunikacją publiczną zależy od pokrycia, dostępności oraz aktualności danych Transitous. Rzeczywiste pozycje pojazdów zależą od feedu MPK Łódź. Ładowarki EV zależą od oznaczeń i metadanych OpenStreetMap. Aplikacja wymaga internetu do wyznaczania tras i nie ma trybu routingu offline.
 
 Wyników nie należy interpretować jako gwarancji najkrótszej drogi, dostępności parkingu lub ładowarki ani rzeczywistego czasu przejazdu. Dla samochodu podstawowy wybór tras wykonuje Valhalla; połączenia komunikacyjne i ich czasy zależą od danych i wyniku API Transitous.
 
@@ -153,7 +142,7 @@ Wyników nie należy interpretować jako gwarancji najkrótszej drogi, dostępno
 - `NaviAstra/Navigation/ValhallaRouteProvider.swift` — żądania `/route` i `/optimized_route`, preferencje i dekodowanie wyniku.
 - `NaviAstra/Transit/Transitous/TransitousRouteProvider.swift` i `TransitousClient.swift` — planowanie połączeń przez Transitous.
 - `NaviAstra/Navigation/Models.swift` — tryby transportu, preferencje, modele tras i etapów podróży.
-- `NaviAstra/Places/NearbyPlaceProvider.swift` — wyszukiwanie parkingów, P+R i ładowarek oraz odczyt ich metadanych OpenStreetMap.
+- `NaviAstra/Places/NearbyPlaceProvider.swift` — wyszukiwanie parkingów i ładowarek oraz odczyt ich metadanych OpenStreetMap.
 - `NaviAstra/Navigation/UI/ContentView+RoutePreview.swift` i `ContentView+Journey.swift` — ustawienia EV, postoje i podsumowanie aktywnej podróży.
 - `NaviAstra/Traffic/TrafficProvider.swift` — pobieranie danych TomTom o ruchu i zdarzeniach.
 ## Weryfikacja

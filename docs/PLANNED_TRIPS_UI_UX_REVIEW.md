@@ -60,7 +60,7 @@ Dodawanie po prostu dopisuje miejsce do tablicy. Nie stosuje limitu ośmiu punkt
 
 ### E. Zmiana transportu usuwa dane szkicu — priorytet wysoki
 
-Wybór komunikacji lub P+R natychmiast usuwa wszystkie postoje i zeruje ich czas. Powrót do auta ich nie odtwarza. Wybór P+R zmienia również przyjazd na wyjazd. Ograniczenie silnika jest prawdziwe, ale użytkownik nie otrzymuje wyjaśnienia zmiany intencji.
+W pierwotnym interfejsie wybór komunikacji usuwał postoje i zerował ich czas. Obecny edytor zachowuje punkty w szkicu i opisuje ograniczenie trybu przy trasie.
 
 Należy zachować punkty w szkicu, oznaczyć ograniczenie wybranego trybu i ustalić jawne zachowanie przy zapisie. Eksplorowanie opcji transportu nie powinno samo kasować wprowadzonych miejsc.
 

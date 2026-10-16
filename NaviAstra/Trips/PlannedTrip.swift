@@ -90,7 +90,7 @@ struct PlannedTrip: Identifiable, Codable, Equatable {
         if let estimate, estimate.occurrence == occurrence { return estimate.departure }
         if timing == .departure { return occurrence }
         guard let estimate else { return nil }
-        if transportMode == .transit || transportMode == .parkRide { return nil }
+        if transportMode == .transit { return nil }
         // Future recurring reminders explicitly refer to the last calculation.
         return occurrence.addingTimeInterval(-estimate.travelSeconds - Double(bufferMinutes + stopMinutes) * 60)
     }

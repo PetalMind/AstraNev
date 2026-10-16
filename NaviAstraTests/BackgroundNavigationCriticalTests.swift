@@ -112,7 +112,7 @@ struct BackgroundNavigationCriticalTests {
         #expect(observe(50))
         detector.reset()
         for seconds in [60.0, 62, 65] {
-            // Transit/P+R and pending stops still require route completion.
+            // Transit and pending stops still require route completion.
             let acceptedIncompleteRoute = detector.observe(
                 location(seconds), destinationDistance: destinationDistance,
                 remainingDistance: 500, destinationRadius: destinationRadius,
@@ -123,7 +123,7 @@ struct BackgroundNavigationCriticalTests {
 
     @Test func backgroundProfilesPreserveNavigationAndStopGPSAfterArrival() {
         let engine = EnergyPolicyEngine()
-        for mode in [TransportMode.car, .walking, .bicycle, .transit, .parkRide] {
+        for mode in [TransportMode.car, .walking, .bicycle, .transit] {
             let active = engine.update(navigationStatus: .rerouting, transportMode: mode,
                 appIsForeground: false, lowPowerMode: true, thermalState: .serious,
                 speedMetersPerSecond: 33)
@@ -133,7 +133,7 @@ struct BackgroundNavigationCriticalTests {
             #expect(!active.location.updatesHeading)
             #expect(active.mapFramesPerSecond == 0)
             #expect(!active.enables3DBuildings && !active.enablesMapPrefetch)
-            #expect(active.location.activity == (mode == .car || mode == .parkRide
+            #expect(active.location.activity == (mode == .car
                 ? .automotiveNavigation : .otherNavigation))
             let arrived = engine.update(navigationStatus: .arrived, transportMode: mode,
                 appIsForeground: true, lowPowerMode: false, thermalState: .nominal,

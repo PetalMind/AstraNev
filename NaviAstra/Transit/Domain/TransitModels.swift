@@ -338,7 +338,7 @@ struct TransitStopMapVisibilityPolicy {
 
         if isNavigating {
             switch transportMode {
-            case .car, .parkRide:
+            case .car:
                 guard stop.isLargeTransitNode else { return nil }
                 return TransitStopMapVisibilityDecision(isOnRoute: false, opacity: 1)
             case .walking:

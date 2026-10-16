@@ -74,7 +74,7 @@ final class EnergyPolicyEngine {
 
         let thermallyLimited = thermalState == .serious || thermalState == .critical
         let performanceLimited = lowPowerMode || thermallyLimited
-        let routeActivity = transportMode == .car || transportMode == .parkRide
+        let routeActivity = transportMode == .car
         let drivingTrafficInterval: TimeInterval = performanceLimited ? 120 : 90
 
         let location: LocationPolicy
@@ -108,7 +108,7 @@ final class EnergyPolicyEngine {
                                       allowsBackgroundUpdates: true, updatesHeading: false)
             frameRate = performanceLimited ? 30 : 60
             trafficInterval = routeActivity ? drivingTrafficInterval : nil
-            transitInterval = transportMode == .transit || transportMode == .parkRide
+            transitInterval = transportMode == .transit
                 ? (performanceLimited ? 60 : 30) : nil
         case .walking:
             location = LocationPolicy(demand: .continuous, accuracy: .nearestTenMeters,
@@ -120,12 +120,12 @@ final class EnergyPolicyEngine {
         case .backgroundNavigation:
             location = LocationPolicy(demand: .continuous, accuracy: .bestForNavigation,
                                       distanceFilter: 0,
-                                      activity: transportMode == .car || transportMode == .parkRide
+                                      activity: transportMode == .car
                                         ? .automotiveNavigation : .otherNavigation,
                                       allowsBackgroundUpdates: true, updatesHeading: false)
             frameRate = 0
             trafficInterval = routeActivity ? drivingTrafficInterval : nil
-            transitInterval = transportMode == .transit || transportMode == .parkRide ? 60 : nil
+            transitInterval = transportMode == .transit ? 60 : nil
         case .arrived:
             location = .stopped
             frameRate = 30

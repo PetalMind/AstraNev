@@ -10,9 +10,7 @@ extension ContentView {
         let maneuverDistance = navigationStore.state.progress?.distanceToNextManeuver ?? .infinity
         let guidanceDistance = maneuverDistance.isFinite
             ? maneuverDistance
-            : (navigationStore.state.transportMode == .parkRide
-                ? (parkRideCarDistanceToTransfer ?? .infinity)
-                : (navigationStore.state.progress?.remainingDistance ?? .infinity))
+            : (navigationStore.state.progress?.remainingDistance ?? .infinity)
 #if os(iOS)
         let isImmediate = currentStepGuidanceIsImmediate
 #else
@@ -22,7 +20,7 @@ extension ContentView {
             HStack(spacing: 12) {
                 ManeuverIcon(type: maneuver?.type,
                              fallbackSymbol: maneuver?.iconName
-                                ?? (navigationStore.state.transportMode == .parkRide ? "parkingsign.circle.fill" : "arrow.up"),
+                                ?? "arrow.up",
                              size: 36, roundabout: maneuver?.roundabout)
                     .foregroundStyle(.white)
                     .frame(width: 60, height: 60)
@@ -41,8 +39,7 @@ extension ContentView {
                         .contentTransition(.numericText())
 
                     Text(maneuver?.displayInstruction
-                         ?? (navigationStore.state.transportMode == .parkRide
-                             ? "Jedź do parkingu P+R" : "Kontynuuj do celu"))
+                         ?? "Kontynuuj do celu")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Color.naviTextPrimary)
                         .lineLimit(2)
@@ -540,7 +537,7 @@ extension ContentView {
             }
 
             transportSelector
-            if navigationStore.state.transportMode == .transit || navigationStore.state.transportMode == .parkRide {
+            if navigationStore.state.transportMode == .transit {
                 journeyTimeControl
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -969,8 +966,7 @@ extension ContentView {
     }
 
     var availableJourneyTimeModes: [JourneyTimeMode] {
-        navigationStore.state.transportMode == .parkRide
-            ? [.now, .departAt] : [.now, .departAt, .arriveBy]
+        [.now, .departAt, .arriveBy]
     }
 
     var isJourneyTimeControlDisabled: Bool {
@@ -995,7 +991,7 @@ extension ContentView {
     }
 
     var journeyTimeSummary: String {
-        guard navigationStore.state.journeyTimeMode != .now else { return navigationStore.state.transportMode == .transit || navigationStore.state.transportMode == .parkRide
+        guard navigationStore.state.journeyTimeMode != .now else { return navigationStore.state.transportMode == .transit
             ? "Najbliższe dostępne połączenia" : "Wyjazd teraz" }
         return PolishRegionalFormat.dateTime(navigationStore.state.journeyTargetTime)
     }
@@ -1065,7 +1061,6 @@ extension ContentView {
         case .walking: "Pieszo"
         case .bicycle: "Rower"
         case .transit: "Komunikacja"
-        case .parkRide: "P+R"
         }
     }
 

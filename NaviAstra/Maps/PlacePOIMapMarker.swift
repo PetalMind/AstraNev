@@ -1,12 +1,12 @@
 import Foundation
 
 enum PlacePOIMapMarkerKind: String, CaseIterable, Sendable {
-    case fuel, parking, parkRide, charging, food, shopping, parcels, health, attraction, transit, lodging, cafe, nature, culture, airport, generic
+    case fuel, parking, charging, food, shopping, parcels, health, attraction, transit, lodging, cafe, nature, culture, airport, generic
 
     var symbolName: String {
         switch self {
         case .fuel: "fuelpump.fill"
-        case .parking, .parkRide: "parkingsign"
+        case .parking: "parkingsign"
         case .charging: "bolt.car.fill"
         case .food: "fork.knife"
         case .shopping: "bag.fill"
@@ -27,7 +27,6 @@ enum PlacePOIMapMarkerKind: String, CaseIterable, Sendable {
         switch self {
         case .fuel: "Stacja paliw"
         case .parking: "Parking"
-        case .parkRide: "Parking P+R"
         case .charging: "Ładowarka samochodów elektrycznych"
         case .food: "Gastronomia"
         case .shopping: "Sklep"
@@ -48,7 +47,6 @@ enum PlacePOIMapMarkerKind: String, CaseIterable, Sendable {
         switch self {
         case .fuel: ["fuel", "gas_station", "gasstation"]
         case .parking: ["parking"]
-        case .parkRide: ["park_ride", "parkride", "park_and_ride"]
         case .charging: ["charging_station", "ev_charger", "ev_charging"]
         case .food: ["food", "restaurant", "fast_food", "bar", "pub", "bakery"]
         case .shopping: ["shop", "grocery", "supermarket", "mall", "clothes", "convenience"]
@@ -69,8 +67,7 @@ enum PlacePOIMapMarkerKind: String, CaseIterable, Sendable {
         guard let category else { return nil }
         let value = category.lowercased().filter { $0.isLetter || $0.isNumber }
         guard !value.isEmpty else { return nil }
-        if value.contains("parkride") || value.contains("parkandride") { self = .parkRide }
-        else if value.contains("parcellocker") || value.contains("parcelpickup") || value.contains("postoffice") { self = .parcels }
+        if value.contains("parcellocker") || value.contains("parcelpickup") || value.contains("postoffice") { self = .parcels }
         else if value.contains("gasstation") || value.contains("fuel") { self = .fuel }
         else if value.contains("parking") { self = .parking }
         else if value.contains("chargingstation") || value.contains("evcharger") || value.contains("evcharging") { self = .charging }
@@ -93,7 +90,7 @@ extension PlacePOIMapMarkerKind {
     func colorHex(dark: Bool) -> UInt32 {
         switch self {
         case .fuel: dark ? 0xC49BEB : 0x8054A8
-        case .parking, .parkRide, .transit, .airport: dark ? 0x82B4EC : 0x286DB5
+        case .parking, .transit, .airport: dark ? 0x82B4EC : 0x286DB5
         case .charging, .nature: dark ? 0x81C698 : 0x327D4B
         case .food, .cafe: dark ? 0xF1AF70 : 0xAF5C20
         case .shopping: dark ? 0x85AFDD : 0x456FA4

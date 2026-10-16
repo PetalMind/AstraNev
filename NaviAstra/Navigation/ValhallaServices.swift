@@ -67,7 +67,7 @@ struct ValhallaServices {
 
     func contours(at origin: Coordinate, mode: TransportMode, preferences: RoutingPreferences,
                   value: Int, distance: Bool) async throws -> [ValhallaContour] {
-        guard origin.isValidValhallaCoordinate, (1...120).contains(value), mode != .transit && mode != .parkRide else {
+        guard origin.isValidValhallaCoordinate, (1...120).contains(value), mode != .transit else {
             throw RoutingError.invalidResponse
         }
         var payload: [String: Any] = ["locations": [["lat": origin.latitude, "lon": origin.longitude]],
@@ -121,7 +121,7 @@ struct ValhallaServices {
 
     func matchTrace(_ segments: [[Coordinate]], mode: TransportMode,
                     preferences: RoutingPreferences) async throws -> [NavigationRoute] {
-        guard !segments.isEmpty, segments.count <= 20, mode != .transit && mode != .parkRide else {
+        guard !segments.isEmpty, segments.count <= 20, mode != .transit else {
             throw ValhallaFeatureError.message("Wybierz ślad drogowy z maksymalnie 20 częściami.")
         }
         var routes: [NavigationRoute] = []

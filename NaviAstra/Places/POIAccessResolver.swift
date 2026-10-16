@@ -35,7 +35,7 @@ actor POIAccessResolver {
 
     func cachedTarget(for destination: Destination, mode: TransportMode) -> POINavigationTarget? {
         guard let poi = destination.poi else { return nil }
-        let resolvedMode: TransportMode = mode == .transit || mode == .parkRide ? .walking : mode
+        let resolvedMode: TransportMode = mode == .transit ? .walking : mode
         let key = cacheKey(destination, poi: poi, mode: resolvedMode)
         guard let cached = cache[key], cached.expiresAt > Date() else { return nil }
         return cached.value
@@ -47,7 +47,7 @@ actor POIAccessResolver {
         let resolvedMode: TransportMode
         switch mode {
         case .car, .walking, .bicycle: resolvedMode = mode
-        case .transit, .parkRide: resolvedMode = .walking
+        case .transit: resolvedMode = .walking
         }
 
         let key = cacheKey(destination, poi: poi, mode: resolvedMode) + (purpose == .departure ? "/departure" : "")
@@ -415,7 +415,7 @@ actor POIAccessResolver {
             return motorRoads.contains(highway)
                 || ["cycleway", "path"].contains(highway)
                 || (highway == "footway" && ["yes", "designated"].contains(tags["bicycle"] ?? ""))
-        case .transit, .parkRide:
+        case .transit:
             return false
         }
     }

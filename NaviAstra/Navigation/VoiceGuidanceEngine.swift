@@ -231,7 +231,6 @@ final class VoiceGuidanceEngine {
         case .walking: instruction = "Cel osiągnięty pieszo."
         case .bicycle: instruction = "Cel osiągnięty rowerem."
         case .transit: instruction = "Cel osiągnięty komunikacją miejską."
-        case .parkRide: instruction = "Cel osiągnięty w systemie Parkuj i jedź."
         }
         scheduler.enqueue(key: "arrival|\(destinationKey)", text: instruction, priority: .critical)
     }

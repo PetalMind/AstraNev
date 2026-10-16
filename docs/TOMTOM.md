@@ -103,7 +103,7 @@ To budżet próbek przepływu, nie łączny limit wszystkich żądań. Osobno do
 
 Wywołania zależą od stanu sesji i aktualizacji lokalizacji; nie są gwarancją wykonania dokładnie co podaną liczbę sekund. Wymuszenie odświeżenia nie omija własnego interwału przepływu dla tej samej trasy. Pobieraniem i cache'em kafli zajmuje się MapLibre; powyższe interwały JSON nie sterują odświeżaniem rastra.
 
-Sesja dopuszcza ruch dla auta i P+R oraz odczyt na żądanie w stanie bez aktywnej podróży. Automatyczne porównanie wariantów i objazd zamknięcia są ograniczone do samochodowej nawigacji. Ruch nie jest odświeżany dla podglądu z inną godziną wyjazdu lub przyjazdu niż „teraz”.
+Sesja dopuszcza ruch dla auta oraz odczyt na żądanie w stanie bez aktywnej podróży. Automatyczne porównanie wariantów i objazd zamknięcia są ograniczone do samochodowej nawigacji. Ruch nie jest odświeżany dla podglądu z inną godziną wyjazdu lub przyjazdu niż „teraz”.
 
 ## 4. Co pokazujemy na mapie i w interfejsie
 

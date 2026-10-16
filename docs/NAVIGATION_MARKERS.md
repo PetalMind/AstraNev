@@ -20,7 +20,7 @@ Zapisany wcześniej wariant kombi jest prezentowany jako sedan, a rower sportowy
 jako wspólny model roweru. Pozostałe preferencje, w tym kolor i wielkość, zostają
 zachowane. Dawne identyfikatory kolorów nadal można odczytać.
 
-Komunikacja i P+R korzystają z istniejącego rozpoznawania etapu podróży.
+Komunikacja korzysta z istniejącego rozpoznawania etapu podróży.
 Autobus, tramwaj, pociąg lub prom pojawiają się na odpowiednim etapie oznaczonym
 jako jazda pojazdem; dojście i oczekiwanie pokazują pieszego. Brak rozpoznanego
 etapu nie implikuje wejścia do pojazdu. Motocykl i skuter nie są dodawane jako

@@ -24,7 +24,7 @@ struct ValhallaPreferencesView: View {
                     Stepper("Maksymalna prędkość: \(Int(draft.advanced.scooterTopSpeed)) km/h",
                             value: $draft.advanced.scooterTopSpeed, in: 20...120, step: 5)
                 }
-                Text("Profil pojazdu jest używany w trybie Auto. Odcinek samochodowy P+R używa profilu samochodu. Ograniczenia pojazdu zależą od kompletności danych OpenStreetMap.")
+                Text("Profil pojazdu jest używany w trybie Auto. Ograniczenia pojazdu zależą od kompletności danych OpenStreetMap.")
                     .font(.caption).foregroundStyle(.secondary)
                 if draft.evPlanningEnabled && draft.advanced.vehicle != .auto {
                     Text("Wyłącz planowanie ładowania EV lub wybierz samochód, aby wyznaczyć trasę.")

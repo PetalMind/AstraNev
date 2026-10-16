@@ -341,6 +341,20 @@ struct PlaceDetailsView: View {
         loadError = nil
         guard result.isPOI else { return }
         isLoading = true
+        if result.placeProvider == .inPost {
+            defer { if !Task.isCancelled { isLoading = false } }
+            do {
+                let loaded = try await InPostPointProvider().details(for: result.placeIdentity)
+                guard !Task.isCancelled else { return }
+                details = loaded
+                loadedAt = loaded?.fetchedAt
+                if loaded == nil { loadError = "Ten punkt InPost nie jest obecnie dostępny." }
+            } catch {
+                guard !Task.isCancelled else { return }
+                loadError = "Nie udało się odświeżyć punktu InPost. Pokazujemy dostępne dane."
+            }
+            return
+        }
         async let appleDetails = try? MapKitPlaceDetailsProvider().details(for: result.placeIdentity)
         defer { if !Task.isCancelled { isLoading = false } }
         if let cached = await provider.cachedDetails(for: result.placeIdentity) {

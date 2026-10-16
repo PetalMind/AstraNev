@@ -106,7 +106,6 @@ final class IOSPlannedTripDraft {
         if origin == nil { return "Wybierz punkt startowy na mapie lub wpisz jego adres." }
         if destination == nil { return "Wybierz cel podróży na mapie lub wpisz jego adres." }
         if normalizedTargetDate <= Date() { return "Wybierz przyszłą datę i godzinę." }
-        if mode == .parkRide && timing == .arrival { return "P+R obsługuje godzinę wyjazdu. Wybierz „Wyjazd”." }
         if !allowsWaypoints && !waypoints.isEmpty { return "Ten transport nie obsługuje punktów pośrednich. Punkty pozostają w szkicu — możesz zmienić transport lub je usunąć." }
         if waypoints.count > 8 { return "Możesz zapisać maksymalnie 8 punktów pośrednich." }
         if repeatRule == .custom && weekdays.isEmpty { return "Wybierz przynajmniej jeden dzień powtarzania." }

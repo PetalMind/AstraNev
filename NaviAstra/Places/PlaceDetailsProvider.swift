@@ -6,6 +6,16 @@ enum PlaceProvider: String, Codable, Sendable {
     case openStreetMap
     case openFreeMap
     case mapKit
+    case inPost
+
+    var detailsSource: PlaceDetailsSource {
+        switch self {
+        case .openStreetMap: .openStreetMap
+        case .openFreeMap: .openFreeMap
+        case .mapKit: .mapKit
+        case .inPost: .inPost
+        }
+    }
 }
 
 struct PlaceIdentity {
@@ -23,21 +33,24 @@ struct PlaceIdentity {
     var timeZoneIdentifier: String? = nil
 
     var cacheKey: String {
+        if provider == .inPost, let providerID { return "inpost/\(providerID.uppercased())" }
+        // One OSM shop may also provide parcel pickup with a different carrier and schedule.
+        let serviceSuffix = category == "parcel_pickup" ? "/parcel-pickup" : ""
         let normalizedName = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "pl_PL"))
             .filter { $0.isLetter || $0.isNumber }
         let normalizedCategory = category?.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "pl_PL"))
             .filter { $0.isLetter || $0.isNumber } ?? ""
         if provider == .openStreetMap, let osmType, let externalID,
            let object = OpenStreetMapObjectID("\(osmType):\(externalID)") {
-            return object.cacheKey
+            return object.cacheKey + serviceSuffix
         }
         if provider == .mapKit, let providerID, !providerID.isEmpty {
-            return "mapkit/\(providerID)"
+            return "mapkit/\(providerID)" + serviceSuffix
         }
         if provider == .openFreeMap, let externalID, Int64(externalID) != nil {
-            return "openfreemap/osm/\(externalID)/\(normalizedName)/\(normalizedCategory)/\(Int((coordinate.latitude * 100_000).rounded()))/\(Int((coordinate.longitude * 100_000).rounded()))"
+            return "openfreemap/osm/\(externalID)/\(normalizedName)/\(normalizedCategory)/\(Int((coordinate.latitude * 100_000).rounded()))/\(Int((coordinate.longitude * 100_000).rounded()))" + serviceSuffix
         }
-        return "\(provider.rawValue)/near/\(normalizedName)/\(normalizedCategory)/\(Int((coordinate.latitude * 100_000).rounded()))/\(Int((coordinate.longitude * 100_000).rounded()))"
+        return "\(provider.rawValue)/near/\(normalizedName)/\(normalizedCategory)/\(Int((coordinate.latitude * 100_000).rounded()))/\(Int((coordinate.longitude * 100_000).rounded()))" + serviceSuffix
     }
 }
 
@@ -117,7 +130,7 @@ struct PlaceDetails: Codable, Identifiable {
                             osmParking: isParkingCategory(result.category) ? .unknown : nil,
                             driveThrough: nil,
                             internetAccess: nil, takeaway: nil, delivery: nil, outdoorSeating: nil,
-                            source: result.placeProvider == .mapKit ? .mapKit : result.placeProvider == .openFreeMap ? .openFreeMap : .openStreetMap,
+                            source: result.placeProvider.detailsSource,
                             fetchedAt: Date())
     }
 
@@ -139,21 +152,18 @@ struct PlaceDetails: Codable, Identifiable {
                      osmParking: isParkingCategory(identity.category) ? .unknown : nil,
                      driveThrough: nil,
                      internetAccess: nil, takeaway: nil, delivery: nil, outdoorSeating: nil,
-                     source: identity.provider == .mapKit ? .mapKit : identity.provider == .openFreeMap ? .openFreeMap : .openStreetMap,
+                     source: identity.provider.detailsSource,
                      fetchedAt: Date())
     }
 
     func merging(_ newer: PlaceDetails) -> PlaceDetails {
-        // A shop and its pickup service share an OSM object. Keep the selected service's
-        // identity and hours when enriching it with the shop's common address/contact data.
-        let keepsPickupService = category == "parcel_pickup" && newer.category != "parcel_pickup"
         return PlaceDetails(id: newer.id,
                      name: newer.name.isEmpty ? name : newer.name,
-                     brand: keepsPickupService ? brand : newer.brand ?? brand,
-                     operatorName: keepsPickupService ? operatorName : newer.operatorName ?? operatorName,
-                     category: keepsPickupService ? category : newer.category ?? category,
+                     brand: newer.brand ?? brand,
+                     operatorName: newer.operatorName ?? operatorName,
+                     category: newer.category ?? category,
                      address: newer.address ?? address,
-                     openingHours: keepsPickupService ? openingHours : newer.openingHours ?? openingHours,
+                     openingHours: newer.openingHours ?? openingHours,
                      phone: newer.phone ?? phone,
                      website: newer.website ?? website,
                      coordinate: newer.coordinate ?? coordinate,
@@ -213,13 +223,14 @@ struct PlaceDetails: Codable, Identifiable {
 }
 
 enum PlaceDetailsSource: String, Codable {
-    case openStreetMap, mapKit, openFreeMap
+    case openStreetMap, mapKit, openFreeMap, inPost
 
     var title: String {
         switch self {
         case .openStreetMap: "OpenStreetMap"
         case .mapKit: "Apple Maps"
         case .openFreeMap: "OpenFreeMap / OpenStreetMap"
+        case .inPost: "InPost"
         }
     }
 }
@@ -285,6 +296,13 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
             return makeDetails(id: id.cacheKey, fallbackName: object.name, tags: object.tags)
         }
         await PlaceDetailsCache.shared.store(details)
+        let pickupDetails = objects.compactMap { object -> PlaceDetails? in
+            guard ParcelPOI.category(tags: object.tags) == "parcel_pickup",
+                  let id = OpenStreetMapObjectID(object.id) else { return nil }
+            return makeDetails(id: id.cacheKey, fallbackName: object.name, tags: object.tags,
+                               includePickupServices: true)
+        }
+        await PlaceDetailsCache.shared.store(pickupDetails, keySuffix: "/parcel-pickup")
     }
 
     func cachedDetails(for identity: PlaceIdentity) async -> PlaceDetails? {
@@ -387,8 +405,11 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
                 let tags = element.tags ?? [:]
                 logger.info("Resolved OSM type=\(element.type, privacy: .public) id=\(element.id) hasHours=\(tags["opening_hours"] != nil)")
                 let resolvedKey = resolvedID.cacheKey
-                let downloaded = Self.makeDetails(id: resolvedKey, fallbackName: partial.name, tags: tags)
-                await PlaceDetailsCache.shared.store(downloaded, for: Array(Set([resolvedKey, requestKey])))
+                let isPickupService = identity.category == "parcel_pickup"
+                let downloaded = Self.makeDetails(id: resolvedKey, fallbackName: partial.name, tags: tags,
+                                                  includePickupServices: isPickupService)
+                let resolvedCacheKey = resolvedKey + (isPickupService ? "/parcel-pickup" : "")
+                await PlaceDetailsCache.shared.store(downloaded, for: Array(Set([resolvedCacheKey, requestKey])))
                 return partial.merging(downloaded)
             } catch is CancellationError {
                 throw CancellationError()
@@ -511,7 +532,8 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         return expectedNumber != actualNumber
     }
 
-    private static func makeDetails(id: String, fallbackName: String, tags: [String: String]) -> PlaceDetails {
+    private static func makeDetails(id: String, fallbackName: String, tags: [String: String],
+                                    includePickupServices: Bool = false) -> PlaceDetails {
         let streetLine = [tags["addr:street"], tags["addr:housenumber"]]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -526,11 +548,11 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
             .compactMap { $0 }
             .joined(separator: ", ")
         let address = tags["addr:full"] ?? (structuredAddress.isEmpty ? nil : structuredAddress)
-        let category = ParcelPOI.category(tags: tags, includePickupServices: false) ?? ["amenity", "shop", "tourism", "leisure", "office", "craft", "historic"]
+        let category = ParcelPOI.category(tags: tags, includePickupServices: includePickupServices) ?? ["amenity", "shop", "tourism", "leisure", "office", "craft", "historic"]
             .compactMap { tags[$0] }
             .first
 
-        let name = ParcelPOI.name(tags: tags, fallback: fallbackName, includePickupServices: false)
+        let name = ParcelPOI.name(tags: tags, fallback: fallbackName, includePickupServices: includePickupServices)
         let phone = tags["contact:phone"] ?? tags["phone"]
         let website = tags["contact:website"] ?? tags["website"]
         let imageURL = tags["image"]
@@ -538,7 +560,10 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         let imageLicense = tags["image:license"]
         let wikimediaCommons = tags["wikimedia_commons"]
         let wikidataID = tags["wikidata"]
-        let brandWikidataID = [tags["brand:wikidata"], tags["operator:wikidata"]]
+        let brandIdentifiers = category == "parcel_pickup"
+            ? [tags["post_office:brand:wikidata"]]
+            : [tags["brand:wikidata"], tags["operator:wikidata"]]
+        let brandWikidataID = brandIdentifiers
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .reduce(into: [String]()) { identifiers, value in
@@ -559,11 +584,11 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
 
         return PlaceDetails(id: id,
                             name: name,
-                            brand: ParcelPOI.brand(tags: tags, includePickupServices: false),
-                            operatorName: ParcelPOI.operatorName(tags: tags, includePickupServices: false),
+                            brand: ParcelPOI.brand(tags: tags, includePickupServices: includePickupServices),
+                            operatorName: ParcelPOI.operatorName(tags: tags, includePickupServices: includePickupServices),
                             category: category,
                             address: address,
-                            openingHours: ParcelPOI.openingHours(tags: tags, includePickupServices: false),
+                            openingHours: ParcelPOI.openingHours(tags: tags, includePickupServices: includePickupServices),
                             phone: phone,
                             website: website,
                             coordinate: nil,
@@ -709,9 +734,9 @@ private actor PlaceDetailsCache {
         persist()
     }
 
-    func store(_ details: [PlaceDetails]) {
+    func store(_ details: [PlaceDetails], keySuffix: String = "") {
         guard !details.isEmpty else { return }
-        for detail in details { entries[detail.id] = detail }
+        for detail in details { entries[detail.id + keySuffix] = detail }
         if entries.count > 1_000 {
             entries = Dictionary(uniqueKeysWithValues: entries.sorted { $0.value.fetchedAt > $1.value.fetchedAt }
                 .prefix(1_000).map { ($0.key, $0.value) })

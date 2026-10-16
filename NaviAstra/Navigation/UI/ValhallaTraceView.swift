@@ -28,7 +28,7 @@ struct ValhallaTraceView: View {
             return TraceHeightPoint(id: index, distance: sample.distanceMeters, height: height, part: part)
         }
     }
-    private var traceTrips: [TripRecord] { trips.filter { !$0.trace.isEmpty && $0.transportMode != .transit && $0.transportMode != .parkRide } }
+    private var traceTrips: [TripRecord] { trips.filter { !$0.trace.isEmpty && $0.transportMode != nil && $0.transportMode != .transit } }
 
     var body: some View {
         Form {
@@ -99,7 +99,7 @@ struct ValhallaTraceView: View {
         .navigationTitle("Analiza śladu GPS")
         .onAppear { if segments.isEmpty && !initialTrace.isEmpty {
             use(initialTrace, name: "Zapisany ślad")
-            mode = initialMode == .transit || initialMode == .parkRide ? .car : initialMode
+            mode = initialMode == .transit ? .car : initialMode
         } }
         .onChange(of: mode) { _, _ in routes = []; error = nil }
         .onDisappear { task?.cancel(); busy = false }

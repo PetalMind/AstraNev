@@ -53,7 +53,7 @@ struct IOSTripPlaceSearch: View {
                     Label("Wybierz na mapie", systemImage: "mappin.and.ellipse").font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity, minHeight: 46)
                 }.buttonStyle(.bordered)
-                if draft.mode == .transit || draft.mode == .parkRide {
+                if draft.mode == .transit {
                     Picker("Wyszukaj", selection: $scope) { Text("Adresy i miejsca").tag(0); Text("Przystanki").tag(1) }.pickerStyle(.segmented)
                 }
             }.padding(.horizontal, 16).padding(.vertical, 10)

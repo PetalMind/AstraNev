@@ -76,7 +76,6 @@ extension NavigationSession {
         if applyConfiguredMode { applyConfiguredDefaultTransportMode() }
         state.destination = destination
         state.navigationTarget = nil
-        state.parkRideCarTarget = nil
         state.waypoints = []
         state.evChargingStops = []
         state.waypointNavigationTargets = [:]

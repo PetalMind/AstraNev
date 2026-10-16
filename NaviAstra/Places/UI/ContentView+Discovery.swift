@@ -42,7 +42,7 @@ extension ContentView {
                         .foregroundStyle(Color.naviTextSecondary)
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 8)], spacing: 8) {
-                    ForEach([NearbyPlaceCategory.fuel, .charging, .parking, .food, .parkRide, .parcels]) { category in
+                    ForEach([NearbyPlaceCategory.fuel, .charging, .parking, .food, .parcels]) { category in
                         Button { presentNearby(category) } label: {
                             HStack(spacing: 9) {
                                 Image(systemName: category.symbol)

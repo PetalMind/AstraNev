@@ -7,6 +7,7 @@ nonisolated enum ParcelPOI {
     struct Query {
         var scope: Scope = .all
         var operatorPattern: String? = nil
+        var reference: String? = nil
 
         var filters: [String] {
             let lockers = [
@@ -20,14 +21,21 @@ nonisolated enum ParcelPOI {
                 "[\"post_office:parcel_to\"][\"post_office:parcel_to\"!~\"^(no|false|0)$\",i]"
             ]
             let selected = scope == .lockers ? lockers : scope == .pickup ? pickup : lockers + pickup
-            guard let operatorPattern else { return selected }
             return selected.map {
-                $0 + "[~\"^(name|brand|operator|post_office:(brand|service_provider|parcel_pickup|parcel_to))$\"~\"\(operatorPattern)\",i]"
+                var filter = $0
+                if let operatorPattern {
+                    filter += "[~\"^(name|brand|operator|post_office:(brand|service_provider|parcel_pickup|parcel_to))$\"~\"\(operatorPattern)\",i]"
+                }
+                if let reference {
+                    filter += "[~\"^(ref(:.*)?|name(:.*)?)$\"~\"\(ParcelPOI.referencePattern(reference))\",i]"
+                }
+                return filter
             }
         }
 
         func selectors(around area: String) -> String {
-            "(" + filters.map { "nwr\($0)(\(area));" }.joined() + ");"
+            let region = area.isEmpty ? "" : "(\(area))"
+            return "(" + filters.map { "nwr\($0)\(region);" }.joined() + ");"
         }
 
         @MainActor func matches(_ result: SearchResult) -> Bool {
@@ -42,6 +50,13 @@ nonisolated enum ParcelPOI {
                 : scope == .pickup ? isPickup && !isLocker : isLocker || isPickup
             guard matchesScope else {
                 return false
+            }
+            if let reference {
+                let matchesReference = result.parcelReferences.contains {
+                    $0.caseInsensitiveCompare(reference) == .orderedSame
+                } || result.destination.name.range(of: ParcelPOI.referencePattern(reference),
+                    options: [.regularExpression, .caseInsensitive]) != nil
+                guard matchesReference else { return false }
             }
             guard let operatorPattern else { return true }
             return [result.destination.name, result.brand, result.operatorName].compactMap { $0 }.contains {
@@ -64,10 +79,44 @@ nonisolated enum ParcelPOI {
         Operator(title: "Allegro One", pattern: "allegro|one[ _-]+box|one[ _-]+punkt", aliases: ["allegro one box", "allegro one punkt", "allegro one", "one box", "one punkt", "allegro"]),
         Operator(title: "Pocztex", pattern: "pocztex|poczta[ _-]+polska", aliases: ["pocztex automat", "pocztex", "poczta polska"]),
         Operator(title: "GLS", pattern: "gls", aliases: ["gls parcelshop", "gls"]),
-        Operator(title: "UPS", pattern: "ups", aliases: ["ups access point", "ups"]),
+        Operator(title: "UPS", pattern: "(^|[^a-zA-Z0-9])ups($|[^a-zA-Z0-9])", aliases: ["ups access point", "ups"]),
         Operator(title: "FedEx", pattern: "fedex", aliases: ["fedex"]),
         Operator(title: "Amazon Locker", pattern: "amazon", aliases: ["amazon hub locker", "amazon locker"])
     ]
+
+    /// Require a compact code with digits. Named streets and Polish postal codes keep their usual search.
+    static func reference(in text: String, explicitOperator: Bool = false) -> String? {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard value.range(of: #"^[A-Z0-9][A-Z0-9_-]{2,31}$"#, options: .regularExpression) != nil,
+              value.contains(where: \.isNumber),
+              value.range(of: #"^\d{2}-\d{3}$"#, options: .regularExpression) == nil else { return nil }
+        if !explicitOperator, value.allSatisfy(\.isNumber), value.count < 4 { return nil }
+        if !explicitOperator,
+           value.range(of: #"^(A|S|DK|DW|E)\d+$"#, options: .regularExpression) != nil { return nil }
+        return value
+    }
+
+    static func referencePattern(_ reference: String) -> String {
+        // reference(in:) admits only ASCII letters, digits, underscores and hyphens.
+        "(^|[^a-zA-Z0-9_-])\(reference)($|[^a-zA-Z0-9_-])"
+    }
+
+    static func references(tags: [String: String]) -> [String] {
+        let keys = tags.keys.filter { $0 == "ref" || $0.hasPrefix("ref:") }.sorted {
+            if $0 == "ref", $1 != "ref" { return true }
+            if $1 == "ref" { return false }
+            return $0 < $1
+        }
+        var values: [String] = []
+        for key in keys {
+            for value in (tags[key] ?? "").split(separator: ";") {
+                guard let value = nonempty(String(value)),
+                      !values.contains(where: { $0.caseInsensitiveCompare(value) == .orderedSame }) else { continue }
+                values.append(value)
+            }
+        }
+        return values
+    }
 
     static func category(tags: [String: String], includePickupServices: Bool = true) -> String? {
         if tags["amenity"] == "parcel_locker" || isLegacyLocker(tags) { return "parcel_locker" }
@@ -85,14 +134,14 @@ nonisolated enum ParcelPOI {
         let title = nonempty(tags["name"])
             ?? brand(tags: tags) ?? operatorName(tags: tags)
             ?? (category == "parcel_locker" ? "Automat paczkowy" : "Punkt odbioru przesyłek")
-        guard category == "parcel_locker", let reference = nonempty(tags["ref"]),
-              !title.localizedCaseInsensitiveContains(reference) else { return title }
-        return "\(title) · \(reference)"
+        let missingReferences = references(tags: tags).filter { !title.localizedCaseInsensitiveContains($0) }
+        guard !missingReferences.isEmpty else { return title }
+        return ([title] + missingReferences).joined(separator: " · ")
     }
 
     static func brand(tags: [String: String], includePickupServices: Bool = true) -> String? {
         if category(tags: tags, includePickupServices: includePickupServices) == "parcel_pickup" {
-            return formattedServices(tags["post_office:brand"]) ?? nonempty(tags["brand"])
+            return formattedServices(tags["post_office:brand"])
         }
         return nonempty(tags["brand"])
     }

@@ -2,7 +2,7 @@ import Foundation
 import MapKit
 
 enum NearbyPlaceCategory: String, CaseIterable, Identifiable {
-    case fuel, food, parking, charging, parkRide, restArea, parcels
+    case fuel, food, parking, charging, restArea, parcels
 
     var id: Self { self }
     var title: String {
@@ -11,7 +11,6 @@ enum NearbyPlaceCategory: String, CaseIterable, Identifiable {
         case .food: "Jedzenie"
         case .parking: "Parkingi"
         case .charging: "Ładowarki EV"
-        case .parkRide: "Parkingi P+R"
         case .restArea: "MOP"
         case .parcels: "Paczkomaty i punkty odbioru"
         }
@@ -22,7 +21,6 @@ enum NearbyPlaceCategory: String, CaseIterable, Identifiable {
         case .food: .food
         case .parking: .parking
         case .charging: .charging
-        case .parkRide: .parkRide
         case .restArea: .parking
         case .parcels: .parcels
         }
@@ -34,7 +32,6 @@ enum NearbyPlaceCategory: String, CaseIterable, Identifiable {
         case .food: "Miejsce gastronomiczne"
         case .parking: "Parking"
         case .charging: "Stacja ładowania"
-        case .parkRide: "Parking P+R"
         case .restArea: "Miejsce obsługi podróżnych"
         case .parcels: "Punkt odbioru przesyłek"
         }
@@ -46,7 +43,6 @@ enum NearbyPlaceCategory: String, CaseIterable, Identifiable {
         case .food: "[amenity~\"restaurant|fast_food|cafe\"]"
         case .parking: "[amenity=parking]"
         case .charging: "[amenity=charging_station]"
-        case .parkRide: "[amenity=parking][park_ride=yes]"
         case .restArea: "[highway~\"^(services|rest_area)$\"]"
         case .parcels: "[amenity=parcel_locker]"
         }
@@ -445,7 +441,6 @@ struct MapKitNearbyPlaceProvider {
             guard let name = item.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
                 return nil
             }
-            if category == .parkRide, !Self.isParkAndRide(name) { return nil }
 
             let location = item.location
             let candidateCoordinate = Coordinate(latitude: location.coordinate.latitude,
@@ -482,13 +477,6 @@ struct MapKitNearbyPlaceProvider {
         }
         return unique
     }
-
-    private static func isParkAndRide(_ name: String) -> Bool {
-        let normalized = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-            .filter { $0.isLetter || $0.isNumber || $0.isWhitespace }
-        return normalized.contains("p r") || normalized.contains("park and ride")
-            || normalized.contains("parkuj i jedz")
-    }
 }
 
 fileprivate extension NearbyPlaceCategory {
@@ -498,7 +486,6 @@ fileprivate extension NearbyPlaceCategory {
         case .food: "food"
         case .parking: "parking"
         case .charging: "EV charging station"
-        case .parkRide: "park and ride"
         case .restArea: "motorway services"
         case .parcels: "paczkomaty i punkty odbioru przesyłek"
         }
@@ -508,7 +495,7 @@ fileprivate extension NearbyPlaceCategory {
         switch self {
         case .fuel: [.gasStation]
         case .food: [.restaurant, .cafe, .bakery]
-        case .parking, .parkRide: [.parking]
+        case .parking: [.parking]
         case .charging: [.evCharger]
         case .restArea: [.parking]
         case .parcels: [.postOffice]

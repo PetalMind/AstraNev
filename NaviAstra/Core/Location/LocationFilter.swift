@@ -29,7 +29,6 @@ extension TransportMode {
         case .bicycle: 40
         case .car: 75
         case .transit: 90
-        case .parkRide: 75
         }
     }
 }

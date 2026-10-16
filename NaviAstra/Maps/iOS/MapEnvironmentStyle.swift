@@ -83,7 +83,32 @@ enum MapEnvironmentStyle {
             texture.minimumZoomLevel = 17
             style.insertLayer(texture, above: area)
         }
+        // Ground approaches terminate visually at the road edge even before
+        // detailed asphalt is available. Elevated and underground paths keep their order.
+        if let road = groundRoadAnchor(in: style) {
+            let approaches = style.layers.filter { layer in
+                guard let line = layer as? MLNLineStyleLayer,
+                      line.sourceLayerIdentifier == "transportation" else { return false }
+                let id = line.identifier.lowercased()
+                return id.contains("path_pedestrian") && !id.contains("bridge") && !id.contains("tunnel")
+            }
+            for layer in approaches {
+                style.removeLayer(layer)
+                style.insertLayer(layer, below: road)
+            }
+        }
         MapTilerEnvironmentStyle.configure(in: style)
+    }
+
+    /// The first actual ground carriageway, excluding paths, rails and other levels.
+    static func groundRoadAnchor(in style: MLNStyle) -> MLNStyleLayer? {
+        style.layers.first { layer in
+            guard let line = layer as? MLNLineStyleLayer,
+                  line.sourceLayerIdentifier == "transportation" else { return false }
+            let id = line.identifier.lowercased()
+            return id.hasPrefix("road_")
+                && !["path", "pedestrian", "rail", "hatching", "bridge", "tunnel"].contains(where: id.contains)
+        }
     }
 
     static func apply(to style: MLNStyle, settings: MapSettings, dark: Bool) {

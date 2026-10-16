@@ -94,7 +94,7 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
     func calculateRoutes(from: Coordinate, to: Coordinate, through: [Coordinate], mode: TransportMode,
                          preferences: RoutingPreferences, avoiding: [Coordinate]) async throws -> [NavigationRoute] {
         guard endpoint.scheme == "https" else { throw RoutingError.invalidEndpoint }
-        guard mode != .transit && mode != .parkRide else { throw RoutingError.invalidEndpoint }
+        guard mode != .transit else { throw RoutingError.invalidEndpoint }
         var request = URLRequest(url: endpoint.appendingPathComponent("route"))
         request.httpMethod = "POST"
         request.timeoutInterval = 15

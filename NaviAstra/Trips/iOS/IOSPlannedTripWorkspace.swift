@@ -50,7 +50,7 @@ struct IOSPlannedTripWorkspace: View {
                 } else {
                     IOSTripCalendarSelection(onBack: { pane = .editor }) { event in
                         draft.title = event.title; draft.targetDate = event.date
-                        if draft.mode != .parkRide { draft.timing = .arrival }
+                        draft.timing = .arrival
                         if let coordinate = event.coordinate {
                             choose(Destination(name: event.title, coordinate: coordinate, address: event.location), role: .destination)
                         } else {
@@ -286,7 +286,7 @@ struct IOSPlannedTripWorkspace: View {
                 Toggle("Unikaj opłat", isOn: $draft.preferences.avoidTolls)
                 Toggle("Unikaj autostrad", isOn: $draft.preferences.avoidHighways)
             }
-            if draft.mode != .transit && draft.mode != .parkRide {
+            if draft.mode != .transit {
                 Toggle("Unikaj promów", isOn: $draft.preferences.avoidFerries)
                 Toggle("Unikaj dróg nieutwardzonych", isOn: $draft.preferences.avoidUnpaved)
             }
@@ -347,7 +347,7 @@ struct IOSPlannedTripWorkspace: View {
 extension IOSPlannedTripWorkspace {
     private func scene(in geometry: GeometryProxy) -> MapScene {
         var settings = mapSettings
-        settings.overlays.transit = draft.mode == .transit || draft.mode == .parkRide
+        settings.overlays.transit = draft.mode == .transit
         let commands = MapSceneCommands(
             onSearchSelect: { destination in
                 guard pane == .map else { return }
@@ -369,7 +369,7 @@ extension IOSPlannedTripWorkspace {
             },
             onCyclingPathsStatus: { _ in }, onRoadPOIStatus: { _ in },
             onTransitViewportChange: { viewport in
-                guard draft.mode == .transit || draft.mode == .parkRide else { return }
+                guard draft.mode == .transit else { return }
                 viewportGeneration += 1; let generation = viewportGeneration
                 mapStopsTask?.cancel()
                 mapStopsTask = Task {

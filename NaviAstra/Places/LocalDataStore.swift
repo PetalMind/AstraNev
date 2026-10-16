@@ -165,7 +165,9 @@ struct TripRecord: Identifiable, Codable {
         arrived = try values.decode(Bool.self, forKey: .arrived)
         originalExpectedTravelTime = try values.decodeIfPresent(TimeInterval.self, forKey: .originalExpectedTravelTime)
         drivingScore = try values.decodeIfPresent(DrivingScore.self, forKey: .drivingScore)
-        transportMode = try values.decodeIfPresent(TransportMode.self, forKey: .transportMode)
+        // Keep historical journeys readable after a transport mode is retired.
+        transportMode = try values.decodeIfPresent(String.self, forKey: .transportMode)
+            .flatMap { TransportMode(rawValue: $0) }
         trace = try values.decodeIfPresent([TripTracePoint].self, forKey: .trace) ?? []
         maximumSpeedKph = try values.decodeIfPresent(Double.self, forKey: .maximumSpeedKph)
         vehicleID = try values.decodeIfPresent(UUID.self, forKey: .vehicleID)

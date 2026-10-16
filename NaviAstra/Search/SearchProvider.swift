@@ -77,6 +77,7 @@ struct SearchResult: Identifiable {
     var category: String? = nil
     var brand: String? = nil
     var operatorName: String? = nil
+    var parcelReferences: [String] = []
     var openingHours: String? = nil
     var phone: String? = nil
     var website: String? = nil
@@ -98,7 +99,8 @@ struct SearchResult: Identifiable {
         guard isPOI else { return destination }
         var result = destination
         result.poi = POIMetadata(provider: placeProvider, osmID: osmID,
-                                 category: category, brand: brand, operatorName: operatorName)
+                                 category: category, brand: brand, operatorName: operatorName,
+                                 providerID: providerID)
         return result
     }
 
@@ -126,6 +128,9 @@ struct SearchResult: Identifiable {
         if merged.category == nil { merged.category = other.category }
         if merged.brand == nil { merged.brand = other.brand }
         if merged.operatorName == nil { merged.operatorName = other.operatorName }
+        for reference in other.parcelReferences where !merged.parcelReferences.contains(reference) {
+            merged.parcelReferences.append(reference)
+        }
         if merged.openingHours == nil { merged.openingHours = other.openingHours }
         if merged.phone == nil { merged.phone = other.phone }
         if merged.website == nil { merged.website = other.website }
@@ -185,7 +190,7 @@ struct SearchResult: Identifiable {
         }
         if let address = destination.address { return address }
         if isAddress { return houseNumber == nil ? "Ulica lub obszar adresowy" : "Adres · punkt budynku" }
-        return isPOI ? "Miejsce · \(placeProvider == .mapKit ? "Apple Maps" : "OpenStreetMap")" : "Miejsce lub obszar"
+        return isPOI ? "Miejsce · \(placeProvider.detailsSource.title)" : "Miejsce lub obszar"
     }
 }
 

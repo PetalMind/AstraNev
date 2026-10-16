@@ -180,8 +180,6 @@ enum PlaceCategoryPresentation {
         "fuel": "Stacja paliw",
         "gasstation": "Stacja paliw",
         "parking": "Parking",
-        "parkride": "Parking P+R",
-        "parkandride": "Parking P+R",
         "chargingstation": "Stacja ładowania",
         "evcharger": "Stacja ładowania",
         "evcharging": "Stacja ładowania",

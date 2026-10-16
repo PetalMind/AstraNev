@@ -19,10 +19,10 @@ final class NavigationSession {
     let energyPolicyEngine = EnergyPolicyEngine()
     let voice: VoiceGuidanceEngine
     var usesJourneyVoiceGuidance: Bool {
-        state.transportMode == .transit || state.transportMode == .parkRide
+        state.transportMode == .transit
     }
     var usesRoadVoiceGuidance: Bool {
-        state.transportMode == .car || state.transportMode == .parkRide
+        state.transportMode == .car
     }
     private var filter = LocationFilter()
     var offRouteDetector = OffRouteDetector()
@@ -312,9 +312,6 @@ final class NavigationSession {
     func selectTransportMode(_ mode: TransportMode) async {
         guard state.status != .navigating && state.status != .rerouting else { return }
         state.transportMode = mode
-        if mode == .parkRide && state.journeyTimeMode == .arriveBy {
-            state.journeyTimeMode = .now
-        }
         if mode != .transit { state.transitPlanningPhase = nil }
         if mode != .car { resetRoadSafetyData() }
         state.transitProgress = nil
@@ -329,13 +326,9 @@ final class NavigationSession {
     func applyConfiguredDefaultTransportMode() {
         let mode = TransportMode.configuredDefault
         state.transportMode = mode
-        if mode == .parkRide && state.journeyTimeMode == .arriveBy {
-            state.journeyTimeMode = .now
-        }
     }
 
     func setJourneyTimeMode(_ mode: JourneyTimeMode) {
-        guard mode != .arriveBy || state.transportMode != .parkRide else { return }
         state.journeyTimeMode = mode
         let now = Date()
         if mode == .now {
@@ -438,7 +431,7 @@ final class NavigationSession {
         let hasFreshRouteTraffic = state.transportMode == .car && routeTrafficDataAvailable
             && Date().timeIntervalSince(routeTrafficUpdatedAt ?? .distantPast) <= 120
         navigationTransitionTask?.cancel()
-        let cameraTransitionDelay = state.transportMode == .transit || state.transportMode == .parkRide
+        let cameraTransitionDelay = state.transportMode == .transit
             ? 400 : 450
         navigationTransitionTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(cameraTransitionDelay))
@@ -492,7 +485,7 @@ final class NavigationSession {
         invalidateSpeedLimit()
         voice.reset()
         state.route = nil; state.routeOptions = []; state.progress = nil; state.destination = nil
-        state.navigationTarget = nil; state.parkRideCarTarget = nil
+        state.navigationTarget = nil
         state.laterTransitRoutes = []
         state.isLoadingLaterTransitRoutes = false
         state.didSearchLaterTransitRoutes = false
@@ -575,13 +568,12 @@ final class NavigationSession {
         }
         if state.status == .navigating || state.status == .rerouting {
             if appIsForeground, state.cameraState != .startingNavigation { updateNavigationCameraState() }
-            if state.transportMode == .car ||
-                (state.transportMode == .parkRide && state.transitProgress?.legIndex == 0) {
+            if state.transportMode == .car {
                 refreshSpeedLimit(for: state.location!)
             }
         }
         refreshEnergyPolicy()
-        if state.transportMode == .car || state.transportMode == .parkRide { refreshTraffic() }
+        if state.transportMode == .car { refreshTraffic() }
     }
     func invalidateTraffic() {
         trafficGeneration += 1
@@ -760,9 +752,7 @@ final class NavigationSession {
         lastNearbySpeedLimitFetch = .now
         let generation = speedLimitGeneration
         let routeID = route.id
-        let routeCoordinates = state.transportMode == .parkRide
-            ? (route.journey?.legs.first(where: { $0.mode.uppercased() == "CAR" })?.coordinates ?? [])
-            : route.coordinates
+        let routeCoordinates = route.coordinates
         let cachedGeometry = speedLimitBufferRouteID == routeID ? speedLimitBufferGeometry : nil
         let provider = roadDataProvider
         nearbySpeedLimitTask = Task(priority: .userInitiated) { [weak self] in
@@ -803,12 +793,7 @@ final class NavigationSession {
 
     func loadRoadData(for route: NavigationRoute, isRetry: Bool = false) {
         guard usesRoadVoiceGuidance else { return }
-        let roadCoordinates: [Coordinate]
-        if state.transportMode == .parkRide {
-            roadCoordinates = route.journey?.legs.first(where: { $0.mode.uppercased() == "CAR" })?.coordinates ?? []
-        } else {
-            roadCoordinates = route.coordinates
-        }
+        let roadCoordinates = route.coordinates
         guard roadCoordinates.count > 1 else { return }
         roadDataTask?.cancel()
         roadDataGeneration &+= 1
@@ -845,8 +830,7 @@ final class NavigationSession {
                 self.updateProgress()
                 if let location = self.state.location,
                    self.state.status == .navigating || self.state.status == .rerouting,
-                   self.state.transportMode == .car ||
-                    (self.state.transportMode == .parkRide && self.state.transitProgress?.legIndex == 0) {
+                   self.state.transportMode == .car {
                     self.refreshSpeedLimit(for: location, force: true)
                 }
                 if snapshot.unavailableSources?.isEmpty == false {

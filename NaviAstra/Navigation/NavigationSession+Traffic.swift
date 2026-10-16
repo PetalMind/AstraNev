@@ -14,7 +14,7 @@ extension NavigationSession {
         let energyPolicy = energyPolicyEngine.currentPolicy
         let isOnDemandMapRequest = force && energyPolicy.mode == .mapBrowsing
         guard energyPolicy.trafficRefreshInterval != nil || isOnDemandMapRequest else { return }
-        guard state.transportMode == .car || state.transportMode == .parkRide || state.status == .idle else { return }
+        guard state.transportMode == .car || state.status == .idle else { return }
         guard !appIsForeground || state.cameraState != .startingNavigation else { return }
         guard let trafficProvider else { state.trafficStatus = .notConfigured; return }
         let coordinate = state.location?.coordinate

@@ -31,7 +31,7 @@ nonisolated enum GuidanceQualityEngine {
         if let following, following < max(120, speed * 10) {
             complexity += 2; reasons.append("Kolejne manewry blisko siebie")
         }
-        let road = mode == .car || mode == .parkRide
+        let road = mode == .car
         let preparation = road ? max(200, min(1_500, speed * (24 + Double(complexity) * 5))) : max(45, min(150, speed * 24))
         let lane = road ? max(80, min(preparation * 0.6, speed * (8 + Double(complexity) * 3))) : max(20, speed * 8)
         return GuidanceQuality(preparationDistance: preparation, laneDistance: lane,

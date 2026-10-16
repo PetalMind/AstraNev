@@ -38,7 +38,6 @@ final class NavigationState {
     }
     var destination: Destination?
     var navigationTarget: POINavigationTarget?
-    var parkRideCarTarget: POINavigationTarget?
     var waypoints: [Destination] = []
     var evChargingStops: [Destination] = []
     var waypointNavigationTargets: [UUID: POINavigationTarget] = [:]

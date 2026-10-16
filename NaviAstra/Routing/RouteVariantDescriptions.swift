@@ -67,7 +67,7 @@ enum RouteVariantDescriptions {
         award(.shortest, values: routes.map { $0.distance }, minimumSpread: 1,
               explanation: "Najmniejszy dystans wśród dostępnych wariantów.")
 
-        if mode == .transit || mode == .parkRide {
+        if mode == .transit {
             award(.fewestTransfers, values: routes.map { $0.journey.map { Double($0.transferCount) } },
                   minimumSpread: 1, explanation: "Najmniejsza liczba przesiadek wśród dostępnych połączeń.")
             let walking: [Double?] = routes.map { route in

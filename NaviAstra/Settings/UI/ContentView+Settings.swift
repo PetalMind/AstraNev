@@ -119,6 +119,7 @@ extension ContentView {
                             SatelliteMapCredits()
                             Link("OpenFreeMap · mapa bazowa", destination: URL(string: "https://openfreemap.org")!)
                             Link("OpenStreetMap · autorzy i licencja ODbL", destination: URL(string: "https://www.openstreetmap.org/copyright")!)
+                            Link("InPost · wyszukiwanie punktów po numerze", destination: URL(string: "https://inpost.pl/znajdz-paczkomat")!)
                             Link("MapLibre · silnik mapy", destination: URL(string: "https://maplibre.org")!)
                             if MapTilerEnvironmentStyle.configuredURL != nil {
                                 Link("MapTiler · szczegóły otoczenia", destination: URL(string: "https://www.maptiler.com/copyright/")!)
@@ -616,7 +617,7 @@ extension ContentView {
                     }
                 }
                 if supportsActiveTripRoadPreferences {
-                    Section(mode == .parkRide ? "Odcinek samochodowy" : "Preferencje trasy") {
+                    Section("Preferencje trasy") {
                         Toggle("Unikaj dróg płatnych", isOn: routePreferenceBinding(\.avoidTolls))
                         Toggle("Unikaj autostrad", isOn: routePreferenceBinding(\.avoidHighways))
                         Toggle("Unikaj promów", isOn: routePreferenceBinding(\.avoidFerries))

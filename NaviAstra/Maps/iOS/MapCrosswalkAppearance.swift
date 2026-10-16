@@ -72,6 +72,8 @@ final class MapCrosswalkRenderer {
         }
     }
 
+    func suspend() { refreshTask?.cancel(); refreshTask = nil }
+
     func refresh(on map: MLNMapView, enabled: Bool) {
         guard enabled, map.zoomLevel >= 17,
               let style = map.style,
@@ -88,10 +90,10 @@ final class MapCrosswalkRenderer {
         }
         // Coalesce tile/frame updates and retain a trailing refresh after rendering stops.
         let elapsed = Date().timeIntervalSince(refreshedAt)
-        if elapsed < 0.75 {
+        if elapsed < MapDetailPolicy.refreshInterval {
             if refreshTask == nil {
                 refreshTask = Task { [weak self, weak map] in
-                    do { try await Task.sleep(for: .seconds(0.75 - elapsed)) } catch { return }
+                    do { try await Task.sleep(for: .seconds(MapDetailPolicy.refreshInterval - elapsed)) } catch { return }
                     guard let self, let map else { return }
                     self.refreshTask = nil
                     self.refresh(on: map, enabled: enabled)
@@ -162,7 +164,7 @@ final class MapCrosswalkRenderer {
         for crossing in crossings {
             let coordinate = crossing.coordinate
             // The tileset has no unique crossing IDs; adjacent tiles can repeat a point.
-            let identity = "\(Int((coordinate.latitude * 1_000_000).rounded())):\(Int((coordinate.longitude * 1_000_000).rounded()))"
+            let identity = Self.identity(latitude: coordinate.latitude, longitude: coordinate.longitude)
             guard seen.insert(identity).inserted else { continue }
             let point = local(coordinate)
             let roadRotation = Self.roadRotation(at: point, segments: grid[Cell(point)] ?? [])
@@ -186,7 +188,12 @@ final class MapCrosswalkRenderer {
             }
             let resolved = MLNPointFeature()
             resolved.coordinate = coordinate
-            resolved.attributes = ["_crosswalkRotation": rotation]
+            func integer(_ value: Any?) -> Int {
+                (value as? NSNumber)?.intValue ?? (value as? String).flatMap(Int.init) ?? 0
+            }
+            let ground = integer(crossing.attributes["layer"]) == 0 && integer(crossing.attributes["level"]) == 0
+                && !["bridge", "tunnel"].contains(crossing.attributes["brunnel"] as? String ?? "")
+            resolved.attributes = ["_crosswalkRotation": rotation, "_crosswalkIdentity": identity, "_crosswalkGround": ground]
             points.append(resolved)
         }
         points.sort {
@@ -198,11 +205,16 @@ final class MapCrosswalkRenderer {
             hasher.combine(point.coordinate.latitude)
             hasher.combine(point.coordinate.longitude)
             hasher.combine((point.attributes["_crosswalkRotation"] as? NSNumber)?.doubleValue)
+            hasher.combine((point.attributes["_crosswalkGround"] as? NSNumber)?.boolValue)
         }
         let updated = hasher.finalize()
         guard signature != updated else { return }
         signature = updated
         output.shape = MLNShapeCollectionFeature(shapes: points)
+    }
+
+    static func identity(latitude: Double, longitude: Double) -> String {
+        "\(Int((latitude * 1_000_000).rounded())):\(Int((longitude * 1_000_000).rounded()))"
     }
 
     private static func axis(_ degrees: Double) -> Double {

@@ -217,8 +217,7 @@ extension NavigationSession {
             arriveAtDestination()
             return
         }
-        let isOnParkRideCarLeg = state.transportMode != .parkRide || journeyProgress?.legIndex == 0
-        if let next, state.voiceEnabled, isOnParkRideCarLeg,
+        if let next, state.voiceEnabled,
            (routeMatch?.confidence ?? 0) >= 0.25, measurement.matching?.ambiguous != true {
             let maneuverCoordinate = route.coordinates.indices.contains(next.shapeIndex)
                 ? route.coordinates[next.shapeIndex] : nil
@@ -226,7 +225,7 @@ extension NavigationSession {
                            distance: max(0, maneuverDistance), speed: max(0, location.speed),
                            quality: state.guidanceQuality, lanes: state.laneGuidance)
         }
-        if state.voiceEnabled, isOnParkRideCarLeg, MapDisplayPriorityEngine.canPresentRouteAlerts(state) {
+        if state.voiceEnabled, MapDisplayPriorityEngine.canPresentRouteAlerts(state) {
             for alert in MapDisplayPriorityEngine.upcomingAlerts(in: state) {
                 guard let alongRoute = alert.distanceAlongRoute else { continue }
                 let distance = alongRoute - projection.alongRoute
@@ -244,12 +243,6 @@ extension NavigationSession {
                 }
             }
         }
-        if state.transportMode == .parkRide,
-           let journeyProgress,
-           let journey = route.journey {
-            updateTransitVoice(for: journeyProgress, journey: journey)
-        }
-        guard state.transportMode != .parkRide else { return }
         let hasSustainedDeparture = offRouteDetector.shouldRequestReroute(
             location: location,
             route: route,

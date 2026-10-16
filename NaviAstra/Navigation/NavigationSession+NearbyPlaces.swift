@@ -267,12 +267,11 @@ extension NavigationSession {
         if asFinalParking {
             if active, let location = state.location?.coordinate {
                 let previousDestinationID = state.destination?.id
-                let targets = await resolveAccessTargets(for: destination, mode: state.transportMode)
+                let targets = await resolveAccessTarget(for: destination, mode: state.transportMode)
                 guard (state.status == .navigating || state.status == .rerouting),
                       state.destination?.id == previousDestinationID else { return }
                 state.destination = destination
-                state.navigationTarget = targets.navigation
-                state.parkRideCarTarget = targets.parkRideCar
+                state.navigationTarget = targets
                 state.evChargingStops = []
                 state.waypointNavigationTargets = [:]
                 tripSession?.destination = destination

@@ -885,7 +885,7 @@ final class RouteLayerRenderer {
 
     private func activeRouteColor(dark: Bool) -> UInt32 {
         return switch parent.state.transportMode {
-        case .car, .transit, .parkRide:
+        case .car, .transit:
             dark ? RouteColorPalette.activeDark : RouteColorPalette.activeLight
         case .walking:
             dark ? RouteColorPalette.walkingDark : RouteColorPalette.walkingLight
@@ -898,7 +898,7 @@ final class RouteLayerRenderer {
         if !dark {
             switch parent.state.transportMode {
             case .walking, .bicycle: return NaviAstraColorPalette.surfaceDay
-            case .car, .transit, .parkRide: break
+            case .car, .transit: break
             }
         }
         return dark ? RouteColorPalette.casingDark : RouteColorPalette.casingLight
@@ -917,7 +917,7 @@ final class RouteLayerRenderer {
 
     private func activeRouteWidth(navigating: Bool) -> CGFloat {
         switch parent.state.transportMode {
-        case .car, .transit, .parkRide: navigating ? 11 : 8
+        case .car, .transit: navigating ? 11 : 8
         case .walking: navigating ? 8 : 6
         case .bicycle: navigating ? 10 : 8
         }
