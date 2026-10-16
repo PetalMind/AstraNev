@@ -13,6 +13,11 @@ extension ContentView {
             : (navigationStore.state.transportMode == .parkRide
                 ? (parkRideCarDistanceToTransfer ?? .infinity)
                 : (navigationStore.state.progress?.remainingDistance ?? .infinity))
+#if os(iOS)
+        let isImmediate = currentStepGuidanceIsImmediate
+#else
+        let isImmediate = guidanceDistance <= (navigationStore.state.guidanceQuality?.immediateDistance ?? 25)
+#endif
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
                 ManeuverIcon(type: maneuver?.type,
@@ -31,7 +36,7 @@ extension ContentView {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(navigationStore.state.status == .rerouting
                          ? "Przeliczanie trasy…"
-                         : (guidanceDistance <= (navigationStore.state.guidanceQuality?.immediateDistance ?? 25) ? "TERAZ" : distance(guidanceDistance)))
+                         : (isImmediate ? "TERAZ" : (guidanceDistance.isFinite ? distance(guidanceDistance) : "—")))
                         .font(.system(size: 20, weight: .bold, design: .rounded))
                         .contentTransition(.numericText())
 
@@ -57,11 +62,21 @@ extension ContentView {
                             .font(.system(size: 15, weight: .medium, design: .rounded).monospacedDigit())
                             .foregroundStyle(Color.naviTextSecondary)
                     }
+#if !os(iOS)
                     laneGuidance
+#endif
                 }
             }
 
+#if os(iOS)
+            if let notices = maneuver?.information?.notices, !notices.isEmpty {
+                Text(notices.joined(separator: " · "))
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+#else
             if let maneuver { ManeuverInformationView(maneuver: maneuver) }
+#endif
 
             if let maneuver = navigationStore.state.progress?.nextManeuver,
                let exitNumber = maneuver.exitNumber {
@@ -88,6 +103,9 @@ extension ContentView {
         VStack(alignment: .leading, spacing: 6) {
             navigationRoadSafetyBanner
             navigationTrafficIncidentBanner
+#if os(iOS)
+            navigationCongestionBanner
+#endif
             navigationRoadDataFooter
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -250,6 +268,14 @@ extension ContentView {
 
     @ViewBuilder
     var laneGuidance: some View {
+#if os(iOS)
+        if isOnRoadDrivingLeg, navigationStore.state.status != .rerouting,
+           let guidance = navigationStore.state.laneGuidance {
+            LaneGuidanceRoadView(guidance: guidance)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 10)
+        }
+#else
         if let lanes = navigationStore.state.progress?.nextManeuver?.lanes, !lanes.isEmpty {
             VStack(spacing: 5) {
                 HStack(spacing: 4) {
@@ -264,6 +290,7 @@ extension ContentView {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(laneGuidanceAccessibilityLabel(lanes))
         }
+#endif
     }
 
     private func laneGuidanceCell(_ lane: TurnLaneGuidance) -> some View {
@@ -666,6 +693,9 @@ extension ContentView {
                     laterTransitConnections
                 }
 
+#if os(iOS)
+                routeTrafficDelaySummary
+#endif
                 if routePreviewExpanded {
                     ScrollView(.vertical) {
                         VStack(alignment: .leading, spacing: 15) {

@@ -36,6 +36,9 @@ nonisolated struct NormalizedDetailedRoad: Sendable {
     let endWidth: Double
     let startCenterOffset: Double
     let endCenterOffset: Double
+    let nodeIDs: [Int64]?
+    let identity: String?
+    let roundabout: Bool
 
     func width(at fraction: Double) -> Double { startWidth + (endWidth - startWidth) * fraction }
     func centerOffset(at fraction: Double) -> Double {
@@ -53,10 +56,7 @@ nonisolated struct NormalizedDetailedRoad: Sendable {
 /// Strict normalization is shared by the Overpass path and the future tile-generation contract.
 nonisolated enum DetailedRoadNormalizer {
     private enum Invalid: Error { case attributes }
-    private static let supportedTurns: Set<String> = [
-        "left", "slight_left", "sharp_left", "through", "right", "slight_right", "sharp_right",
-        "reverse", "merge_to_left", "merge_to_right"
-    ]
+    private static let supportedTurns = DetailedRoadArrowGeometry.supportedTurns
 
     static func normalize(_ road: DetailedRoad) -> NormalizedDetailedRoad? {
         try? make(road)
@@ -197,7 +197,8 @@ nonisolated enum DetailedRoadNormalizer {
             confidence = .estimated
         }
         if lanes.isEmpty { startWidth = measuredWidth ?? estimatedWidth; endWidth = startWidth }
-        guard startWidth > 0, endWidth > 0, startWidth <= 60, endWidth <= 60 else { throw Invalid.attributes }
+        guard startWidth >= 0, endWidth >= 0, max(startWidth, endWidth) > 0,
+              startWidth <= 60, endWidth <= 60 else { throw Invalid.attributes }
         if explicitWidths, completeDirections, !uncertainExtras { confidence = .exact }
         if directionality == .reversible || directionality == .unknown || tags["lanes:conditional"] != nil {
             confidence = .estimated
@@ -231,7 +232,9 @@ nonisolated enum DetailedRoadNormalizer {
             directionality: directionality, confidence: confidence, renderLevel: renderLevel,
             layer: layer, bridge: bridge, covered: covered, marked: tags["lane_markings"] != "no",
             lanes: lanes, startWidth: startWidth, endWidth: endWidth,
-            startCenterOffset: placement.0, endCenterOffset: placement.1)
+            startCenterOffset: placement.0, endCenterOffset: placement.1,
+            nodeIDs: road.nodeIDs, identity: tags["ref"] ?? tags["name"],
+            roundabout: tags["junction"] == "roundabout" || tags["junction"] == "circular")
     }
 
     private static func dimension(_ raw: String?, range: ClosedRange<Double>) throws -> Double? {

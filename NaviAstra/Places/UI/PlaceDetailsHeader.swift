@@ -277,6 +277,7 @@ enum PlaceCategoryPresentation {
         "recycling": "Punkt recyklingu",
         "vendingmachine": "Automat sprzedażowy",
         "parcellocker": "Paczkomat",
+        "parcelpickup": "Punkt odbioru przesyłek",
         "telephone": "Telefon publiczny",
         "hotel": "Hotel",
         "hostel": "Hostel",

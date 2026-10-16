@@ -39,7 +39,7 @@ struct NearbyPlacesSheet: View {
     }
 
     private var categories: [NearbyPlaceCategory] {
-        nearDestination ? [.parking, .parkRide] : [.fuel, .parking, .charging, .restArea, .food, .parkRide]
+        nearDestination ? [.parking, .parkRide] : [.fuel, .parking, .charging, .restArea, .food, .parkRide, .parcels]
     }
 
     private var nearbySearchRefreshKey: String {
@@ -691,6 +691,7 @@ struct NearbyPlacesSheet: View {
         case .food: "restaurant"
         case .parking, .parkRide, .restArea: "parking"
         case .charging: "charging_station"
+        case .parcels: "parcel_pickup"
         }
         let osmID: String?
         if poi?.provider == .openStreetMap {

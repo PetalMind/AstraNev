@@ -1,6 +1,6 @@
 import Foundation
 
-enum ManeuverKind: Int, Sendable {
+nonisolated enum ManeuverKind: Int, Sendable {
     case none = 0
     case start = 1
     case startRight = 2
@@ -95,7 +95,7 @@ enum ManeuverKind: Int, Sendable {
     var isRoundabout: Bool { self == .roundaboutEnter || self == .roundaboutExit }
 }
 
-struct Maneuver: Identifiable, Sendable {
+nonisolated struct Maneuver: Identifiable, Sendable {
     var id: Int { shapeIndex }
     var shapeIndex: Int
     var instruction: String
@@ -140,7 +140,7 @@ struct Maneuver: Identifiable, Sendable {
     }
 }
 
-struct TurnLaneGuidance: Identifiable, Sendable {
+nonisolated struct TurnLaneGuidance: Identifiable, Sendable {
     var id: Int
     var indications: [String]
     var valid: Bool

@@ -314,7 +314,7 @@ private struct TripHistoryRow: View {
                     EnergyUsageLabel(estimate: estimate)
                 } else {
                     Label(trip.vehicleID == nil ? "Przypisz pojazd, aby obliczyć zużycie paliwa"
-                          : "Zużycie paliwa niedostępne · brak pełnych pomiarów lub dystansu", systemImage: "fuelpump")
+                          : "Zużycie paliwa niedostępne · brak zamkniętego pomiaru lub dystansu", systemImage: "fuelpump")
                         .font(.caption).foregroundStyle(Color.naviTextSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

@@ -4,7 +4,15 @@ import AVFoundation
 extension ContentView {
     var trafficDetailsSheet: some View {
         NavigationStack {
-            ScrollView { trafficCard.padding() }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+#if os(iOS)
+                    routeCongestionDetailsCard
+#endif
+                    trafficCard
+                }
+                .padding()
+            }
                 .navigationTitle("Ruch na żywo")
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
@@ -748,7 +756,7 @@ extension ContentView {
                 }
 
                 if let updatedAt = navigationStore.state.traffic?.updatedAt {
-                    Text("Aktualizacja: \(updatedAt.formatted(date: .omitted, time: .shortened))")
+                    Text("Aktualizacja: \(PolishRegionalFormat.time(updatedAt))")
                         .font(.caption)
                         .foregroundStyle(Color.naviTextSecondary)
                 }

@@ -6,6 +6,22 @@ import QuartzCore
 import SwiftUI
 import UIKit
 
+#if DEBUG
+/// Ephemeral framing for native visual audits; never changes GPS or saved preferences.
+@MainActor
+private func applyRoadAuditCamera(to map: MLNMapView) -> Bool {
+    guard let raw = ProcessInfo.processInfo.environment["NAVIASTRA_MAP_AUDIT_CAMERA"] else { return false }
+    let values = raw.split(separator: ",").compactMap { Double($0) }
+    guard values.count == 3, values.allSatisfy(\.isFinite),
+          (-85...85).contains(values[0]), (-180...180).contains(values[1]), (16...20).contains(values[2]) else { return false }
+    if abs(map.centerCoordinate.latitude - values[0]) > 0.0000001
+        || abs(map.centerCoordinate.longitude - values[1]) > 0.0000001 || abs(map.zoomLevel - values[2]) > 0.001 {
+        map.setCenter(CLLocationCoordinate2D(latitude: values[0], longitude: values[1]), zoomLevel: values[2], animated: false)
+    }
+    return true
+}
+#endif
+
 @MainActor
 private final class PuckDisplayLinkTarget: NSObject {
     weak var coordinator: MapLibreView.Coordinator?
@@ -219,6 +235,9 @@ struct MapLibreView: UIViewRepresentable {
         map.prefetchesTiles = false
         map.delegate = context.coordinator
         map.setCenter(CLLocationCoordinate2D(latitude: 52.2297, longitude: 21.0122), zoomLevel: 10, animated: false)
+#if DEBUG
+        _ = applyRoadAuditCamera(to: map)
+#endif
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tappedPOI(_:)))
         tap.delegate = context.coordinator
         map.addGestureRecognizer(tap)
@@ -319,8 +338,7 @@ struct MapLibreView: UIViewRepresentable {
         private var tileShopIdentities: [String: PlaceIdentity] = [:]
         private var lastShopLogosEnabled: Bool?
         private var lastPOIMarkerDark: Bool?
-        private let poiOverviewClusters = POIOverviewClusterRenderer()
-        private var lastStyleURL: URL?
+            private var lastStyleURL: URL?
         private var lastViewportPadding: CameraPadding?
         private var lastMapSize: CGSize = .zero
         private var lastIntent: CameraIntent?
@@ -331,9 +349,10 @@ struct MapLibreView: UIViewRepresentable {
         private var lastRoutePreviewExpanded: Bool?
         private let navigationStyle = NaviAstraMapStyle()
         private var buildingLightingTimer: Timer?
-        private var buildingGlowNeedsUpdate = true
-        private var buildingGlowKey = ""
-        private var lastBuildingGlowUpdate = Date.distantPast
+        private var buildingFacadesNeedsUpdate = true
+        private var buildingFacadesKey = ""
+        private var lastBuildingFacadesUpdate = Date.distantPast
+        private var buildingFacadesRefreshWorkItem: DispatchWorkItem?
         private let streetLabels = NavigationStreetLabels()
         private weak var vehicleMarker: NavigationMarkerNativeView?
         private var cameraAnimationInFlight = false
@@ -374,6 +393,31 @@ struct MapLibreView: UIViewRepresentable {
         func stopBuildingLightingUpdates() {
             buildingLightingTimer?.invalidate()
             buildingLightingTimer = nil
+            buildingFacadesRefreshWorkItem?.cancel()
+            buildingFacadesRefreshWorkItem = nil
+        }
+
+        private func scheduleBuildingFacadesRefresh(on map: MLNMapView) {
+            buildingFacadesNeedsUpdate = true
+            guard parent.scene.energyPolicy.mapRenderingEnabled else { return }
+            buildingFacadesRefreshWorkItem?.cancel()
+            let delay = max(0, 1 - Date().timeIntervalSince(lastBuildingFacadesUpdate))
+            let work = DispatchWorkItem { [weak self, weak map] in
+                guard let self, let map, self.parent.scene.energyPolicy.mapRenderingEnabled else { return }
+                self.refreshBuildingFacadesIfNeeded(on: map)
+            }
+            buildingFacadesRefreshWorkItem = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        }
+
+        private func refreshBuildingFacadesIfNeeded(on map: MLNMapView) {
+            guard buildingFacadesNeedsUpdate, map.style != nil,
+                  parent.scene.energyPolicy.mapRenderingEnabled else { return }
+            buildingFacadesRefreshWorkItem?.cancel()
+            buildingFacadesRefreshWorkItem = nil
+            buildingFacadesNeedsUpdate = false
+            lastBuildingFacadesUpdate = Date()
+            navigationStyle.updateBuildingFacades(on: map, settings: parent.settings, dark: usesDarkMapAppearance)
         }
 
         func startPuckDisplayLink() {
@@ -455,7 +499,6 @@ struct MapLibreView: UIViewRepresentable {
             let point = recognizer.location(in: map)
             guard !routeLayerRenderer.containsETAMarker(at: point, on: map) else { return }
             let tappedCoordinate = map.convert(point, toCoordinateFrom: map)
-            if poiOverviewClusters.handleTap(at: point, on: map) { return }
             let tappedLocation = CLLocation(latitude: tappedCoordinate.latitude, longitude: tappedCoordinate.longitude)
             let appAnnotations = searchPins + trafficEventPins + Array(transitVehiclePins.values)
                 + transitStopRenderer.annotations + [destinationPin, vehiclePin, closurePin, parkedCarPin].compactMap { $0 }
@@ -475,7 +518,7 @@ struct MapLibreView: UIViewRepresentable {
             guard let style = map.style else { return }
             let layerIDs = Set(style.layers.compactMap { layer -> String? in
                 guard let symbolLayer = layer as? MLNSymbolStyleLayer,
-                      (symbolLayer.sourceLayerIdentifier == "poi"
+                      (MapPOIVisualRenderer.isPOILayer(symbolLayer)
                        || symbolLayer.identifier == "naviastra-poi-overview-points") else { return nil }
                 return symbolLayer.identifier
             })
@@ -484,21 +527,26 @@ struct MapLibreView: UIViewRepresentable {
             var candidates: [String: (result: SearchResult, distance: CLLocationDistance)] = [:]
             for feature in map.visibleFeatures(in: touchRect, styleLayerIdentifiers: layerIDs).compactMap({ $0 as? MLNPointFeature }) {
                 let attributes = feature.attributes
-                let rawCategory = (attributes["subclass"] as? String) ?? (attributes["class"] as? String)
+                let rawCategory = (attributes["_selectionCategory"] as? String)
+                    ?? (attributes["subclass"] as? String) ?? (attributes["class"] as? String)
                 guard let rawCategory, !rawCategory.isEmpty else { continue }
                 let isShop = PlacePOIMapMarkerKind(category: rawCategory) == .shopping
                     || PlacePOIMapMarkerKind(category: attributes["class"] as? String) == .shopping
-                let category = isShop ? "shop=\(rawCategory)" : rawCategory
+                let category = isShop && !rawCategory.hasPrefix("shop=") ? "shop=\(rawCategory)" : rawCategory
                 let markerKind = PlacePOIMapMarkerKind(category: category)
-                let name = (attributes["name"] as? String)
-                    ?? feature.title
-                    ?? (attributes["brand"] as? String)
-                    ?? (attributes["operator"] as? String)
-                    ?? markerKind?.accessibilityName
-                guard let name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                let name = [attributes["name:pl"] as? String, attributes["name"] as? String,
+                            feature.title, attributes["brand"] as? String, attributes["operator"] as? String,
+                            attributes["_fallbackName"] as? String, markerKind?.accessibilityName]
+                    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .first { !$0.isEmpty }
+                guard let name else { continue }
                 let coordinate = Coordinate(latitude: feature.coordinate.latitude, longitude: feature.coordinate.longitude)
                 let tileOSMID: String?
-                if let value = attributes["osm_id"] as? NSNumber, value.int64Value != 0 {
+                let isPlanet = attributes["_planet"] as? Bool == true
+                if isPlanet {
+                    // Planet feature IDs have no documented OpenMapTiles OSM encoding.
+                    tileOSMID = nil
+                } else if let value = attributes["osm_id"] as? NSNumber, value.int64Value != 0 {
                     tileOSMID = String(value.int64Value)
                 } else if let value = attributes["osm_id"] as? String, Int64(value).map({ $0 != 0 }) == true {
                     tileOSMID = value
@@ -512,7 +560,7 @@ struct MapLibreView: UIViewRepresentable {
                                           street: nil, houseNumber: nil, city: nil, countryCode: nil,
                                           isPOI: true,
                                           osmID: tileOSMID,
-                                          placeProvider: .openFreeMap,
+                                          placeProvider: isPlanet ? .openStreetMap : .openFreeMap,
                                           category: category,
                                           brand: attributes["brand"] as? String)
                 let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
@@ -550,6 +598,7 @@ struct MapLibreView: UIViewRepresentable {
 
         func mapViewDidBecomeIdle(_ mapView: MLNMapView) {
             updatePOIDensity(on: mapView)
+            if buildingFacadesNeedsUpdate { scheduleBuildingFacadesRefresh(on: mapView) }
             updateCyclingPaths(on: mapView)
             updateMapRoadPOIs(on: mapView)
             applyCameraIntent(to: mapView)
@@ -565,15 +614,16 @@ struct MapLibreView: UIViewRepresentable {
 
         func mapViewDidFinishRenderingFrame(_ mapView: MLNMapView, fullyRendered: Bool) {
             updateStreetLabels(on: mapView)
-            guard fullyRendered, buildingGlowNeedsUpdate,
+            // An unrelated pending tile/image must not block already available buildings.
+            guard buildingFacadesNeedsUpdate,
                   parent.scene.energyPolicy.mapRenderingEnabled,
-                  Date().timeIntervalSince(lastBuildingGlowUpdate) >= 1 else { return }
-            buildingGlowNeedsUpdate = false
-            lastBuildingGlowUpdate = Date()
-            navigationStyle.updateBuildingGlow(on: mapView, settings: parent.settings)
+                  Date().timeIntervalSince(lastBuildingFacadesUpdate) >= 1 else { return }
+            refreshBuildingFacadesIfNeeded(on: mapView)
         }
 
         func mapViewRegionIsChanging(_ mapView: MLNMapView) {
+            navigationStyle.updateBuildingFacadeVisibility(on: mapView, settings: parent.settings,
+                dark: usesDarkMapAppearance, renderingEnabled: parent.scene.energyPolicy.mapRenderingEnabled)
             updatePOIZoomDensity(on: mapView)
             updatePositionMarker(bearing: puckEngine.frame()?.bearing)
         }
@@ -606,8 +656,8 @@ struct MapLibreView: UIViewRepresentable {
             mapLogger.info("Map style loaded: \(style.layers.count) layers, \(style.sources.count) sources")
             navigationStyle.reset()
             detailedRoadRenderer.didLoadStyle(on: mapView)
-            buildingGlowNeedsUpdate = true
-            buildingGlowKey = ""
+            buildingFacadesNeedsUpdate = true
+            buildingFacadesKey = ""
             streetLabels.reset()
             updatePOIDensity(on: mapView)
             updateMapRoadPOIs(on: mapView)
@@ -633,6 +683,8 @@ struct MapLibreView: UIViewRepresentable {
                 minimum: displayLinkRate, maximum: displayLinkRate, preferred: displayLinkRate)
             puckDisplayLink?.isPaused = !energyPolicy.mapRenderingEnabled
             updateStreetLabels(on: map)
+            navigationStyle.updateBuildingFacadeVisibility(on: map, settings: parent.settings,
+                dark: usesDarkMapAppearance, renderingEnabled: energyPolicy.mapRenderingEnabled)
             guard energyPolicy.mapRenderingEnabled else {
                 detailedRoadRenderer.stop()
                 return
@@ -901,18 +953,33 @@ struct MapLibreView: UIViewRepresentable {
             navigationStyle.apply(to: style, settings: parent.settings, dark: usesDarkMapAppearance,
                                   activelyNavigating: activelyNavigating, zoom: map.zoomLevel,
                                   coordinate: map.centerCoordinate)
-            poiOverviewClusters.update(on: map, settings: parent.settings, dark: usesDarkMapAppearance)
+            navigationStyle.refreshPOIs(on: map, settings: parent.settings, dark: usesDarkMapAppearance,
+                                       selected: parent.scene.selectedPlace)
+            navigationStyle.refreshCrosswalks(on: map, settings: parent.settings,
+                renderingEnabled: parent.scene.energyPolicy.mapRenderingEnabled)
+            MapTilerEnvironmentStyle.updateBuildingFallback(on: map, settings: parent.settings)
             updateShopLogos(on: map)
             let lighting = MapBuildingLighting.resolve(appearance: parent.settings.appearance, coordinate: map.centerCoordinate)
-            let glowKey = "\(parent.settings.overlays.buildings3D)-\(parent.settings.cameraMode)-\(lighting.intensity > 0)-\(lighting.quiet)"
-            if glowKey != buildingGlowKey {
-                buildingGlowKey = glowKey
-                buildingGlowNeedsUpdate = true
+            navigationStyle.updateBuildingFacadeVisibility(on: map, settings: parent.settings,
+                dark: usesDarkMapAppearance, renderingEnabled: parent.scene.energyPolicy.mapRenderingEnabled)
+            let facadeKey = "\(parent.settings.overlays.buildings3D)-\(parent.settings.cameraMode)-\(usesDarkMapAppearance)-\(lighting.level)-\(lighting.quiet)-\(map.zoomLevel >= 17.5)-\(map.camera.pitch > 35)"
+            if facadeKey != buildingFacadesKey {
+                buildingFacadesKey = facadeKey
+                scheduleBuildingFacadesRefresh(on: map)
             }
         }
 
         func mapViewDidFinishRenderingMap(_ mapView: MLNMapView, fullyRendered: Bool) {
-            if fullyRendered { updateShopLogos(on: mapView) }
+            navigationStyle.refreshCrosswalks(on: mapView, settings: parent.settings,
+                renderingEnabled: parent.scene.energyPolicy.mapRenderingEnabled)
+            // Also refresh partial maps when some sources are slow or unavailable.
+            scheduleBuildingFacadesRefresh(on: mapView)
+            if fullyRendered {
+                navigationStyle.refreshPOIs(on: mapView, settings: parent.settings, dark: usesDarkMapAppearance,
+                                           selected: parent.scene.selectedPlace)
+                MapTilerEnvironmentStyle.updateBuildingFallback(on: mapView, settings: parent.settings)
+                updateShopLogos(on: mapView)
+            }
         }
 
         func stopShopLogoUpdates() {
@@ -924,7 +991,7 @@ struct MapLibreView: UIViewRepresentable {
             guard let style = map.style else { return }
             let layerIDs = Set(style.layers.compactMap { layer -> String? in
                 guard let symbol = layer as? MLNSymbolStyleLayer,
-                      symbol.sourceLayerIdentifier == "poi", symbol.isVisible else { return nil }
+                      MapPOIVisualRenderer.isPOILayer(symbol), symbol.isVisible else { return nil }
                 return symbol.identifier
             })
             let wantsTiles = parent.settings.shopLogosEnabled && parent.settings.visiblePOICategories.contains(.shopping)
@@ -943,9 +1010,11 @@ struct MapLibreView: UIViewRepresentable {
                         }
                     for feature in features {
                         let attributes = feature.attributes
+                        let isPlanet = attributes["_planet"] as? Bool == true
                         let subclass = attributes["subclass"] as? String
                         let tileClass = attributes["class"] as? String
-                        guard PlacePOIMapMarkerKind(category: subclass) == .shopping
+                        guard attributes["_kind"] as? String == "shopping"
+                                || PlacePOIMapMarkerKind(category: subclass) == .shopping
                                 || PlacePOIMapMarkerKind(category: tileClass) == .shopping,
                               let name = attributes["name"] as? String, !name.isEmpty else { continue }
                         let category = subclass.map { "shop=\($0)" } ?? tileClass
@@ -956,7 +1025,9 @@ struct MapLibreView: UIViewRepresentable {
                         // Keep that ID for styling; resolve the original OSM ID near this exact location.
                         // https://github.com/openmaptiles/openmaptiles/blob/master/layers/poi/poi.sql
                         let originalID: String?
-                        if attributeID != nil {
+                        if isPlanet {
+                            originalID = nil
+                        } else if attributeID != nil {
                             originalID = attributeID
                         } else if numericID > 0, [0, 1, 4].contains(numericID % 10) {
                             originalID = String(numericID / 10)
@@ -964,7 +1035,7 @@ struct MapLibreView: UIViewRepresentable {
                             originalID = nil
                         }
                         let key = [tileID, name, attributes["class"] as? String ?? "", attributes["subclass"] as? String ?? ""].joined(separator: "|")
-                        tileShopIdentities[key] = PlaceIdentity(provider: .openFreeMap, externalID: originalID, osmType: nil,
+                        tileShopIdentities[key] = PlaceIdentity(provider: isPlanet ? .openStreetMap : .openFreeMap, externalID: originalID, osmType: nil,
                             coordinate: Coordinate(latitude: feature.coordinate.latitude, longitude: feature.coordinate.longitude),
                             name: name, category: category, address: nil)
                         if tileShopIdentities.count >= 32 { break }
@@ -1012,6 +1083,9 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         private func applyCameraIntent(to map: MLNMapView) {
+#if DEBUG
+            if applyRoadAuditCamera(to: map) { return }
+#endif
             guard map.style != nil, map.bounds.width > 0, map.bounds.height > 0,
                   let intent = parent.state.cameraIntent,
                   parent.state.cameraState != .freeLook else { return }
@@ -1479,7 +1553,7 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MLNMapView, regionDidChangeAnimated animated: Bool) {
-            buildingGlowNeedsUpdate = true
+            scheduleBuildingFacadesRefresh(on: mapView)
             updateShopLogos(on: mapView, force: true)
             shopTileRefreshTask?.cancel()
             shopTileRefreshTask = Task { [weak self, weak mapView] in

@@ -49,8 +49,8 @@ enum MapEnvironmentStyle {
             let steps = MLNLineStyleLayer(identifier: prefix + path.identifier + "-steps", source: source)
             steps.sourceLayerIdentifier = path.sourceLayerIdentifier
             steps.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
-                path.predicate ?? NSPredicate(value: true), NSPredicate(format: "subclass == %@", "steps")
-            ])
+                path.predicate, NSPredicate(format: "subclass == %@", "steps")
+            ].compactMap { $0 })
             steps.minimumZoomLevel = 18
             steps.lineDashPattern = NSExpression(forConstantValue: [0.35, 1.3])
             style.insertLayer(steps, above: path)
@@ -77,9 +77,9 @@ enum MapEnvironmentStyle {
             let texture = MLNFillStyleLayer(identifier: prefix + "paving", source: source)
             texture.sourceLayerIdentifier = "transportation"
             texture.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
-                (area as? MLNVectorStyleLayer)?.predicate ?? NSPredicate(value: true),
+                (area as? MLNVectorStyleLayer)?.predicate,
                 NSPredicate(format: "class == %@ OR subclass IN %@", "pedestrian", ["pedestrian", "square"])
-            ])
+            ].compactMap { $0 })
             texture.minimumZoomLevel = 17
             style.insertLayer(texture, above: area)
         }

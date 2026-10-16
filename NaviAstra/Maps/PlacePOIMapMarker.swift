@@ -1,7 +1,7 @@
 import Foundation
 
 enum PlacePOIMapMarkerKind: String, CaseIterable, Sendable {
-    case fuel, parking, parkRide, charging, food, shopping, health, attraction, transit, lodging, cafe, nature, culture, airport, generic
+    case fuel, parking, parkRide, charging, food, shopping, parcels, health, attraction, transit, lodging, cafe, nature, culture, airport, generic
 
     var symbolName: String {
         switch self {
@@ -10,6 +10,7 @@ enum PlacePOIMapMarkerKind: String, CaseIterable, Sendable {
         case .charging: "bolt.car.fill"
         case .food: "fork.knife"
         case .shopping: "bag.fill"
+        case .parcels: "shippingbox.fill"
         case .health: "cross.case.fill"
         case .attraction: "camera.fill"
         case .transit: "tram.fill"
@@ -30,6 +31,7 @@ enum PlacePOIMapMarkerKind: String, CaseIterable, Sendable {
         case .charging: "Ładowarka samochodów elektrycznych"
         case .food: "Gastronomia"
         case .shopping: "Sklep"
+        case .parcels: "Automat paczkowy lub punkt odbioru przesyłek"
         case .health: "Ochrona zdrowia"
         case .attraction: "Atrakcja"
         case .transit: "Transport publiczny"
@@ -50,6 +52,7 @@ enum PlacePOIMapMarkerKind: String, CaseIterable, Sendable {
         case .charging: ["charging_station", "ev_charger", "ev_charging"]
         case .food: ["food", "restaurant", "fast_food", "bar", "pub", "bakery"]
         case .shopping: ["shop", "grocery", "supermarket", "mall", "clothes", "convenience"]
+        case .parcels: ["parcel_locker", "parcel_pickup", "post_office"]
         case .health: ["hospital", "pharmacy", "doctor", "doctors", "clinic"]
         case .attraction: ["attraction", "viewpoint"]
         case .transit: ["bus", "rail", "railway", "station", "bus_stop", "tram_stop", "subway", "public_transport"]
@@ -67,6 +70,7 @@ enum PlacePOIMapMarkerKind: String, CaseIterable, Sendable {
         let value = category.lowercased().filter { $0.isLetter || $0.isNumber }
         guard !value.isEmpty else { return nil }
         if value.contains("parkride") || value.contains("parkandride") { self = .parkRide }
+        else if value.contains("parcellocker") || value.contains("parcelpickup") || value.contains("postoffice") { self = .parcels }
         else if value.contains("gasstation") || value.contains("fuel") { self = .fuel }
         else if value.contains("parking") { self = .parking }
         else if value.contains("chargingstation") || value.contains("evcharger") || value.contains("evcharging") { self = .charging }
@@ -93,6 +97,7 @@ extension PlacePOIMapMarkerKind {
         case .charging, .nature: dark ? 0x81C698 : 0x327D4B
         case .food, .cafe: dark ? 0xF1AF70 : 0xAF5C20
         case .shopping: dark ? 0x85AFDD : 0x456FA4
+        case .parcels: dark ? 0xE8C477 : 0x986A1A
         case .health: dark ? 0xF19B9B : 0xBD444A
         case .attraction, .culture: dark ? 0xB49BEB : 0x7953AF
         case .lodging: dark ? 0xD69CCA : 0x995785

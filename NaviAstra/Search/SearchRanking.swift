@@ -110,7 +110,9 @@ enum SearchDeduplicator {
         let proximityCenter = intent.intent == .brand || intent.intent == .category
             ? context.area ?? context.origin ?? searchCenter : searchCenter
         for result in candidates {
-            if intent.intent == .brand {
+            if let parcelQuery = intent.parcelQuery {
+                guard parcelQuery.matches(result) else { continue }
+            } else if intent.intent == .brand {
                 let names = [result.destination.name, result.brand, result.operatorName]
                     .compactMap { $0 }.map(QueryClassifier.normalize)
                 let query = QueryClassifier.normalize(intent.text)
@@ -142,6 +144,11 @@ enum SearchDeduplicator {
         let rightIdentity = rhs.placeIdentity
         if leftIdentity.cacheKey == rightIdentity.cacheKey,
            (leftIdentity.externalID != nil || leftIdentity.providerID != nil) { return true }
+
+        // Adjacent machines can have the same carrier and address but distinct OSM identities.
+        if PlacePOIMapMarkerKind(category: lhs.category) == .parcels,
+           PlacePOIMapMarkerKind(category: rhs.category) == .parcels,
+           let leftID = lhs.osmID, let rightID = rhs.osmID, leftID != rightID { return false }
 
         let distance = lhs.destination.coordinate.distance(to: rhs.destination.coordinate)
         guard distance <= 45 else { return false }

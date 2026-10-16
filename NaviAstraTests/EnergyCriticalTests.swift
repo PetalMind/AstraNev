@@ -6,10 +6,11 @@ import Testing
 @MainActor
 struct EnergyCriticalTests {
     private func entry(_ vehicle: EnergyVehicle, _ days: Double, _ quantity: Double,
-                       _ odometer: Double?, full: Bool, kind: EnergyKind = .pb95) -> EnergyEntry {
+                       _ odometer: Double?, full: Bool, kind: EnergyKind = .pb95, reserve: Bool = false) -> EnergyEntry {
         EnergyEntry(vehicleID: vehicle.id, date: Date(timeIntervalSince1970: days * 86400), kind: kind,
                     quantity: quantity, unitPrice: 6, totalPrice: quantity * 6,
-                    odometer: odometer, full: full, station: "", coordinate: nil)
+                    odometer: odometer, full: full, station: "", coordinate: nil,
+                    fuelLevelBefore: reserve ? .reserve : nil)
     }
 
     @Test func partialFillsOdometerAndVehicleIsolationSurviveEditsAndReload() throws {
@@ -43,6 +44,40 @@ struct EnergyCriticalTests {
         var invalid = c; invalid.odometer = 900
         #expect(!reloaded.saveEntry(invalid))
         #expect(EnergyStore(directory: directory).entries.first(where: { $0.id == c.id })?.odometer == 1430)
+
+        // Reserve measurements must survive backdated inserts, edits, deletion and disk reload.
+        let d = entry(vehicle, 4, 16, 1500, full: false, reserve: true)
+        var e = entry(vehicle, 5, 4, 1600, full: false)
+        let f = entry(vehicle, 6, 30, 1750, full: false, reserve: true)
+        let g = entry(vehicle, 7, 8, 1950, full: false, reserve: true)
+        for item in [g, e, f, d] { #expect(reloaded.saveEntry(item)) }
+        let reserveStore = EnergyStore(directory: directory)
+        #expect(reserveStore.entries.first { $0.id == d.id }?.fuelLevelBefore == .reserve)
+        var cycles = reserveStore.periods(for: vehicle, kind: .pb95, trips: [])
+        #expect(cycles.map(\.quantity) == [25, 20, 30])
+        #expect(cycles.map(\.kilometers) == [430, 250, 200])
+        #expect(cycles.map(\.measurement) == [.fullToFull, .reserveToReserve, .reserveToReserve])
+        #expect(cycles[1].expense == 120)
+        #expect(cycles[1].consumption == 8)
+        #expect(cycles[2].consumption == 15) // Uses the opening 30 L, not the closing 8 L.
+        e.quantity = 6; e.totalPrice = 36
+        #expect(reserveStore.saveEntry(e))
+        #expect(reserveStore.periods(for: vehicle, kind: .pb95, trips: [])[1].quantity == 22)
+        #expect(reserveStore.removeEntry(e.id))
+        #expect(reserveStore.periods(for: vehicle, kind: .pb95, trips: [])[1].quantity == 16)
+        var unmarked = d; unmarked.fuelLevelBefore = nil
+        #expect(reserveStore.saveEntry(unmarked))
+        cycles = EnergyStore(directory: directory).periods(for: vehicle, kind: .pb95, trips: [])
+        #expect(cycles.map(\.quantity) == [25, 30])
+        #expect(reserveStore.removeEntry(g.id))
+        #expect(reserveStore.periods(for: vehicle, kind: .pb95, trips: []).count == 1)
+
+        // Legacy archives have no marker; never infer reserve from a partial purchase.
+        var legacy = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(d)) as? [String: Any])
+        legacy.removeValue(forKey: "fuelLevelBefore")
+        let decoded = try JSONDecoder().decode(EnergyEntry.self, from: JSONSerialization.data(withJSONObject: legacy))
+        #expect(decoded.fuelLevelBefore == nil)
+        #expect(!decoded.startsAtReserve)
         // Malformed storage must never be overwritten by an empty archive.
         let url = directory.appendingPathComponent("energy.json")
         let damaged = Data("damaged".utf8)
@@ -92,6 +127,48 @@ struct EnergyCriticalTests {
         var invalidA = a; invalidA.odometer = 1500
         var invalidB = b; invalidB.odometer = 1000
         #expect(EnergyCalculator.periods(vehicleID: vehicle.id, kind: .pb95, entries: [invalidA, invalidB], trips: trips).first?.kilometers == nil)
+
+        // Same GPS rules and vehicle isolation apply to reserve estimates and route costs.
+        var reserveA = a; reserveA.full = false; reserveA.fuelLevelBefore = .reserve
+        var reserveB = b; reserveB.full = false; reserveB.fuelLevelBefore = .reserve
+        let reservePeriod = try #require(EnergyCalculator.periods(vehicleID: vehicle.id, kind: .pb95,
+            entries: [reserveB, reserveA, entry(another, 2, 100, nil, full: false, reserve: true)], trips: trips).first)
+        #expect(reservePeriod.quantity == 40)
+        #expect(reservePeriod.kilometers == 430)
+        #expect(reservePeriod.measurement == .reserveToReserve)
+        #expect(EnergyCalculator.periods(vehicleID: vehicle.id, kind: .pb95, entries: [reserveA, reserveB], trips: []).first?.consumption == nil)
+        #expect(EnergyCalculator.periods(vehicleID: vehicle.id, kind: .pb95, entries: [reserveA], trips: trips).isEmpty)
+        let reserveEstimate = try #require(EnergyCalculator.estimate(vehicle: vehicle, kilometers: 100, date: b.date,
+            entries: [reserveA, reserveB, evA, evB], trips: trips))
+        #expect(abs(reserveEstimate.cost - ((40 + 43) / 430.0 * 100 * 6)) < 0.00001)
+        #expect(EnergyCalculator.estimate(vehicle: vehicle, kilometers: 100, date: a.date,
+            entries: [reserveA, reserveB, evA, evB], trips: trips) == nil)
+
+        // Full measurements take precedence over overlapping reserve intervals, never double distance.
+        let mixed = [entry(vehicle, 1, 40, 1000, full: true),
+                     entry(vehicle, 2, 10, 1100, full: false, reserve: true),
+                     entry(vehicle, 3, 12, 1200, full: false, reserve: true),
+                     entry(vehicle, 4, 30, 1500, full: true),
+                     entry(vehicle, 5, 8, 1700, full: false, reserve: true),
+                     entry(vehicle, 6, 16, 1800, full: false, reserve: true)]
+        let mixedPeriods = EnergyCalculator.periods(vehicleID: vehicle.id, kind: .pb95, entries: mixed, trips: [])
+        #expect(mixedPeriods.map(\.quantity) == [52, 8])
+        #expect(mixedPeriods.map(\.kilometers) == [500, 100])
+        #expect(abs(try #require(EnergyCalculator.average(mixedPeriods)) - 10) < 0.00001)
+        var missingFullDistances = mixed
+        missingFullDistances[0].odometer = nil; missingFullDistances[3].odometer = nil
+        let fallback = EnergyCalculator.periods(vehicleID: vehicle.id, kind: .pb95, entries: missingFullDistances, trips: [])
+        #expect(fallback.map(\.measurement) == [.reserveToReserve, .reserveToReserve, .reserveToReserve])
+        #expect(fallback.map(\.kilometers) == [100, 500, 100])
+
+        // A fill may begin on reserve AND end full: adjacent methods have different inventory boundaries.
+        let combined = [entry(vehicle, 1, 40, 1000, full: true),
+                        entry(vehicle, 2, 30, 1300, full: true, reserve: true),
+                        entry(vehicle, 3, 10, 1600, full: false, reserve: true)]
+        let adjacent = EnergyCalculator.periods(vehicleID: vehicle.id, kind: .pb95, entries: combined, trips: [])
+        #expect(adjacent.map(\.measurement) == [.fullToFull, .reserveToReserve])
+        #expect(adjacent.map(\.quantity) == [30, 30])
+        #expect(adjacent.map(\.kilometers) == [300, 300])
     }
 
     @Test func stationVisitAndFillBoundaryRespectGPSGapsAndPriceDates() throws {

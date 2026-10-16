@@ -210,7 +210,8 @@ extension ContentView {
                               minimumMediumHeight: 420,
                               dragHandleHeight: 44,
                               hidesExpandedChevron: true,
-                              resizesFromContent: false) { detent, _ in
+                              resizesFromContent: false,
+                              fitsCompactContent: true) { detent, _ in
             Group {
                 switch detent {
                 case .peek:
@@ -326,7 +327,8 @@ extension ContentView {
                     Text(routeOriginPoint?.name ?? "Twoja lokalizacja")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(Color.naviTextPrimary)
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, minHeight: 47, alignment: .leading)
                         .contentShape(Rectangle())
                 }
@@ -364,7 +366,8 @@ extension ContentView {
                     Text(navigationStore.state.destination?.name ?? "Dokąd?")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(Color.naviTextPrimary)
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, minHeight: 47, alignment: .leading)
                         .contentShape(Rectangle())
                 }
@@ -832,6 +835,9 @@ extension ContentView {
             }
 
             if navigationStore.state.transportMode == .car {
+#if os(iOS)
+                routeTrafficDelaySummary
+#endif
                 Button { appRouter.present(.trafficDetails) } label: {
                     Label("Szczegóły ruchu", systemImage: "car.side")
                         .font(.system(size: 12, weight: .semibold))

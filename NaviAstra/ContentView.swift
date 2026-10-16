@@ -92,6 +92,9 @@ struct ContentView: View {
     @State var routeStopReorderFeedbackToken = 0
     @State var journeyGuidanceExpanded = false
     @State var currentStepExpandedOverride: Bool? = nil
+#if os(iOS)
+    @State var currentStepGuidancePresentation: CurrentStepGuidancePresentation?
+#endif
     @State var routePlanningDetailsExpanded = false
     @State var expandedTransitStopsLegID: UUID?
     @State var expandedTransitTimelineLegID: UUID?

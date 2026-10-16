@@ -44,6 +44,18 @@ struct EnergyVehicle: Identifiable, Codable {
     }
 }
 
+enum FuelLevelBefore: String, Codable, CaseIterable, Identifiable {
+    case unspecified, reserve, aboveReserve
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .unspecified: "Nie określono"
+        case .reserve: "Na rezerwie"
+        case .aboveReserve: "Powyżej rezerwy"
+        }
+    }
+}
+
 struct EnergyEntry: Identifiable, Codable {
     var id = UUID()
     var vehicleID: UUID
@@ -56,6 +68,19 @@ struct EnergyEntry: Identifiable, Codable {
     var full: Bool
     var station: String
     var coordinate: Coordinate?
+    // Optional for archives saved before reserve measurements were supported.
+    var fuelLevelBefore: FuelLevelBefore? = nil
+    var startsAtReserve: Bool { kind != .electricity && fuelLevelBefore == .reserve }
+}
+
+enum EnergyMeasurement {
+    case fullToFull, reserveToReserve
+    var title: String {
+        switch self {
+        case .fullToFull: "Od pełnego do pełnego"
+        case .reserveToReserve: "Szacunek od rezerwy do rezerwy"
+        }
+    }
 }
 
 struct EnergyPeriod: Identifiable {
@@ -67,13 +92,22 @@ struct EnergyPeriod: Identifiable {
     let recordedKilometers: Double
     let kilometers: Double?
     let usesOdometer: Bool
+    let measurement: EnergyMeasurement
     var quantity: Double { entries.reduce(0) { $0 + $1.quantity } }
     var expense: Double { entries.reduce(0) { $0 + $1.totalPrice } }
     var consumption: Double? { kilometers.map { quantity / $0 * 100 } }
     var costPerKm: Double? { kilometers.map { expense / $0 } }
+    func overlaps(_ other: EnergyPeriod) -> Bool {
+        start.date < other.end.date && end.date > other.start.date
+    }
     var quality: String {
         if kilometers == nil { return "Brak prawidłowego dystansu" }
         if start.kind == .electricity { return "Energia ładowania · obejmuje straty" }
+        if measurement == .reserveToReserve {
+            return usesOdometer
+                ? "Szacunek z licznika · różny poziom rezerwy wpływa na wynik"
+                : "Szacunek z rezerwy i zapisanych przejazdów · historia może być niepełna"
+        }
         return usesOdometer ? "Wysoka · pełny zbiornik i licznik" : "Szacowana · tylko zapisane przejazdy"
     }
 }
@@ -84,26 +118,27 @@ struct EnergyEstimate {
         let consumptionPer100Km: Double
         let quantity: Double
         let cost: Double
+        let measurementDescription: String
     }
     let components: [Component]
     var cost: Double { components.reduce(0) { $0 + $1.cost } }
 }
 
-/// Full-to-full cycles exclude the opening fill and include every subsequent partial fill.
+/// Full cycles use (start, end] purchases; reserve cycles use [start, end) purchases.
+/// Prefer full cycles wherever intervals overlap, so distance never contributes twice.
 enum EnergyCalculator {
     static func periods(vehicleID: UUID, kind: EnergyKind, entries: [EnergyEntry], trips: [TripRecord]) -> [EnergyPeriod] {
         let ordered = entries.filter { $0.vehicleID == vehicleID && $0.kind == kind }
             .sorted { $0.date == $1.date ? $0.id.uuidString < $1.id.uuidString : $0.date < $1.date }
-        var anchor: EnergyEntry?
-        var pending: [EnergyEntry] = []
-        var result: [EnergyPeriod] = []
-        for entry in ordered {
-            guard let start = anchor else {
-                if entry.full { anchor = entry }
-                continue
-            }
-            pending.append(entry)
-            guard entry.full else { continue }
+        let fullIndices = ordered.indices.filter { ordered[$0].full }
+        let reserveIndices = ordered.indices.filter { ordered[$0].startsAtReserve }
+        let fullRanges = zip(fullIndices, fullIndices.dropFirst()).map { ($0, $1, EnergyMeasurement.fullToFull) }
+        let reserveRanges = zip(reserveIndices, reserveIndices.dropFirst()).map { ($0, $1, EnergyMeasurement.reserveToReserve) }
+        let candidates = (fullRanges + reserveRanges).map { first, last, measurement in
+            let start = ordered[first]
+            let entry = ordered[last]
+            let purchases = measurement == .fullToFull
+                ? Array(ordered[(first + 1)...last]) : Array(ordered[first..<last])
             let contributions = trips.compactMap { trip -> (TripRecord, Double)? in
                 guard trip.vehicleID == vehicleID,
                       let distance = recordedKilometers(trip, from: start.date, to: entry.date) else { return nil }
@@ -120,12 +155,31 @@ enum EnergyCalculator {
             } else {
                 distance = gpsKm > 0 ? gpsKm : nil
             }
-            result.append(EnergyPeriod(start: start, end: entry, entries: pending, trips: matching,
-                                       recordedKilometers: gpsKm, kilometers: distance, usesOdometer: hasOdometer))
-            anchor = entry
-            pending = []
+            return EnergyPeriod(start: start, end: entry, entries: purchases, trips: matching,
+                                recordedKilometers: gpsKm, kilometers: distance, usesOdometer: hasOdometer,
+                                measurement: measurement)
         }
-        return result
+        let validFull = candidates.filter { $0.measurement == .fullToFull && $0.consumption != nil }
+        let reserves = candidates.filter { candidate in
+            candidate.measurement == .reserveToReserve && !validFull.contains { $0.overlaps(candidate) }
+        }
+        let invalidFull = candidates.filter { candidate in
+            candidate.measurement == .fullToFull && candidate.consumption == nil &&
+                !reserves.contains { $0.overlaps(candidate) }
+        }
+        return (validFull + invalidFull + reserves).sorted { $0.end.date < $1.end.date }
+    }
+
+    static func measurementDescription(_ periods: [EnergyPeriod]) -> String {
+        let valid = periods.filter { $0.consumption != nil }
+        let reserve = valid.contains { $0.measurement == .reserveToReserve }
+        let full = valid.contains { $0.measurement == .fullToFull }
+        let method = reserve
+            ? (full ? "Pełne zbiorniki i szacunki między rezerwami."
+                    : "Szacunek od rezerwy do rezerwy. Różny poziom rezerwy wpływa na wynik.")
+            : "Pomiar między pełnymi wpisami."
+        return method + (valid.allSatisfy { $0.usesOdometer }
+            ? " Dystans z licznika." : " Dystans obejmuje zapisane przejazdy; historia może być niepełna.")
     }
 
     /// Crossing fills only receive their share of continuous, accepted trace segments.
@@ -173,7 +227,8 @@ enum EnergyCalculator {
                     .max(by: { $0.date < $1.date })?.unitPrice else { return nil }
             let quantity = consumption * kilometers / 100
             components.append(.init(kind: kind, consumptionPer100Km: consumption,
-                                    quantity: quantity, cost: quantity * price))
+                                    quantity: quantity, cost: quantity * price,
+                                    measurementDescription: measurementDescription(cycles)))
         }
         return EnergyEstimate(components: components)
     }

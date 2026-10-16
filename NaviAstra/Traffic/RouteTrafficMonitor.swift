@@ -265,7 +265,7 @@ struct RouteTrafficMonitor {
                 RouteTrafficSegment(id: segment.id, routeID: segment.routeID,
                     startDistance: segment.startDistance, endDistance: segment.endDistance,
                     coordinates: segment.coordinates, colorHex: segment.colorHex,
-                    isRoadClosure: segment.isRoadClosure)
+                    isRoadClosure: segment.isRoadClosure, measuredAt: segment.measuredAt)
             }
     }
 

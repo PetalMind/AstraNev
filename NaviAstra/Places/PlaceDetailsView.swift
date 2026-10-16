@@ -574,6 +574,7 @@ struct PlaceDetailsView: View {
 
     private func photoSymbol(for category: String) -> String {
         let value = category.lowercased()
+        if PlacePOIMapMarkerKind(category: category) == .parcels { return "shippingbox.fill" }
         if value.contains("fuel") || value.contains("gas_station") { return "fuelpump.fill" }
         if value.contains("parking") { return "parkingsign.circle.fill" }
         if value.contains("charging") || value.contains("ev_charger") { return "bolt.car.fill" }

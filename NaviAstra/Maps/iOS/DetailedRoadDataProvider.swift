@@ -5,7 +5,10 @@ nonisolated struct DetailedRoadSnapshot: Sendable {
     let roads: [DetailedRoad]
     let fetchedAt: Date
     let revision: String
-    var isFresh: Bool { Date().timeIntervalSince(fetchedAt) < 24 * 60 * 60 }
+    var isFresh: Bool {
+        let age = Date().timeIntervalSince(fetchedAt)
+        return age >= -300 && age < 24 * 60 * 60
+    }
 }
 
 /// MVTs contain prepared geometry conforming to the same feature contract as the local normalizer.
@@ -70,7 +73,7 @@ actor DetailedRoadGeometryCache {
     private var entries: [String: Entry] = [:]
 
     func graphics(for snapshot: DetailedRoadSnapshot, in query: DetailedRoadQuery) throws -> [DetailedRoadGraphic] {
-        let key = "normalized-v2|" + snapshot.revision + "|" + query.id
+        let key = "road-surface-union-v4|" + snapshot.revision + "|" + query.id
         if var cached = entries[key] {
             cached.accessedAt = .now
             entries[key] = cached
@@ -80,7 +83,9 @@ actor DetailedRoadGeometryCache {
         let normalized = snapshot.roads.compactMap(DetailedRoadNormalizer.normalize)
         let graphics = try DetailedRoadGeometry.build(normalized, in: query)
         try Task.checkCancellation()
-        let vertices = graphics.reduce(0) { $0 + $1.points.count }
+        let vertices = graphics.reduce(0) { total, graphic in
+            total + graphic.points.count + graphic.interiorRings.reduce(0) { $0 + $1.count }
+        }
         entries[key] = Entry(graphics: graphics, accessedAt: .now, vertices: vertices)
         while entries.count > 8 || entries.values.reduce(0, { $0 + $1.vertices }) > 300_000 {
             guard let oldest = entries.min(by: { $0.value.accessedAt < $1.value.accessedAt })?.key else { break }

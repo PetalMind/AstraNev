@@ -45,6 +45,8 @@ struct EnergyUsageLabel: View {
                 if !compact {
                     Text("Średnie \(component.kind == .electricity ? "zużycie" : "spalanie"): \(EnergyNumber.text(component.consumptionPer100Km)) \(component.kind.unit)/100 km")
                         .font(.caption).foregroundStyle(Color.naviTextSecondary)
+                    Text(component.measurementDescription)
+                        .font(.caption).foregroundStyle(Color.naviTextSecondary)
                 }
             }
         }
@@ -70,9 +72,7 @@ struct EnergyConsumptionSummary: View {
                         .font(.subheadline).monospacedDigit()
                     Text("\(EnergyNumber.text(valid.reduce(0) { $0 + ($1.kilometers ?? 0) })) km · \(EnergyNumber.text(valid.reduce(0) { $0 + $1.quantity })) \(kind.unit) · \(valid.count) zamkniętych okresów")
                         .font(.caption).foregroundStyle(Color.naviTextSecondary)
-                    Text(valid.allSatisfy { $0.usesOdometer }
-                         ? "Dystans z licznika między pełnymi wpisami."
-                         : "Szacunek z zapisanych przejazdów; historia może być niepełna.")
+                    Text(EnergyCalculator.measurementDescription(valid))
                         .font(.caption).foregroundStyle(Color.naviTextSecondary)
                 } else {
                     Text("\(kind.title): \(store.consumptionUnavailableReason(for: vehicle, kind: kind, trips: trips))")
@@ -155,10 +155,10 @@ struct EnergyDashboard: View {
         .sheet(isPresented: $addingVehicle) { EnergyVehicleEditor(store: store, original: nil) }
         .sheet(item: $editingVehicle) { EnergyVehicleEditor(store: store, original: $0) }
         .sheet(isPresented: $addingEntry) {
-            if let vehicle { EnergyEntryEditor(store: store, vehicle: vehicle, original: nil, coordinate: coordinate) }
+            if let vehicle { EnergyEntryEditor(store: store, vehicle: vehicle, original: nil, coordinate: coordinate, trips: places.trips) }
         }
         .sheet(item: $editingEntry) { entry in
-            if let vehicle { EnergyEntryEditor(store: store, vehicle: vehicle, original: entry, coordinate: coordinate) }
+            if let vehicle { EnergyEntryEditor(store: store, vehicle: vehicle, original: entry, coordinate: coordinate, trips: places.trips) }
         }
         .confirmationDialog("Usunąć wpis? Spalanie zostanie przeliczone.", isPresented: Binding(
             get: { removingEntry != nil }, set: { if !$0 { removingEntry = nil } }), titleVisibility: .visible, presenting: removingEntry) { entry in
@@ -183,8 +183,7 @@ struct EnergyDashboard: View {
                 if let average = EnergyCalculator.average(periods) {
                     EnergyMetricHero(title: kind == .electricity ? "Średnie zużycie" : "Średnie spalanie", value: EnergyNumber.text(average), unit: "\(kind.unit)/100 km", symbol: kind.symbol)
                     Text(kind == .electricity ? "Energia ładowania obejmuje straty"
-                         : (periods.allSatisfy { $0.usesOdometer }
-                            ? "Pełne zbiorniki i dystans licznika" : "Szacunek z zapisanych przejazdów; historia może być niepełna"))
+                         : EnergyCalculator.measurementDescription(periods))
                         .font(.caption).foregroundStyle(Color.naviTextSecondary)
                 } else {
                     Text(store.consumptionUnavailableReason(for: vehicle, kind: kind, trips: places.trips))
@@ -214,7 +213,7 @@ struct EnergyDashboard: View {
                     .chartPlotStyle { $0.background(Color.accentColor.opacity(0.035)) }
                     .tint(Color.accentColor)
                     .frame(height: 160)
-                    .accessibilityLabel("Zużycie między pełnymi wpisami: \(kind.title)")
+                    .accessibilityLabel("Zużycie w zamkniętych okresach pomiarowych: \(kind.title)")
                 }
             }
         }
@@ -224,7 +223,7 @@ struct EnergyDashboard: View {
                 Text("Średnie zużycie i ostatnia cena każdego rodzaju energii. Dla PHEV wynik wymaga danych benzyny i prądu.")
                     .font(.caption).foregroundStyle(Color.naviTextSecondary)
             } else {
-                Text("Brak pełnych okresów pomiarowych dla wszystkich rodzajów energii pojazdu.")
+                Text("Koszt pojawi się po zamknięciu pomiaru zużycia dla każdego rodzaju energii pojazdu.")
                     .foregroundStyle(Color.naviTextSecondary)
             }
         }
@@ -278,8 +277,12 @@ struct EnergyDashboard: View {
                 DisclosureGroup {
                     LabeledContent("Cena", value: "\(EnergyNumber.money(entry.unitPrice))/\(entry.kind.unit)")
                     LabeledContent("Pełny zbiornik / bateria", value: entry.full ? "Tak" : "Nie")
+                    if entry.kind != .electricity {
+                        LabeledContent("Przed tankowaniem", value: (entry.fuelLevelBefore ?? .unspecified).title)
+                    }
                     if let odometer = entry.odometer { LabeledContent("Licznik", value: "\(EnergyNumber.text(odometer)) km") }
                     if let period {
+                        LabeledContent("Metoda", value: period.measurement.title)
                         LabeledContent("Początek okresu", value: TripHistoryFormat.date(period.start.date))
                         LabeledContent("Energia w okresie", value: "\(EnergyNumber.text(period.quantity)) \(entry.kind.unit)")
                         LabeledContent("Dystans", value: period.kilometers.map { "\(EnergyNumber.text($0)) km" } ?? "Brak danych")
@@ -288,8 +291,12 @@ struct EnergyDashboard: View {
                         if let consumption = period.consumption { LabeledContent("Zużycie", value: "\(EnergyNumber.text(consumption)) \(entry.kind.unit)/100 km") }
                         if let cost = period.costPerKm { LabeledContent("Koszt okresu/km", value: EnergyNumber.money(cost)) }
                         Text(period.quality).font(.caption).foregroundStyle(Color.naviTextSecondary)
+                        if period.measurement == .reserveToReserve {
+                            Text("Uwzględniono paliwo od tankowania rozpoczynającego okres. Paliwo z tego wpisu rozpoczyna kolejny pomiar.")
+                                .font(.caption).foregroundStyle(Color.naviTextSecondary)
+                        }
                     } else {
-                        Text("Wpis rozpoczyna okres lub uzupełnia częściowe tankowania. Nie ma osobnego pomiaru zużycia.")
+                        Text("Ten wpis nie zamyka osobnego pomiaru. Może rozpoczynać okres lub być uwzględniony w dłuższym pomiarze. Pełne zbiorniki mają pierwszeństwo przed nakładającymi się szacunkami z rezerwy.")
                             .font(.caption).foregroundStyle(Color.naviTextSecondary)
                     }
                     HStack(spacing: 12) {
@@ -305,9 +312,17 @@ struct EnergyDashboard: View {
                         Text(TripHistoryFormat.date(entry.date)).font(.caption).foregroundStyle(Color.naviTextSecondary)
                         Text("\(entry.kind.title) · \(EnergyNumber.text(entry.quantity)) \(entry.kind.unit) · \(EnergyNumber.money(entry.totalPrice))")
                             .font(.subheadline)
+                        if entry.startsAtReserve {
+                            Label("Przed tankowaniem: rezerwa", systemImage: "fuelpump")
+                                .font(.caption).foregroundStyle(Color.naviTextSecondary)
+                        }
                         if let consumption = period?.consumption {
                             Text("\(entry.kind == .electricity ? "Zużycie" : "Spalanie") w okresie: \(EnergyNumber.text(consumption)) \(entry.kind.unit)/100 km")
                                 .font(.caption).foregroundStyle(Color.naviTextSecondary)
+                            if let period {
+                                Text(period.measurement.title)
+                                    .font(.caption).foregroundStyle(Color.naviTextSecondary)
+                            }
                         }
                     }
                 }
@@ -331,7 +346,7 @@ struct EnergyDashboard: View {
                         EnergyCostLabel(estimate: estimate)
                         Text("Szacunek według aktualnej średniej pojazdu i ostatnich zapisanych cen, także z późniejszych tankowań.")
                             .font(.caption).foregroundStyle(Color.naviTextSecondary)
-                    } else { Text("Przypisz pojazd i uzupełnij pełne wpisy oraz dystans, aby obliczyć zużycie.").font(.caption).foregroundStyle(Color.naviTextSecondary) }
+                    } else { Text("Przypisz pojazd i zapisz dystans oraz zamknięty pomiar: między rezerwami lub pełnymi zbiornikami; dla prądu między ładowaniami do 100%.").font(.caption).foregroundStyle(Color.naviTextSecondary) }
                 } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         Label(trip.destination.name, systemImage: "point.topleft.down.to.point.bottomright.curvepath")
@@ -412,6 +427,7 @@ struct EnergyEntryEditor: View {
     let vehicle: EnergyVehicle
     let original: EnergyEntry?
     let coordinate: Coordinate?
+    let trips: [TripRecord]
     var suggestedStation: FuelStopStation? = nil
     var onSaved: (() -> Void)? = nil
     @State private var quote: StationFuelPrices?
@@ -427,12 +443,30 @@ struct EnergyEntryEditor: View {
     @State private var quantityFromTotal = false
     @State private var odometer = ""
     @State private var full = false
+    @State private var fuelLevelBefore = FuelLevelBefore.unspecified
+    @State private var draftID = UUID()
     @State private var station = ""
     @State private var error: String?
     @State private var attachLocation = false
     private var parsedQuantity: Double? { EnergyNumber.parse(quantity) }
     private var parsedPrice: Double? { EnergyNumber.parse(price) }
     private var parsedTotal: Double? { EnergyNumber.parse(total) }
+    private var draftEntry: EnergyEntry? {
+        guard let quantity = parsedQuantity, quantity > 0, let price = parsedPrice, price >= 0,
+              let total = parsedTotal, total >= 0,
+              odometer.isEmpty || EnergyNumber.parse(odometer).map({ $0 >= 0 }) == true else { return nil }
+        return EnergyEntry(id: original?.id ?? draftID, vehicleID: vehicle.id, date: date, kind: kind,
+            quantity: quantity, unitPrice: price, totalPrice: total, odometer: EnergyNumber.parse(odometer),
+            full: full, station: station.trimmingCharacters(in: .whitespacesAndNewlines),
+            coordinate: original?.coordinate ?? suggestedStation?.identity.coordinate ?? (attachLocation ? coordinate : nil),
+            fuelLevelBefore: kind == .electricity || fuelLevelBefore == .unspecified ? nil : fuelLevelBefore)
+    }
+    private var closingPeriod: EnergyPeriod? {
+        guard let entry = draftEntry else { return nil }
+        return EnergyCalculator.periods(vehicleID: vehicle.id, kind: kind,
+            entries: store.entries.filter { $0.id != entry.id } + [entry], trips: trips)
+            .first { $0.end.id == entry.id }
+    }
 
     var body: some View {
         NavigationStack {
@@ -459,13 +493,20 @@ struct EnergyEntryEditor: View {
                         .font(.caption).foregroundStyle(Color.naviTextSecondary)
                 }
                 if suggestedStation != nil { stationPriceSuggestion }
-                EnergySection("Pomiar") {
+                EnergySection(kind == .electricity ? "Pomiar zużycia" : "Pomiar spalania", symbol: "gauge.with.dots.needle.50percent") {
+                    if kind != .electricity {
+                        Picker("Paliwo przed tankowaniem", selection: $fuelLevelBefore) {
+                            ForEach(FuelLevelBefore.allCases) { Text($0.title).tag($0) }
+                        }
+                        .pickerStyle(.menu)
+                        Text("Tankujesz za określoną kwotę? Wybierz „Na rezerwie”, jeśli tankujesz przy podobnym poziomie rezerwy. Nie musisz tankować do pełna.")
+                            .font(.caption).foregroundStyle(Color.naviTextSecondary)
+                    }
+                    Toggle(kind == .electricity ? "Naładowano do 100%" : "Zatankowano do pełna", isOn: $full)
                     TextField("Przebieg licznika (km, opcjonalnie)", text: $odometer)
-                    Toggle(kind == .electricity ? "Ładowanie do 100%" : "Tankowanie do pełna", isOn: $full)
-                    Text(kind == .electricity
-                         ? "Wpisuj energię z ładowarki. Zużycie pomiędzy ładowaniami do 100% obejmuje straty ładowania."
-                         : "Pełny zbiornik zamyka okres. Częściowe tankowania zostaną doliczone do kolejnego pełnego zbiornika.")
+                    Text("Licznik daje pełny dystans. Bez niego uwzględnimy tylko zapisane przejazdy przypisane do tego pojazdu.")
                         .font(.caption).foregroundStyle(Color.naviTextSecondary)
+                    measurementFeedback
                 }
                 EnergySection("Stacja") {
                     TextField("Nazwa stacji (opcjonalnie)", text: $station)
@@ -479,7 +520,9 @@ struct EnergyEntryEditor: View {
                 }
                 if let error { EnergySection { Text(error).foregroundStyle(Color(naviHex: NaviAstraColorPalette.danger)) } }
             }
-            .navigationTitle(original == nil ? "Dodaj wpis" : "Edytuj wpis")
+            .navigationTitle(kind == .electricity
+                             ? (original == nil ? "Dodaj ładowanie" : "Edytuj ładowanie")
+                             : (original == nil ? "Dodaj tankowanie" : "Edytuj tankowanie"))
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -495,6 +538,7 @@ struct EnergyEntryEditor: View {
                     price = EnergyNumber.text(original.unitPrice, digits: 6); total = EnergyNumber.text(original.totalPrice, digits: 2)
                     odometer = original.odometer.map { EnergyNumber.text($0, digits: 3) } ?? ""
                     full = original.full; station = original.station
+                    fuelLevelBefore = original.fuelLevelBefore ?? .unspecified
                 }
             }
             .task(id: "\(suggestedStation?.id ?? "manual")/\(kind.rawValue)/\(priceRetry)") {
@@ -503,6 +547,42 @@ struct EnergyEntryEditor: View {
 
         }
         .frame(minWidth: 320, minHeight: 480)
+    }
+
+    @ViewBuilder private var measurementFeedback: some View {
+        if let period = closingPeriod {
+            Divider()
+            Label(period.start.kind == .electricity ? "Zamykasz pomiar zużycia" : period.measurement.title,
+                  systemImage: "checkmark.circle")
+                .font(.subheadline.weight(.semibold))
+            Text("Od \(TripHistoryFormat.date(period.start.date))")
+                .font(.caption).foregroundStyle(Color.naviTextSecondary)
+            if let consumption = period.consumption, let kilometers = period.kilometers {
+                Text("Po zapisaniu: \(EnergyNumber.text(consumption)) \(kind.unit)/100 km · \(EnergyNumber.text(kilometers)) km")
+                    .font(.subheadline.weight(.semibold)).monospacedDigit()
+            } else if period.usesOdometer {
+                Text("Przebieg na końcu okresu musi być większy niż na początku. Sprawdź licznik w obu wpisach.")
+                    .font(.caption).foregroundStyle(Color.naviTextSecondary)
+            } else {
+                Text("Do obliczenia wyniku brakuje dystansu. Uzupełnij licznik w obu wpisach lub przypisz zapisane przejazdy.")
+                    .font(.caption).foregroundStyle(Color.naviTextSecondary)
+            }
+            Text(period.quality).font(.caption).foregroundStyle(Color.naviTextSecondary)
+        } else if kind == .electricity {
+            Text("Dwa ładowania do 100% zamykają pomiar. Wpisuj energię z ładowarki; wynik obejmuje straty ładowania.")
+                .font(.caption).foregroundStyle(Color.naviTextSecondary)
+        } else if fuelLevelBefore == .reserve {
+            Label("Pomiar od rezerwy do rezerwy", systemImage: "fuelpump")
+                .font(.subheadline.weight(.semibold))
+            Text("Paliwo dolane teraz uwzględnimy do kolejnego tankowania oznaczonego „Na rezerwie”. Zapisuj wszystkie tankowania po drodze. Różny poziom rezerwy wpływa na dokładność szacunku.")
+                .font(.caption).foregroundStyle(Color.naviTextSecondary)
+        } else if full {
+            Text("Pełny zbiornik ustala początek pomiaru. Kolejne tankowanie do pełna zamknie okres; doliczymy wszystkie tankowania po drodze.")
+                .font(.caption).foregroundStyle(Color.naviTextSecondary)
+        } else {
+            Text("Tankowanie częściowe doliczymy do pomiaru między rezerwami lub pełnymi zbiornikami. Początek i koniec pomiaru oznaczysz w odpowiednich wpisach, także przez edycję historii.")
+                .font(.caption).foregroundStyle(Color.naviTextSecondary)
+        }
     }
     @ViewBuilder private var stationPriceSuggestion: some View {
         EnergySection("Cena na stacji", symbol: "tag") {
@@ -587,14 +667,9 @@ struct EnergyEntryEditor: View {
         total = EnergyNumber.text(calculated, digits: 2)
     }
     private func save() {
-        guard let quantity = parsedQuantity, quantity > 0, let price = parsedPrice, price >= 0,
-              let total = parsedTotal, total >= 0, odometer.isEmpty || EnergyNumber.parse(odometer).map({ $0 >= 0 }) == true else {
+        guard let entry = draftEntry else {
             error = "Podaj prawidłową ilość, cenę, kwotę i przebieg."; return
         }
-        let entry = EnergyEntry(id: original?.id ?? UUID(), vehicleID: vehicle.id, date: date, kind: kind,
-            quantity: quantity, unitPrice: price, totalPrice: total, odometer: EnergyNumber.parse(odometer),
-            full: full, station: station.trimmingCharacters(in: .whitespacesAndNewlines),
-            coordinate: original?.coordinate ?? suggestedStation?.identity.coordinate ?? (attachLocation ? coordinate : nil))
         if store.saveEntry(entry) { onSaved?(); dismiss() } else { error = store.errorMessage }
     }
 }

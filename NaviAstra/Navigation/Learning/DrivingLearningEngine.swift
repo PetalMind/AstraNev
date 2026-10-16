@@ -37,7 +37,8 @@ final class DrivingLearningEngine {
         var observations: [PreferenceEvidence] = []
     }
 
-    init(store: DrivingProfileStore = DrivingProfileStore()) {
+    init(store: DrivingProfileStore? = nil) {
+        let store = store ?? DrivingProfileStore()
         self.store = store
         do { snapshot = try store.load() }
         catch { message = "Nie udało się odczytać preferencji tras: \(error.localizedDescription)" }

@@ -180,9 +180,11 @@ extension ContentView {
             journeyGuidanceExpanded = false
             currentStepExpandedOverride = nil
         }
+#if !os(iOS)
         .onChange(of: isCurrentStepGuidanceExpanded) { _, expanded in
             if !expanded { journeyGuidanceExpanded = false }
         }
+#endif
         .onChange(of: isNavigating) { _, navigating in
             if navigating, navigationStore.state.transportMode == .car {
                 navigationPanelDetent = .peek
@@ -191,6 +193,9 @@ extension ContentView {
             } else if !navigating {
                 journeyGuidanceExpanded = false
                 currentStepExpandedOverride = nil
+#if os(iOS)
+                currentStepGuidancePresentation = nil
+#endif
             }
         }
     }
@@ -547,7 +552,7 @@ extension ContentView {
     private var rootContentWithPrimarySheets: some View {
         rootPresentationContent
             .sheet(isPresented: $showsFuelStopEntry) {
-                FuelStopQuickSheet(store: energyStore, stations: fuelStopEntryCandidates) {
+                FuelStopQuickSheet(store: energyStore, stations: fuelStopEntryCandidates, trips: placeStore.trips) {
                     fuelStopStore.saved(stationIDs: Set(fuelStopEntryCandidates.map(\.id)))
                 }
             }

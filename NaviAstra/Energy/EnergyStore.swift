@@ -87,6 +87,7 @@ final class EnergyStore {
               entry.quantity.isFinite, entry.quantity > 0,
               entry.unitPrice.isFinite, entry.unitPrice >= 0,
               entry.totalPrice.isFinite, entry.totalPrice >= 0,
+              entry.kind != .electricity || entry.fuelLevelBefore == nil || entry.fuelLevelBefore == .unspecified,
               entry.date <= Date(), entry.odometer.map({ $0.isFinite && $0 >= 0 }) ?? true,
               abs(entry.quantity * entry.unitPrice - entry.totalPrice) <= 0.02 else {
             errorMessage = "Sprawdź ilość, cenę, kwotę, datę i przebieg."
@@ -131,13 +132,19 @@ final class EnergyStore {
     func consumptionUnavailableReason(for vehicle: EnergyVehicle, kind: EnergyKind, trips: [TripRecord]) -> String {
         let cycles = periods(for: vehicle, kind: kind, trips: trips)
         if cycles.isEmpty {
-            return kind == .electricity
-                ? "Potrzebne są dwa ładowania oznaczone jako pełne."
-                : "Potrzebne są dwa tankowania oznaczone jako do pełna; częściowe wpisy między nimi też są uwzględniane."
+            if kind == .electricity { return "Zapisz dwa ładowania do 100%, aby obliczyć zużycie." }
+            let matching = entries.filter { $0.vehicleID == vehicle.id && $0.kind == kind }
+            if let last = matching.filter({ $0.startsAtReserve || $0.full }).max(by: { $0.date < $1.date }) {
+                if last.startsAtReserve && !last.full {
+                    return "Zapisano początek pomiaru na rezerwie. Przy kolejnym tankowaniu na podobnym poziomie zaznacz „Na rezerwie”. Dodaj przebieg lub zapisuj przejazdy, aby obliczyć szacowane spalanie."
+                }
+                return "Zapisano pełny zbiornik. Kolejne tankowanie do pełna pozwoli obliczyć spalanie; doliczymy tankowania po drodze. Możesz też mierzyć od rezerwy do rezerwy."
+            }
+            return "Tankujesz za określoną kwotę? Przy dwóch tankowaniach na podobnym poziomie paliwa wybierz „Na rezerwie”. Możesz też mierzyć między dwoma pełnymi zbiornikami. Starsze wpisy uzupełnisz przez „Edytuj” w historii."
         }
         if cycles.contains(where: { !$0.usesOdometer }) {
             return "Brakuje dystansu między wpisami. Uzupełnij licznik lub przypisz zapisane przejazdy do tego pojazdu."
         }
-        return "Brakuje dodatniej różnicy przebiegu licznika między pełnymi wpisami."
+        return "Przebieg na końcu okresu musi być większy niż na początku. Sprawdź licznik we wpisach."
     }
 }

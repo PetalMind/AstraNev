@@ -10,6 +10,7 @@ struct ClassifiedQuery {
     var photonTag: String? = nil
     var coordinate: Coordinate? = nil
     var alongRoute = false
+    var parcelQuery: ParcelPOI.Query? = nil
 }
 
 struct QueryClassifier {
@@ -27,6 +28,7 @@ struct QueryClassifier {
         }
         let along = text.hasSuffix(" po trasie")
         let clean = along ? String(text.dropLast(" po trasie".count)) : text
+        if let parcel = classifyParcel(clean, alongRoute: along) { return parcel }
         let brands = ["mcdonald's", "mcdonalds", "biedronka", "lidl", "orlen", "shell", "bp", "auchan", "aldi", "kaufland", "zabka", "rossmann", "ikea", "kfc", "doz"]
         for brand in brands where clean == brand || clean.hasPrefix(brand + " ") || clean.hasPrefix(brand + ",") {
             let suffix = String(clean.dropFirst(brand.count))
@@ -64,6 +66,46 @@ struct QueryClassifier {
             break
         }
         return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func classifyParcel(_ text: String, alongRoute: Bool) -> ClassifiedQuery? {
+        let categories: [(String, ParcelPOI.Scope)] = [
+            ("paczkomaty i punkty odbioru", .all), ("automaty paczkowe", .lockers),
+            ("automat paczkowy", .lockers), ("punkty odbioru", .pickup),
+            ("punkt odbioru", .pickup),
+            ("paczkomaty", .lockers), ("paczkomat", .lockers),
+            ("paczkopunkty", .pickup), ("paczkopunkt", .pickup)
+        ]
+        func hasPrefix(_ value: String, _ prefix: String) -> Bool {
+            value == prefix || value.hasPrefix(prefix + " ") || value.hasPrefix(prefix + ",")
+        }
+        let category = categories.first { hasPrefix(text, $0.0) }
+        let remainder = category.map {
+            String(text.dropFirst($0.0.count)).trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ",;")))
+        } ?? text
+        for carrier in ParcelPOI.operators {
+            guard let alias = carrier.aliases.first(where: { hasPrefix(remainder, $0) }) else { continue }
+            var suffix = String(remainder.dropFirst(alias.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            var scope = category?.1 ?? .all
+            if category == nil {
+                if alias.range(of: "station|box|automat|locker|packstation", options: .regularExpression) != nil { scope = .lockers }
+                else if alias.range(of: "punkt|pop|parcelshop|access point", options: .regularExpression) != nil { scope = .pickup }
+            }
+            if let trailingCategory = categories.first(where: { hasPrefix(suffix, $0.0) }) {
+                scope = trailingCategory.1
+                suffix = String(suffix.dropFirst(trailingCategory.0.count))
+            }
+            let location = locationSuffix(suffix)
+            return ClassifiedQuery(intent: .brand, text: carrier.title,
+                                   location: location.isEmpty ? nil : location, alongRoute: alongRoute,
+                                   parcelQuery: ParcelPOI.Query(scope: scope, operatorPattern: carrier.pattern))
+        }
+        guard let category else { return nil }
+        let location = locationSuffix(remainder)
+        let title = category.1 == .lockers ? "Paczkomaty" : category.1 == .pickup ? "Punkty odbioru" : "Paczkomaty i punkty odbioru"
+        return ClassifiedQuery(intent: .category, text: title,
+                               location: location.isEmpty ? nil : location, alongRoute: alongRoute,
+                               parcelQuery: ParcelPOI.Query(scope: category.1))
     }
 }
 
@@ -296,7 +338,9 @@ struct POISearchProvider {
             } else {
                 around = RouteSearchCorridor.around(route, radius: Double(radius))
             }
-            let query = "[out:json][timeout:\(serverTimeout)];nwr\(intent.filter ?? "")(\(around));out center tags;"
+            let selectors = intent.parcelQuery?.selectors(around: around)
+                ?? "nwr\(intent.filter ?? "")(\(around));"
+            let query = "[out:json][timeout:\(serverTimeout)];\(selectors)out center tags;"
             var request = URLRequest(url: endpoint)
             request.httpMethod = "POST"
             request.timeoutInterval = min(8, remaining)
@@ -325,12 +369,12 @@ struct POISearchProvider {
                 let tags = element.tags ?? [:]
                 let street = tags["addr:street"], number = tags["addr:housenumber"], city = tags["addr:city"]
                 let address = [[street, number].compactMap { $0 }.joined(separator: " "), city ?? ""].filter { !$0.isEmpty }.joined(separator: ", ")
-                return SearchResult(destination: Destination(name: tags["name"] ?? tags["brand"] ?? intent.text.capitalized,
+                return SearchResult(destination: Destination(name: ParcelPOI.name(tags: tags, fallback: intent.text.capitalized, includePickupServices: intent.parcelQuery != nil),
                                                               coordinate: coordinate, address: address.isEmpty ? nil : address),
                                     street: street, houseNumber: number, city: city, countryCode: tags["addr:country"],
-                                    isPOI: true, osmID: "\(element.type):\(element.id)", category: tags["amenity"] ?? tags["shop"] ?? tags["tourism"],
-                                    brand: tags["brand"], operatorName: tags["operator"],
-                                    openingHours: tags["opening_hours"],
+                                    isPOI: true, osmID: "\(element.type):\(element.id)", category: ParcelPOI.category(tags: tags, includePickupServices: intent.parcelQuery != nil) ?? tags["amenity"] ?? tags["shop"] ?? tags["tourism"],
+                                    brand: ParcelPOI.brand(tags: tags, includePickupServices: intent.parcelQuery != nil), operatorName: ParcelPOI.operatorName(tags: tags, includePickupServices: intent.parcelQuery != nil),
+                                    openingHours: ParcelPOI.openingHours(tags: tags, includePickupServices: intent.parcelQuery != nil),
                                     phone: tags["contact:phone"] ?? tags["phone"],
                                     website: tags["contact:website"] ?? tags["website"])
             }

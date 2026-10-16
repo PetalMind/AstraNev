@@ -44,35 +44,14 @@ extension ContentView {
                     VStack(alignment: .leading, spacing: 0) {
                         currentStepGuidanceCard
 
-                        if isCurrentStepGuidanceExpanded, nextRoadManeuverAfterCurrent != nil {
-                            journeyGuidanceDivider
-                            if journeyGuidanceExpanded {
-                                journeyRoadManeuverTimeline
-                                    .transition(.opacity.combined(with: .move(edge: .top)))
-                            } else {
-                                journeyNextStepPreview
-                                    .transition(.opacity.combined(with: .move(edge: .top)))
-                            }
+                        if showsCurrentStepLaneGuidance {
+                            laneGuidance
+                        }
 
-                            if upcomingRoadManeuvers.count > 2 {
-                                journeyGuidanceDivider
-                                Button {
-                                    withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
-                                        journeyGuidanceExpanded.toggle()
-                                    }
-                                } label: {
-                                    Label(journeyGuidanceExpanded ? "Ukryj kroki" : "Pokaż wszystkie kroki",
-                                          systemImage: journeyGuidanceExpanded ? "chevron.up" : "chevron.down")
-                                        .font(.system(size: 12, weight: .semibold))
-                                        .foregroundStyle(Color.accentColor)
-                                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                                        .padding(.horizontal, 14)
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel(journeyGuidanceExpanded
-                                                    ? "Ukryj pozostałe manewry"
-                                                    : "Pokaż wszystkie pozostałe manewry")
-                            }
+                        if showsNextStepGuidancePreview {
+                            journeyGuidanceDivider
+                            journeyNextStepPreview
+                                .transition(.opacity.combined(with: .move(edge: .top)))
                         }
                     }
                     .padding(.vertical, 4)
@@ -83,6 +62,9 @@ extension ContentView {
                 }
             }
             .frame(maxWidth: 560, alignment: .leading)
+            .onChange(of: currentStepGuidanceInput, initial: true) { _, input in
+                currentStepGuidancePresentation = input?.retainingPhase(from: currentStepGuidancePresentation)
+            }
         }
 #else
         EmptyView()
@@ -98,9 +80,57 @@ extension ContentView {
     }
 
     var isCurrentStepGuidanceExpanded: Bool {
+#if os(iOS)
+        if navigationStore.state.status == .rerouting || currentStepGuidancePhase >= .lanes { return true }
+        if let currentStepExpandedOverride { return currentStepExpandedOverride }
+        return currentStepGuidancePhase >= .preparation
+#else
         if let currentStepExpandedOverride { return currentStepExpandedOverride }
         return navigationStore.state.status == .rerouting || currentStepGuidanceDistance <= 1_000
+#endif
     }
+
+#if os(iOS)
+    private var currentStepGuidanceInput: CurrentStepGuidancePresentation? {
+        let state = navigationStore.state
+        guard isNavigating, state.status != .rerouting,
+              let route = state.route, let progress = state.progress,
+              progress.geometryRouteID == route.id else { return nil }
+        let quality = state.guidanceQuality ?? progress.nextManeuver.map {
+            GuidanceQualityEngine.evaluate(maneuver: $0, followingDistance: nil,
+                speed: state.location?.speed ?? 0, mode: state.transportMode)
+        }
+        let distance = currentStepGuidanceDistance
+        let phase: CurrentStepGuidancePresentation.Phase
+        if !distance.isFinite || distance < 0 { phase = .distant }
+        else if distance <= (quality?.immediateDistance ?? 25) { phase = .immediate }
+        else if distance <= (quality?.laneDistance ?? 80) { phase = .lanes }
+        else if distance <= (quality?.preparationDistance ?? 200) { phase = .preparation }
+        else { phase = .distant }
+        return CurrentStepGuidancePresentation(routeID: route.id, maneuverID: progress.nextManeuver?.id,
+            mode: state.transportMode, phase: phase)
+    }
+
+    private var currentStepGuidancePhase: CurrentStepGuidancePresentation.Phase {
+        currentStepGuidanceInput?.retainingPhase(from: currentStepGuidancePresentation).phase ?? .distant
+    }
+
+    var currentStepGuidanceIsImmediate: Bool { currentStepGuidancePhase == .immediate }
+
+    private var showsCurrentStepLaneGuidance: Bool {
+        isOnRoadDrivingLeg && navigationStore.state.status != .rerouting
+            && navigationStore.state.laneGuidance != nil && currentStepGuidancePhase >= .lanes
+    }
+
+    private var showsNextStepGuidancePreview: Bool {
+        guard isCurrentStepGuidanceExpanded, !showsCurrentStepLaneGuidance,
+              navigationStore.state.status != .rerouting, currentStepGuidancePhase < .immediate,
+              let next = nextRoadManeuverAfterCurrent else { return false }
+        let speed = navigationStore.state.location?.speed ?? 0
+        let nearby = next.distance.map { $0 <= max(120, (speed.isFinite ? max(0, speed) : 0) * 10) } ?? false
+        return currentStepExpandedOverride == true || nearby
+    }
+#endif
 
     @ViewBuilder
     var currentStepGuidanceCard: some View {
@@ -109,12 +139,22 @@ extension ContentView {
                 maneuverCard
                     .contentShape(RoundedRectangle(cornerRadius: 21, style: .continuous))
                     .onTapGesture {
+#if os(iOS)
+                        guard currentStepGuidancePhase < .lanes,
+                              navigationStore.state.status != .rerouting else { return }
+#endif
                         withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
                             currentStepExpandedOverride = false
                         }
                     }
+#if os(iOS)
+                    .accessibilityAddTraits(currentStepGuidancePhase < .lanes ? .isButton : [])
+                    .accessibilityHint(currentStepGuidancePhase < .lanes
+                        ? "Stuknij, aby zwinąć informacje o kroku" : "")
+#else
                     .accessibilityAddTraits(.isButton)
                     .accessibilityHint("Stuknij, aby zwinąć informacje o kroku")
+#endif
                     .transition(.opacity.combined(with: .move(edge: .top)))
             } else {
                 compactCurrentStepGuidance
@@ -134,6 +174,13 @@ extension ContentView {
         }
         return navigationStore.state.progress?.remainingDistance ?? .infinity
     }
+
+#if os(iOS)
+    private var currentStepGuidanceDistanceText: String {
+        let value = currentStepGuidanceDistance
+        return value.isFinite && value >= 0 ? distance(value) : "—"
+    }
+#endif
 
     private var compactCurrentStepGuidance: some View {
         let maneuver = navigationStore.state.progress?.nextManeuver
@@ -155,6 +202,12 @@ extension ContentView {
                     .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 2) {
+#if os(iOS)
+                    Text(currentStepGuidanceDistanceText)
+                        .font(.system(size: 18, weight: .bold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(Color.naviTextPrimary)
+                        .contentTransition(.numericText())
+#endif
                     Text(instruction)
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(Color.naviTextPrimary)
@@ -170,7 +223,7 @@ extension ContentView {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                Image(systemName: "arrowtriangle.down.fill")
+                Image(systemName: "chevron.down")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(Color.naviTextSecondary)
                     .frame(width: 18, height: 18)
@@ -179,7 +232,11 @@ extension ContentView {
             .padding(.vertical, 7)
         }
         .buttonStyle(.plain)
+#if os(iOS)
+        .accessibilityLabel("\(currentStepGuidanceDistanceText), \(instruction)")
+#else
         .accessibilityLabel(instruction)
+#endif
         .accessibilityHint("Rozwiń informacje o kroku")
     }
 
@@ -275,6 +332,11 @@ extension ContentView {
                     journeyNavigationSummaryRow(detent: detent)
                         .padding(.horizontal, 18)
                         .padding(.top, detent == .peek ? 0 : 4)
+#if os(iOS)
+                    routeTrafficDelaySummary
+                        .padding(.horizontal, 18)
+                        .padding(.top, 4)
+#endif
                     if detent == .expanded, navigationStore.state.transportMode == .car,
                        let confidence = navigationStore.state.etaConfidence {
                         Text(confidence.explanation).font(.caption).foregroundStyle(.secondary)
@@ -294,6 +356,31 @@ extension ContentView {
                     }
 
                     if detent != .peek {
+#if os(iOS)
+                        if showsRoadManeuverTimeline, upcomingRoadManeuvers.count > 1 {
+                            VStack(alignment: .leading, spacing: 0) {
+                                Button {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        journeyGuidanceExpanded.toggle()
+                                    }
+                                } label: {
+                                    Label(journeyGuidanceExpanded ? "Ukryj kroki" : "Pokaż wszystkie kroki",
+                                          systemImage: journeyGuidanceExpanded ? "chevron.up" : "chevron.down")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(Color.accentColor)
+                                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .padding(.horizontal, 18)
+
+                                if journeyGuidanceExpanded {
+                                    journeyRoadManeuverTimeline
+                                }
+                            }
+                            .padding(.top, 8)
+                        }
+#endif
                         journeyNavigationQuickActions
                             .padding(.horizontal, 18)
                             .padding(.top, 14)
@@ -542,7 +629,7 @@ extension ContentView {
             navigationPanelDetent = detent == .expanded ? .medium : .expanded
         } label: {
             HStack(spacing: 4) {
-                journeySummaryMetric(value: remainingTime.map(arrivalTime) ?? "—", caption: "ETA",
+                journeySummaryMetric(value: remainingTime.map(arrivalTime) ?? "—", caption: "Przyjazd",
                                      emphasis: .primary)
                     .frame(maxWidth: .infinity, alignment: .center)
                 journeySummaryMetric(value: remainingTime.map(time) ?? "—", caption: "Pozostało",
@@ -633,7 +720,7 @@ extension ContentView {
     private var journeyNextStepPreview: some View {
         if showsRoadManeuverTimeline, let next = nextRoadManeuverAfterCurrent {
             HStack(spacing: 11) {
-                ManeuverIcon(type: next.maneuver.type, fallbackSymbol: next.maneuver.iconName, size: 20, roundabout: next.maneuver.roundabout)
+                ManeuverIcon(type: next.maneuver.type, fallbackSymbol: next.maneuver.iconName, size: 24, roundabout: next.maneuver.roundabout)
                     .foregroundStyle(Color.naviTextPrimary)
                     .frame(width: 32, height: 32)
                     .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
@@ -642,8 +729,7 @@ extension ContentView {
                     Text("Następnie: \(next.maneuver.displayInstruction)")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color.naviTextPrimary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
+                        .lineLimit(2)
                     if let streetLine = next.maneuver.streetLine {
                         Text(streetLine)
                             .font(.system(size: 10, weight: .medium))
@@ -654,7 +740,7 @@ extension ContentView {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 if let stepDistance = next.distance, stepDistance > 0 {
-                    Text(distance(stepDistance))
+                    Text("potem za \(distance(stepDistance))")
                         .font(.system(size: 12, weight: .medium, design: .rounded).monospacedDigit())
                         .foregroundStyle(Color.naviTextSecondary)
                         .lineLimit(1)
@@ -664,7 +750,7 @@ extension ContentView {
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("Następnie: \(next.maneuver.displayInstruction)\(next.distance.map { ", za \(distance($0))" } ?? "")")
+            .accessibilityLabel("Następnie: \(next.maneuver.displayInstruction)\(next.distance.map { ", po bieżącym manewrze za \(distance($0))" } ?? "")")
         }
     }
 
@@ -796,7 +882,7 @@ extension ContentView {
                                        distanceToStep: Double?,
                                        isCurrent: Bool) -> some View {
         HStack(alignment: .top, spacing: 10) {
-            ManeuverIcon(type: maneuver.type, fallbackSymbol: maneuver.iconName, size: 19, roundabout: maneuver.roundabout)
+            ManeuverIcon(type: maneuver.type, fallbackSymbol: maneuver.iconName, size: 24, roundabout: maneuver.roundabout)
                 .foregroundStyle(isCurrent ? Color.accentColor : Color.naviTextSecondary)
                 .frame(width: 32, height: 32)
                 .background(isCurrent ? Color.accentColor.opacity(0.13) : Color.primary.opacity(0.055),

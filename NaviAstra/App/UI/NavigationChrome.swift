@@ -84,7 +84,7 @@ struct NavigationGlassPanelSurface: ViewModifier {
     }
 }
 
-enum NavigationBottomSheetDetent: Int, CaseIterable {
+nonisolated enum NavigationBottomSheetDetent: Int, CaseIterable, Sendable {
     case peek
     case medium
     case expanded
@@ -111,6 +111,11 @@ private struct NavigationBottomSheetScrollOffsetKey: PreferenceKey {
     }
 }
 
+nonisolated private struct NavigationBottomSheetMeasurement: Equatable, Sendable {
+    let detent: NavigationBottomSheetDetent
+    let height: CGFloat
+}
+
 /// A map-attached sheet with shared detents, drag physics, and scroll handoff.
 struct NavigationBottomSheet<Content: View, Footer: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -125,6 +130,7 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
     private let dragHandleHeight: CGFloat
     private let hidesExpandedChevron: Bool
     private let resizesFromContent: Bool
+    private let fitsCompactContent: Bool
     private let onClose: (() -> Void)?
     private let closeAccessibilityLabel: String
     private let content: (NavigationBottomSheetDetent, CGFloat) -> Content
@@ -135,6 +141,8 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
     @State private var dragStartTranslation: CGFloat?
     @State private var interactiveHeight: CGFloat?
     @State private var ownsCurrentDrag = false
+    @State private var contentHeights: [Int: CGFloat] = [:]
+    @State private var footerHeights: [Int: CGFloat] = [:]
 
     init(detent: Binding<NavigationBottomSheetDetent>,
          maximumHeight: CGFloat,
@@ -147,6 +155,7 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
          dragHandleHeight: CGFloat = 60,
          hidesExpandedChevron: Bool = false,
          resizesFromContent: Bool = true,
+         fitsCompactContent: Bool = false,
          onClose: (() -> Void)? = nil,
          closeAccessibilityLabel: String = "Zamknij panel",
          @ViewBuilder content: @escaping (NavigationBottomSheetDetent, CGFloat) -> Content,
@@ -161,6 +170,7 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
         self.dragHandleHeight = max(44, dragHandleHeight)
         self.hidesExpandedChevron = hidesExpandedChevron
         self.resizesFromContent = resizesFromContent
+        self.fitsCompactContent = fitsCompactContent
         self.onClose = onClose
         self.closeAccessibilityLabel = closeAccessibilityLabel
         self._isDragging = isDragging
@@ -177,18 +187,29 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
         if expanded < 240 {
             let basePeek = min(expanded * 0.6, max(84, expanded * 0.45))
             let maximumPeek = max(basePeek, expanded - 40)
-            let peek = min(maximumPeek, max(basePeek, minimumPeekHeight ?? basePeek))
+            let peek = min(maximumPeek, max(basePeek, minimumPeekHeight ?? basePeek,
+                                            contentHeight(for: .peek)))
             let medium = min(expanded - 1, max(peek + 24, expanded * mediumHeightFraction,
-                                              minimumMedium))
+                                              minimumMedium, contentHeight(for: .medium)))
             return [peek, medium, expanded]
         }
         // Keep enough room for the compact summary and the grabber.
         let basePeek = min(140, max(124, expanded * 0.18))
         let maximumPeek = max(basePeek, expanded - dragHandleHeight)
-        let peek = min(maximumPeek, max(basePeek, minimumPeekHeight ?? basePeek))
+        let peek = min(maximumPeek, max(basePeek, minimumPeekHeight ?? basePeek,
+                                        contentHeight(for: .peek)))
         let medium = min(expanded - 1, max(peek + 40, expanded * mediumHeightFraction,
-                                          minimumMedium))
+                                          minimumMedium, contentHeight(for: .medium)))
         return [peek, medium, expanded]
+    }
+
+    private func contentHeight(for detent: NavigationBottomSheetDetent) -> CGFloat {
+        guard fitsCompactContent else { return 0 }
+        // Reserve room for the entire content above the fixed footer, including
+        // the grabber and the scroll position marker. On short screens the
+        // maximum sheet height still wins and the content remains scrollable.
+        return dragHandleHeight + (contentHeights[detent.rawValue] ?? 0)
+            + (footerHeights[detent.rawValue] ?? 0) + 1
     }
 
     private var selectedIndex: Int {
@@ -238,6 +259,13 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
                         .id("navigation-bottom-sheet-scroll-top")
 
                         content(detent, progress)
+                            .onGeometryChange(for: NavigationBottomSheetMeasurement.self) { geometry in
+                                NavigationBottomSheetMeasurement(
+                                    detent: detent, height: geometry.size.height.rounded(.up))
+                            } action: { measurement in
+                                guard fitsCompactContent, measurement.detent != .expanded else { return }
+                                contentHeights[measurement.detent.rawValue] = measurement.height
+                            }
                     }
                 }
                 .coordinateSpace(name: scrollSpaceName)
@@ -258,6 +286,13 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
 
             footer(detent, progress)
                 .fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: NavigationBottomSheetMeasurement.self) { geometry in
+                    NavigationBottomSheetMeasurement(
+                        detent: detent, height: geometry.size.height.rounded(.up))
+                } action: { measurement in
+                    guard fitsCompactContent, measurement.detent != .expanded else { return }
+                    footerHeights[measurement.detent.rawValue] = measurement.height
+                }
                 .simultaneousGesture(dragGesture(fromContent: false))
         }
         .frame(maxWidth: .infinity)

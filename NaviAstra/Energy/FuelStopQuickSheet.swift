@@ -4,6 +4,7 @@ struct FuelStopQuickSheet: View {
     @Environment(\.dismiss) private var dismiss
     let store: EnergyStore
     let stations: [FuelStopStation]
+    let trips: [TripRecord]
     let onSaved: () -> Void
     @State private var selected: FuelStopStation?
     @State private var addingVehicle = false
@@ -17,7 +18,7 @@ struct FuelStopQuickSheet: View {
         Group {
             if let vehicle, let station = selected ?? (stations.count == 1 ? stations.first : nil) {
                 EnergyEntryEditor(store: store, vehicle: vehicle, original: nil,
-                                  coordinate: station.identity.coordinate, suggestedStation: station,
+                                  coordinate: station.identity.coordinate, trips: trips, suggestedStation: station,
                                   onSaved: onSaved)
             } else if vehicle == nil {
                 NavigationStack {

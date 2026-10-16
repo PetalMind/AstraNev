@@ -37,6 +37,16 @@ Dla marek i kategorii ranking najpierw porównuje zgodność wyniku z dopisaną 
 
 Wyniki Photon są przede wszystkim wynikami geokodera: zawierają nazwę/adres, położenie i — gdy jest dostępny — identyfikator obiektu OSM. Photon nie jest źródłem godzin otwarcia w tym przepływie. Godziny w karcie pochodzą z tagu `opening_hours` OSM albo z danych już dołączonych do wyszukiwania OSM.
 
+## Paczkomaty i punkty odbioru przesyłek
+
+Wyszukiwarka rozpoznaje InPost, DPD, DHL, ORLEN Paczkę, Allegro One, Pocztex / Pocztę Polską, GLS, UPS, FedEx i Amazon Locker. Można wpisać np. „InPost”, „paczkomaty Warszawa”, „paczkomat InPost Łódź”, „ORLEN Paczka” albo „DPD po trasie”. Samo „ORLEN” zachowuje dotychczasowe wyszukiwanie marki. Skrót „Paczkomaty i punkty odbioru” jest dostępny w wyszukiwaniu i w panelu miejsc w pobliżu. Panel zachowuje filtrowanie według operatora i dostępnych godzin otwarcia, zapisywanie miejsca oraz wybór jako celu lub postoju.
+
+OSM jest źródłem wyszukiwania pobliskich automatów i punktów. Wyszukiwanie tekstowe dodatkowo korzysta z Photon i MapKit, a wyniki są filtrowane według rodzaju punktu i operatora. Obsługiwane są `amenity=parcel_locker`, starsze automaty `amenity=vending_machine` z `vending=parcel_pickup` / `parcel_mail_in`, placówki `amenity=post_office`, punkty partnerskie `post_office=post_partner` oraz usługi `post_office:parcel_pickup` i `post_office:parcel_to` w sklepach. Dla usług w sklepach odczytywane są także marka, operator i godziny z przestrzeni `post_office:*`, niezależnie od podstawowej działalności sklepu. Dwa różne automaty z osobnymi ID OSM nie są scalane tylko dlatego, że stoją obok siebie i mają tego samego operatora.
+
+Nazwa automatu zawiera numer `ref`, jeśli jest zapisany w OSM. Punkt otrzymuje ikonę przesyłki oraz polską nazwę kategorii. Brak godzin, adresu lub numeru nie jest uzupełniany fikcyjnymi danymi. To wyszukiwanie miejsc z istniejących źródeł mapowych; aplikacja nie integruje się z systemami obsługi przesyłek operatorów i nie pokazuje dostępności skrytek ani statusu paczki. Kompletność punktów zależy od danych dostawców.
+
+Schematy danych: [automaty paczkowe OSM](https://wiki.openstreetmap.org/wiki/Tag:amenity%3Dparcel_locker), [punkty partnerskie i usługi pocztowe](https://wiki.openstreetmap.org/wiki/Key:post_office).
+
 ## Wybór POI z mapy
 
 Na iOS aplikacja odczytuje POI, które są już widoczne w warstwach MapLibre. Z kafla wykorzystuje kategorię (`subclass` lub `class`), nazwę, markę i — jeśli kafel ją zawiera — `osm_id`. Gdy kilka punktów leży pod dotknięciem, karta pozwala wybrać właściwy obiekt.

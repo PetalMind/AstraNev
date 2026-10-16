@@ -144,13 +144,16 @@ struct PlaceDetails: Codable, Identifiable {
     }
 
     func merging(_ newer: PlaceDetails) -> PlaceDetails {
-        PlaceDetails(id: newer.id,
+        // A shop and its pickup service share an OSM object. Keep the selected service's
+        // identity and hours when enriching it with the shop's common address/contact data.
+        let keepsPickupService = category == "parcel_pickup" && newer.category != "parcel_pickup"
+        return PlaceDetails(id: newer.id,
                      name: newer.name.isEmpty ? name : newer.name,
-                     brand: newer.brand ?? brand,
-                     operatorName: newer.operatorName ?? operatorName,
-                     category: newer.category ?? category,
+                     brand: keepsPickupService ? brand : newer.brand ?? brand,
+                     operatorName: keepsPickupService ? operatorName : newer.operatorName ?? operatorName,
+                     category: keepsPickupService ? category : newer.category ?? category,
                      address: newer.address ?? address,
-                     openingHours: newer.openingHours ?? openingHours,
+                     openingHours: keepsPickupService ? openingHours : newer.openingHours ?? openingHours,
                      phone: newer.phone ?? phone,
                      website: newer.website ?? website,
                      coordinate: newer.coordinate ?? coordinate,
@@ -429,7 +432,8 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
 
     private static func matchesExactName(_ expected: String, tags: [String: String]) -> Bool {
         guard !expected.isEmpty else { return false }
-        let taggedNames = [tags["name"], tags["brand"], tags["operator"]].compactMap { $0 }
+        let taggedNames = [tags["name"], tags["brand"], tags["operator"],
+                           ParcelPOI.name(tags: tags, fallback: "")].compactMap { $0 }
             + tags.filter { $0.key.lowercased().hasPrefix("name:") }.map(\.value)
         for value in taggedNames {
             if normalized(value) == expected { return true }
@@ -450,12 +454,15 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         }
         aliases = aliases.filter { !$0.isEmpty }
         guard !aliases.isEmpty else { return false }
-        return tags.keys.contains(where: { aliases.contains(normalized($0)) }) ||
+        return ParcelPOI.category(tags: tags).map { aliases.contains(normalized($0)) } == true ||
+            tags.keys.contains(where: { aliases.contains(normalized($0)) }) ||
             tags.values.contains(where: { aliases.contains(normalized($0)) })
     }
 
     private static func nameMatchScore(_ identity: PlaceIdentity, tags: [String: String]) -> Double? {
-        let taggedNames = ([tags["name"], tags["brand"], tags["operator"]].compactMap { $0 }
+        let taggedNames = ([tags["name"], tags["brand"], tags["operator"],
+                            ParcelPOI.name(tags: tags, fallback: ""), ParcelPOI.brand(tags: tags),
+                            ParcelPOI.operatorName(tags: tags)].compactMap { $0 }
             + tags.filter { $0.key.lowercased().hasPrefix("name:") }.map(\.value)).map(normalized)
         guard !taggedNames.isEmpty else { return nil }
         let expected = [identity.name, identity.brand, identity.operatorName]
@@ -519,11 +526,11 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
             .compactMap { $0 }
             .joined(separator: ", ")
         let address = tags["addr:full"] ?? (structuredAddress.isEmpty ? nil : structuredAddress)
-        let category = ["amenity", "shop", "tourism", "leisure", "office", "craft", "historic"]
+        let category = ParcelPOI.category(tags: tags, includePickupServices: false) ?? ["amenity", "shop", "tourism", "leisure", "office", "craft", "historic"]
             .compactMap { tags[$0] }
             .first
 
-        let name = tags["name"] ?? tags["brand"] ?? fallbackName
+        let name = ParcelPOI.name(tags: tags, fallback: fallbackName, includePickupServices: false)
         let phone = tags["contact:phone"] ?? tags["phone"]
         let website = tags["contact:website"] ?? tags["website"]
         let imageURL = tags["image"]
@@ -552,11 +559,11 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
 
         return PlaceDetails(id: id,
                             name: name,
-                            brand: tags["brand"],
-                            operatorName: tags["operator"],
+                            brand: ParcelPOI.brand(tags: tags, includePickupServices: false),
+                            operatorName: ParcelPOI.operatorName(tags: tags, includePickupServices: false),
                             category: category,
                             address: address,
-                            openingHours: tags["opening_hours"],
+                            openingHours: ParcelPOI.openingHours(tags: tags, includePickupServices: false),
                             phone: phone,
                             website: website,
                             coordinate: nil,

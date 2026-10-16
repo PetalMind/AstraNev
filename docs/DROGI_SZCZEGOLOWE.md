@@ -12,6 +12,9 @@ DetailedRoadDataProvider
   │                                  ↓
   │                     DetailedRoadGeometryCache (L2)
   │                                  ↓
+  │                     DetailedRoadTopology
+  │                     korytarze + obszary węzłów
+  │                                  ↓
   │                     powierzchnie / linie / punkty
   └── TileDetailedRoadProvider → gotowe warstwy MVT
                                      ↓
@@ -51,11 +54,29 @@ Liczba pól szerokości musi być zgodna z liczbą pasów. Niespójny opis pozos
 - `estimated`: sama nawierzchnia.
 - `invalid`: mapa bazowa; lokalny normalizator odrzuca taki odcinek, a warstwy MVT filtrują go po atrybucie.
 
-Powierzchnie i położenie separatorów powstają w metrach w lokalnym układzie geograficznym. Obrót, pochylenie i zbliżenie kamery zachowują ich położenie. Offsety mają limit miter 2,5, wykrywają ostre kąty i stosują rzeczywiste ścięcie narożnika z obu sąsiadujących normalnych. Pierścienie powierzchni i linie są sprawdzane pod kątem samoprzecięć. Niebezpieczna geometria, pętle lub przekroczenie budżetu kontroli powodują zachowanie prostszego wyglądu. Kontrola używa komórek przestrzennych, aby uniknąć nieograniczonego porównywania każdej pary segmentów.
+Powierzchnie i położenie separatorów powstają w metrach w lokalnym układzie geograficznym. Nawierzchnia jest sumą przekrojów segmentów i zaokrąglonych połączeń, normalizowaną operacjami CoreGraphics osobno dla każdego poziomu, mostu i sposobu renderowania. Wynik zachowuje wewnętrzne pierścienie, w tym wyspy rond. Obramowanie powstaje dopiero z końcowej powierzchni, dzięki czemu granice odcinków nie tworzą poprzecznych szwów. Samoprzecięcie offsetu może wyłączyć niebezpieczne oznaczenie, ale nie usuwa nawierzchni. Linie są przycinane do lokalnych masek w komórkach 64 m; krawędzie dodatkowo do obrysu powierzchni. Długie osie są przycinane do widoku przed budową przekrojów, z zachowaniem interpolacji szerokości i przesunięcia.
 
-Separatory kończą się przed węzłami odcinka. Linie są schematycznym podziałem na pasy, bez deklarowania prawnych zakazów ich przekraczania. `lane_markings=no` pozostawia nawierzchnię i wyłącza oznaczenia. Strzałki pojawiają się tylko przy rzeczywistym końcu odcinka OSM, a nie na sztucznym końcu części ograniczonej widokiem mapy. Nie wskazują bieżącego pasa samochodu.
+Separatory zachowują ciągłość na zgodnych połączeniach dwóch odcinków. Przy złożonym skrzyżowaniu lub niepewnych danych wygaszają się przed jego środkiem. Linie są schematycznym podziałem na pasy, bez deklarowania prawnych zakazów ich przekraczania. `lane_markings=no` pozostawia nawierzchnię i wyłącza oznaczenia. Strzałki pojawiają się tylko przy rzeczywistym końcu odcinka OSM, a nie na sztucznym końcu części ograniczonej widokiem mapy lub przy każdym nowo wykrytym wlocie. Nie wskazują bieżącego pasa samochodu.
 
 `bridge`, `tunnel`, `covered` i `layer` są osobnymi informacjami. Ujemny `layer` nie oznacza tunelu, a dodatni nie oznacza mostu. Tunele i lokalizacje podziemne pozostają w mapie bazowej. Etykiety, zdarzenia i trasa zachowują pierwszeństwo.
+
+Renderer iOS ogranicza nawierzchnię i oznaczenia od góry pierwszą warstwą etykiet, budynków 3D albo nakładek nawigacji. Reguła działa również w stylu bez warstwy `transportation` oraz po późniejszym dodaniu nakładki. Poziomy nawierzchni nie mogą przesunąć asfaltu ponad tę granicę. Nawierzchnia i jej obramowanie mają wygładzone krawędzie oraz maksymalną nieprzezroczystość 0,995: pozostają w przebiegu mieszania, aby nie zapisywać współpłaszczyznowej głębokości przecinającej trasę lub napisy przy pochylonej kamerze. Nie zmienia to geometrii jezdni ani wyznaczania trasy.
+
+Przed etykietami i nakładkami nawigacji wspólny styl iOS instaluje `MapOverlayDepthLayer`. Warstwa jednym trójkątem Metal przywraca odległą głębokość, zachowując kolor mapy oraz bufor szablonu używany do maskowania kafli. Chroni napisy i trasę również przed głębokością zapisaną przez tekstury wody, roślinności i nawierzchni: w MapLibre 6.29 warstwa `fill-pattern` zapisuje głębokość także przy małej nieprzezroczystości. Tekstury, kolory i budynki 3D pozostają na mapie; napisy i nawigacja są komponowane nad gotowym otoczeniem. Warstwa jest instalowana ponownie przy zmianie stylu.
+
+## Ciągła nawierzchnia i obszary skrzyżowań
+
+`DetailedRoadTopology` rozdziela oś drogi, jej przekrój, profile wlotów i wspólną powierzchnię węzła. Identyfikatory węzłów OSM z odpowiedzi Overpass pozostają w surowych danych. Pozwalają dzielić długą drogę także przy wlocie położonym w jej środku. Starsze zapisy L1 bez identyfikatorów nadal działają: używają współrzędnych z dokładnością dopasowania 0,1 m. Różne poziomy i oznaczenia mostu są rozpatrywane oddzielnie; sam geometryczny krzyż osi nie tworzy połączenia. Wyjątkiem jest wspólny identyfikator OSM na końcu drogi: zachowuje połączenie dojazdu z mostem. Dojazdy pozostają kompletne na obu poziomach, a lokalne maski usuwają wewnętrzne obramowania na przejściu.
+
+Wolne końce można wizualnie dopasować na odległości do 1,25 m tylko przy wzajemnym najbliższym dopasowaniu, zgodnej klasie i dostępnej nazwie/numerze drogi oraz przeciwnych, niemal współliniowych stycznych. Dopasowanie nie obejmuje rond, równoległych jezdni ani różnych poziomów. Nie zmienia grafu routera.
+
+Bliskie skrzyżowania tworzą wspólny `JunctionRegion` wyłącznie wtedy, gdy łączy je istniejący krótki odcinek, oba końce mają co najmniej trzy wloty i geometria mieści się w ograniczonym obszarze. Długość łącznika wynosi najwyżej 12 m, region ma najwyżej osiem węzłów i 24 m średnicy. Ronda nie są scalane w jeden wypełniony środek. Zamknięte osie są dzielone na łuki, aby zachować jezdnię i centralną wyspę także na rondzie z jednym wjazdem.
+
+Każdy zewnętrzny wlot przekazuje profil: styczną, krawędzie, szerokość, położenia pasów i jakość danych. Korytarz jest skracany dopiero po poprawnym przygotowaniu wspólnej nawierzchni. Obrys powstaje z uporządkowanych profili i krzywych Béziera, zachowując wklęsłe narożniki oraz przestrzeń pomiędzy odnogami. Nie stosujemy wypukłej otoczki zalewającej wyspy. Jeżeli obrys pojedynczego węzła sam się przecina lub nie obejmuje osi dojazdów, zachowujemy pełne korytarze i łączymy ich powierzchnie z małym zaokrąglonym środkiem. Nieudane scalenie klastra pozostawia osobne węzły. Zmiana nazwy lub klasy drogi we wspólnym węźle nie przerywa zgodnych separatorów. Na ostrym rozwidleniu niezależne oznaczenia odnóg są odsunięte poza obszar nakładania ich przekrojów; nie rysujemy na sobie dwóch siatek pasów ani strzałek w ich wspólnej części.
+
+Zgodna kontynuacja osi o zmienionej szerokości dostaje łagodne przejście. Docelowo przejście obejmuje do 24 m na drogach miejskich i do 60 m na autostradach oraz drogach ekspresowych; na krótkich odcinkach dopasowuje się do dostępnego miejsca. Przy wiarygodnych jednokierunkowych profilach różniących się o jeden lub dwa pasy pozostałe separatory biegną dalej, a nadmiarowy prawy pas zanika przy krawędzi. Bez danych wskazujących stronę zmiany jest to reguła wizualna, nie informacja o organizacji ruchu. Pozostałe niezgodności upraszczają oznaczenia. Wygaszanie wykorzystuje cztery pasma przezroczystości z łagodną interpolacją, a nie twarde zakończenie na węźle OSM.
+
+Trajektorie pasów zachowują ich kolejność, respektują znany kierunek ruchu i opisane skręty. Przy łagodnym rozwidleniu preferują skrajny pas, a niepewne skręty miejskie pozostają bez linii. Te trajektorie wspierają dopasowanie separatorów; nie stają się instrukcjami prowadzenia ani nowymi strzałkami. Skomplikowany środek ma wspólną nawierzchnię, delikatne rozjaśnienie i mniej oznaczeń niż dojazdy. Na dobrze opisanym jednokierunkowym rozwidleniu może pojawić się mała, zaokrąglona strefa neutralna, wyłącznie gdy mieści się w bezpiecznej powierzchni węzła. To schematyczna powierzchnia malowana, nie rozpoznanie fizycznej wysepki lub krawężnika.
 
 ## MapLibre i płynność
 
@@ -63,7 +84,7 @@ Lokalna geometria korzysta z trzech zbiorczych `MLNShapeSource`: powierzchnie ja
 
 Nawierzchnia pojawia się między zbliżeniem 16 i 17, separatory między 16,8 i 18, a strzałki między 17,3 i 18,2. Motyw dzienny/nocny i zmiana stylu nie wymagają ponownego pobrania danych ani zbudowania geometrii.
 
-Zapytania Overpass obejmują zaokrąglony obszar z marginesem. Pobieranie zaczyna się po 650 ms, a kolejne rozpoczęcia są rozdzielone minimum 10 sekundami. Nieaktualna praca jest anulowana. Awaria uruchamia ponowienie po 60 sekundach, a poprzednia poprawna geometria pozostaje do przygotowania nowej. Obliczenia działają poza głównym wątkiem, obiekty MapLibre są tworzone partiami. Obszar, dane wejściowe, liczba cech, wierzchołków i sprawdzeń geometrii mają limity.
+Zapytania Overpass obejmują zaokrąglony obszar z marginesem minimum 60 m. Siatka zapytania jest dopasowana do zbliżenia: 0,002° od 18, 0,004° od 17 i 0,008° poniżej 17. Pobieranie zaczyna się po 650 ms, a kolejne rozpoczęcia są rozdzielone minimum 10 sekundami. Nieaktualna praca jest anulowana. Awaria uruchamia ponowienie po 60 sekundach, a poprzednia poprawna geometria pozostaje do przygotowania nowej. Obliczenia działają poza głównym wątkiem, obiekty MapLibre są tworzone partiami. Obszar, dane wejściowe, liczba cech, wierzchołków i sprawdzeń geometrii mają limity. Budżet najpierw rezerwuje miejsce dla nawierzchni; przy dużej złożoności pomija nadmiarowe oznaczenia i dekoracje, zamiast odrzucać poprawną powierzchnię z powodu samych separatorów.
 
 ## Pamięć podręczna i offline
 
@@ -79,11 +100,13 @@ TileJSON powinien udostępniać trzy warstwy źródłowe:
 
 | Warstwa | Geometria | `kind` |
 |---|---|---|
-| `road_surface` | Polygon / MultiPolygon | `casing`, `surface` |
+| `road_surface` | Polygon / MultiPolygon | `casing`, `surface`, opcjonalnie `junction`, `gore` |
 | `road_lanes` | LineString / MultiLineString | `edge`, `separator`, `center`, `sharedBoundary` |
 | `road_arrows` | Point | `arrow` |
 
 Atrybuty wspólne: `kind`, `level` (od -3 do 5), `roadClass`, `renderLevel`, `bridge`, `covered`, `confidence`, `directionality`, `laneType`, `direction`. Strzałki dodatkowo: `turnType` (zweryfikowane wartości posortowane i połączone średnikami), `bearing` (stopnie zgodnie z ruchem wskazówek zegara od północy) i `arrowScale` (względny rozmiar). Nazwy enumów odpowiadają modelowi Swift. Serwer musi wygenerować i zweryfikować gotową geometrię zgodnie z tym kontraktem; klient nie odtwarza pasów z osi drogi zawartej w MVT.
+
+Opcjonalne `paintOpacity` (0–1) steruje lokalnym wygaszaniem linii. Brak pola oznacza pełną intensywność, więc wcześniejsze kafle zachowują działanie. Nowa topologia jest obliczana lokalnie dla dostawcy Overpass. Gotowe kafle MVT muszą otrzymać odpowiednie powierzchnie i łączniki w procesie generowania po stronie ich dostawcy.
 
 Samo przygotowanie klienta nie tworzy infrastruktury serwerowej, danych regionalnych ani pełnych pakietów offline. Te etapy pozostają kolejnym etapem opisanej architektury.
 
@@ -92,8 +115,15 @@ Samo przygotowanie klienta nie tworzy infrastruktury serwerowej, danych regional
 - `DetailedRoadProvider.swift`: surowe dane OSM, transport Overpass i L1.
 - `DetailedRoadDataProvider.swift`: protokół, dostawca MVT, wybór źródła i L2.
 - `NormalizedDetailedRoad.swift`: kierunkowość, pasy, szerokości, położenie osi, jakość i walidacja.
-- `DetailedRoadGeometry.swift`: bezpieczne powierzchnie, linie i punkty strzałek.
+- `DetailedRoadTopology.swift`: połączenia, korytarze, profile wlotów, wspólne powierzchnie, łączniki pasów i przejścia szerokości.
+- `DetailedRoadGeometry.swift`: powierzchnie, lokalne maski oznaczeń, linie i punkty strzałek.
+- `DetailedRoadSurfaceGeometry.swift`: sumowanie przekrojów, pierścienie z otworami i operacje na ścieżkach.
+- `DetailedRoadArrowGeometry.swift`: wspólne ścieżki wszystkich 1023 niepustych kombinacji dziesięciu obsługiwanych wskazań.
 - `DetailedRoadRenderer.swift`: trzy źródła, warstwy, symbole i cykl życia mapy.
 - `MapLibreView.swift`: integracja z mapą iOS.
 
 Funkcja nie zmienia wyznaczania trasy ani dopasowania GPS. Dotyczy wyłącznie iOS.
+
+## Atlas kontrolny
+
+Procedurę odtwarzania macierzy geometrii, niezależnej kontroli i grafik opisuje [ROAD_ATLAS.md](ROAD_ATLAS.md). Atlas zawiera warianty dzienne i nocne. To kontrola krytycznej warstwy mapy; nie zastępuje oceny rzeczywistego renderowania na iPhonie.

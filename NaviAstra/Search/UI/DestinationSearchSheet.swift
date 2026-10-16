@@ -551,6 +551,7 @@ struct DestinationSearchSheet: View {
                     categoryShortcut("Jedzenie", query: "restauracja", symbol: "fork.knife")
                     categoryShortcut("Kawa", query: "kawa", symbol: "cup.and.saucer.fill")
                     categoryShortcut("Parking", query: "parking", symbol: "parkingsign.circle.fill")
+                    categoryShortcut("Paczkomaty i punkty odbioru", query: "paczkomaty i punkty odbioru", symbol: "shippingbox.fill")
                 }
             }
             .scrollIndicators(.hidden)

@@ -11,6 +11,8 @@ nonisolated struct DetailedRoad: Codable, Sendable {
     let id: Int64
     let points: [Point]
     let tags: [String: String]
+    /// Optional for compatibility with cached snapshots written before topology was retained.
+    let nodeIDs: [Int64]?
 }
 
 nonisolated struct DetailedRoadQuery: Hashable, Codable, Sendable {
@@ -18,6 +20,12 @@ nonisolated struct DetailedRoadQuery: Hashable, Codable, Sendable {
     let west: Double
     let north: Double
     let east: Double
+
+    var isValid: Bool {
+        [south, west, north, east].allSatisfy(\.isFinite)
+            && south >= -80 && north <= 80 && west >= -180 && east <= 180
+            && north > south && east > west
+    }
 
     var id: String {
         [south, west, north, east].map {
@@ -28,17 +36,17 @@ nonisolated struct DetailedRoadQuery: Hashable, Codable, Sendable {
     /// A padded, quantized viewport supplies a margin for continuous navigation and avoids per-frame requests.
     static func visible(south: Double, west: Double, north: Double, east: Double,
                         zoom: Double) -> DetailedRoadQuery? {
-        guard zoom >= 16, [south, west, north, east].allSatisfy(\.isFinite),
+        guard zoom.isFinite, zoom >= 16, [south, west, north, east].allSatisfy(\.isFinite),
               south >= -80, north <= 80, west >= -180, east <= 180,
               north > south, east > west else { return nil }
         let cosine = max(0.17, cos((south + north) / 2 * .pi / 180))
         let height = (north - south) * 111_320
         let width = (east - west) * 111_320 * cosine
         guard height <= 5_000, width <= 5_000 else { return nil }
-        let latitudeStep = 0.01
-        let longitudeStep = 0.01 / max(0.17, cos(floor((south + north) / 2) * .pi / 180))
-        let latitudeMargin = max((north - south) * 0.2, 0.002)
-        let longitudeMargin = max((east - west) * 0.2, 0.002 / cosine)
+        let latitudeStep = zoom >= 18 ? 0.002 : (zoom >= 17 ? 0.004 : 0.008)
+        let longitudeStep = latitudeStep / max(0.17, cos(floor((south + north) / 2) * .pi / 180))
+        let latitudeMargin = max((north - south) * 0.2, 60 / 111_320)
+        let longitudeMargin = max((east - west) * 0.2, 60 / (111_320 * cosine))
         return DetailedRoadQuery(
             south: max(-80, floor((south - latitudeMargin) / latitudeStep) * latitudeStep),
             west: max(-180, floor((west - longitudeMargin) / longitudeStep) * longitudeStep),
@@ -69,8 +77,11 @@ actor OverpassDetailedRoadProvider: DetailedRoadDataProvider {
         let endpoint: String
         let roads: [DetailedRoad]
         let fetchedAt: Date
-        var isFresh: Bool { Date().timeIntervalSince(fetchedAt) < 24 * 60 * 60 }
-        var isUsable: Bool { Date().timeIntervalSince(fetchedAt) < 7 * 24 * 60 * 60 }
+        var isFresh: Bool { isUsable && Date().timeIntervalSince(fetchedAt) < 24 * 60 * 60 }
+        var isUsable: Bool {
+            let age = Date().timeIntervalSince(fetchedAt)
+            return age >= -300 && age < 7 * 24 * 60 * 60 && query.isValid
+        }
     }
     private var cache: [String: Entry] = [:]
     private var restored = false
@@ -109,6 +120,7 @@ actor OverpassDetailedRoadProvider: DetailedRoadDataProvider {
     }
 
     func roads(in query: DetailedRoadQuery) async throws -> [DetailedRoad] {
+        guard query.isValid else { throw URLError(.badURL) }
         restore()
         let cacheKey = key(query)
         if let entry = cache[cacheKey], entry.isFresh { return entry.roads }
@@ -139,6 +151,7 @@ actor OverpassDetailedRoadProvider: DetailedRoadDataProvider {
             let id: Int64
             let tags: [String: String]?
             let geometry: [Point]?
+            let nodes: [Int64]?
         }
         struct Point: Decodable {
             let lat: Double?
@@ -165,7 +178,8 @@ actor OverpassDetailedRoadProvider: DetailedRoadDataProvider {
             guard points.count == geometry.count else { continue }
             vertexCount += points.count
             guard vertexCount <= 80_000 else { throw URLError(.dataLengthExceedsMaximum) }
-            result.append(DetailedRoad(id: element.id, points: points, tags: tags))
+            result.append(DetailedRoad(id: element.id, points: points, tags: tags,
+                nodeIDs: element.nodes?.count == points.count ? element.nodes : nil))
         }
         return result
     }
@@ -182,7 +196,18 @@ actor OverpassDetailedRoadProvider: DetailedRoadDataProvider {
               size <= 24 * 1024 * 1024,
               let data = try? Data(contentsOf: url),
               let entries = try? JSONDecoder().decode([Entry].self, from: data) else { return }
-        for entry in entries where entry.isUsable {
+        var vertices = 0
+        for entry in entries.sorted(by: { $0.fetchedAt > $1.fetchedAt }) where entry.isUsable {
+            guard cache.count < 32, entry.roads.count <= 4_000,
+                  entry.roads.allSatisfy({ road in
+                      (2...4_000).contains(road.points.count) && road.points.allSatisfy {
+                          $0.latitude.isFinite && $0.longitude.isFinite
+                              && (-80...80).contains($0.latitude) && (-180...180).contains($0.longitude)
+                      }
+                  }) else { continue }
+            let count = entry.roads.reduce(0) { $0 + $1.points.count }
+            guard vertices + count <= 120_000 else { continue }
+            vertices += count
             cache[entry.endpoint + "|" + entry.query.id] = entry
         }
     }

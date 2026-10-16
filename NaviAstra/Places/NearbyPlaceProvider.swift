@@ -2,7 +2,7 @@ import Foundation
 import MapKit
 
 enum NearbyPlaceCategory: String, CaseIterable, Identifiable {
-    case fuel, food, parking, charging, parkRide, restArea
+    case fuel, food, parking, charging, parkRide, restArea, parcels
 
     var id: Self { self }
     var title: String {
@@ -13,6 +13,7 @@ enum NearbyPlaceCategory: String, CaseIterable, Identifiable {
         case .charging: "Ładowarki EV"
         case .parkRide: "Parkingi P+R"
         case .restArea: "MOP"
+        case .parcels: "Paczkomaty i punkty odbioru"
         }
     }
     var markerKind: PlacePOIMapMarkerKind {
@@ -23,6 +24,7 @@ enum NearbyPlaceCategory: String, CaseIterable, Identifiable {
         case .charging: .charging
         case .parkRide: .parkRide
         case .restArea: .parking
+        case .parcels: .parcels
         }
     }
     var symbol: String { self == .restArea ? "cup.and.saucer.fill" : markerKind.symbolName }
@@ -34,6 +36,7 @@ enum NearbyPlaceCategory: String, CaseIterable, Identifiable {
         case .charging: "Stacja ładowania"
         case .parkRide: "Parking P+R"
         case .restArea: "Miejsce obsługi podróżnych"
+        case .parcels: "Punkt odbioru przesyłek"
         }
     }
 
@@ -45,6 +48,7 @@ enum NearbyPlaceCategory: String, CaseIterable, Identifiable {
         case .charging: "[amenity=charging_station]"
         case .parkRide: "[amenity=parking][park_ride=yes]"
         case .restArea: "[highway~\"^(services|rest_area)$\"]"
+        case .parcels: "[amenity=parcel_locker]"
         }
     }
 }
@@ -66,7 +70,8 @@ struct NearbyPlaceCandidate: Identifiable {
     var providerID: String? = nil
 
     var operatorOrBrand: String? {
-        [operatorName, brand].compactMap { $0 }.first { $0 != destination.name }
+        if category == .parcels { return operatorName ?? brand }
+        return [operatorName, brand].compactMap { $0 }.first { $0 != destination.name }
     }
 
     @MainActor func openingHoursPresentation() async -> OpeningHoursPresentation? {
@@ -144,7 +149,9 @@ struct OpenStreetMapNearbyPlaceProvider {
             let center = centers[0]
             area = "around:\(Int(radius)),\(center.latitude),\(center.longitude)"
         }
-        let query = "[out:json][timeout:10];nwr\(category.overpassFilter)(\(area));out center tags;"
+        let selectors = category == .parcels ? ParcelPOI.Query().selectors(around: area)
+            : "nwr\(category.overpassFilter)(\(area));"
+        let query = "[out:json][timeout:10];\(selectors)out center tags;"
         var components = URLComponents()
         components.queryItems = [URLQueryItem(name: "data", value: query)]
         var request = URLRequest(url: endpoint)
@@ -188,12 +195,14 @@ struct OpenStreetMapNearbyPlaceProvider {
                 routeDistance = pathDistance
             }
             let tags = element.tags ?? [:]
-            let name = tags["name"] ?? tags["brand"] ?? tags["operator"] ?? category.fallbackName
+            let name = ParcelPOI.name(tags: tags, fallback: category.fallbackName, includePickupServices: category == .parcels)
+            let osmCategory = ParcelPOI.category(tags: tags, includePickupServices: category == .parcels) ?? tags["amenity"] ?? tags["shop"] ?? tags["tourism"]
+            let brand = ParcelPOI.brand(tags: tags, includePickupServices: category == .parcels)
+            let operatorName = ParcelPOI.operatorName(tags: tags, includePickupServices: category == .parcels)
             let id = "\(element.type ?? "poi")-\(element.id)"
             let poiMetadata = element.type.map {
                 POIMetadata(provider: .openStreetMap, osmID: "\($0):\(element.id)",
-                            category: tags["amenity"] ?? tags["shop"] ?? tags["tourism"],
-                            brand: tags["brand"], operatorName: tags["operator"])
+                            category: osmCategory, brand: brand, operatorName: operatorName)
             }
             let destination = Destination(name: name, coordinate: coordinate,
                                           address: [tags["addr:street"], tags["addr:housenumber"]]
@@ -201,11 +210,11 @@ struct OpenStreetMapNearbyPlaceProvider {
                                           poi: poiMetadata)
             found.append(NearbyPlaceCandidate(id: id, destination: destination,
                                                category: category, distanceFromRoute: pathDistance,
-                                               osmCategory: tags["amenity"] ?? tags["shop"],
+                                               osmCategory: osmCategory,
                                                distanceToRoute: routeDistance,
-                                               brand: tags["brand"],
-                                               operatorName: tags["operator"],
-                                               openingHours: tags["opening_hours"],
+                                               brand: brand,
+                                               operatorName: operatorName,
+                                               openingHours: ParcelPOI.openingHours(tags: tags, includePickupServices: category == .parcels),
                                                countryCode: Self.countryCode(from: tags),
                                                fuelTypes: category == .fuel ? Self.fuelTypes(from: tags) : [],
                                                chargingStation: category == .charging
@@ -221,7 +230,8 @@ struct OpenStreetMapNearbyPlaceProvider {
             var nearby: [NearbyPlaceCandidate] = []
             for candidate in found.sorted(by: { $0.distanceFromRoute < $1.distanceFromRoute }) {
                 guard !nearby.contains(where: {
-                    $0.destination.coordinate.distance(to: candidate.destination.coordinate) < 15
+                    if category == .parcels { return $0.id == candidate.id }
+                    return $0.destination.coordinate.distance(to: candidate.destination.coordinate) < 15
                         && $0.destination.name.caseInsensitiveCompare(candidate.destination.name) == .orderedSame
                         && $0.osmCategory == candidate.osmCategory
                 }) else { continue }
@@ -364,7 +374,7 @@ struct OpenStreetMapNearbyPlaceProvider {
 struct NearbyPlaceSearchProvider {
     func search(_ category: NearbyPlaceCategory, around coordinate: Coordinate,
                 radius: Double, resultLimit: Int) async throws -> [NearbyPlaceCandidate] {
-        if category == .restArea {
+        if category == .restArea || category == .parcels {
             return try await OpenStreetMapNearbyPlaceProvider().search(category, around: coordinate,
                                                                        radius: radius, resultLimit: resultLimit)
         }
@@ -490,6 +500,7 @@ fileprivate extension NearbyPlaceCategory {
         case .charging: "EV charging station"
         case .parkRide: "park and ride"
         case .restArea: "motorway services"
+        case .parcels: "paczkomaty i punkty odbioru przesyłek"
         }
     }
 
@@ -500,6 +511,7 @@ fileprivate extension NearbyPlaceCategory {
         case .parking, .parkRide: [.parking]
         case .charging: [.evCharger]
         case .restArea: [.parking]
+        case .parcels: [.postOffice]
         }
     }
 }

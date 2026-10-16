@@ -18,6 +18,7 @@ final class DetailedRoadRenderer {
     private var generation = 0
     private var dark: Bool?
     private var requestedDark = false
+    private var renderingEnabled = false
     private var features: [Group: [MLNShape & MLNFeature]] = [:]
     private var spriteNames: Set<String> = []
     private let logger = Logger(subsystem: "NaviAstra", category: "DetailedRoads")
@@ -31,17 +32,25 @@ final class DetailedRoadRenderer {
         task = nil
     }
     func didLoadStyle(on map: MLNMapView) {
+        stop()
         layerIDs = []
-        spriteNames = []
+        // Sprite identities belong to retained features, even after replacing the style.
         dark = nil
         configure(on: map)
         applyAppearance(dark: requestedDark, on: map)
         publish(on: map)
+        updateVisibility(on: map)
     }
     func update(on map: MLNMapView, dark: Bool, enabled: Bool) {
         requestedDark = dark
-        guard enabled else { stop(); return }
+        let visibilityChanged = renderingEnabled != enabled
+        renderingEnabled = enabled
+        guard enabled else {
+            if visibilityChanged { stop(); updateVisibility(on: map) }
+            return
+        }
         configure(on: map)
+        if visibilityChanged { updateVisibility(on: map) }
         applyAppearance(dark: dark, on: map)
         // Native MVT scheduling and caching belong to MapLibre, never to an Overpass viewport loop.
         if case .vectorTiles = provider.sourceConfiguration { return }
@@ -53,7 +62,10 @@ final class DetailedRoadRenderer {
         }
         if let query, query.contains(south: bounds.sw.latitude, west: bounds.sw.longitude,
                                      north: bounds.ne.latitude, east: bounds.ne.longitude),
-           task != nil || Date().timeIntervalSince(refreshedAt) < 24 * 60 * 60 || retryAfter > .now { return }
+           task != nil || Date().timeIntervalSince(refreshedAt) < 24 * 60 * 60 || retryAfter > .now {
+            if task == nil, retryAfter > .now { scheduleRetry(on: map) }
+            return
+        }
         let changed = query?.id != requested.id
         guard changed || (task == nil && retryAfter <= .now) else { return }
         stop()
@@ -100,6 +112,13 @@ final class DetailedRoadRenderer {
         }
     }
     private func shapeID(_ group: Group) -> String { prefix + "-" + group.rawValue + "-source" }
+    private func updateVisibility(on map: MLNMapView) {
+        for id in layerIDs {
+            if let layer = map.style?.layer(withIdentifier: id), layer.isVisible != renderingEnabled {
+                layer.isVisible = renderingEnabled
+            }
+        }
+    }
     private func collection(_ group: Group) -> MLNShapeCollectionFeature? {
         guard let shapes = features[group], !shapes.isEmpty else { return nil }
         return MLNShapeCollectionFeature(shapes: shapes)
@@ -128,14 +147,19 @@ final class DetailedRoadRenderer {
                 "renderLevel": graphic.renderLevel.rawValue, "bridge": graphic.bridge, "covered": graphic.covered,
                 "confidence": graphic.confidence.rawValue, "directionality": graphic.directionality.rawValue,
                 "laneType": graphic.laneType, "direction": graphic.direction.rawValue,
-                "turnType": turnType, "bearing": graphic.bearing, "arrowScale": graphic.arrowScale
+                "turnType": turnType, "bearing": graphic.bearing, "arrowScale": graphic.arrowScale,
+                "paintOpacity": graphic.opacity
             ]
             if graphic.kind == .arrow {
                 let point = MLNPointFeature(); point.coordinate = points[0]; point.attributes = attributes
                 nextFeatures[.arrows, default: []].append(point)
                 usedSprites.insert(prefix + "-arrow-" + turnType)
             } else if graphic.polygon {
-                let polygon = MLNPolygonFeature(coordinates: &points, count: UInt(points.count))
+                let holes = graphic.interiorRings.map { ring -> MLNPolygon in
+                    var coordinates = ring.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+                    return MLNPolygon(coordinates: &coordinates, count: UInt(coordinates.count))
+                }
+                let polygon = MLNPolygonFeature(coordinates: &points, count: UInt(points.count), interiorPolygons: holes)
                 polygon.attributes = attributes; nextFeatures[.surface, default: []].append(polygon)
             } else {
                 let line = MLNPolylineFeature(coordinates: &points, count: UInt(points.count))
@@ -182,6 +206,7 @@ final class DetailedRoadRenderer {
         }
         guard !sources.isEmpty else {
             if layerIDs.isEmpty { layerIDs = style.layers.map(\.identifier).filter { $0.hasPrefix(prefix) } }
+            keepBelowOverlays(in: style)
             return
         }
         var anchor = style.layers.last {
@@ -194,15 +219,20 @@ final class DetailedRoadRenderer {
         }
         layerIDs = []
         for level in -3...5 {
-            for kind in [DetailedRoadGraphic.Kind.casing, .surface, .edge, .separator, .center, .sharedBoundary, .arrow] {
-                let id = "\(prefix)-\(level)-\(kind.rawValue)"
-                let group: Group = kind == .arrow ? .arrows : (kind == .casing || kind == .surface ? .surface : .lanes)
+          for bridge in [false, true] {
+            for kind in [DetailedRoadGraphic.Kind.casing, .surface, .junction, .gore, .edge, .separator, .center, .sharedBoundary, .arrow] {
+                let id = "\(prefix)-\(level)-\(bridge ? "bridge" : "ground")-\(kind.rawValue)"
+                let group: Group = kind == .arrow ? .arrows : ([.casing, .surface, .junction, .gore].contains(kind) ? .surface : .lanes)
                 guard let source = sources[group] else { continue }
                 let layer: MLNVectorStyleLayer
                 if group == .surface {
                     let fill = MLNFillStyleLayer(identifier: id, source: source)
                     fill.fillAntialiased = NSExpression(forConstantValue: true)
-                    fill.fillOpacity = fade(start: 16, finish: 17, maximum: 1); layer = fill
+                    // Keep coplanar asphalt out of the opaque/depth-writing pass.
+                    // At high pitch its triangles must never cut into route lines
+                    // or label glyphs, even where their geometry shares the ground.
+                    fill.fillOpacity = fade(start: 16, finish: 17,
+                        maximum: kind == .junction ? 0.035 : (kind == .gore ? 0.32 : 0.995)); layer = fill
                 } else if group == .arrows {
                     let symbol = MLNSymbolStyleLayer(identifier: id, source: source)
                     symbol.iconImageName = NSExpression(mglJSONObject: ["concat", prefix + "-arrow-", ["get", "turnType"]])
@@ -210,8 +240,8 @@ final class DetailedRoadRenderer {
                     symbol.iconRotationAlignment = NSExpression(forConstantValue: "map")
                     symbol.iconPitchAlignment = NSExpression(forConstantValue: "map")
                     symbol.iconScale = NSExpression(mglJSONObject: ["interpolate", ["exponential", 2], ["zoom"],
-                        17.3, ["*", 0.55, ["get", "arrowScale"]], 18.2, ["get", "arrowScale"],
-                        20, ["*", 3.4, ["get", "arrowScale"]]])
+                        17.3, ["*", 0.4125, ["get", "arrowScale"]], 18.2, ["*", 0.75, ["get", "arrowScale"]],
+                        20, ["*", 2.55, ["get", "arrowScale"]]])
                     symbol.iconOpacity = fade(start: 17.3, finish: 18.2, maximum: 0.9)
                     symbol.iconAllowsOverlap = NSExpression(forConstantValue: false)
                     layer = symbol
@@ -219,21 +249,62 @@ final class DetailedRoadRenderer {
                     let line = MLNLineStyleLayer(identifier: id, source: source)
                     line.lineCap = NSExpression(forConstantValue: "round"); line.lineJoin = NSExpression(forConstantValue: "round")
                     line.lineWidth = NSExpression(mglJSONObject: ["interpolate", ["linear"], ["zoom"], 16, 0.35, 18, 0.95, 20, 1.5])
-                    line.lineOpacity = fade(start: 16.8, finish: 18, maximum: kind == .edge ? 0.65 : 0.88)
+                    // coalesce preserves the existing contract for prepared vector tiles.
+                    line.lineOpacity = NSExpression(mglJSONObject: ["interpolate", ["linear"], ["zoom"],
+                        16.8, 0, 18, ["*", kind == .edge ? 0.65 : 0.88,
+                            ["coalesce", ["get", "paintOpacity"], 1]]])
                     if kind != .edge { line.lineDashPattern = NSExpression(forConstantValue: kind == .separator ? [5, 7] : [7, 5]) }
                     layer = line
                 }
                 layer.sourceLayerIdentifier = sourceLayers[group]
                 layer.minimumZoomLevel = 16
+                layer.isVisible = renderingEnabled
                 let confidences = kind == .arrow ? ["exact"] : (group == .surface ? ["exact", "derived", "estimated"] : ["exact", "derived"])
-                layer.predicate = NSPredicate(format: "kind == %@ AND level == %d AND confidence IN %@ AND renderLevel != %@",
-                                              kind.rawValue, level, confidences, "underground")
-                if level <= 0, let firstBridge { style.insertLayer(layer, below: firstBridge) }
-                else { if let previous = anchor { style.insertLayer(layer, above: previous) } else { style.addLayer(layer) }; anchor = layer }
+                let attributes = NSPredicate(format: "kind == %@ AND level == %d AND confidence IN %@ AND renderLevel != %@",
+                                             kind.rawValue, level, confidences, "underground")
+                let elevation = NSPredicate(format: bridge ? "bridge == YES" : "bridge != YES")
+                layer.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [attributes, elevation])
+                let belowBridge = level <= 0 ? firstBridge : nil
+                insert(layer, in: style, above: anchor, below: belowBridge)
+                if belowBridge == nil { anchor = layer }
                 layerIDs.append(id)
             }
+          }
         }
         dark = nil
+    }
+
+    /// Road levels order the pavement, never the navigation or names above it.
+    /// A style without a transportation anchor must also keep this upper bound.
+    private func isOverlay(_ layer: MLNStyleLayer) -> Bool {
+        guard !layer.identifier.hasPrefix(prefix) else { return false }
+        return layer is MLNSymbolStyleLayer || layer is MLNFillExtrusionStyleLayer || layer is MLNCustomStyleLayer
+            || ["naviastra-active-route-", "naviastra-completed-route-", "naviastra-alternative-route-",
+                "naviastra-route-traffic-", "naviastra-incident-", "com.mapbox.annotations", "org.maplibre.annotations"]
+                .contains { layer.identifier.hasPrefix($0) }
+    }
+
+    private func insert(_ layer: MLNStyleLayer, in style: MLNStyle,
+                        above anchor: MLNStyleLayer?, below ceiling: MLNStyleLayer?) {
+        let layers = style.layers
+        let ceilingIndex = ceiling.flatMap { ceiling in layers.firstIndex { $0.identifier == ceiling.identifier } }
+        let anchorIndex = anchor.flatMap { anchor in layers.firstIndex { $0.identifier == anchor.identifier } }
+        let preferred = ceilingIndex ?? anchorIndex.map { $0 + 1 } ?? layers.count
+        let index = min(preferred, layers.firstIndex(where: isOverlay) ?? layers.count)
+        if index < layers.count { style.insertLayer(layer, below: layers[index]) }
+        else { style.addLayer(layer) }
+    }
+
+    private func keepBelowOverlays(in style: MLNStyle) {
+        let layers = style.layers
+        guard let boundaryIndex = layers.firstIndex(where: isOverlay) else { return }
+        let boundary = layers[boundaryIndex]
+        // Repair only layers that crossed the boundary after another renderer
+        // inserted an overlay. Retain ground/bridge ordering for everything else.
+        for layer in layers.dropFirst(boundaryIndex + 1) where layer.identifier.hasPrefix(prefix) {
+            style.removeLayer(layer)
+            style.insertLayer(layer, below: boundary)
+        }
     }
     private func fade(start: Double, finish: Double, maximum: Double) -> NSExpression {
         NSExpression(mglJSONObject: ["interpolate", ["linear"], ["zoom"], start, 0, finish, maximum])
@@ -244,8 +315,10 @@ final class DetailedRoadRenderer {
         for id in layerIDs {
             if let fill = style.layer(withIdentifier: id) as? MLNFillStyleLayer {
                 let casing = id.hasSuffix("-casing")
+                let marking = id.hasSuffix("-junction") || id.hasSuffix("-gore")
                 fill.fillColor = NSExpression(forConstantValue: UIColor(naviHex:
-                    casing ? (dark ? 0x42434A : 0xD5D3CF) : (dark ? 0x26282D : 0xE8E9EC)))
+                    marking ? (dark ? 0xB8C6CB : 0xFFFFFF)
+                        : (casing ? (dark ? 0x42434A : 0xD5D3CF) : (dark ? 0x26282D : 0xE8E9EC))))
             } else if let line = style.layer(withIdentifier: id) as? MLNLineStyleLayer {
                 line.lineColor = NSExpression(forConstantValue: UIColor(naviHex: dark ? 0xB8C6CB : 0xFFFFFF))
             }
@@ -258,29 +331,18 @@ final class DetailedRoadRenderer {
         let imagePrefix = prefix + "-arrow-"
         guard name.hasPrefix(imagePrefix) else { return nil }
         let turns = String(name.dropFirst(imagePrefix.count)).components(separatedBy: ";")
-        let allowed: Set<String> = ["left", "slight_left", "sharp_left", "through", "right", "slight_right", "sharp_right", "reverse", "merge_to_left", "merge_to_right"]
-        guard !turns.isEmpty, turns.count <= 4, turns.allSatisfy({ allowed.contains($0) }) else { return nil }
+        guard let paths = DetailedRoadArrowGeometry.paths(for: turns) else { return nil }
         spriteNames.insert(name)
-        return UIGraphicsImageRenderer(size: CGSize(width: 12, height: 26)).image { context in
+        return UIGraphicsImageRenderer(size: CGSize(width: DetailedRoadArrowGeometry.width, height: DetailedRoadArrowGeometry.height)).image { context in
             let cg = context.cgContext
             cg.setStrokeColor(UIColor(naviHex: requestedDark ? 0xB8C6CB : 0xFFFFFF).cgColor)
             cg.setLineWidth(1.6); cg.setLineCap(.round); cg.setLineJoin(.round)
-            for turn in turns {
-                let side: CGFloat = turn.contains("left") ? -1 : (turn.contains("right") ? 1 : 0)
-                var tip = CGPoint(x: 6, y: 3), vector = CGPoint(x: 0, y: -1)
-                var stem = [CGPoint(x: 6, y: 23), CGPoint(x: 6, y: 11)]
-                if turn == "reverse" { stem += [CGPoint(x: 2, y: 7), CGPoint(x: 2, y: 15)]; tip = CGPoint(x: 2, y: 18); vector = CGPoint(x: 0, y: 1) }
-                else if side != 0 {
-                    if turn.hasPrefix("slight") || turn.hasPrefix("merge") { tip = CGPoint(x: 6 + side * 4, y: 5); vector = CGPoint(x: side * 0.55, y: -0.83) }
-                    else if turn.hasPrefix("sharp") { tip = CGPoint(x: 6 + side * 4, y: 16); vector = CGPoint(x: side * 0.7, y: 0.7) }
-                    else { tip = CGPoint(x: 6 + side * 4, y: 9); vector = CGPoint(x: side, y: 0) }
-                }
-                cg.move(to: stem[0]); for point in stem.dropFirst() { cg.addLine(to: point) }; cg.addLine(to: tip); cg.strokePath()
-                let normal = CGPoint(x: -vector.y, y: vector.x)
-                cg.move(to: CGPoint(x: tip.x - vector.x * 3 + normal.x * 2, y: tip.y - vector.y * 3 + normal.y * 2))
-                cg.addLine(to: tip)
-                cg.addLine(to: CGPoint(x: tip.x - vector.x * 3 - normal.x * 2, y: tip.y - vector.y * 3 - normal.y * 2)); cg.strokePath()
+            for path in paths {
+                guard let first = path.first else { continue }
+                cg.move(to: CGPoint(x: first.x, y: first.y))
+                for point in path.dropFirst() { cg.addLine(to: CGPoint(x: point.x, y: point.y)) }
             }
+            cg.strokePath()
         }
     }
 }
