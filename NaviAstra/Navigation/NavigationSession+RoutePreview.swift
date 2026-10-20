@@ -139,7 +139,7 @@ extension NavigationSession {
             state.routeOptions = []
             state.transitPlanningPhase = nil
             state.status = .error
-            state.errorMessage = error.localizedDescription
+            state.errorMessage = PolishUserErrorMessage.make(error, fallback: "Nie udało się wyznaczyć trasy. Sprawdź połączenie i spróbuj ponownie.")
             if state.transportMode == .car, !(error is CancellationError) {
                 RoutingDiagnostics.shared.publish(.make(routes: [], preference: state.routingPreferences.advanced.effectiveRoutePreference,
                     selected: nil, source: "preview-error", calculationSeconds: ProcessInfo.processInfo.systemUptime - calculationStarted,

@@ -78,7 +78,11 @@ struct ValhallaToolsView: View {
             do {
                 let samples = try await ValhallaServices(endpoint: endpoint).heights([point], resample: false)
                 try Task.checkCancellation(); height = samples.first?.heightMeters; heightLoaded = true
-            } catch is CancellationError { } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+            } catch is CancellationError { } catch {
+                if !Task.isCancelled {
+                    self.error = PolishUserErrorMessage.make(error, fallback: "Nie udało się pobrać wysokości tego punktu.")
+                }
+            }
         }
     }
     private func loadStatus() {
@@ -87,7 +91,11 @@ struct ValhallaToolsView: View {
         task = Task {
             defer { busy = false }
             do { let result = try await ValhallaServices(endpoint: endpoint).status(); try Task.checkCancellation(); status = result }
-            catch is CancellationError { } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+            catch is CancellationError { } catch {
+                if !Task.isCancelled {
+                    self.error = PolishUserErrorMessage.make(error, fallback: "Nie udało się sprawdzić dostępności serwera tras.")
+                }
+            }
         }
     }
 }
@@ -182,7 +190,11 @@ struct ValhallaReachabilityView: View {
                 let result = try await ValhallaServices(endpoint: endpoint).contours(at: origin, mode: mode,
                     preferences: preferences, value: limit, distance: distance)
                 try Task.checkCancellation(); contours = result
-            } catch is CancellationError { } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+            } catch is CancellationError { } catch {
+                if !Task.isCancelled {
+                    self.error = PolishUserErrorMessage.make(error, fallback: "Nie udało się obliczyć zasięgu podróży.")
+                }
+            }
         }
     }
 }

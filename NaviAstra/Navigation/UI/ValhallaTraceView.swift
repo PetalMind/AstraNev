@@ -113,11 +113,21 @@ struct ValhallaTraceView: View {
                 guard size <= 10_000_000 else { throw ValhallaFeatureError.message("Plik GPX może mieć maksymalnie 10 MB.") }
                 let imported = try GPXTraceParser.read(Data(contentsOf: url))
                 use(imported, name: url.lastPathComponent)
-            } catch { self.error = error.localizedDescription }
+            } catch {
+                if PolishUserErrorMessage.isCancellation(error) {
+                    self.error = nil
+                } else if let error = error as? ValhallaFeatureError {
+                    self.error = error.errorDescription
+                } else {
+                    self.error = PolishUserErrorMessage.make(error, fallback: "Nie udało się wczytać śladu GPX.")
+                }
+            }
         }
         .fileExporter(isPresented: $showsExporter, document: MatchedTraceDocument(routes: routes),
             contentType: .naviastraGPX, defaultFilename: "NaviAstra-dopasowany-slad") { result in
-                if case .failure(let failure) = result { error = failure.localizedDescription }
+                if case .failure(let failure) = result, !PolishUserErrorMessage.isCancellation(failure) {
+                    error = PolishUserErrorMessage.make(failure, fallback: "Nie udało się wyeksportować dopasowanego śladu.")
+                }
             }
     }
 
@@ -150,7 +160,11 @@ struct ValhallaTraceView: View {
             do {
                 let result = try await ValhallaServices(endpoint: endpoint).matchTrace(input, mode: selectedMode, preferences: preferences)
                 try Task.checkCancellation(); routes = result
-            } catch is CancellationError { } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+            } catch is CancellationError { } catch {
+                if !Task.isCancelled {
+                    self.error = PolishUserErrorMessage.make(error, fallback: "Nie udało się dopasować śladu do dróg.")
+                }
+            }
         }
     }
     private func loadHeights() {
@@ -173,7 +187,11 @@ struct ValhallaTraceView: View {
                     offset += samples.last?.distanceMeters ?? 0
                 }
                 elevations = result
-            } catch is CancellationError { } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+            } catch is CancellationError { } catch {
+                if !Task.isCancelled {
+                    self.error = PolishUserErrorMessage.make(error, fallback: "Nie udało się pobrać profilu wysokości śladu.")
+                }
+            }
         }
     }
     private struct TraceHeightPoint: Identifiable {

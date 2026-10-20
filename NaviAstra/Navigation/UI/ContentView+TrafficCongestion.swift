@@ -28,6 +28,14 @@ private struct RouteCongestionSummary {
         let lower = min(geometry.length, max(0, start))
         let colors: Set<UInt32> = [RouteColorPalette.trafficModerate, RouteColorPalette.trafficSlow,
                                   RouteColorPalette.trafficHeavy, RouteColorPalette.trafficStationary]
+        func severity(of colorHex: UInt32) -> Int {
+            switch colorHex {
+            case RouteColorPalette.trafficModerate: 1
+            case RouteColorPalette.trafficSlow: 2
+            case RouteColorPalette.trafficHeavy: 3
+            default: 0
+            }
+        }
         func fresh(_ segment: RouteTrafficSegment) -> Bool {
             segment.routeID == route.id && segment.startDistance.isFinite && segment.endDistance.isFinite &&
                 segment.endDistance > max(lower, segment.startDistance) &&
@@ -57,8 +65,7 @@ private struct RouteCongestionSummary {
                 if let last = result.last, a <= last.end + 1 {
                     let index = result.count - 1
                     result[index].end = b
-                    if last.colorHex == RouteColorPalette.trafficModerate ||
-                        segment.colorHex == RouteColorPalette.trafficHeavy {
+                    if severity(of: segment.colorHex) > severity(of: last.colorHex) {
                         result[index].colorHex = segment.colorHex
                     }
                     result[index].travelTime = last.travelTime.flatMap { t in duration.map { t + $0 } }

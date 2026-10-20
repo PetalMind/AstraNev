@@ -89,7 +89,12 @@ struct OfflineRoutingView: View {
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.archive, .data]) { result in
             switch result {
             case .success(let url): store.importArchive(url, motorVehiclesOnly: motorVehiclesOnly)
-            case .failure(let error): store.error = error.localizedDescription
+            case .failure(let error):
+                if PolishUserErrorMessage.isCancellation(error) {
+                    store.error = nil
+                } else {
+                    store.error = "Nie udało się otworzyć wybranego pliku. Wybierz poprawną paczkę danych drogowych Valhalla."
+                }
             }
         }
         .alert("Usunąć dane drogowe?", isPresented: Binding(

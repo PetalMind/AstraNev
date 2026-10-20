@@ -154,26 +154,31 @@ struct SearchResult: Identifiable {
     }
 
     var travelSummary: String? {
-        if let detour {
+        if let detour, detour.isFinite, detour >= 0, detour < Double(Int.max / 2) * 60 {
             let duration = TravelDurationFormatter.string(minutes: max(0, Int((detour / 60).rounded(.up))))
-            if let detourDistance {
-                return "\(String(format: "%.1f", detourDistance / 1_000)) km od trasy • +\(duration)"
+            if let detourDistance, detourDistance.isFinite, detourDistance >= 0 {
+                let kilometers = String(format: "%.1f", locale: PolishRegionalFormat.locale, detourDistance / 1_000)
+                return "\(kilometers) km od trasy • +\(duration)"
             }
             return "+\(duration) objazdu (szacunek)"
         }
-        if let travelTime, let travelDistance {
+        if let travelTime, travelTime.isFinite, travelTime >= 0, travelTime < Double(Int.max / 2) * 60,
+           let travelDistance, travelDistance.isFinite, travelDistance >= 0 {
             let duration = TravelDurationFormatter.string(minutes: max(1, Int((travelTime / 60).rounded(.up))))
-            return "\(String(format: "%.1f", travelDistance / 1000)) km · ~\(duration)"
+            let kilometers = String(format: "%.1f", locale: PolishRegionalFormat.locale, travelDistance / 1_000)
+            return "\(kilometers) km · ~\(duration)"
         }
         switch travelEstimateStatus {
         case .calculating:
-            if let distance = detourDistance {
-                return "\(String(format: "%.1f", distance / 1_000)) km od trasy • obliczanie czasu…"
+            if let distance = detourDistance, distance.isFinite, distance >= 0 {
+                let kilometers = String(format: "%.1f", locale: PolishRegionalFormat.locale, distance / 1_000)
+                return "\(kilometers) km od trasy • obliczanie czasu…"
             }
             return "Obliczanie odległości trasy i ETA…"
         case .unavailable:
-            if let distance = detourDistance {
-                return "\(String(format: "%.1f", distance / 1_000)) km od trasy • objazd niedostępny"
+            if let distance = detourDistance, distance.isFinite, distance >= 0 {
+                let kilometers = String(format: "%.1f", locale: PolishRegionalFormat.locale, distance / 1_000)
+                return "\(kilometers) km od trasy • objazd niedostępny"
             }
             return requiresRouteEstimate ? "Odległość trasy i ETA niedostępne" : nil
         case .notRequested:

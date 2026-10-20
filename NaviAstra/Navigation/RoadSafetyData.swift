@@ -189,9 +189,11 @@ struct RoadSafetyAlert: Identifiable, Codable, Equatable, Sendable {
     }
 
     func distanceText(from routeDistance: Double) -> String {
-        let remaining = max(0, (distanceAlongRoute ?? routeDistance) - routeDistance)
+        guard routeDistance.isFinite, routeDistance >= 0 else { return "Dystans niedostępny" }
+        let distanceAlongRoute = self.distanceAlongRoute.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil } ?? routeDistance
+        let remaining = max(0, distanceAlongRoute - routeDistance)
         return remaining >= 1_000
-            ? String(format: "%.1f km", remaining / 1_000)
+            ? String(format: "%.1f km", locale: Locale(identifier: "pl_PL"), remaining / 1_000)
             : "\(Int(remaining.rounded())) m"
     }
 

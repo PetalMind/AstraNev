@@ -51,7 +51,7 @@ extension NavigationSession {
                   laterGeneration == laterTransitRequestGeneration,
                   state.destination?.id == expectedDestinationID,
                   state.route?.id == expectedRouteID else { return }
-            state.errorMessage = error.localizedDescription
+            state.errorMessage = PolishUserErrorMessage.make(error, fallback: "Nie udało się znaleźć późniejszego połączenia. Spróbuj ponownie.")
             state.laterTransitRoutes = []
             state.didSearchLaterTransitRoutes = true
         }

@@ -149,7 +149,8 @@ actor ValhallaRouteInformationProvider {
         if flows?["current_flow"] != nil, let congestions = shape["congestion"] as? [Double], congestions.count >= finish {
             let values = congestions[start..<finish].filter { $0.isFinite && $0 >= 0 && $0 <= 100 }
             if let maxValue = values.max() {
-                result.append(RouteInformationItem(title: "Natężenie wg serwera (0–100)", value: String(format: "%.0f", maxValue)))
+                result.append(RouteInformationItem(title: "Natężenie wg serwera (0–100)",
+                                                   value: String(format: "%.0f", locale: PolishRegionalFormat.locale, maxValue)))
             }
         }
         return result
@@ -229,7 +230,9 @@ actor ValhallaRouteInformationProvider {
         for (key, title, unit) in [("mean_elevation","Średnia wysokość","m n.p.m."),
                                   ("max_upward_grade","Maksymalny podjazd","%"),
                                   ("max_downward_grade","Maksymalny zjazd","%")] {
-            if let value = number(edge[key]), value != 32768 { add(title, String(format: "%.0f %@", value, unit)) }
+            if let value = number(edge[key]), value != 32768 {
+                add(title, String(format: "%.0f %@", locale: PolishRegionalFormat.locale, value, unit))
+            }
         }
         if let speed = number(edge["truck_speed"]), speed > 0, speed < 300 { add("Prędkość routingu ciężarówek", "\(Int(speed)) km/h") }
         add("Pas HOV", translated("hov_type", ["hov2":"Min. 2 osoby", "hov3":"Min. 3 osoby"]))

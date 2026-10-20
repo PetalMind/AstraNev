@@ -26,7 +26,10 @@ struct RoutingDiagnosticsView: View {
                 Text("Zapis zawiera warianty i współrzędne tras. Pozostaje na urządzeniu: maksymalnie 20 zapisów i 20 MB. Nie jest wysyłany do serwera.")
                     .font(.caption).foregroundStyle(.secondary)
                 Button("Usuń zapisane decyzje", role: .destructive) {
-                    Task { do { try await RoutingDiagnosticsArchive.shared.clear() } catch { self.error = error.localizedDescription } }
+                    Task {
+                        do { try await RoutingDiagnosticsArchive.shared.clear() }
+                        catch { self.error = PolishUserErrorMessage.make(error, fallback: "Nie udało się usunąć zapisanych danych diagnostycznych.") }
+                    }
                 }
                 if let archiveError = diagnostics.archiveError { Text(archiveError).foregroundStyle(.orange) }
             }
@@ -98,7 +101,9 @@ struct RoutingDiagnosticsView: View {
                             let records = try await RoutingDiagnosticsArchive.shared.records()
                             guard !records.isEmpty else { error = "Brak zapisanych decyzji do odtworzenia."; return }
                             run { RoutingBenchmarkSuite.replay(records) }
-                        } catch { self.error = error.localizedDescription }
+                        } catch {
+                            self.error = PolishUserErrorMessage.make(error, fallback: "Nie udało się odtworzyć zapisanych danych diagnostycznych.")
+                        }
                     }
                 }.disabled(busy)
                 Button("Importuj decyzję JSON do odtworzenia") { importing = true }.disabled(busy)
@@ -121,7 +126,9 @@ struct RoutingDiagnosticsView: View {
         .navigationTitle("Diagnostyka routingu")
         .fileExporter(isPresented: $exporting, document: document, contentType: .json,
                       defaultFilename: "NaviAstra-routing-diagnostics") { result in
-            if case .failure(let failure) = result { error = failure.localizedDescription }
+            if case .failure(let failure) = result, !PolishUserErrorMessage.isCancellation(failure) {
+                error = PolishUserErrorMessage.make(failure, fallback: "Nie udało się wyeksportować raportu.")
+            }
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
             do {
@@ -134,7 +141,15 @@ struct RoutingDiagnosticsView: View {
                 let record = try decoder.decode(RoutingDecisionRecord.self, from: Data(contentsOf: url))
                 guard record.isReplayable else { throw ValhallaFeatureError.message("Nieobsługiwana wersja diagnostyki.") }
                 run { RoutingBenchmarkSuite.replay([record]) }
-            } catch { self.error = error.localizedDescription }
+            } catch {
+                if PolishUserErrorMessage.isCancellation(error) {
+                    self.error = nil
+                } else if let featureError = error as? ValhallaFeatureError {
+                    self.error = featureError.errorDescription
+                } else {
+                    self.error = PolishUserErrorMessage.make(error, fallback: "Nie udało się wczytać zapisu diagnostycznego.")
+                }
+            }
         }
     }
     private func percent(_ value: Double) -> String { "\(Int((min(1, max(0, value)) * 100).rounded()))%" }
@@ -149,6 +164,8 @@ struct RoutingDiagnosticsView: View {
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
             encoder.nonConformingFloatEncodingStrategy = .convertToString(positiveInfinity: "Infinity", negativeInfinity: "-Infinity", nan: "NaN")
             document = RoutingDiagnosticDocument(data: try encoder.encode(value)); exporting = true
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            self.error = PolishUserErrorMessage.make(error, fallback: "Nie udało się przygotować pliku raportu.")
+        }
     }
 }

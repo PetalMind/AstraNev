@@ -59,7 +59,9 @@ extension NavigationSession {
             } catch {
                 guard generation == trafficGeneration else { return }
                 publishTrafficSnapshot()
-                state.trafficStatus = .unavailable(error.localizedDescription)
+                state.trafficStatus = .unavailable(
+                    PolishUserErrorMessage.make(error, fallback: "Dane o ruchu drogowym są niedostępne.")
+                )
             }
         }
     }
@@ -159,7 +161,9 @@ extension NavigationSession {
             if trafficError == nil || !flowSamples.isEmpty {
                 self.state.trafficStatus = .available
             } else if let trafficError {
-                self.state.trafficStatus = .unavailable(trafficError.localizedDescription)
+                self.state.trafficStatus = .unavailable(
+                    PolishUserErrorMessage.make(trafficError, fallback: "Nie udało się pobrać aktualnego ruchu drogowego.")
+                )
             }
             if let published = self.state.traffic {
                 let closureAhead = self.confirmedClosureAhead(in: published, on: route,

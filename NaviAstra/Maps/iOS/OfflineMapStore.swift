@@ -81,8 +81,9 @@ final class OfflineMapStore {
                 guard let self, let pack = notification.object as? MLNOfflinePack,
                       let id = self.packsByID.first(where: { $0.value === pack })?.key,
                       !self.deletingIDs.contains(id) else { return }
-                let message = (notification.userInfo?[MLNOfflinePackUserInfoKey.error] as? NSError)?
-                    .localizedDescription ?? "Nie udało się pobrać zasobów mapy."
+                let message = (notification.userInfo?[MLNOfflinePackUserInfoKey.error] as? Error).map {
+                    PolishUserErrorMessage.make($0, fallback: "Nie udało się pobrać zasobów mapy. Sprawdź połączenie i wolne miejsce.")
+                } ?? "Nie udało się pobrać zasobów mapy."
                 self.packErrors[id] = message
                 pack.suspend()
                 self.refresh()
@@ -162,13 +163,15 @@ final class OfflineMapStore {
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.isCreating = false
-                    if let failure { self.error = failure.localizedDescription }
+                    if let failure {
+                        self.error = PolishUserErrorMessage.make(failure, fallback: "Nie udało się utworzyć obszaru offline.")
+                    }
                     else if let pack { pack.resume() }
                     else { self.error = "Nie udało się utworzyć obszaru offline." }
                     self.refresh()
                 }
             }
-        } catch { self.error = error.localizedDescription }
+        } catch { self.error = PolishUserErrorMessage.make(error, fallback: "Nie udało się przygotować obszaru offline.") }
     }
 
     func toggleDownload(_ id: String) {
@@ -191,7 +194,7 @@ final class OfflineMapStore {
                 guard let self else { return }
                 self.deletingIDs.remove(id)
                 if let failure {
-                    self.error = failure.localizedDescription
+                    self.error = PolishUserErrorMessage.make(failure, fallback: "Nie udało się usunąć pobranej mapy.")
                     // The SDK invalidates the old object even when deletion fails.
                     for validPack in self.packsByID.values { validPack.suspend() }
                     self.packsByID.removeAll()

@@ -19,6 +19,7 @@ final class DrivingLearningEngine {
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var revision = 0
     @ObservationIgnored private var roadEvidence: [String: RoadEvidence] = [:]
+    @ObservationIgnored private var profileLoadFailed = false
     var recordingGeneration: Int { revision }
     private(set) var evidence: [PreferenceEvidence] = []
     private(set) var databaseBytes: Int64?
@@ -41,7 +42,10 @@ final class DrivingLearningEngine {
         let store = store ?? DrivingProfileStore()
         self.store = store
         do { snapshot = try store.load() }
-        catch { message = "Nie udało się odczytać preferencji tras: \(error.localizedDescription)" }
+        catch {
+            profileLoadFailed = true
+            message = PolishUserErrorMessage.make(error, fallback: "Nie udało się odczytać preferencji tras.")
+        }
         let cutoff = Date().addingTimeInterval(-365 * 86_400)
         snapshot.trips = Array(snapshot.trips.filter { $0.startedAt >= cutoff }.prefix(300))
         snapshot.pending = Array(snapshot.pending.filter { $0.startedAt >= cutoff }.suffix(10))
@@ -50,7 +54,10 @@ final class DrivingLearningEngine {
         let migrated = snapshot.trips.filter { !existing.contains($0.id) }
         for trip in migrated { snapshot.evidence += DrivingEvidenceMath.observations(for: trip, migrated: true) }
         snapshot.schemaVersion = 2
-        if !migrated.isEmpty { do { try store.save(snapshot) } catch { message = error.localizedDescription } }
+        if !migrated.isEmpty {
+            do { try store.save(snapshot) }
+            catch { message = PolishUserErrorMessage.make(error, fallback: "Nie udało się przygotować zapisanych preferencji tras.") }
+        }
         rebuild()
     }
 
@@ -233,7 +240,7 @@ final class DrivingLearningEngine {
                 } catch is CancellationError { return }
                 catch {
                     guard self.revision == generation else { return }
-                    self.message = error.localizedDescription
+                    self.message = PolishUserErrorMessage.make(error, fallback: "Nie udało się przetworzyć przejazdu. Spróbuj ponownie później.")
                     // Keep the compact pending trace for retry after a map is installed.
                     return
                 }
@@ -287,6 +294,10 @@ final class DrivingLearningEngine {
     }
 
     @discardableResult private func commit(_ input: DrivingProfileSnapshot) -> Bool {
+        guard !profileLoadFailed else {
+            message = "Nie zapisano zmian, aby nie zastąpić nieodczytanych preferencji tras."
+            return false
+        }
         var next = input
         let retained = Set(next.trips.map(\.id) + next.pending.map(\.id))
         let liveEvidence = next.evidence.filter { $0.tripID.map { retained.contains($0) } ?? true }
@@ -311,7 +322,7 @@ final class DrivingLearningEngine {
             rebuild()
             return true
         } catch {
-            message = "Nie udało się zapisać preferencji tras: \(error.localizedDescription)"
+            message = PolishUserErrorMessage.make(error, fallback: "Nie udało się zapisać preferencji tras. Twoje dane pozostały bez zmian.")
             return false
         }
     }

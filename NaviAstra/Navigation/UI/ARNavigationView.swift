@@ -262,7 +262,10 @@ struct ARNavigationView: View {
 
     private func distanceText(_ meters: Double) -> String {
         guard meters.isFinite, meters >= 0 else { return "Dystans niedostępny" }
-        if meters >= 1000 { return String(format: "Za %.1f km", meters / 1000) }
+        if meters >= 1000 {
+            let kilometers = String(format: "%.1f", locale: PolishRegionalFormat.locale, meters / 1000)
+            return "Za \(kilometers) km"
+        }
         return "Za \(Int(meters.rounded())) m"
     }
 }

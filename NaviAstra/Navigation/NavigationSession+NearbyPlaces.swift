@@ -150,7 +150,9 @@ extension NavigationSession {
             }
         } catch {
             guard nearbySearchID == searchID, !Task.isCancelled else { return }
-            state.nearbyStatus = .unavailable(error.localizedDescription)
+            state.nearbyStatus = .unavailable(
+                PolishUserErrorMessage.make(error, fallback: "Nie udało się znaleźć miejsc po drodze. Spróbuj ponownie.")
+            )
         }
     }
 

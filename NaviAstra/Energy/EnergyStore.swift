@@ -27,7 +27,9 @@ final class EnergyStore {
             }
         } catch {
             canWrite = false
-            errorMessage = "Nie udało się wczytać danych paliwa: \(error.localizedDescription). Zapis został zablokowany, aby zachować plik."
+            errorMessage = PolishUserErrorMessage.make(
+                error, fallback: "Nie udało się wczytać danych paliwa. Zapis wstrzymano, aby zachować plik."
+            )
         }
     }
 
@@ -39,7 +41,7 @@ final class EnergyStore {
             errorMessage = nil
             return true
         } catch {
-            errorMessage = "Nie udało się zapisać danych paliwa: \(error.localizedDescription)"
+            errorMessage = PolishUserErrorMessage.make(error, fallback: "Nie udało się zapisać danych paliwa. Twoje dane pozostały bez zmian.")
             return false
         }
     }

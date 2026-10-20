@@ -853,10 +853,11 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         private func roadAlertSubtitle(_ alert: RoadSafetyAlert, routeDistance: Double) -> String {
-            guard let distance = alert.distanceAlongRoute else { return "" }
+            guard let distance = alert.distanceAlongRoute,
+                  distance.isFinite, distance >= 0, routeDistance.isFinite, routeDistance >= 0 else { return "" }
             let remaining = max(0, distance - routeDistance)
             let distanceText = remaining >= 1_000
-                ? String(format: "%.1f km", remaining / 1_000)
+                ? String(format: "%.1f km", locale: PolishRegionalFormat.locale, remaining / 1_000)
                 : "\(Int(remaining.rounded())) m"
             return distanceText
         }

@@ -42,7 +42,9 @@ final class TripPlanningService {
             }
         } catch {
             canWrite = false
-            errorMessage = "Nie udało się wczytać planowanych podróży. Zapis wstrzymany, aby zachować dane: \(error.localizedDescription)"
+            errorMessage = PolishUserErrorMessage.make(
+                error, fallback: "Nie udało się wczytać planowanych podróży. Zapis wstrzymano, aby zachować dane."
+            )
         }
     }
 
@@ -78,7 +80,7 @@ final class TripPlanningService {
             errorMessage = nil
             return true
         } catch {
-            errorMessage = "Nie udało się zapisać podróży: \(error.localizedDescription)"
+            errorMessage = PolishUserErrorMessage.make(error, fallback: "Nie udało się zapisać podróży. Twoje dane pozostały bez zmian.")
             return false
         }
     }
@@ -87,7 +89,7 @@ final class TripPlanningService {
         do {
             let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
             reminderMessage = granted ? nil : "Powiadomienia są wyłączone. Możesz włączyć je w ustawieniach systemu."
-        } catch { reminderMessage = error.localizedDescription }
+        } catch { reminderMessage = PolishUserErrorMessage.make(error, fallback: "Nie udało się włączyć przypomnień.") }
         await reschedule()
     }
 
@@ -129,7 +131,7 @@ final class TripPlanningService {
                 currentTraffic: currentTraffic, matched: matched, trafficNote: trafficNote)
             updated.refreshError = nil
         } catch is CancellationError { return }
-        catch { updated.refreshError = "Nie udało się odświeżyć trasy: \(error.localizedDescription)" }
+        catch { updated.refreshError = PolishUserErrorMessage.make(error, fallback: "Nie udało się odświeżyć trasy.") }
         // A route response must not resurrect a deleted or edited plan.
         guard trips.first(where: { $0.id == id }) == original else { return }
         if save(updated) { await reschedule() }
@@ -203,7 +205,7 @@ final class TripPlanningService {
         repeat {
             scheduleAgain = false
             do { reminderMessage = try await scheduler.replace(trips: trips) }
-            catch { reminderMessage = "Nie udało się ustawić przypomnień: \(error.localizedDescription)" }
+            catch { reminderMessage = PolishUserErrorMessage.make(error, fallback: "Nie udało się ustawić przypomnień.") }
         } while scheduleAgain && !Task.isCancelled
     }
 }

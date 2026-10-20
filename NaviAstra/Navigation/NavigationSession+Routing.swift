@@ -85,7 +85,9 @@ extension NavigationSession {
                   state.destination?.id == destination.id else { return }
             state.status = .navigating
             updateNavigationCameraState()
-            state.errorMessage = "Nie udało się przeliczyć trasy: \(error.localizedDescription)"
+            state.errorMessage = PolishUserErrorMessage.make(
+                error, fallback: "Nie udało się przeliczyć trasy. Sprawdź połączenie i spróbuj ponownie."
+            )
         }
     }
 
@@ -538,7 +540,9 @@ extension NavigationSession {
                               self.state.destination?.id == destinationID else { return }
                         self.state.status = .navigating
                         self.updateNavigationCameraState()
-                        self.state.errorMessage = "Nie udało się ominąć zgłoszonego zamknięcia: \(error.localizedDescription)"
+                        self.state.errorMessage = PolishUserErrorMessage.make(
+                            error, fallback: "Nie udało się ominąć zgłoszonego zamknięcia. Spróbuj ponownie za chwilę."
+                        )
                         self.rerouteController.scheduleClosureRetry(closureIncident.id, after: 60)
                     }
                 }

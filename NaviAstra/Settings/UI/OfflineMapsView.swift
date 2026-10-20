@@ -52,7 +52,7 @@ struct OfflineMapsView: View {
                     }
                     if let selectedBounds {
                         Text(selectedBounds.dimensions).font(.subheadline)
-                        Text(String(format: "%.4f, %.4f — %.4f, %.4f", selectedBounds.south,
+                        Text(String(format: "%.4f; %.4f — %.4f; %.4f", locale: PolishRegionalFormat.locale, selectedBounds.south,
                                     selectedBounds.west, selectedBounds.north, selectedBounds.east))
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -64,7 +64,8 @@ struct OfflineMapsView: View {
                         }
                     }
                     if let center {
-                        Text(String(format: "%.4f, %.4f", center.latitude, center.longitude))
+                        Text(String(format: "%.4f; %.4f", locale: PolishRegionalFormat.locale,
+                                    center.latitude, center.longitude))
                             .font(.caption).foregroundStyle(.secondary)
                     } else {
                         Text("Brak pozycji. Wybierz cel podróży albo poczekaj na ustalenie lokalizacji.")

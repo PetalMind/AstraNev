@@ -212,7 +212,8 @@ struct ParkedCarDetailsSheet: View {
                     Label(displayedCar.address ?? "Zapisana lokalizacja na mapie", systemImage: "mappin.and.ellipse")
                         .font(.subheadline.weight(.semibold))
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(String(format: "%.5f, %.5f", displayedCar.coordinate.latitude, displayedCar.coordinate.longitude))
+                    Text(String(format: "%.5f; %.5f", locale: PolishRegionalFormat.locale,
+                                displayedCar.coordinate.latitude, displayedCar.coordinate.longitude))
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(Color.naviTextSecondary)
                         .textSelection(.enabled)
@@ -357,6 +358,10 @@ struct ParkedCarDetailsSheet: View {
     private var walkingRouteSummary: some View {
         TimelineView(.periodic(from: .now, by: 5)) { context in
             if canGuide, let estimate = walkingEstimate, let updatedAt = estimateUpdatedAt,
+               estimate.travelTime.isFinite, estimate.travelTime >= 0,
+               estimate.travelTime < Double(Int.max / 2) * 60,
+               estimate.distanceMeters.isFinite, estimate.distanceMeters >= 0,
+               context.date.timeIntervalSince(updatedAt) >= 0,
                context.date.timeIntervalSince(updatedAt) <= 60 {
                 let minutes = max(1, Int(ceil(estimate.travelTime / 60)))
                 Text(estimate.travelTime < 60 ? "Mniej niż minuta pieszo" : "\(minutes) min pieszo")
@@ -374,8 +379,9 @@ struct ParkedCarDetailsSheet: View {
     }
 
     private func routeDistanceLabel(_ meters: Double) -> String {
+        guard meters.isFinite, meters >= 0 else { return "Dystans niedostępny" }
         if meters < 1_000 { return "\(Int(meters.rounded())) m" }
-        return String(format: "%.1f km", meters / 1_000)
+        return String(format: "%.1f km", locale: PolishRegionalFormat.locale, meters / 1_000)
     }
 
     private var removalButton: some View {

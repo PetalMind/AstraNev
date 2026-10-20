@@ -162,7 +162,11 @@ struct RouteInformationView: View {
     }
 
     private func formatDistance(_ value: Double) -> String {
-        value >= 1000 ? String(format: "%.1f km", value / 1000) : "\(Int(value.rounded())) m"
+        guard value.isFinite, value >= 0 else { return "Dystans niedostępny" }
+        if value >= 1_000 {
+            return String(format: "%.1f km", locale: PolishRegionalFormat.locale, value / 1_000)
+        }
+        return "\(Int(value.rounded())) m"
     }
 
     @MainActor private func load(_ source: RouteInformationSource?) async {
@@ -204,7 +208,11 @@ struct ManeuverInformationView: View {
     private func stage(_ info: ManeuverInformation) -> String {
         var parts: [String] = []
         if let length = info.distanceMeters {
-            parts.append(length >= 1000 ? String(format: "%.1f km", length / 1000) : "\(Int(length.rounded())) m")
+            if length.isFinite, length >= 0 {
+                parts.append(length >= 1_000
+                    ? String(format: "%.1f km", locale: PolishRegionalFormat.locale, length / 1_000)
+                    : "\(Int(length.rounded())) m")
+            }
         }
         if let duration = info.duration { parts.append(duration < 60 ? "\(Int(duration.rounded())) s" : "około \(Int((duration / 60).rounded())) min") }
         return "Odcinek: " + parts.joined(separator: " · ")

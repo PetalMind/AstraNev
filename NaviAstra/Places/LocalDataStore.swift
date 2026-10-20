@@ -222,20 +222,21 @@ final class LocalDataStore {
     private(set) var parkedCar: ParkedCar?
     var errorMessage: String?
     private let directory: URL
+    private var canWriteDirectory = true
+    private var unreadableFiles: Set<String> = []
 
     init(directory: URL? = nil) {
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("NaviAstra", isDirectory: true)
         do { try FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true) }
-        catch { errorMessage = "Nie udało się przygotować lokalnego zapisu: \(error.localizedDescription)" }
-        do { places = try Self.read([SavedPlace].self, from: self.directory.appendingPathComponent("places.json")) ?? [] }
-        catch { errorMessage = "Nie udało się wczytać ulubionych: \(error.localizedDescription)" }
-        do { trips = try Self.read([TripRecord].self, from: self.directory.appendingPathComponent("trips.json")) ?? [] }
-        catch { errorMessage = "Nie udało się wczytać historii: \(error.localizedDescription)" }
-        do { searches = try Self.read([SearchHistoryEntry].self, from: self.directory.appendingPathComponent("searches.json")) ?? [] }
-        catch { errorMessage = "Nie udało się wczytać historii wyszukiwania: \(error.localizedDescription)" }
-        do { parkedCar = try Self.read(ParkedCar.self, from: self.directory.appendingPathComponent("parked-car.json")) }
-        catch { errorMessage = "Nie udało się wczytać miejsca samochodu: \(error.localizedDescription)" }
+        catch {
+            canWriteDirectory = false
+            errorMessage = PolishUserErrorMessage.make(error, fallback: "Nie udało się przygotować miejsca na dane aplikacji.")
+        }
+        places = load([SavedPlace].self, file: "places.json", fallback: "Nie udało się wczytać ulubionych. Zapis tych danych został wstrzymany, aby zachować plik.") ?? []
+        trips = load([TripRecord].self, file: "trips.json", fallback: "Nie udało się wczytać historii podróży. Zapis tych danych został wstrzymany, aby zachować plik.") ?? []
+        searches = load([SearchHistoryEntry].self, file: "searches.json", fallback: "Nie udało się wczytać historii wyszukiwania. Zapis tych danych został wstrzymany, aby zachować plik.") ?? []
+        parkedCar = load(ParkedCar.self, file: "parked-car.json", fallback: "Nie udało się wczytać miejsca samochodu. Zapis tych danych został wstrzymany, aby zachować plik.")
     }
 
     @discardableResult
@@ -269,6 +270,7 @@ final class LocalDataStore {
 
     @discardableResult
     func removeParkedCar() -> Bool {
+        guard canPersist(file: "parked-car.json") else { return false }
         let file = directory.appendingPathComponent("parked-car.json")
         do {
             if FileManager.default.fileExists(atPath: file.path) {
@@ -278,16 +280,17 @@ final class LocalDataStore {
                 try? FileManager.default.removeItem(at: parkedCarPhotoURL(for: photoPath))
             }
             parkedCar = nil
-            errorMessage = nil
+            clearErrorIfPossible()
             return true
         } catch {
-            errorMessage = "Nie udało się usunąć miejsca samochodu: \(error.localizedDescription)"
+            errorMessage = PolishUserErrorMessage.make(error, fallback: "Nie udało się usunąć miejsca samochodu. Twoje dane pozostały bez zmian.")
             return false
         }
     }
 
     func saveParkedCarPhoto(_ data: Data, for carID: UUID) -> String? {
         guard var car = parkedCar, car.id == carID else { return nil }
+        guard canPersist(file: "parked-car.json") else { return nil }
         let fileName = "parked-car-\(UUID().uuidString).photo"
         do {
             try data.write(to: parkedCarPhotoURL(for: fileName), options: .atomic)
@@ -298,7 +301,7 @@ final class LocalDataStore {
             }
             return fileName
         } catch {
-            errorMessage = "Nie udało się zapisać zdjęcia samochodu: \(error.localizedDescription)"
+            errorMessage = PolishUserErrorMessage.make(error, fallback: "Nie udało się zapisać zdjęcia samochodu. Spróbuj ponownie.")
             return nil
         }
     }
@@ -407,16 +410,44 @@ final class LocalDataStore {
         }
     }
     @discardableResult private func persist<T: Encodable>(_ value: T, file: String) -> Bool {
+        guard canPersist(file: file) else { return false }
         do {
             let data = try JSONEncoder().encode(value)
             try data.write(to: directory.appendingPathComponent(file), options: .atomic)
-            errorMessage = nil
+            clearErrorIfPossible()
             return true
         } catch {
-            errorMessage = "Nie udało się zapisać danych na urządzeniu: \(error.localizedDescription)"
+            errorMessage = PolishUserErrorMessage.make(error, fallback: "Nie udało się zapisać danych na urządzeniu. Twoje zmiany pozostały bez zmian.")
             return false
         }
     }
+
+    private func canPersist(file: String) -> Bool {
+        guard canWriteDirectory else {
+            errorMessage = "Zapis danych na urządzeniu jest niedostępny. Nie zmieniono zapisanych danych."
+            return false
+        }
+        guard !unreadableFiles.contains(file) else {
+            errorMessage = "Nie zapisano zmian, aby nie zastąpić nieodczytanych danych."
+            return false
+        }
+        return true
+    }
+
+    private func clearErrorIfPossible() {
+        if canWriteDirectory && unreadableFiles.isEmpty { errorMessage = nil }
+    }
+
+    private func load<Value: Decodable>(_ type: Value.Type, file: String, fallback: String) -> Value? {
+        do {
+            return try Self.read(type, from: directory.appendingPathComponent(file))
+        } catch {
+            unreadableFiles.insert(file)
+            errorMessage = PolishUserErrorMessage.make(error, fallback: fallback)
+            return nil
+        }
+    }
+
     private static func read<T: Decodable>(_ type: T.Type, from url: URL) throws -> T? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         return try JSONDecoder().decode(type, from: Data(contentsOf: url))

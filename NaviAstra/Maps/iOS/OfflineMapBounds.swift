@@ -20,7 +20,7 @@ nonisolated struct OfflineMapBounds: Codable, Equatable, Sendable {
     }
     var heightKilometers: Double { (north - south) * 111.32 }
     var dimensions: String {
-        String(format: "%.1f × %.1f km", widthKilometers, heightKilometers)
+        String(format: "%.1f × %.1f km", locale: Locale(identifier: "pl_PL"), widthKilometers, heightKilometers)
     }
     var approximateAreaSquareKilometers: Double {
         let radians = Double.pi / 180

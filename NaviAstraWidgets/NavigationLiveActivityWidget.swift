@@ -28,7 +28,7 @@ struct NavigationLiveActivityWidget: Widget {
                     Text("·")
                     Text(distance(context.state.remainingDistance))
                     Spacer()
-                    Text(context.state.arrivalTime, style: .time)
+                    Text(polishTime(context.state.arrivalTime))
                 }.font(.subheadline.monospacedDigit())
                 ProgressView(value: context.state.routeProgress).tint(.cyan)
             }
@@ -55,7 +55,7 @@ struct NavigationLiveActivityWidget: Widget {
                         HStack {
                             Text("\(duration(context.state.remainingTime)) · \(distance(context.state.remainingDistance))")
                             Spacer()
-                            Text(context.state.arrivalTime, style: .time)
+                            Text(polishTime(context.state.arrivalTime))
                         }.font(.caption.monospacedDigit())
                         ProgressView(value: context.state.routeProgress).tint(.cyan)
                     }
@@ -78,11 +78,23 @@ struct NavigationLiveActivityWidget: Widget {
     }
 
     private func distance(_ meters: Double) -> String {
-        if meters >= 1_000 { return String(format: "%.1f km", meters / 1_000) }
+        guard meters.isFinite, meters >= 0 else { return "Dystans niedostępny" }
+        if meters >= 1_000 {
+            let kilometers = String(format: "%.1f", locale: Locale(identifier: "pl_PL"), meters / 1_000)
+            return "\(kilometers) km"
+        }
         return "\(Int((meters / 10).rounded()) * 10) m"
     }
 
     private func duration(_ seconds: TimeInterval) -> String {
-        "\(max(0, Int(ceil(seconds / 60)))) min"
+        guard seconds.isFinite, seconds >= 0, seconds < Double(Int.max / 2) * 60 else { return "Czas niedostępny" }
+        return "\(max(0, Int(ceil(seconds / 60)))) min"
+    }
+
+    private func polishTime(_ date: Date) -> String {
+        guard date.timeIntervalSince1970.isFinite else { return "Czas niedostępny" }
+        var format = Date.FormatStyle(date: .omitted, time: .shortened, locale: Locale(identifier: "pl_PL"))
+        format.timeZone = .current
+        return date.formatted(format)
     }
 }

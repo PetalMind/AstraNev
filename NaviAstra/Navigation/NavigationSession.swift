@@ -698,7 +698,7 @@ final class NavigationSession {
                    snapshot.speedLimit(at: current) != nil || snapshot.shouldSuppressRoutingFallback(at: current) { return }
                 state.speedLimitKph = nil
                 state.speedLimitSource = nil
-                state.speedLimitMessage = "Limit niedostępny: \(error.localizedDescription)"
+                state.speedLimitMessage = PolishUserErrorMessage.make(error, fallback: "Nie udało się pobrać limitu prędkości.")
                 speedLimitObservationLocation = nil
             }
         }
@@ -846,7 +846,9 @@ final class NavigationSession {
                 self.roadDataSnapshot = nil
                 self.state.roadSafetyAlerts = []
                 self.state.roadAlertRoadSegments = nil
-                self.state.roadSafetyStatus = .unavailable(error.localizedDescription)
+                self.state.roadSafetyStatus = .unavailable(
+                    PolishUserErrorMessage.make(error, fallback: "Dane o ograniczeniach drogowych są niedostępne.")
+                )
             }
         }
     }

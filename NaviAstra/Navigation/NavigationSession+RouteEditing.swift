@@ -278,7 +278,7 @@ extension NavigationSession {
             await preview(destination)
         } catch {
             guard generation == requestGeneration, RoadRoutingContext.cancellationToken?.isCancelled != true else { return }
-            state.errorMessage = "Nie udało się zoptymalizować kolejności: \(error.localizedDescription)"
+            state.errorMessage = PolishUserErrorMessage.make(error, fallback: "Nie udało się zoptymalizować kolejności przystanków.")
         }
     }
 

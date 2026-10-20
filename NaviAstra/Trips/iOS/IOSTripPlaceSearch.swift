@@ -45,7 +45,7 @@ struct IOSTripPlaceSearch: View {
                         .focused($focused).submitLabel(.search).autocorrectionDisabled()
                         .onSubmit { submittedRevision += 1 }
                     if !draft.searchQuery.isEmpty {
-                        Button { draft.searchQuery = "" } label: { Image(systemName: "xmark.circle.fill").frame(width: 40, height: 40) }
+                        Button { draft.searchQuery = "" } label: { Image(systemName: "xmark.circle.fill").frame(width: 44, height: 44) }
                             .accessibilityLabel("Wyczyść adres")
                     }
                 }.padding(.horizontal, 14).frame(minHeight: 52).modifier(NavigationGlassSurface(radius: 16, interactive: true))

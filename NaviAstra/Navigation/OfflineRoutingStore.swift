@@ -2,6 +2,7 @@
 import Foundation
 import Network
 import Observation
+import OSLog
 
 nonisolated struct OfflineRoutingDownload: Identifiable, Decodable, Sendable {
     let name: String
@@ -55,6 +56,7 @@ final class OfflineRoutingStore {
     @ObservationIgnored private var transferTask: Task<Void, Never>?
     @ObservationIgnored private var transferID: UUID?
     @ObservationIgnored private let monitor = NWPathMonitor()
+    private let logger = Logger(subsystem: "Blackmaks.NaviAstras.pl", category: "OfflineRoutingStore")
 
     private init() {
         activeID = UserDefaults.standard.string(forKey: "offlineRouting.activePack").flatMap(UUID.init(uuidString:))
@@ -63,7 +65,10 @@ final class OfflineRoutingStore {
         if activePack == nil { preferOffline = false }
         Task {
             do { try await OfflineRoutingEngine.shared.discardInterruptedInstallations() }
-            catch { self.error = "Nie udało się usunąć przerwanych instalacji: \(error.localizedDescription)" }
+            catch {
+                logger.error("Nie udało się usunąć przerwanych instalacji: \(error.localizedDescription, privacy: .private)")
+                self.error = "Nie udało się uporządkować niedokończonej instalacji danych drogowych."
+            }
         }
         monitor.pathUpdateHandler = { [weak self] path in
             let unavailable = path.status == .unsatisfied
@@ -84,7 +89,10 @@ final class OfflineRoutingStore {
                         FileManager.default.fileExists(atPath: directory.appendingPathComponent("tiles.tar").path) else { return nil }
                     return pack
                 }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            logger.error("Nie udało się odczytać paczek offline: \(error.localizedDescription, privacy: .private)")
+            self.error = "Nie udało się odczytać zapisanych paczek danych drogowych."
+        }
     }
 
     func loadCatalog() async {
@@ -105,7 +113,10 @@ final class OfflineRoutingStore {
                     && $0.size > 0 && $0.browserDownloadURL.scheme == "https" && $0.browserDownloadURL.host == "github.com"
             }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         } catch is CancellationError {}
-        catch { self.error = "Nie udało się odczytać katalogu paczek drogowych: \(error.localizedDescription)" }
+        catch {
+            logger.error("Nie udało się wczytać katalogu paczek: \(error.localizedDescription, privacy: .private)")
+            self.error = "Nie udało się wczytać katalogu paczek. Sprawdź połączenie i spróbuj ponownie."
+        }
     }
 
     func download(url: URL, name: String, motorVehiclesOnly: Bool, expectedSHA256: String? = nil) {
@@ -132,7 +143,8 @@ final class OfflineRoutingStore {
                 activeID = pack.id
             } catch is CancellationError {}
             catch {
-                if !Task.isCancelled { self.error = "Nie udało się pobrać danych drogowych: \(error.localizedDescription)" }
+                logger.error("Nie udało się pobrać paczki danych drogowych: \(error.localizedDescription, privacy: .private)")
+                if !Task.isCancelled { self.error = "Nie udało się pobrać danych drogowych. Sprawdź połączenie i dostępne miejsce, a następnie spróbuj ponownie." }
             }
             finishTransfer()
         }
@@ -150,7 +162,10 @@ final class OfflineRoutingStore {
                 refresh()
                 activeID = pack.id
             } catch is CancellationError {}
-            catch { self.error = "Nie udało się zaimportować danych drogowych: \(error.localizedDescription)" }
+            catch {
+                logger.error("Nie udało się zaimportować paczki: \(error.localizedDescription, privacy: .private)")
+                self.error = "Nie udało się zaimportować paczki. Sprawdź, czy to poprawne archiwum Valhalla, i spróbuj ponownie."
+            }
         }
     }
 
@@ -164,7 +179,10 @@ final class OfflineRoutingStore {
             do {
                 try await OfflineRoutingEngine.shared.remove(pack.id)
                 refresh()
-            } catch { self.error = error.localizedDescription }
+            } catch {
+                logger.error("Nie udało się usunąć paczki offline: \(error.localizedDescription, privacy: .private)")
+                self.error = "Nie udało się usunąć paczki danych drogowych."
+            }
             removingIDs.remove(pack.id)
         }
     }

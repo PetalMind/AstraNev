@@ -158,7 +158,7 @@ struct DrivingPersonalizationView: View {
                 let buckets = Set(pattern.trips.map { $0.context.hourBucket }).sorted()
                 Text("Pora jazdy: " + buckets.map { "\($0 * 2):00–\($0 * 2 + 1):59" }.joined(separator: ", "))
                 let days = Set(pattern.trips.map { $0.context.weekday }).sorted()
-                Text("Dni: " + days.map { Calendar.current.weekdaySymbols[$0 - 1] }.joined(separator: ", "))
+                Text("Dni: " + days.map(PolishRegionalFormat.weekday).filter { !$0.isEmpty }.joined(separator: ", "))
             }
             Section("Powtarzane odstępstwa i omijane drogi") {
                 let groups = Dictionary(grouping: pattern.trips.flatMap(\.deviations), by: \.id)

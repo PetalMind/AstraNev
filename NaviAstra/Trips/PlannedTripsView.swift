@@ -363,7 +363,12 @@ private struct TripPlacePicker: View {
                     try Task.checkCancellation()
                     results = found; loading = false
                 } catch is CancellationError { }
-                catch { if !Task.isCancelled { self.error = error.localizedDescription; loading = false } }
+                catch {
+                    if !Task.isCancelled {
+                        self.error = PolishUserErrorMessage.make(error, fallback: "Nie udało się wyszukać miejsca. Sprawdź połączenie i spróbuj ponownie.")
+                        loading = false
+                    }
+                }
             }
         }
     }
@@ -415,7 +420,7 @@ private struct TripCalendarPicker: View {
                     .filter { !$0.isAllDay && $0.startDate > start && ($0.structuredLocation?.geoLocation != nil || !($0.location ?? "").isEmpty) }
                     .sorted { $0.startDate < $1.startDate }
                 if events.isEmpty { message = "Brak wydarzeń z godziną i lokalizacją w najbliższych 30 dniach." }
-            } catch { message = error.localizedDescription }
+            } catch { message = PolishUserErrorMessage.make(error, fallback: "Nie udało się odczytać wydarzeń z kalendarza.") }
         }
     }
 }

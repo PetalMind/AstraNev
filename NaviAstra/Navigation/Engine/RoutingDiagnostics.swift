@@ -121,7 +121,7 @@ final class RoutingDiagnostics {
         guard recordingEnabled else { return }
         Task {
             do { try await RoutingDiagnosticsArchive.shared.save(record); archiveError = nil }
-            catch { archiveError = error.localizedDescription }
+            catch { archiveError = PolishUserErrorMessage.make(error, fallback: "Nie udało się zapisać diagnostyki routingu.") }
         }
     }
 }

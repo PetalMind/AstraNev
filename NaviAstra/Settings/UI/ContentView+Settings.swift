@@ -859,7 +859,8 @@ private struct VoiceSettingsSlider: View {
             HStack {
                 Text(title)
                 Spacer()
-                Text(String(format: "%.0f%%", draftValue * percentageMultiplier))
+                Text(String(format: "%.0f%%", locale: PolishRegionalFormat.locale,
+                            draftValue * percentageMultiplier))
                     .foregroundStyle(Color.naviTextSecondary)
                     .monospacedDigit()
             }
