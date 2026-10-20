@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.1.133] - 2026-10-20
+
+### Fixed
+
+- Obliczaj godziny otwarcia pobliskich miejsc z lokalną strefą czasową i kodem kraju, także dla punktów położonych dalej od bieżącej lokalizacji.
+- Preferuj bogatsze godziny i tagi OpenStreetMap, zachowując Apple Maps jako ograniczony czasowo fallback.
+- Zachowuj pełne godziny otwarcia punktów InPost zamiast pomijać harmonogramy inne niż całodobowe.
+- Dopasowuj dokładne adresy GUGiK po numerze i ulicy bez wymogu wpisania miejscowości.
+- Ogranicz czas oczekiwania wyszukiwania na dostawców oraz uwzględniaj kolejkę i ponowienia w limicie zapytań Overpass.
+
 ## [1.1.132] - 2026-10-20
 
 ### Fixed

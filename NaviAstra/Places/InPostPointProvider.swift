@@ -32,6 +32,12 @@ struct InPostPointProvider {
         let coordinate = Coordinate(latitude: point.location.latitude, longitude: point.location.longitude)
         let title = "\(isLocker ? "Paczkomat InPost" : "PaczkoPunkt InPost") · \(point.name)"
         let address = [point.address?.line1, point.address?.line2].compactMap { $0 }.joined(separator: ", ")
+        let openingHours: String?
+        if let value = point.opening_hours?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty {
+            openingHours = value
+        } else {
+            openingHours = nil
+        }
         let destination = Destination(name: title, coordinate: coordinate,
                                       address: address.isEmpty ? nil : address)
         return [SearchResult(destination: destination, street: point.address_details?.street,
@@ -39,7 +45,7 @@ struct InPostPointProvider {
                              city: point.address_details?.city, countryCode: "pl", isPOI: true,
                              providerID: point.name, placeProvider: .inPost, category: category,
                              brand: "InPost", operatorName: "InPost", parcelReferences: [point.name],
-                             openingHours: point.opening_hours == "24/7" ? "24/7" : nil,
+                             openingHours: openingHours,
                              phone: point.phone_number, timeZoneIdentifier: "Europe/Warsaw")]
     }
 

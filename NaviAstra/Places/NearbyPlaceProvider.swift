@@ -72,14 +72,14 @@ struct NearbyPlaceCandidate: Identifiable {
 
     @MainActor func openingHoursPresentation() async -> OpeningHoursPresentation? {
         guard let openingHours else { return nil }
-        let resolvedTimeZoneIdentifier = self.timeZoneIdentifier
-            ?? PlaceTimeZoneResolver.cachedIdentifier(for: destination.coordinate)
+        let locale = PlaceTimeZoneResolver.cachedContext(for: destination.coordinate)
+        let resolvedTimeZoneIdentifier = timeZoneIdentifier ?? locale?.timeZoneIdentifier
         guard let resolvedTimeZoneIdentifier else {
             return .unavailable(.timeZoneUnavailable)
         }
         return await PlaceOpeningHours(rawValue: openingHours,
                                        coordinate: destination.coordinate,
-                                       countryCode: countryCode,
+                                       countryCode: countryCode ?? locale?.countryCode,
                                        timeZoneIdentifier: resolvedTimeZoneIdentifier).presentation()
     }
 
@@ -367,6 +367,13 @@ struct OpenStreetMapNearbyPlaceProvider {
     private struct Center: Decodable { let lat: Double; let lon: Double }
 }
 
+private enum NearbyPlaceSearchReply {
+    case openStreetMap([NearbyPlaceCandidate]?)
+    case mapKit([NearbyPlaceCandidate]?)
+    case fallbackGraceExpired
+    case deadlineExpired
+}
+
 struct NearbyPlaceSearchProvider {
     func search(_ category: NearbyPlaceCategory, around coordinate: Coordinate,
                 radius: Double, resultLimit: Int) async throws -> [NearbyPlaceCandidate] {
@@ -374,45 +381,84 @@ struct NearbyPlaceSearchProvider {
             return try await OpenStreetMapNearbyPlaceProvider().search(category, around: coordinate,
                                                                        radius: radius, resultLimit: resultLimit)
         }
-        return try await withThrowingTaskGroup(of: [NearbyPlaceCandidate]?.self) { group in
+        return try await withThrowingTaskGroup(of: NearbyPlaceSearchReply.self) { group in
             group.addTask {
                 do {
-                    return try await OpenStreetMapNearbyPlaceProvider().search(
+                    let candidates = try await OpenStreetMapNearbyPlaceProvider().search(
                         category, around: coordinate, radius: radius, resultLimit: resultLimit)
+                    return .openStreetMap(candidates)
                 } catch {
                     try Task.checkCancellation()
-                    return nil
+                    return .openStreetMap(nil)
                 }
             }
             group.addTask {
-                // Give OSM a short head start for its richer tags, but do not wait
-                // for its shared map queue, retries and failover before trying Apple.
+                // Let OSM return its richer hours and tags first; Apple remains a bounded fallback.
                 try await Task.sleep(for: .seconds(1))
                 do {
-                    return try await MapKitNearbyPlaceProvider().search(
+                    let candidates = try await MapKitNearbyPlaceProvider().search(
                         category, around: coordinate, radius: radius, resultLimit: resultLimit)
+                    return .mapKit(candidates)
                 } catch {
                     try Task.checkCancellation()
-                    return nil
+                    return .mapKit(nil)
                 }
             }
             group.addTask {
                 try await Task.sleep(for: .seconds(8))
-                throw NearbyPlaceError.unavailable
+                return .deadlineExpired
             }
             defer { group.cancelAll() }
-            var completedSources = 0
-            var failed = false
-            while let candidates = try await group.next() {
+            var osmFinished = false
+            var mapKitFinished = false
+            var osmFailed = false
+            var mapKitFailed = false
+            var mapKitFallback: [NearbyPlaceCandidate]?
+            var graceScheduled = false
+            while let reply = try await group.next() {
                 try Task.checkCancellation()
-                if let candidates, !candidates.isEmpty { return candidates }
-                failed = failed || candidates == nil
-                completedSources += 1
-                if completedSources == 2 {
-                    if failed { throw NearbyPlaceError.unavailable }
+                switch reply {
+                case .openStreetMap(let candidates):
+                    osmFinished = true
+                    osmFailed = candidates == nil
+                    if let candidates, !candidates.isEmpty { return candidates }
+                    if mapKitFinished {
+                        if let mapKitFallback { return mapKitFallback }
+                        if osmFailed || mapKitFailed { throw NearbyPlaceError.unavailable }
+                        return []
+                    }
+                case .mapKit(let candidates):
+                    mapKitFinished = true
+                    mapKitFailed = candidates == nil
+                    if let candidates, !candidates.isEmpty {
+                        mapKitFallback = candidates
+                        if osmFinished { return candidates }
+                        if !graceScheduled {
+                            graceScheduled = true
+                            group.addTask {
+                                try await Task.sleep(for: .seconds(1.5))
+                                return .fallbackGraceExpired
+                            }
+                        }
+                    } else if osmFinished {
+                        if osmFailed || mapKitFailed { throw NearbyPlaceError.unavailable }
+                        return []
+                    }
+                case .fallbackGraceExpired:
+                    if let mapKitFallback { return mapKitFallback }
+                case .deadlineExpired:
+                    if let mapKitFallback { return mapKitFallback }
+                    throw NearbyPlaceError.unavailable
+                }
+
+                if osmFinished && mapKitFinished {
+                    if let mapKitFallback { return mapKitFallback }
+                    if osmFailed || mapKitFailed { throw NearbyPlaceError.unavailable }
                     return []
                 }
             }
+            if let mapKitFallback { return mapKitFallback }
+            if osmFinished && mapKitFinished && !osmFailed && !mapKitFailed { return [] }
             throw NearbyPlaceError.unavailable
         }
     }

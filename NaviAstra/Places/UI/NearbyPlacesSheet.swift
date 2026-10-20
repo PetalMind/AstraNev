@@ -140,35 +140,47 @@ struct NearbyPlacesSheet: View {
     private func refreshOpeningHours() async {
         openingHoursPresentations = [:]
         let suggestions = navigationStore.state.nearbySuggestions
-        for suggestion in suggestions {
-            guard !Task.isCancelled else { return }
+        let timedSuggestions = suggestions.filter { $0.candidate.openingHours != nil }
+        let unresolved = timedSuggestions.filter { suggestion in
             let candidate = suggestion.candidate
-            guard candidate.timeZoneIdentifier != nil
-                || PlaceTimeZoneResolver.cachedIdentifier(for: candidate.destination.coordinate) != nil,
-                  let presentation = await candidate.openingHoursPresentation() else { continue }
-            guard !Task.isCancelled else { return }
-            openingHoursPresentations[suggestion.id] = presentation
+            let cached = PlaceTimeZoneResolver.cachedContext(for: candidate.destination.coordinate)
+            let missingTimeZone = candidate.timeZoneIdentifier == nil && cached?.timeZoneIdentifier == nil
+            let missingCountry = candidate.countryCode == nil && cached?.countryCode == nil
+            return missingTimeZone || missingCountry
         }
-        guard suggestions.contains(where: {
-            $0.candidate.openingHours != nil && $0.candidate.timeZoneIdentifier == nil
-        }) else { return }
-        let reference = nearDestination ? navigationStore.state.destination?.coordinate
-            : nearestSearch ? navigationStore.state.location?.coordinate
-            : suggestions.first(where: { $0.candidate.openingHours != nil })?.candidate.destination.coordinate
-        let timeZone: String?
-        if let reference {
-            timeZone = await PlaceTimeZoneResolver.identifier(for: reference)
-        } else {
-            timeZone = nil
-        }
-        guard !Task.isCancelled else { return }
-        let reuseRadius = nearDestination ? 2_000 : nearestSearch ? min(searchRadius, 5_000) : 1_000
-        for suggestion in suggestions {
-            var candidate = suggestion.candidate
-            guard candidate.timeZoneIdentifier == nil else { continue }
-            if let reference, candidate.destination.coordinate.distance(to: reference) <= reuseRadius {
-                candidate.timeZoneIdentifier = timeZone
+        var localeByID: [String: PlaceLocaleContext] = [:]
+        let workerCount = min(4, unresolved.count)
+        if workerCount > 0 {
+            await withTaskGroup(of: [(String, PlaceLocaleContext)].self) { group in
+                for worker in 0..<workerCount {
+                    let assigned = unresolved.enumerated()
+                        .filter { $0.offset % workerCount == worker }
+                        .map(\.element)
+                    group.addTask { @MainActor in
+                        var resolved: [(String, PlaceLocaleContext)] = []
+                        for suggestion in assigned {
+                            guard !Task.isCancelled else { return resolved }
+                            if let locale = await PlaceTimeZoneResolver.context(
+                                for: suggestion.candidate.destination.coordinate) {
+                                resolved.append((suggestion.id, locale))
+                            }
+                        }
+                        return resolved
+                    }
+                }
+                for await values in group {
+                    for (id, locale) in values { localeByID[id] = locale }
+                }
             }
+        }
+
+        for suggestion in timedSuggestions {
+            guard !Task.isCancelled else { return }
+            var candidate = suggestion.candidate
+            let locale = localeByID[suggestion.id]
+                ?? PlaceTimeZoneResolver.cachedContext(for: candidate.destination.coordinate)
+            if candidate.timeZoneIdentifier == nil { candidate.timeZoneIdentifier = locale?.timeZoneIdentifier }
+            if candidate.countryCode == nil { candidate.countryCode = locale?.countryCode }
             guard let presentation = await candidate.openingHoursPresentation(), !Task.isCancelled else { continue }
             openingHoursPresentations[suggestion.id] = presentation
         }

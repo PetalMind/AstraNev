@@ -321,12 +321,13 @@ struct PlaceDetailsView: View {
             await loadPlacePhoto(for: current, forceRefresh: retry > 0)
         }
         .task(id: timeZoneRefreshKey) {
-            guard result.isPOI, details?.timeZoneIdentifier == nil else { return }
+            guard result.isPOI,
+                  details?.timeZoneIdentifier == nil || details?.countryCode == nil else { return }
             let key = result.placeIdentity.cacheKey
-            let identifier = await PlaceTimeZoneResolver.identifier(for: result.destination.coordinate)
-            guard !Task.isCancelled, key == result.placeIdentity.cacheKey,
-                  let identifier else { return }
-            details?.timeZoneIdentifier = identifier
+            let locale = await PlaceTimeZoneResolver.context(for: result.destination.coordinate)
+            guard !Task.isCancelled, key == result.placeIdentity.cacheKey, let locale else { return }
+            if details?.timeZoneIdentifier == nil { details?.timeZoneIdentifier = locale.timeZoneIdentifier }
+            if details?.countryCode == nil { details?.countryCode = locale.countryCode }
         }
         .onChange(of: isFavoriteFromParent) { _, newValue in
             isSaved = newValue
@@ -482,7 +483,8 @@ struct PlaceDetailsView: View {
     }
 
     private var timeZoneRefreshKey: String {
-        detailsRefreshKey + "/" + (details?.timeZoneIdentifier ?? "unknown")
+        [detailsRefreshKey, details?.timeZoneIdentifier ?? "unknown",
+         details?.countryCode ?? "unknown"].joined(separator: "/")
     }
 
     private var placePhotoSection: some View {

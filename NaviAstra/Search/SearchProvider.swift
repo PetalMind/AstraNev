@@ -227,9 +227,11 @@ struct SearchProviderBatch {
         var index: Int
         var results: [SearchResult]?
         var error: SearchError?
+        var didTimeout = false
     }
 
     static func search(_ requests: [Request],
+                       timeoutSeconds: TimeInterval = 12,
                        onUpdate: ([SearchResult]) -> Void) async throws -> [SearchResult] {
         try await withThrowingTaskGroup(of: Reply.self) { group in
             for (index, request) in requests.enumerated() {
@@ -246,10 +248,25 @@ struct SearchProviderBatch {
                     }
                 }
             }
+            group.addTask { @MainActor in
+                try await Task.sleep(for: .seconds(max(1, timeoutSeconds)))
+                return Reply(index: -1, didTimeout: true)
+            }
             var replies: [Int: Reply] = [:]
             var merged: [SearchResult] = []
             for try await reply in group {
                 try Task.checkCancellation()
+                if reply.didTimeout {
+                    let completed = replies.values.sorted { $0.index < $1.index }
+                    let partial = completed.flatMap { $0.results ?? [] }
+                    group.cancelAll()
+                    if !partial.isEmpty {
+                        onUpdate(partial)
+                        return partial
+                    }
+                    if completed.count == requests.count { return [] }
+                    throw SearchError.timeout
+                }
                 replies[reply.index] = reply
                 // Stable source precedence keeps identity and metadata from jumping as replies arrive.
                 let ordered = replies.values.sorted { $0.index < $1.index }
@@ -476,14 +493,10 @@ struct GUGiKAddressProvider {
               let reply = await request(address: query, exactNumber: true) else { return nil }
         let normalizedQuery = normalized(query)
         let matches = reply.results?.values.filter { candidate in
-            guard normalized(candidate.number) == requestedNumber,
-                  let city = candidate.city else { return false }
-            let cityKey = normalized(city)
-            guard !cityKey.isEmpty else { return false }
-            let cityMatches = normalizedQuery.contains(cityKey)
+            guard normalized(candidate.number) == requestedNumber else { return false }
             let street = normalizedStreet(candidate.street)
-            let streetMatches = street.isEmpty || normalizedStreet(query).contains(street)
-            return cityMatches && streetMatches
+            guard !street.isEmpty else { return false }
+            return normalizedQuery.contains(street)
         } ?? []
         // Duplicate locality/street names must never select an arbitrary UUG record.
         guard matches.count == 1, let address = matches.first else { return nil }

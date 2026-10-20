@@ -373,7 +373,8 @@ struct POISearchProvider {
             var body = URLComponents()
             body.queryItems = [URLQueryItem(name: "data", value: query)]
             request.httpBody = body.percentEncodedQuery?.data(using: .utf8)
-            let (data, response) = try await OSMRequestTransport.shared.data(for: request, priority: true)
+            let (data, response) = try await OSMRequestTransport.shared.data(
+                for: request, priority: true, maximumDuration: remaining)
             guard let http = response as? HTTPURLResponse else { throw SearchError.unavailable }
             guard (200...299).contains(http.statusCode) else { throw SearchError.httpStatus(http.statusCode) }
             let decoded = try JSONDecoder().decode(Reply.self, from: data)
