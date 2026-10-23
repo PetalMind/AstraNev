@@ -71,8 +71,10 @@ extension NavigationSession {
         let startDistance = max(0, progress?.traveledDistance ?? 0)
         let lookAhead = RouteTrafficMonitor.lookAheadDistance(for: route, progress: progress)
         let endDistance = startDistance + lookAhead
+        let policyInterval = energyPolicyEngine.currentPolicy.trafficRefreshInterval ?? 90
+        let flowRefreshInterval = max(60, policyInterval)
         let shouldFetchFlow = routeFlowRouteID != route.id ||
-            Date().timeIntervalSince(lastRouteFlowFetch) >= 180
+            Date().timeIntervalSince(lastRouteFlowFetch) >= flowRefreshInterval
         routeTrafficRequestInFlight = true
         lastRouteTrafficFetch = Date()
         let generation = trafficGeneration
