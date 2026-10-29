@@ -167,5 +167,77 @@ struct DetailedRoadLifecycleCriticalTests {
         let requests = await provider.requests
         #expect(requests == (scenario == .freshCache ? 0 : 1))
     }
+
+    @Test func movingCameraAllowsAnInFlightDownloadToPublish() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("moving.json")
+        try Data(##"{"version":8,"sources":{},"layers":[{"id":"background","type":"background"}]}"##.utf8).write(to: file)
+        let host = MapHost(); defer { host.close() }
+        let provider = Provider(.cancelledDownload), renderer = DetailedRoadRenderer(provider: provider)
+        defer { renderer.stop() }
+        host.map.styleURL = file
+        try await waitUntil("styl przy ruchu kamery") { host.loads >= 1 }
+        renderer.didLoadStyle(on: host.map)
+        renderer.update(on: host.map, dark: false, enabled: true)
+        try await waitUntil("pobieranie przy ruchu kamery") { await provider.requests > 0 }
+        // Each move crosses the quantized query margin before the two-second
+        // response arrives. Viewport cancellation previously starved publication.
+        for index in 1...12 {
+            host.map.setCenter(CLLocationCoordinate2D(latitude: 52, longitude: 19 + Double(index) * 0.004),
+                               zoomLevel: 18, animated: false)
+            renderer.update(on: host.map, dark: false, enabled: true)
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        #expect(hasSurface(host.map))
+        let requests = await provider.requests
+        #expect(requests <= 2)
+    }
+
+    @Test func cachedSurfacesRemainUsableDuringAnOutageAndPartialCoverageStillRefreshes() async throws {
+        struct Entry: Encodable {
+            let query: DetailedRoadQuery
+            let endpoint: String
+            let roads: [DetailedRoad]
+            let fetchedAt: Date
+        }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("NaviAstra/DetailedRoads/v2.json")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let configured = UserDefaults.standard.string(forKey: "overpassServer").flatMap(URL.init(string:))
+        let endpoint = configured.flatMap {
+            ["https", "http"].contains($0.scheme?.lowercased() ?? "") && $0.host != nil ? $0.absoluteString : nil
+        } ?? "https://overpass-api.de/api/interpreter"
+        let first = DetailedRoadQuery(south: 52, west: 19, north: 52.01, east: 19.01)
+        let second = DetailedRoadQuery(south: 52, west: 19.01, north: 52.01, east: 19.02)
+        func road(_ id: Int64) -> DetailedRoad {
+            .init(id: id, points: [.init(latitude: 52.001, longitude: 19.001),
+                                  .init(latitude: 52.002, longitude: 19.002)],
+                  tags: ["highway": "primary", "lanes": "2"], nodeIDs: nil)
+        }
+        let expired = DetailedRoadQuery(south: 50, west: 20, north: 50.01, east: 20.01)
+        let entries = [
+            Entry(query: first, endpoint: endpoint, roads: [road(1)], fetchedAt: .now.addingTimeInterval(-10 * 86_400)),
+            Entry(query: second, endpoint: endpoint, roads: [road(2)], fetchedAt: .now.addingTimeInterval(-3_600)),
+            Entry(query: expired, endpoint: endpoint, roads: [road(3)], fetchedAt: .now.addingTimeInterval(-31 * 86_400))
+        ]
+        try JSONEncoder().encode(entries).write(to: file)
+        let provider = OverpassDetailedRoadProvider(cacheDirectory: folder)
+        guard case .roads(let cached)? = await provider.cachedData(in: first) else {
+            Issue.record("Utracono zachowaną nawierzchnię podczas awarii sieci"); return
+        }
+        #expect(cached.roads.map(\.id) == [1])
+        #expect(cached.coversQuery && !cached.isFresh)
+        let partial = DetailedRoadQuery(south: 52, west: 19.005, north: 52.01, east: 19.025)
+        guard case .roads(let merged)? = await provider.cachedData(in: partial) else {
+            Issue.record("Przesunięcie kadru usunęło dostępne fragmenty dróg"); return
+        }
+        #expect(merged.roads.map(\.id) == [1, 2])
+        #expect(!merged.coversQuery && !merged.isFresh)
+        let removed = await provider.cachedData(in: expired)
+        #expect(removed == nil)
+    }
 }
 #endif

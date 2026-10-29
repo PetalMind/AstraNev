@@ -1,8 +1,9 @@
 # Personalizowany znacznik pozycji
 
 Ustawienia → Twój znacznik pozwalają wybrać model albo klasyczną strzałkę.
-Samochód ma trzy różne sylwetki: krótki kompakt, niski sedan z dłuższym bagażnikiem
-i wyższy, szerszy SUV. Rower i pieszy mają po jednej uproszczonej sylwetce.
+Samochód ma siedem gotowych sylwetek z Kenney Car Kit 3.1: kompakt, sedan, SUV,
+sedan sportowy, SUV luksusowy, van i auto wyścigowe. Paczka jest udostępniona
+na licencji CC0. Modele są częścią aplikacji iOS i działają bez internetu. Rower i pieszy mają po jednej uproszczonej sylwetce.
 Każdy z tych sposobów podróży ma osobny zapis koloru. Dostępne kolory to
 niebieski, czarny, biały, czerwony, srebrny i fioletowy.
 
@@ -33,10 +34,12 @@ profile trasy ani jako opcje wyglądu nieobsługiwanego sposobu podróży.
 - `NavigationMarkerAppearance` definiuje katalog, kolory, wielkość i zapis.
 - `NavigationMarkerPresentation.resolve` wybiera model, orientację i jakość
   na podstawie rzeczywistego stanu nawigacji. Kamera jest uwzględniana osobno.
-- `NavigationMarkerArtwork` zawiera autorskie bryły 3D i projekcję do obrazów
-  2.5D. Poza pochyleniem są obracane płynnie; w perspektywie ujęcia są
+- `NavigationMarkerArtwork` wczytuje lokalne siatki samochodów Kenney i zawiera
+  autorskie bryły pozostałych sposobów podróży oraz projekcję do obrazów 2.5D. Poza pochyleniem są obracane płynnie; w perspektywie ujęcia są
   próbkowane co 5 stopni. Cache obrazów ma budżet kosztu 12 MiB; geometria
-  jest współdzielona między ujęciami. Modele nie wymagają sieci ani silnika 3D.
+  jest współdzielona między ujęciami. Pamięć podręczna pomalowanych siatek mieści
+  do 12 wariantów; źródłowe siatki aut są wczytywane raz i współdzielone między
+  kolorami. Modele nie wymagają sieci ani silnika 3D.
 - `NavigationMarkerNativeView` rysuje model, ring, kierunek i jakość jako
   warstwy natywne. Mapa MapLibre korzysta z tego widoku;
   SwiftUI nie otrzymuje klatek pozycji do ponownego budowania interfejsu.
@@ -74,8 +77,9 @@ w ustawieniach jest jawnie oznaczonym lokalnym podglądem wyglądu.
 
 Wszystkie sylwetki korzystają z tej samej projekcji, światła i kotwicy podłoża.
 Podglądy poniżej używają pochylenia 45°; na mapie perspektywa dostosowuje się do
-rzeczywistej kamery. Bryły aut podkreślają dach, szyby i światła bez drobnych
-detali karoserii. Rowerzysta i pieszy mają neutralne głowy i uproszczone kończyny.
+rzeczywistej kamery. Modele aut zachowują szyby, koła, lampy, spoilery i inne elementy
+oryginalnej paczki. Wybrany lakier zmienia karoserię; szkło, opony i światła
+zachowują własne kolory. Rowerzysta i pieszy mają neutralne głowy i uproszczone kończyny.
 
 Motyw dzienny ma delikatny cień i ciemniejsze powierzchnie boczne. Motyw nocny
 rozjaśnia refleksy, dodaje chłodne światło do materiału oraz subtelną poświatę
@@ -83,14 +87,14 @@ krawędzi. Czarny lakier otrzymuje mocniejszy chłodny refleks dla czytelności.
 Obrys lokalizacji i poświata kierunku również zmieniają intensywność z motywem;
 modele nie otrzymują mocnej białej obwódki.
 
-![Zestaw znaczników w obu motywach](images/navigation-markers-premium-preview.png)
+![Samochody Kenney w rendererze aplikacji](images/navigation-cars-kenney-preview.png)
 
-![Znaczniki na mapie Warszawy i w rozmiarze 48 px](images/navigation-markers-map-preview.png)
+Arkusz pokazuje siedem aktualnych modeli: dzień i noc przy pochyleniu 45°,
+widok z góry, przód przy 60° oraz czarny lakier nocą. Przy każdym powiększeniu
+widoczny jest również obraz o wielkości 48 px. To podgląd renderera,
+nie zapis przejazdu ani pomiar wydajności iOS.
 
-Drugi obraz zestawia natywny renderer ze statycznymi mapami centrum Warszawy
-uzyskanymi przez MapKit w jasnym i ciemnym motywie. Pozycje modeli są ilustracyjne;
-nie są zapisem rzeczywistego przejazdu. Dolny rząd ma rozmiar 48 px bez powiększenia.
-Podgląd służy ocenie sylwetek i kontrastu, nie potwierdza zachowania GPS ani
-wydajności podczas jazdy. Osobny arkusz pokazuje wszystkie sześć kolorów aut:
+![Sześć kolorów wszystkich samochodów](images/navigation-cars-kenney-colors-preview.png)
 
-![Kolory aut w obu motywach](images/navigation-markers-colors-preview.png)
+Analiza darmowych paczek, pochodzenie plików, procedura importu i ograniczenia:
+[Modele samochodów — źródła i wdrożenie](NAVIGATION_CAR_ASSETS.md).

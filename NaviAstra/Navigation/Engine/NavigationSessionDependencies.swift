@@ -14,7 +14,7 @@ struct NavigationSessionDependencies {
                      transitProvider: TransitRouteProvider? = nil,
                      transitDataProvider: TransitDataProviding? = nil) -> NavigationSessionDependencies {
         let normalizedKey = trafficAPIKey?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trafficProvider = normalizedKey.flatMap { $0.isEmpty ? nil : TomTomTrafficProvider(apiKey: $0) }
+        let trafficProvider = CombinedTrafficProvider(apiKey: normalizedKey)
         let routing = NavigationRoutingDependencies.live(routeEndpoint: routeEndpoint,
                                                           transitProvider: transitProvider)
         return NavigationSessionDependencies(
@@ -58,5 +58,5 @@ struct TrafficProviderFactory {
         return makeProvider(normalizedKey)
     }
 
-    static let tomTom = TrafficProviderFactory { TomTomTrafficProvider(apiKey: $0) }
+    static let tomTom = TrafficProviderFactory { CombinedTrafficProvider(apiKey: $0) }
 }

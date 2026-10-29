@@ -154,30 +154,34 @@ struct SearchResult: Identifiable {
     }
 
     var travelSummary: String? {
-        if let detour {
+        func valid(_ value: Double?, limit: Double) -> Double? {
+            value.flatMap { $0.isFinite && (0...limit).contains($0) ? $0 : nil }
+        }
+        func kilometers(_ meters: Double) -> String {
+            (meters / 1_000).formatted(.number.precision(.fractionLength(1)).locale(Locale(identifier: "pl_PL")))
+        }
+        if let detour = valid(detour, limit: 31_536_000) {
             let duration = TravelDurationFormatter.string(minutes: max(0, Int((detour / 60).rounded(.up))))
-            if let detourDistance {
-                return "\(String(format: "%.1f", detourDistance / 1_000)) km od trasy • +\(duration)"
+            if let distance = valid(travelDistance, limit: 400_000_000) {
+                return "\(kilometers(distance)) km trasą · +\(duration) objazdu"
             }
             return "+\(duration) objazdu (szacunek)"
         }
-        if let travelTime, let travelDistance {
-            let duration = TravelDurationFormatter.string(minutes: max(1, Int((travelTime / 60).rounded(.up))))
-            return "\(String(format: "%.1f", travelDistance / 1000)) km · ~\(duration)"
+        if let time = valid(travelTime, limit: 31_536_000),
+           let distance = valid(travelDistance, limit: 400_000_000) {
+            let duration = TravelDurationFormatter.string(minutes: max(1, Int((time / 60).rounded(.up))))
+            return "\(kilometers(distance)) km trasą · ~\(duration)"
+        }
+        if let distance = valid(travelDistance, limit: 400_000_000) {
+            return "\(kilometers(distance)) km trasą · czas niedostępny"
         }
         switch travelEstimateStatus {
         case .calculating:
-            if let distance = detourDistance {
-                return "\(String(format: "%.1f", distance / 1_000)) km od trasy • obliczanie czasu…"
-            }
-            return "Obliczanie odległości trasy i ETA…"
+            return "Obliczam trasę po drogach i ścieżkach…"
         case .unavailable:
-            if let distance = detourDistance {
-                return "\(String(format: "%.1f", distance / 1_000)) km od trasy • objazd niedostępny"
-            }
-            return requiresRouteEstimate ? "Odległość trasy i ETA niedostępne" : nil
+            return requiresRouteEstimate ? "Odległość po drogach i czas niedostępne" : nil
         case .notRequested:
-            return requiresRouteEstimate ? "Odległość trasy i ETA niedostępne" : nil
+            return requiresRouteEstimate ? "Odległość po drogach i czas niedostępne" : nil
         }
     }
     var isAddress: Bool {
@@ -518,11 +522,7 @@ struct GUGiKAddressProvider {
                   return (formatted, Double(address.distance ?? ""))
               }).min(by: { ($0.1 ?? .infinity) < ($1.1 ?? .infinity) }) else { return nil }
 
-        if let distance = nearest.1, distance.isFinite, distance >= 0 {
-            let meters = Int(min(distance.rounded(), 100_000))
-            return "Najbliższy adres: \(nearest.0) (\(meters) m od punktu)"
-        }
-        return "Adres w pobliżu: \(nearest.0)"
+        return "Znaleziony adres: \(nearest.0)"
     }
 
     private func request(address: String, exactNumber: Bool) async -> Reply? {

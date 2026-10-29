@@ -12,6 +12,7 @@ final class DetailedRoadRenderer {
     private var layerIDs: [String] = []
     private var query: DetailedRoadQuery?
     private var task: Task<Void, Never>?
+    private var isFetching = false
     private var retryAfter = Date.distantPast
     private var refreshedAt = Date.distantPast
     private var nextFetchAt = Date.distantPast
@@ -30,6 +31,7 @@ final class DetailedRoadRenderer {
         generation &+= 1
         task?.cancel()
         task = nil
+        isFetching = false
     }
     func didLoadStyle(on map: MLNMapView) {
         stop()
@@ -54,7 +56,7 @@ final class DetailedRoadRenderer {
         applyAppearance(dark: dark, on: map)
         // Native MVT scheduling and caching belong to MapLibre, never to an Overpass viewport loop.
         if case .vectorTiles = provider.sourceConfiguration { return }
-        let bounds = map.visibleCoordinateBounds
+        let bounds = detailBounds(on: map)
         guard let requested = DetailedRoadQuery.visible(south: bounds.sw.latitude, west: bounds.sw.longitude,
             north: bounds.ne.latitude, east: bounds.ne.longitude, zoom: map.zoomLevel) else {
             if query != nil { stop(); query = nil; features = [:]; publish(on: map) }
@@ -68,21 +70,29 @@ final class DetailedRoadRenderer {
         }
         let changed = query?.id != requested.id
         guard changed || (task == nil && retryAfter <= .now) else { return }
+        // Finish the bounded request already in progress. A moving navigation
+        // camera used to cancel it repeatedly before any roads reached L1.
+        // The completion immediately schedules the newest visible area.
+        guard !isFetching else { return }
         stop()
         query = requested
         refreshedAt = .distantPast
         let token = generation
+        isFetching = true
         task = Task { [weak self, weak map] in
             do {
                 guard let self, let map, self.generation == token else { return }
                 if case .roads(let cached) = await self.provider.cachedData(in: requested) {
                     try await self.render(cached, query: requested, token: token, on: map)
                     if cached.isFresh {
-                        self.refreshedAt = cached.fetchedAt; self.retryAfter = .distantPast; self.task = nil; return
+                        self.refreshedAt = cached.fetchedAt; self.retryAfter = .distantPast
+                        self.finishFetch(token: token, on: map); return
                     }
                 }
                 try await Task.sleep(for: .milliseconds(350))
-                guard self.retryAfter <= .now else { self.scheduleRetry(on: map); return }
+                guard self.retryAfter <= .now else {
+                    self.isFetching = false; self.scheduleRetry(on: map); return
+                }
                 let delay = max(0, self.nextFetchAt.timeIntervalSinceNow)
                 if delay > 0 { try await Task.sleep(for: .seconds(delay)) }
                 try Task.checkCancellation()
@@ -92,14 +102,41 @@ final class DetailedRoadRenderer {
                     self.refreshedAt = snapshot.fetchedAt
                 }
                 guard self.generation == token else { return }
-                self.retryAfter = .distantPast; self.task = nil
+                self.retryAfter = .distantPast
+                self.finishFetch(token: token, on: map)
             } catch {
                 guard !Task.isCancelled, let self, self.generation == token else { return }
-                self.retryAfter = Date().addingTimeInterval(60); self.refreshedAt = .distantPast; self.task = nil
+                self.retryAfter = Date().addingTimeInterval(60); self.refreshedAt = .distantPast
+                self.task = nil; self.isFetching = false
                 self.logger.debug("Detailed roads unavailable; retaining cached geometry: \(error.localizedDescription, privacy: .private)")
                 self.scheduleRetry(on: map)
             }
         }
+    }
+    private func finishFetch(token: Int, on map: MLNMapView) {
+        guard generation == token else { return }
+        task = nil; isFetching = false
+        if renderingEnabled { update(on: map, dark: requestedDark, enabled: true) }
+    }
+
+    private func detailBounds(on map: MLNMapView) -> MLNCoordinateBounds {
+        let bounds = map.visibleCoordinateBounds
+        let cosine = max(0.17, cos(map.centerCoordinate.latitude * .pi / 180))
+        let height = (bounds.ne.latitude - bounds.sw.latitude) * 111_320
+        let width = (bounds.ne.longitude - bounds.sw.longitude) * 111_320 * cosine
+        guard height > 5_000 || width > 5_000 else { return bounds }
+        // The far edge of a pitched camera can span many kilometres even when
+        // nearby asphalt is large on screen. Keep the bounded, useful foreground
+        // instead of turning off all detail because the horizon exceeds its limit.
+        let latitudeRadius = 1_500.0 / 111_320
+        let longitudeRadius = latitudeRadius / cosine
+        let center = map.centerCoordinate
+        return MLNCoordinateBounds(sw: CLLocationCoordinate2D(
+            latitude: max(bounds.sw.latitude, center.latitude - latitudeRadius),
+            longitude: max(bounds.sw.longitude, center.longitude - longitudeRadius)),
+            ne: CLLocationCoordinate2D(
+                latitude: min(bounds.ne.latitude, center.latitude + latitudeRadius),
+                longitude: min(bounds.ne.longitude, center.longitude + longitudeRadius)))
     }
     private func scheduleRetry(on map: MLNMapView?) {
         guard let map else { return }

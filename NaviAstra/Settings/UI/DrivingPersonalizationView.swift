@@ -23,12 +23,12 @@ struct DrivingPersonalizationView: View {
                 Toggle("Ucz się sposobu dojazdu do miejsc", isOn: setting(\.destinationApproach))
                     .disabled(!engine.settings.enabled)
             } footer: {
-                Text("Uczenie obejmuje ukończone przejazdy autem bez punktów pośrednich i postojów ładowania. Preferencje powstają po powtórzeniach lub po użyciu „Zapamiętaj tę trasę”. Godzina oraz dzień tygodnia pomagają wybrać właściwy wariant. ETA pozostaje wyliczane z trasy i ruchu.")
+                Text("Uczenie działa automatycznie po ukończonych przejazdach autem bez punktów pośrednich i postojów ładowania. Co najmniej trzy powtórzenia własnego wariantu mogą wpłynąć na kolejne propozycje. Nie trzeba potwierdzać przejazdów. Godzina oraz dzień tygodnia pomagają wybrać właściwy wariant. ETA pozostaje wyliczane z trasy i ruchu.")
             }
             Section("Dopasowanie śladu i prywatność") {
                 Toggle("Zezwalaj na dopasowanie na serwerze", isOn: setting(\.allowRemoteMatching))
                     .disabled(!engine.settings.enabled)
-                Text("Domyślnie ślad jest dopasowywany na iPhonie za pomocą pobranej paczki dróg. Historia i statystyki pozostają w lokalnej bazie. Włączenie opcji powyżej pozwala wysłać współrzędne śladu do skonfigurowanego serwera Valhalla, gdy lokalne dopasowanie jest niedostępne.")
+                Text("Uczenie działa lokalnie także bez pobranej paczki dróg: porównuje powtarzane ślady GPS z propozycją trasy. Paczka offline pozwala dodatkowo rozpoznać konkretne odcinki dróg. Historia i statystyki pozostają na iPhonie. Włączenie opcji powyżej pozwala wysłać ślad do skonfigurowanego serwera Valhalla. Proponowany znajomy wariant jest każdorazowo przeliczany według aktualnych ograniczeń ruchu.")
                     .font(.footnote).foregroundStyle(.secondary)
                 #if os(macOS)
                 Text("Na Macu dopasowanie śladów wymaga zezwolenia na użycie serwera.")

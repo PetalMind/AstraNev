@@ -1,9 +1,17 @@
 # Otoczenie mapy iOS
 
+Od iOS **1.1.139 (141)** otoczenie zawiera 62 gotowe modele Kenney CC0:
+domy, bloki, wieżowce, obiekty przemysłowe, drzewa, dwie ławki, latarnię,
+sygnalizator i słupek. Modele są dostępne od z15; podczas nawigacji mają niższe
+progi rozmiaru na ekranie, a dalszy plan wykorzystuje uproszczone siatki.
+Siatki są dołączone do aplikacji i zastępują tylko zgodne obiekty danych mapy.
+[Źródła, sposób dopasowania, podgląd i ograniczenia](ENVIRONMENT_MODELS.md).
+Opis własnych brył poniżej dotyczy również ich prezentacji zapasowej.
+
 Mapa ma cztery wizualne poziomy: krajobraz, zabudowa, transport oraz trasa i zdarzenia. Niższe poziomy są spokojniejsze. iOS korzysta z następujących źródeł:
 
 - OpenFreeMap / OpenMapTiles: mapa bazowa, woda, etykiety i POI; budynki i szczegóły kolei także wtedy, gdy Planet v4 nie jest skonfigurowany.
-- MapTiler Planet v4: lasy i zieleń, zastępcze budynki 2D i 3D od z15/z16, szczegóły kolei od z17, parkingi i miejsca parkingowe, ścieżki, powierzchnie piesze, drzewa, liniowe bariery, wyposażenie ulic i tematyczne warstwy POI.
+- MapTiler Planet v4: lasy i zieleń, zastępcze budynki 2D i 3D od z15, szczegóły kolei od z17, parkingi i miejsca parkingowe, ścieżki, powierzchnie piesze, drzewa, liniowe bariery, wyposażenie ulic i tematyczne warstwy POI.
 - MapTiler Buildings: klasyfikacja budynków, kolory elewacji i dachów, wysokości oraz rzeczywiste punkty wejść.
 - Istniejący `DetailedRoadDataProvider`: szczegółowe jezdnie, podział na pasy i strzałki. Źródło otoczenia nie zastępuje tego dostawcy.
 
@@ -11,13 +19,21 @@ Nie dodajemy zapytań Overpass o lasy, budynki, chodniki, parkingi ani inne obie
 
 ## Sterowanie gotowością i szczegółowością
 
-Aktualizacje otoczenia, boisk, wyposażenia i POI przechodzą przez wspólną kolejkę `NaviAstraMapStyle` z odstępem co najmniej 350 ms, zwiększanym do 700 ms przy oszczędzaniu energii lub wysokiej temperaturze urządzenia. W tych warunkach budżety modeli wyposażenia i drzew maleją odpowiednio do 96 i 48; pozostałe obiekty zachowują reprezentację uproszczoną. Kolejka odczytuje najnowszy widok i ustawienia także podczas gestu, zamiast przechwytywać je osobno dla każdego renderera. Wstrzymanie lub zamknięcie mapy anuluje oczekujące zadania. W kompilacji Debug kategoria logów `MapDetails` zapisuje rzeczywisty czas aktualizacji, najwyżej raz na 10 sekund; nie jest to pomiar FPS.
+Aktualizacje otoczenia, boisk, wyposażenia i POI przechodzą przez wspólną kolejkę `NaviAstraMapStyle` z odstępem co najmniej 350 ms, zwiększanym do 700 ms przy oszczędzaniu energii lub wysokiej temperaturze urządzenia. W tych warunkach budżety modeli wyposażenia i drzew maleją odpowiednio do 96 i 64; pozostałe obiekty zachowują reprezentację uproszczoną. Kolejka odczytuje najnowszy widok i ustawienia także podczas gestu, zamiast przechwytywać je osobno dla każdego renderera. Wstrzymanie lub zamknięcie mapy anuluje oczekujące zadania. W kompilacji Debug kategoria logów `MapDetails` zapisuje rzeczywisty czas aktualizacji, najwyżej raz na 10 sekund; nie jest to pomiar FPS.
 
-`MapDetailPolicy` ocenia rozmiar obiektu po projekcji do ekranu, uwzględniając perspektywę. Pełne modele wyposażenia wymagają co najmniej 11 punktów ekranowych, a raz wybrane zachowują się do 7 punktów. Odrębne progi wejścia i wyjścia ograniczają migotanie. Obiekty spoza budżetu i daleki plan otrzymują własne symbole, również wtedy, gdy część pobliskich punktów jest już modelem. Oryginalne symbole są zastępowane dopiero po opublikowaniu źródła zastępczego. Drzewa zachowują niezależność od przełącznika POI. Sondy źródłowe pozostają przezroczyste i są wykluczone z nadawania wyglądu.
+`MapDetailPolicy` ocenia rozmiar obiektu po projekcji do ekranu, uwzględniając perspektywę. `MapEnvironmentModelPolicy` ustala osobne progi nawigacji i przeglądania: modele wyposażenia wchodzą od 1,8/2,8 punktu, a raz wybrane zachowują się do 1,3/2 punktów; pełny detal wymaga 14/16 punktów. Odrębne progi wejścia i wyjścia ograniczają migotanie. Obiekty spoza budżetu i daleki plan otrzymują własne symbole, również wtedy, gdy część pobliskich punktów jest już modelem. Oryginalne symbole są zastępowane dopiero po opublikowaniu źródła zastępczego. Drzewa zachowują niezależność od przełącznika POI. Sondy źródłowe pozostają przezroczyste i są wykluczone z nadawania wyglądu.
 
 Przez maksymalnie 15 sekund zachowywane są ostatnio zaobserwowane obiekty z otoczenia widoku, aby chwilowo niepełny zestaw kafli nie usuwał ich natychmiast. Pamięć jest ograniczona obszarem widoku i liczbą obiektów. Gotowa geometria wyposażenia i boisk jest używana ponownie. Linie boisk zanikają przy zbyt małej wielkości ekranowej; powierzchnia pojawia się płynnie między z17,2 a z17,8, z wejściem do aktywnej reprezentacji od z17,5. Zestaw POI zawiera też punkty dla kolejnego przybliżenia, a widoczność kontroluje filtr warstwy.
 
 `MapBuildingFallbackRenderer` porównuje konkretne obrysy Planet z zaobserwowanymi obrysami Buildings, z zachowaniem otworów dziedzińców. Pojedynczy gotowy budynek nie wyłącza zastępstwa dla całego ekranu. Maska fasad oraz światła latarni korzystają ze wspólnej pamięci siatki budynków i skwantowanego początku współrzędnych; sam mały ruch kamery nie wymusza każdorazowej wymiany buforów. Efekty nadal mają osobne przebiegi GPU. Fasady stopniowo ograniczają okna według wielkości ekranowej i nachylenia, bez nagłego poszerzania całego zbioru na z18. Szczegółowe drogi pokazują dostępną pamięć podręczną od razu, a opóźnienie dotyczy tylko nowego pobrania.
+
+### Odzyskiwanie szczegółowych jezdni
+
+Nawierzchnie, pasy i strzałki `DetailedRoadRenderer` powstają z zapisanej geometrii i tagów OSM; nie wymagają osobnej bitmapy nawierzchni w aplikacji. Świeżość danych pozostaje ograniczona do 24 godzin, a podczas niedostępności Overpass lokalna geometria może służyć jako zastępstwo wizualne do 30 dni. Nie uczestniczy w wyznaczaniu trasy, ocenie przejezdności ani ograniczeń. Pamięć zachowuje dotychczasowe limity obszarów i wierzchołków. Nakładające się fragmenty cache mogą pokryć część nowego kadru, ale częściowy wynik zawsze wymaga pobrania brakującego obszaru.
+
+Ruch kamery nie anuluje rozpoczętego, ograniczonego czasowo pobrania. Po jego zakończeniu renderer sprawdza najnowszy kadr. Daleki horyzont mapy 3D nie wyłącza detalu całej mapy: zapytanie obejmuje wtedy bliski plan, z promieniem do 1,5 km wokół środka kamery. Wyłączenie renderowania lub zejście poniżej zoomu 16 nadal zatrzymuje pracę. Przy ustawionym limicie całej operacji wspólny transport Overpass dzieli pozostały czas między serwery, zamiast zużywać go na powtórny timeout pierwszego hosta.
+
+Audyt z 27 października 2026 potwierdził na urządzeniu zachowane obszary z 14–17 października, odrzucane wcześniej przez siedmiodniowy limit podczas problemów z pobieraniem. Konfiguracja Planet v4 była obecna w zbudowanej aplikacji, a kod geometrii odpowiadał głównej kopii projektu. Samo odnowienie cache nie gwarantuje dostępności nowego obszaru przy awarii obu publicznych serwerów. Kontrola źródeł produkcyjnych odtworzyła odzyskiwanie dziesięciodniowych danych, scalanie częściowego pokrycia oraz przejście do zapasowego hosta po timeoutcie w ramach wspólnego budżetu.
 
 ## Stopniowanie szczegółów
 
@@ -25,8 +41,8 @@ Przez maksymalnie 15 sekund zachowywane są ostatnio zaobserwowane obiekty z oto
 | --- | --- |
 | poniżej 10 | Uogólnione lasy `forest`; pozostała mapa bazowa |
 | 10–14 | Szczegółowa granica lasu `wood`; od z12 parki, ogrody i główne obszary krajobrazu |
-| 15 | Obrysy budynków 2D, powierzchnie parkingów, ścieżki piesze i rowerowe jako wstęgi, pojedyncze drzewa i mniejsza zieleń |
-| 16 | Budynki 3D przy włączonym ustawieniu i kamerze 3D; modele wyposażenia ulic i drzew kwalifikowane rozmiarem na ekranie; szersze wstęgi ścieżek, polygonowe strefy piesze i subtelna faktura lasu |
+| 15 | Obrysy budynków 2D; przy kamerze 3D budynki, drzewa i wyposażenie kwalifikowane rozmiarem na ekranie; powierzchnie parkingów, ścieżki piesze i rowerowe jako wstęgi, pojedyncze drzewa i mniejsza zieleń |
+| 16 | Szersze wstęgi ścieżek, polygonowe strefy piesze i subtelna faktura lasu |
 | 17 | Podwójne szyny i podkłady, miejsca parkingowe, neutralne symbole przejść i spokojna faktura utwardzonych stref pieszych |
 | 18 | Schody, wejścia, sygnalizatory, liniowe i punktowe krawężniki, bariery ochronne, mury, ogrodzenia i uspokojenia ruchu |
 | 18,5 | Symbole 2D ławek, latarni, fontann i słupków; modele 3D mogą być widoczne wcześniej |
@@ -93,7 +109,7 @@ Schemat zweryfikowano w oficjalnej dokumentacji Planet v4. Natywne kafle szczeg�
 | `pedestrian` | Wielokąty stref pieszych, placów oraz powierzchni ścieżek |
 | `forest`, `wood` | Uogólniony las poniżej z10 i szczegółowa geometria od z10; neutralna faktura od z16 |
 | `grass`, `leisure` | Cztery rodziny zieleni oraz tereny rekreacyjne i sportowe |
-| `building` | Obrysy od z15 i bryły od z16 na podstawie `height` / `height_min` |
+| `building` | Obrysy i bryły od z15 na podstawie `height` / `height_min` |
 | `railway` | Szczegóły `rail`, `tram`, `light_rail`, `narrow_gauge`, `preserved`, `disused`, `abandoned` od z17 |
 | `tree` | Punkty pojedynczych drzew, bez wymyślania ich lokalizacji |
 | `traffic_control` | Liniowe krawężniki (z rozróżnieniem `lowered=true`), bariery ochronne i poręcze, mury, ogrodzenia oraz uspokojenia ruchu |
@@ -109,13 +125,13 @@ Kolej zachowuje podział `brunnel` na tory naziemne, mostowe i tunelowe. Podkła
 
 `MapStreetFurnitureGeometry` definiuje własne, lekkie modele z części w metrach: ławkę z czterema deskami siedziska, dwiema deskami oparcia, nogami i podłokietnikami oraz latarnię z wielokątnym słupem, podstawą, wysięgnikiem i oprawą. `MapStreetFurnitureRenderer` zamienia części na wielokąty z wysokością podstawy i wierzchu. Natywna warstwa `MLNFillExtrusionStyleLayer` renderuje je w przebiegu 3D razem z budynkami, z perspektywą, cieniowaniem i buforem głębokości. Nie są to płaskie obrazki ani pliki modeli pobierane z internetu.
 
-Modele zastępują symbole `bench`, `street_lamp`, `bollard` i `traffic_signals` w trybie 3D mapy standardowej od z16, jeśli ich przestrzenny obrys osiągnie 4 punkty na ekranie. Już widoczne modele są utrzymywane do 3 punktów. Renderer dobiera poziom prosty, średni lub pełny na podstawie wysokości i szerokości modelu w projekcji kamery, a nie płaskiego fragmentu podłoża. Natywną macierz przechwytuje `MapFurnitureProjectionLayer`. W trybie 2D pozostają dotychczasowe ikonki. Przełącznik POI steruje modelami wyposażenia ulicy; drzewa zachowują niezależność od POI. Widok satelitarny i wstrzymane renderowanie mapy ukrywają modele. Punkty oczekujące na model zachowują płaskie symbole przy ich zwykłych progach zbliżenia.
+Modele zastępują symbole `bench`, `street_lamp`, `bollard` i `traffic_signals` w trybie 3D mapy standardowej od z15, jeśli ich przestrzenny obrys osiągnie 1,8 punktu podczas nawigacji lub 2,8 punktu podczas przeglądania. Już widoczne modele są utrzymywane odpowiednio do 1,3 lub 2 punktów. Renderer dobiera poziom prosty, średni lub pełny na podstawie wysokości i szerokości modelu w projekcji kamery, a nie płaskiego fragmentu podłoża. Natywną macierz przechwytuje `MapFurnitureProjectionLayer`. Również budynki 3D są dostępne od z15 przy włączonym ustawieniu i kamerze 3D. W trybie 2D pozostają dotychczasowe ikonki. Przełącznik POI steruje modelami wyposażenia ulicy; drzewa zachowują niezależność od POI. Widok satelitarny i wstrzymane renderowanie mapy ukrywają modele. Punkty oczekujące na model zachowują płaskie symbole przy ich zwykłych progach zbliżenia.
 
-Limity wynoszą 256 obiektów ulicy i 128 drzew, dodatkowo ograniczonych kosztem wierzchołków geometrii. W trybie oszczędzania energii i przy wysokiej temperaturze limity są niższe. Gotowe poziomy modeli są buforowane do 30 sekund w pamięci o ograniczonym koszcie; niewidoczne obrysy nie zajmują budżetu aktywnych modeli. Niezmienione zestawy nie przebudowują źródeł. Światło ma osobny limit 64 latarni, albo 24 przy ograniczonej energii, i wolniejszą przebudowę maski. Szczegółowe progi oraz diagnostykę opisuje audyt obiektów.
+Limity wynoszą 384 obiekty ulicy i 256 drzew, dodatkowo ograniczonych kosztem wierzchołków geometrii. W trybie oszczędzania energii i przy wysokiej temperaturze limity są niższe. Gotowe poziomy modeli są buforowane do 30 sekund w pamięci o ograniczonym koszcie; niewidoczne obrysy nie zajmują budżetu aktywnych modeli. Niezmienione zestawy nie przebudowują źródeł. Światło ma osobny limit 64 latarni, albo 24 przy ograniczonej energii, i wolniejszą przebudowę maski. Szczegółowe progi oraz diagnostykę opisuje audyt obiektów.
 
 Słupki mają podstawę, słup z pasem odblaskowym i zwieńczenie; sygnalizatory słup, korpus, daszki i trzy wygaszone soczewki. Nie symulujemy zielonego, żółtego ani czerwonego światła, ponieważ nie ma danych o stanie sygnału. Punkty `tree` otrzymują pień i umowną zaokrągloną koronę z dziesięciu warstw brył; nie przypisujemy gatunku ani typu liści. W trybie 3D koła drzew ustępują modelom po osiągnięciu wymaganego rozmiaru na ekranie. Punkty oczekujące na model pozostają widoczne jako koła; przejście wykorzystuje płynną zmianę przezroczystości i histerezę. W trybie 2D pozostają koła. Ikona sygnalizatora jest zachowana od z18 i płynnie zanika przy pojawianiu się korpusu. Warstwy techniczne pobierania punktów pozostają całkowicie przezroczyste także po ponownym zastosowaniu stylu.
 
-Położenie i rodzaj pochodzą z rzeczywistych punktów Planet. Wygląd, materiały, wymiary (ławka 1,8 m, latarnia 5,91 m) i orientacja modeli są umowne. Szablony są skierowane na północ, niezależnie od obrotu kamery. Nie wykorzystujemy `direction`: schemat dokumentuje je dla przejść, a nie dla ławek czy latarni. Dane nie określają modelu, wysokości, materiału, orientacji ani stanu świecenia tych obiektów. Warstwa `MapStreetLampLightLayer` dodaje nocą jasny rdzeń przy soczewce, poświatę i miękką plamę światła na podłożu. Tryb dnia/nocy oraz obliczenia położenia słońca sterują intensywnością. Maska głębokości wykorzystuje geometrię widocznych budynków oraz najbliższe części modeli drzew, aby światło nie prześwitywało przez ściany, dachy i przestrzenne korony. Części drzew mają osobny budżet maski do 240 części. Efekt jest dekoracją i nie potwierdza działania konkretnej lampy; nie jest pełną symulacją oświetlenia materiałów ani dynamicznych cieni. Brak punktu źródłowego oznacza brak modelu. Modele nie korzystają z zewnętrznych zasobów ani licencji modeli; atrybucja map pozostaje w istniejących ustawieniach.
+Położenie i rodzaj pochodzą z rzeczywistych punktów Planet. Wygląd, materiały, wymiary (ławka 1,8 m, latarnia 5,91 m) i orientacja modeli są umowne. Szablony są skierowane na północ, niezależnie od obrotu kamery. Nie wykorzystujemy `direction`: schemat dokumentuje je dla przejść, a nie dla ławek czy latarni. Dane nie określają modelu, wysokości, materiału, orientacji ani stanu świecenia tych obiektów. Warstwa `MapStreetLampLightLayer` dodaje nocą jasny rdzeń przy soczewce, poświatę i miękką plamę światła na podłożu. Tryb dnia/nocy oraz obliczenia położenia słońca sterują intensywnością. Maska głębokości wykorzystuje geometrię widocznych budynków oraz najbliższe części modeli drzew, aby światło nie prześwitywało przez ściany, dachy i przestrzenne korony. Części drzew mają osobny budżet maski do 240 części. Efekt jest dekoracją i nie potwierdza działania konkretnej lampy; nie jest pełną symulacją oświetlenia materiałów ani dynamicznych cieni. Brak punktu źródłowego oznacza brak modelu. Opisane bryły proceduralne nie wymagają zewnętrznych zasobów. Pobliskie obiekty mogą korzystać z dołączonych modeli Kenney CC0, zgodnie z [katalogiem modeli](ENVIRONMENT_MODELS.md). Atrybucja map pozostaje w istniejących ustawieniach.
 
 Pełny audyt pozostałych symboli, linii i modeli opisuje [OBIEKTY_MAPY_3D.md](OBIEKTY_MAPY_3D.md).
 

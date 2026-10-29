@@ -1,0 +1,10 @@
+{
+  "selectedSource": "01-astra.png",
+  "selection": "Biało-fioletowa strzałka z gwiazdą wskazana na załączonym obrazie; trzecia wyświetlona propozycja.",
+  "version": "1.1.133",
+  "build": 135,
+  "normalAndDark": "01-astra.png",
+  "tinted": "01-astra.png",
+  "assetSize": "1024x1024",
+  "tool": "Oryginał z image_gen.imagegen; sips — dopasowanie rozmiaru do zasobów iOS"
+}

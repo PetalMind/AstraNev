@@ -81,6 +81,7 @@ final class NaviAstraMapStyle {
 
     func reset() {
         suspendDetails()
+        satelliteStyle.stopRecovery()
         detailFocus = nil
         detailRoute = []
         buildingFallbackRenderer.reset()
@@ -99,6 +100,16 @@ final class NaviAstraMapStyle {
         buildingHeightKey = "render_height"
         buildingBaseKey = "render_min_height"
     }
+
+    func updateSatelliteRecovery(on map: MLNMapView, enabled: Bool, renderingEnabled: Bool) {
+        satelliteStyle.updateRecovery(on: map, enabled: enabled, renderingEnabled: renderingEnabled)
+    }
+
+    func satelliteTileOperation(_ operation: MLNTileOperation, sourceID: String, tile: SatelliteTileAddress) {
+        satelliteStyle.tileOperation(operation, sourceID: sourceID, tile: tile)
+    }
+
+    func stopSatelliteRecovery() { satelliteStyle.stopRecovery() }
 
     func apply(to style: MLNStyle, settings: MapSettings, dark: Bool,
                activelyNavigating: Bool, zoom: Double, coordinate: CLLocationCoordinate2D) {
@@ -396,7 +407,7 @@ final class NaviAstraMapStyle {
                layer.sourceLayerIdentifier == "building" {
                 // OpenMapTiles omits hide_3d unless an outline must be hidden.
                 // Include that missing value explicitly in the native style filter.
-                layer.minimumZoomLevel = 16
+                layer.minimumZoomLevel = Float(MapEnvironmentModelPolicy.minimumZoom)
                 layer.predicate = NSPredicate(format: "(hide_3d == nil OR hide_3d != true) AND render_height > 0")
                 // Keep the provider's height and base in meters at every zoom.
                 // Scaling them to zero at zoom 15 made the 3D view look flat.
@@ -452,9 +463,9 @@ final class NaviAstraMapStyle {
         let planet = building.identifier == MapTilerEnvironmentStyle.buildingLayerID
         buildingHeightKey = planet ? "height" : "render_height"
         buildingBaseKey = planet ? "height_min" : "render_min_height"
-        // The native extrusion already includes its roof. A second extrusion only
-        // 2 cm above it competes for depth during camera movement and flashes
-        // between the two palettes. Keep one surface for both body and roof.
+        // Keep one native body and its exact roof geometry. The existing facade
+        // pass tints the same triangulated roof inside its own depth-tested color
+        // target; it never adds a competing offset extrusion or changes its height.
         let layer = MapBuildingFacadeLayer(identifier: MapBuildingFacadeLayer.layerID)
         // Road-arrow symbols precede buildings in Liberty. Anchoring to the first
         // symbol puts the lights underneath the bodies that they decorate.

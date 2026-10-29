@@ -297,4 +297,203 @@ import Testing
         #expect(first.hourBucket != second.hourBucket)
     }
 
+    private func localLearningFixture() -> (DrivingLearningEngine, DrivingProfileStore, NavigationRoute, NavigationRoute) {
+        let store = DrivingProfileStore(url: FileManager.default.temporaryDirectory
+            .appendingPathComponent("driving-local-critical-\(UUID().uuidString)/NavigationLearning.sqlite"))
+        let ordinary = NavigationRoute(coordinates: [origin, destination], distance: 2_224,
+            expectedTravelTime: 300, maneuvers: [])
+        let coordinates = [origin,
+            Coordinate(latitude: 52.004, longitude: 21),
+            Coordinate(latitude: 52.008, longitude: 21.005),
+            Coordinate(latitude: 52.014, longitude: 21.005),
+            Coordinate(latitude: 52.018, longitude: 21), destination]
+        let familiar = NavigationRoute(coordinates: coordinates,
+            distance: RouteProgressGeometry(coordinates: coordinates).length,
+            expectedTravelTime: 301, maneuvers: [])
+        return (DrivingLearningEngine(store: store), store, ordinary, familiar)
+    }
+
+    private func continuousTrace(_ route: NavigationRoute, start: Date) -> [TripTracePoint] {
+        let geometry = RouteProgressGeometry(route)
+        let count = max(2, Int(ceil(geometry.length / 35)))
+        return (0...count).compactMap { index in
+            let distance = geometry.length * Double(index) / Double(count)
+            return geometry.coordinate(at: distance).map {
+                TripTracePoint(coordinate: $0, timestamp: start.addingTimeInterval(distance / 9),
+                    speedKph: 32.4, startsSegment: index == 0)
+            }
+        }
+    }
+
+    private func waitForLocalLearning(_ engine: DrivingLearningEngine) async throws {
+        for _ in 0..<300 {
+            if !engine.isProcessing { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        Issue.record("Local learning did not finish within three seconds")
+    }
+
+    @Test func completedGPSLearnsLocallyAndChangesNextProposalAfterRepeatedChoice() async throws {
+        let (engine, store, ordinary, familiar) = localLearningFixture()
+        defer { try? FileManager.default.removeItem(at: store.url.deletingLastPathComponent()) }
+        #expect(engine.settings.enabled)
+        #expect(!engine.settings.allowRemoteMatching)
+        let endpoint = URL(string: "https://example.invalid")!
+        let recentStart = Date().addingTimeInterval(-600)
+        let context = DrivingPreferenceContext(date: recentStart)
+        for index in 0..<3 {
+            // Separate days at the same weekday/hour model three independent visits.
+            let start = recentStart.addingTimeInterval(Double(index - 2) * 7 * 86_400)
+            let trace = continuousTrace(familiar, start: start)
+            let trip = TripRecord(destination: Destination(name: "Cel", coordinate: destination),
+                startedAt: start, endedAt: try #require(trace.last?.timestamp),
+                distanceMeters: familiar.distance, movingSeconds: familiar.distance / 9,
+                rerouteCount: 1, arrived: true, transportMode: .car, trace: trace)
+            engine.enqueue(trip, proposed: ordinary, costing: "auto", context: context,
+                allowAutomaticDeviations: true, recordingGeneration: engine.recordingGeneration,
+                offeredRoutes: [ordinary], selectedRouteID: ordinary.id)
+            engine.processPending(endpoint: endpoint)
+            try await waitForLocalLearning(engine)
+            #expect(engine.pendingCount == 0)
+            #expect(engine.learnedTripCount == index + 1)
+            #expect(engine.patterns.first?.representative.segments.allSatisfy { $0.id.hasPrefix("trace:") } == true)
+            #expect(engine.patterns.first?.representative.deviations.isEmpty == false)
+            if index < 2 {
+                #expect(engine.candidateHints(from: origin, to: destination,
+                    context: context, baseline: ordinary).isEmpty)
+                #expect(engine.ranked([ordinary, familiar], preference: .fastest, date: recentStart).first?.id == ordinary.id)
+            }
+        }
+        let restored = DrivingLearningEngine(store: store)
+        #expect(restored.learnedTripCount == 3)
+        #expect(restored.patterns.count == 1)
+        #expect(!restored.settings.allowRemoteMatching)
+        let hints = restored.candidateHints(from: origin, to: destination, context: context, baseline: ordinary)
+        #expect(!hints.isEmpty)
+        #expect(hints.flatMap { $0 }.contains { abs($0.longitude - 21.005) < 0.001 })
+        #expect(restored.ranked([ordinary, familiar], preference: .fastest, date: recentStart).first?.id == familiar.id)
+        #expect(restored.ranked([ordinary, familiar], preference: .shortest, date: recentStart).first?.id == ordinary.id)
+        #expect(familiar.expectedTravelTime == 301)
+    }
+
+    @Test func localLearningRejectsGapsAndNoiseAndDoesNotPromoteTemporaryDetours() async throws {
+        let (engine, store, ordinary, familiar) = localLearningFixture()
+        defer { try? FileManager.default.removeItem(at: store.url.deletingLastPathComponent()) }
+        let start = Date().addingTimeInterval(-600)
+        var broken = continuousTrace(familiar, start: start)
+        let middle = broken.count / 2
+        broken[middle] = TripTracePoint(coordinate: broken[middle].coordinate,
+            timestamp: broken[middle].timestamp, speedKph: broken[middle].speedKph, startsSegment: true)
+        #expect(throws: DrivingLearningFailure.self) { try DrivingTraceLearning.segments(trace: broken) }
+        let noiseCoordinates = ordinary.coordinates.enumerated().map { index, coordinate in
+            Coordinate(latitude: coordinate.latitude, longitude: coordinate.longitude + (index == 0 ? 0.0001 : -0.0001))
+        }
+        let noise = DrivingTraceLearning.segments(coordinates: noiseCoordinates)
+        let proposed = DrivingTraceLearning.segments(coordinates: ordinary.coordinates)
+        #expect(DrivingTraceLearning.deviations(actual: noise, proposed: proposed,
+            trace: continuousTrace(ordinary, start: start)).isEmpty)
+        let valid = continuousTrace(familiar, start: start)
+        let cutoff = valid.count / 2
+        let unfinished = Array(valid.prefix(cutoff))
+        #expect(DrivingTraceLearning.deviations(
+            actual: DrivingTraceLearning.segments(coordinates: unfinished.map(\.coordinate)),
+            proposed: proposed, trace: unfinished).isEmpty)
+        var stopped: [TripTracePoint] = []
+        for (index, point) in valid.enumerated() {
+            stopped.append(TripTracePoint(coordinate: point.coordinate,
+                timestamp: point.timestamp.addingTimeInterval(index > cutoff ? 100 : 0),
+                speedKph: point.speedKph, startsSegment: point.startsSegment))
+            if index == cutoff {
+                for offset in 1...5 {
+                    stopped.append(TripTracePoint(coordinate: point.coordinate,
+                        timestamp: point.timestamp.addingTimeInterval(Double(offset) * 20),
+                        speedKph: 0, startsSegment: false))
+                }
+            }
+        }
+        let stoppedSegments = try DrivingTraceLearning.segments(trace: stopped)
+        #expect(DrivingTraceLearning.deviations(actual: stoppedSegments, proposed: proposed, trace: stopped).isEmpty)
+        var jumping = valid
+        jumping[cutoff] = TripTracePoint(coordinate: Coordinate(latitude: 52.5, longitude: 21.5),
+            timestamp: valid[cutoff].timestamp, speedKph: 32.4, startsSegment: false)
+        let invalidTrip = TripRecord(destination: Destination(name: "Cel", coordinate: destination),
+            startedAt: start, endedAt: try #require(valid.last?.timestamp),
+            distanceMeters: familiar.distance, movingSeconds: familiar.distance / 9,
+            rerouteCount: 1, arrived: true, transportMode: .car, trace: jumping)
+        engine.enqueue(invalidTrip, proposed: ordinary, costing: "auto", context: DrivingPreferenceContext(date: start),
+            allowAutomaticDeviations: true)
+        for index in 0..<4 {
+            let trace = continuousTrace(familiar, start: start.addingTimeInterval(Double(index) * -7 * 86_400))
+            let trip = TripRecord(destination: Destination(name: "Cel", coordinate: destination),
+                startedAt: try #require(trace.first?.timestamp), endedAt: try #require(trace.last?.timestamp),
+                distanceMeters: familiar.distance, movingSeconds: familiar.distance / 9,
+                rerouteCount: 1, arrived: true, transportMode: .car, trace: trace)
+            engine.enqueue(trip, proposed: ordinary, costing: "auto", context: DrivingPreferenceContext(date: start),
+                allowAutomaticDeviations: false)
+            engine.processPending(endpoint: URL(string: "https://example.invalid")!)
+            try await waitForLocalLearning(engine)
+        }
+        #expect(engine.learnedTripCount == 4)
+        #expect(engine.pendingCount == 1) // One invalid observation did not block the valid queue.
+        #expect(engine.patterns.first?.confidence == 0)
+        #expect(engine.candidateHints(from: origin, to: destination,
+            context: DrivingPreferenceContext(date: start), baseline: ordinary).isEmpty)
+        #expect(engine.ranked([ordinary, familiar], preference: .fastest).first?.id == ordinary.id)
+    }
+
+    @Test func automaticLocalLearningMigrationPreservesRemotePrivacyAndLaterDisable() throws {
+        let (_, store, _, _) = localLearningFixture()
+        defer { try? FileManager.default.removeItem(at: store.url.deletingLastPathComponent()) }
+        var legacy = DrivingProfileSnapshot()
+        legacy.schemaVersion = 2
+        legacy.settings.enabled = false
+        legacy.settings.allowRemoteMatching = false
+        try store.save(legacy)
+        let engine = DrivingLearningEngine(store: store)
+        #expect(engine.settings.enabled)
+        #expect(!engine.settings.allowRemoteMatching)
+        #expect(try store.load().schemaVersion == 3)
+        var settings = engine.settings
+        settings.enabled = false
+        engine.updateSettings(settings)
+        #expect(!DrivingLearningEngine(store: store).settings.enabled)
+    }
+
+    @Test func differentOneOffDeviationsOnLongJourneyDoNotBecomeOneRepeatedChoice() async throws {
+        let store = DrivingProfileStore(url: FileManager.default.temporaryDirectory
+            .appendingPathComponent("driving-distinct-critical-\(UUID().uuidString)/NavigationLearning.sqlite"))
+        defer { try? FileManager.default.removeItem(at: store.url.deletingLastPathComponent()) }
+        let engine = DrivingLearningEngine(store: store)
+        let farDestination = Coordinate(latitude: 52.4, longitude: 21)
+        let ordinary = NavigationRoute(coordinates: [origin, farDestination], distance: 44_478,
+            expectedTravelTime: 4_950, maneuvers: [])
+        let recent = Date().addingTimeInterval(-7_000)
+        let context = DrivingPreferenceContext(date: recent)
+        for index in 0..<3 {
+            let latitude = 52.08 + Double(index) * 0.10
+            let points = [origin,
+                Coordinate(latitude: latitude - 0.012, longitude: 21),
+                Coordinate(latitude: latitude - 0.006, longitude: 21.005),
+                Coordinate(latitude: latitude + 0.006, longitude: 21.005),
+                Coordinate(latitude: latitude + 0.012, longitude: 21), farDestination]
+            let route = NavigationRoute(coordinates: points,
+                distance: RouteProgressGeometry(coordinates: points).length,
+                expectedTravelTime: 4_951, maneuvers: [])
+            let start = recent.addingTimeInterval(Double(index - 2) * 7 * 86_400)
+            let trace = continuousTrace(route, start: start)
+            let trip = TripRecord(destination: Destination(name: "Daleki cel", coordinate: farDestination),
+                startedAt: start, endedAt: try #require(trace.last?.timestamp),
+                distanceMeters: route.distance, movingSeconds: route.distance / 9,
+                rerouteCount: 1, arrived: true, transportMode: .car, trace: trace)
+            engine.enqueue(trip, proposed: ordinary, costing: "auto", context: context,
+                allowAutomaticDeviations: true)
+            engine.processPending(endpoint: URL(string: "https://example.invalid")!)
+            try await waitForLocalLearning(engine)
+        }
+        #expect(engine.learnedTripCount == 3)
+        // A common final approach may be learned, but no one-off side road is repeated.
+        let hints = engine.candidateHints(from: origin, to: farDestination, context: context, baseline: ordinary)
+        #expect(!hints.flatMap { $0 }.contains { $0.longitude > 21.003 })
+    }
+
 }

@@ -109,10 +109,15 @@ extension ContentView {
                     }
                     Spacer(minLength: 8)
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text(quickETAEstimates[place.id.uuidString].map { TravelDurationFormatter.string(minutes: $0.minutes) } ?? "— min")
-                        Text(quickETAKilometers(quickETAEstimates[place.id.uuidString]?.distanceMeters))
-                            .font(.caption2)
-                            .foregroundStyle(Color.naviTextSecondary)
+                        if let estimate = quickETAEstimates[place.id.uuidString] {
+                            Text(TravelDurationFormatter.string(minutes: estimate.minutes))
+                            Text(quickETAKilometers(estimate.distanceMeters))
+                                .font(.caption2)
+                                .foregroundStyle(Color.naviTextSecondary)
+                        } else {
+                            Text(quickETAInFlight ? "Obliczanie trasy…" : "Trasa niedostępna")
+                                .foregroundStyle(Color.naviTextSecondary)
+                        }
                     }
                     .font(.caption.weight(.semibold).monospacedDigit())
                 }

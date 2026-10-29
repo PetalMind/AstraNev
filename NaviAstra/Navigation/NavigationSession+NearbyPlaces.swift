@@ -86,13 +86,14 @@ extension NavigationSession {
                     let (first, second) = try await (outbound, onward)
                     try Task.checkCancellation()
                     guard nearbySearchID == searchID else { return }
-                    if let baseline = first[0][targets.count].time {
+                    if let baseline = first.first?.last?.time, baseline.isFinite, baseline >= 0 {
                         for (rowIndex, routed) in routedSelected.enumerated() {
-                            state.nearbySuggestions[routed.selectedIndex].travelTime = first[0][rowIndex].time
-                            state.nearbySuggestions[routed.selectedIndex].travelDistance =
-                                first[0][rowIndex].distance.map { $0 * 1_000 }
-                            if let arrival = first[0][rowIndex].time,
-                               let continuation = second[rowIndex][0].time {
+                            guard let row = first.first, row.indices.contains(rowIndex), second.indices.contains(rowIndex) else { continue }
+                            let metric = RoutedTravelMetrics(time: row[rowIndex].time, distance: row[rowIndex].distance.map { $0 * 1_000 })
+                            state.nearbySuggestions[routed.selectedIndex].travelTime = metric?.time
+                            state.nearbySuggestions[routed.selectedIndex].travelDistance = metric?.distance
+                            if let arrival = metric?.time,
+                               let continuation = second[rowIndex].first?.time, continuation.isFinite, continuation >= 0 {
                                 state.nearbySuggestions[routed.selectedIndex].detourSeconds =
                                     max(0, arrival + continuation - baseline)
                             }
@@ -101,7 +102,7 @@ extension NavigationSession {
                 } else {
                     let baseline = try await provider.calculateRoutes(from: current, to: destinationCoordinate,
                         through: pendingStops, mode: .car, preferences: preferences, avoiding: []).first?.expectedTravelTime
-                    if let baseline {
+                    if let baseline, baseline.isFinite, baseline >= 0 {
                         // Limit server load while letting independent estimates complete together.
                         for start in stride(from: 0, to: routedSelected.count, by: 3) {
                             try Task.checkCancellation()
@@ -117,8 +118,9 @@ extension NavigationSession {
                                             let second = nearDestination ? 0 : try await provider.calculateRoutes(
                                                 from: routed.coordinate, to: destinationCoordinate,
                                                 through: pendingStops, mode: .car, preferences: preferences, avoiding: []).first?.expectedTravelTime
-                                            guard let first, let second else { return (index, nil) }
-                                            return (index, max(0, first.expectedTravelTime + second - baseline))
+                                            guard let first, let second, second.isFinite, second >= 0,
+                                                  let metric = RoutedTravelMetrics(time: first.expectedTravelTime, distance: first.distance) else { return (index, nil) }
+                                            return (index, max(0, metric.time + second - baseline))
                                         } catch { return (index, nil) }
                                     }
                                 }
@@ -145,7 +147,7 @@ extension NavigationSession {
                 case let (left?, right?): left < right
                 case (_?, nil): true
                 case (nil, _?): false
-                case (nil, nil): lhs.candidate.distanceFromRoute < rhs.candidate.distanceFromRoute
+                case (nil, nil): lhs.id < rhs.id
                 }
             }
         } catch {
@@ -165,68 +167,51 @@ extension NavigationSession {
 
     private func estimateNearbyTravel(for candidates: [NearbyPlaceCandidate], from origin: Coordinate,
                                       preferences: RoutingPreferences, searchID: UUID) async {
-        guard let provider = routeProvider as? AdvancedRouteProvider else {
-            for index in state.nearbySuggestions.indices {
-                state.nearbySuggestions[index].estimateStatus = .unavailable
-            }
-            return
-        }
+        let mode = state.transportMode
         for candidate in candidates {
             guard let index = state.nearbySuggestions.firstIndex(where: { $0.id == candidate.id }) else { continue }
             state.nearbySuggestions[index].estimateStatus = .calculating
         }
         do {
-            let resolvedPOIs = await cachedNearbyAccessTargets(for: candidates)
+            let resolvedPOIs = await cachedNearbyAccessTargets(for: candidates, mode: mode)
             try Task.checkCancellation()
             guard nearbySearchID == searchID else { return }
-            let routedCandidates: [(index: Int, candidate: NearbyPlaceCandidate, coordinate: Coordinate)] =
-                candidates.indices.compactMap { index in
-                    if candidates[index].destination.poi != nil {
-                        return (index, candidates[index], resolvedPOIs[index]?.coordinate
-                                ?? candidates[index].destination.coordinate)
-                    }
-                    return (index, candidates[index], candidates[index].destination.coordinate)
+            if mode != .transit, let matrix = routeProvider as? ValhallaRouteProvider {
+                let coordinates = candidates.indices.map { index in
+                    resolvedPOIs.indices.contains(index) ? resolvedPOIs[index]?.coordinate ?? candidates[index].destination.coordinate
+                        : candidates[index].destination.coordinate
                 }
-            guard !routedCandidates.isEmpty else { return }
-            if let matrix = routeProvider as? ValhallaRouteProvider {
-                let rows = try await matrix.searchMatrix(sources: [origin],
-                    targets: routedCandidates.map { $0.coordinate }, mode: .car,
-                    preferences: preferences)
+                let rows = try await matrix.searchMatrix(sources: [origin], targets: coordinates,
+                    mode: mode, preferences: preferences)
                 try Task.checkCancellation()
                 guard nearbySearchID == searchID else { return }
-                for (rowIndex, routed) in routedCandidates.enumerated() {
-                    let estimate = rows[0][rowIndex]
-                    guard let suggestionIndex = state.nearbySuggestions.firstIndex(where: { $0.id == routed.candidate.id }) else { continue }
-                    state.nearbySuggestions[suggestionIndex].travelTime = estimate.time
-                    state.nearbySuggestions[suggestionIndex].travelDistance = estimate.distance.map { $0 * 1_000 }
+                for index in candidates.indices {
+                    guard let suggestionIndex = state.nearbySuggestions.firstIndex(where: { $0.id == candidates[index].id }) else { continue }
+                    let cell = rows.first.flatMap { $0.indices.contains(index) ? $0[index] : nil }
+                    let metric = RoutedTravelMetrics(time: cell?.time, distance: cell?.distance.map { $0 * 1_000 })
+                    state.nearbySuggestions[suggestionIndex].travelTime = metric?.time
+                    state.nearbySuggestions[suggestionIndex].travelDistance = metric?.distance
                 }
             } else {
-                for start in stride(from: 0, to: routedCandidates.count, by: 3) {
+                for start in stride(from: 0, to: candidates.count, by: 3) {
                     try Task.checkCancellation()
                     guard nearbySearchID == searchID else { return }
-                    await withTaskGroup(of: (Int, TimeInterval?, Double?).self) { group in
-                        for index in start..<min(start + 3, routedCandidates.count) {
-                            let routed = routedCandidates[index]
+                    await withTaskGroup(of: (Int, RoutedTravelMetrics?).self) { group in
+                        for index in start..<min(start + 3, candidates.count) {
+                            let destination = candidates[index].destination
                             group.addTask { @MainActor in
                                 do {
-                                    let route = try await provider.calculateRoutes(from: origin,
-                                        to: routed.coordinate, through: [], mode: .car,
-                                        preferences: preferences, avoiding: []).first
-                                    return (index, route?.expectedTravelTime, route?.distance)
-                                } catch {
-                                    return (index, nil, nil)
-                                }
+                                    let estimate = try await self.estimatedSearchRoute(from: origin, to: destination, mode: mode)
+                                    return (index, RoutedTravelMetrics(time: estimate?.travelTime, distance: estimate?.distanceMeters))
+                                } catch { return (index, nil) }
                             }
                         }
-                        for await (index, travelTime, travelDistance) in group {
-                            guard nearbySearchID == searchID, !Task.isCancelled else { continue }
-                            guard let suggestionIndex = state.nearbySuggestions.firstIndex(where: {
-                                $0.id == routedCandidates[index].candidate.id
-                            }) else { continue }
-                            state.nearbySuggestions[suggestionIndex].travelTime = travelTime
-                            state.nearbySuggestions[suggestionIndex].travelDistance = travelDistance
-                            state.nearbySuggestions[suggestionIndex].estimateStatus = travelTime != nil && travelDistance != nil
-                                ? .notRequested : .unavailable
+                        for await (index, metric) in group {
+                            guard nearbySearchID == searchID, !Task.isCancelled,
+                                  let suggestionIndex = state.nearbySuggestions.firstIndex(where: { $0.id == candidates[index].id }) else { continue }
+                            state.nearbySuggestions[suggestionIndex].travelTime = metric?.time
+                            state.nearbySuggestions[suggestionIndex].travelDistance = metric?.distance
+                            state.nearbySuggestions[suggestionIndex].estimateStatus = metric == nil ? .unavailable : .notRequested
                         }
                     }
                 }
@@ -238,18 +223,23 @@ extension NavigationSession {
         for candidate in candidates {
             guard let index = state.nearbySuggestions.firstIndex(where: { $0.id == candidate.id }) else { continue }
             let suggestion = state.nearbySuggestions[index]
-            state.nearbySuggestions[index].estimateStatus = suggestion.travelTime != nil && suggestion.travelDistance != nil
-                ? .notRequested : .unavailable
+            state.nearbySuggestions[index].estimateStatus =
+                RoutedTravelMetrics(time: suggestion.travelTime, distance: suggestion.travelDistance) == nil ? .unavailable : .notRequested
+        }
+        state.nearbySuggestions.sort { lhs, rhs in
+            if lhs.travelTime != rhs.travelTime { return (lhs.travelTime ?? .infinity) < (rhs.travelTime ?? .infinity) }
+            if lhs.travelDistance != rhs.travelDistance { return (lhs.travelDistance ?? .infinity) < (rhs.travelDistance ?? .infinity) }
+            return lhs.id < rhs.id
         }
     }
 
-    private func cachedNearbyAccessTargets(for candidates: [NearbyPlaceCandidate]) async -> [POINavigationTarget?] {
+    private func cachedNearbyAccessTargets(for candidates: [NearbyPlaceCandidate], mode: TransportMode = .car) async -> [POINavigationTarget?] {
         // A list estimate uses Valhalla's road snapping or an already known access
         // point. Fetch full entrance geometry only for the place selected for routing.
         var targets: [POINavigationTarget?] = []
         for candidate in candidates {
             guard !Task.isCancelled else { break }
-            targets.append(await POIAccessResolver.shared.cachedTarget(for: candidate.destination, mode: .car))
+            targets.append(await POIAccessResolver.shared.cachedTarget(for: candidate.destination, mode: mode == .transit ? .walking : mode))
         }
         return targets
     }

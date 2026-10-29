@@ -305,7 +305,9 @@ nonisolated enum RoadRoutingContext {
 }
 
 /// Bounded multi-label search over charging stations ordered along each base route.
-/// Reachability uses the same 20 percent range margin as final route validation.
+/// Proximity only prunes impossible candidate sequences. Every selected sequence
+/// is rerouted and range-validated before its actual route/charging ETA is shown.
+/// A geometric offset never becomes a driving-time penalty.
 enum EVStopPlanner {
     struct Label { let indices: [Int]; let cost: Double }
 
@@ -319,7 +321,7 @@ enum EVStopPlanner {
             let position = station.distanceFromRoute
             var options: [Label] = []
             if position + station.distanceToRoute <= initialRange * 0.8 {
-                options.append(Label(indices: [index], cost: station.distanceToRoute / 8 + 300))
+                options.append(Label(indices: [index], cost: 300))
             }
             for previous in 0..<index {
                 let distance = position - chargers[previous].distanceFromRoute +
@@ -330,7 +332,7 @@ enum EVStopPlanner {
                 let charging = distance / 100_000 * consumption / (power * 0.7) * 3_600
                 for label in labels[previous] where label.indices.count < 10 {
                     options.append(Label(indices: label.indices + [index],
-                                         cost: label.cost + charging + station.distanceToRoute / 8 + 300))
+                                         cost: label.cost + charging + 300))
                 }
             }
             labels[index] = Array(options.sorted { $0.cost < $1.cost }.prefix(3))

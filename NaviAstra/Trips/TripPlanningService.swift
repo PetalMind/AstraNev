@@ -113,7 +113,8 @@ final class TripPlanningService {
         do {
             let (route, matched) = try await calculate(original, occurrence: occurrence)
             try Task.checkCancellation()
-            guard route.expectedTravelTime.isFinite, route.expectedTravelTime > 0 else { throw RoutingError.invalidResponse }
+            guard RoutedTravelMetrics(time: route.expectedTravelTime, distance: route.distance) != nil,
+                  route.expectedTravelTime > 0 else { throw RoutingError.invalidResponse }
             let proposedDeparture = original.timing == .departure ? occurrence
                 : occurrence.addingTimeInterval(-route.expectedTravelTime - Double(original.bufferMinutes + original.stopMinutes) * 60)
             var duration = route.expectedTravelTime

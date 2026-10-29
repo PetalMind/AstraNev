@@ -33,12 +33,13 @@ actor ValhallaRequestGate {
 }
 
 enum RoutingError: LocalizedError {
-    case invalidEndpoint, server(Int), invalidResponse
+    case invalidEndpoint, server(Int), invalidResponse, network
     var errorDescription: String? {
         switch self {
         case .invalidEndpoint: "Nieprawidłowy adres serwera tras."
         case .server(let code): "Serwer tras zwrócił błąd HTTP \(code)."
         case .invalidResponse: "Serwer tras zwrócił nieprawidłową trasę."
+        case .network: "Nie można połączyć się z serwerem tras. Sprawdź dostęp do internetu i spróbuj ponownie."
         }
     }
 }
@@ -69,7 +70,7 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
         try await ValhallaRequestGate.shared.waitUntilAllowed(for: endpoint)
         let (data, response) = try await RoadRoutingContext.data(for: request)
         try ValhallaServices.validate(data: data, response: response)
-        let result = try JSONDecoder().decode(MatrixResponse.self, from: data)
+        guard let result = try? JSONDecoder().decode(MatrixResponse.self, from: data) else { throw RoutingError.invalidResponse }
         let matrix = result.sourcesToTargets
         guard let durations = matrix.durations.first, durations.count == targets.count,
               let distances = matrix.distances.first, distances.count == targets.count else {
@@ -78,7 +79,7 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
         let shapes = matrix.shapes?.first
         return targets.indices.map { index in
             guard let duration = durations[index], let distanceKilometers = distances[index],
-                  duration.isFinite, distanceKilometers.isFinite else { return nil }
+                  duration.isFinite, duration >= 0, distanceKilometers.isFinite, distanceKilometers >= 0 else { return nil }
             let encodedShape: String?
             if let shapes, shapes.indices.contains(index) { encodedShape = shapes[index] }
             else { encodedShape = nil }
@@ -104,7 +105,7 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
             "locations": ([from] + through + [to]).map { ["lat": $0.latitude, "lon": $0.longitude] },
             "costing": preferences.advanced.costing(for: mode),
             "units": "kilometers",
-            "directions_options": ["language": "pl-PL"],
+            "language": "pl-PL",
             "alternates": through.isEmpty ? 2 : 0,
             "turn_lanes": true,
             "roundabout_exits": true,
@@ -175,7 +176,7 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
     private func routeData(for request: URLRequest, mode: TransportMode) async throws -> (Data, Bool) {
         #if os(iOS)
         let store = OfflineRoutingStore.shared
-        if store.preferOffline || store.networkUnavailable {
+        if store.preferOffline || (store.networkUnavailable && store.activePack != nil) {
             guard let body = request.httpBody else { throw RoutingError.invalidResponse }
             return (try await OfflineRoutingEngine.shared.route(request: body, pack: store.activePack, mode: mode), true)
         }
@@ -189,18 +190,19 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
             #if os(iOS)
             let connectionErrors: [URLError.Code] = [.notConnectedToInternet, .networkConnectionLost,
                 .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed, .timedOut]
-            if let failure = error as? URLError, connectionErrors.contains(failure.code) {
+            if let failure = error as? URLError, connectionErrors.contains(failure.code), let pack = store.activePack {
                 try RoadRoutingContext.checkCancellation()
                 guard let body = request.httpBody else { throw RoutingError.invalidResponse }
-                return (try await OfflineRoutingEngine.shared.route(request: body, pack: store.activePack, mode: mode), true)
+                return (try await OfflineRoutingEngine.shared.route(request: body, pack: pack, mode: mode), true)
             }
             #endif
+            if error is URLError { throw RoutingError.network }
             throw error
         }
     }
 
     func decodeRoutes(_ data: Data, mode: TransportMode, costing: String, offline: Bool = false) throws -> [NavigationRoute] {
-        let result = try JSONDecoder().decode(Response.self, from: data)
+        guard let result = try? JSONDecoder().decode(Response.self, from: data) else { throw RoutingError.invalidResponse }
         let trips = [result.trip] + (result.alternates ?? []).map(\.trip)
         let routes = trips.compactMap { trip -> NavigationRoute? in
             let legs = trip.legs
@@ -210,7 +212,15 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
             var legStart = 0.0
             for leg in legs {
                 let legCoordinates = Polyline6.decode(leg.shape)
-                guard !legCoordinates.isEmpty else { return nil }
+                guard legCoordinates.count > 1,
+                      leg.maneuvers.allSatisfy({ turn in
+                          legCoordinates.indices.contains(turn.beginShapeIndex) &&
+                          (turn.endShapeIndex.map { $0 >= turn.beginShapeIndex && legCoordinates.indices.contains($0) } ?? true)
+                      }) else { return nil }
+                // Adjacent legs share their boundary point. Dropping an unrelated first
+                // point silently draws a fictitious connection and shifts all maneuvers.
+                if let previous = coordinates.last,
+                   previous.distance(to: legCoordinates[0]) > 2 { return nil }
                 let offset = max(0, coordinates.count - (coordinates.isEmpty ? 0 : 1))
                 coordinates.append(contentsOf: coordinates.isEmpty ? legCoordinates : Array(legCoordinates.dropFirst()))
                 var cumulative = [0.0]
@@ -290,7 +300,8 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
                 ["lat": $0.latitude, "lon": $0.longitude]
             },
             "costing": preferences.advanced.costing(for: mode),
-            "units": "kilometers"
+            "units": "kilometers",
+            "language": "pl-PL"
         ]
         if mode == .car {
             var carOptions: [String: Any] = ["shortest": false, "maneuver_penalty": 12.0,
@@ -307,7 +318,11 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
         try await ValhallaRequestGate.shared.waitUntilAllowed(for: endpoint)
         let (data, response) = try await RoadRoutingContext.data(for: request)
         try ValhallaServices.validate(data: data, response: response)
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        return try Self.decodeWaypointOrder(data, waypointCount: waypoints.count)
+    }
+
+    static func decodeWaypointOrder(_ data: Data, waypointCount: Int) throws -> [Int] {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             throw RoutingError.invalidResponse
         }
         let optimized = object["optimized_route"] as? [String: Any] ?? object
@@ -315,11 +330,10 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
                 (optimized["locations"] as? [[String: Any]]) ??
                 (object["locations"] as? [[String: Any]]) else { throw RoutingError.invalidResponse }
         let indexes = locations.compactMap { $0["original_index"] as? Int }
-        let ordered = indexes.filter { $0 > 0 && $0 <= waypoints.count }.map { $0 - 1 }
-        guard ordered.count == waypoints.count, Set(ordered).count == waypoints.count else {
-            throw RoutingError.invalidResponse
-        }
-        return ordered
+        guard indexes.count == waypointCount + 2, indexes.first == 0,
+              indexes.last == waypointCount + 1,
+              Set(indexes) == Set(0..<(waypointCount + 2)) else { throw RoutingError.invalidResponse }
+        return indexes.dropFirst().dropLast().map { $0 - 1 }
     }
 
     private struct Response: Decodable {
@@ -578,6 +592,8 @@ nonisolated enum Polyline6 {
         while index < bytes.count {
             guard let lat = value(), let lon = value() else { return [] }
             latitude += lat; longitude += lon
+            guard (-90_000_000...90_000_000).contains(latitude),
+                  (-180_000_000...180_000_000).contains(longitude) else { return [] }
             points.append(Coordinate(latitude: Double(latitude) / 1_000_000, longitude: Double(longitude) / 1_000_000))
         }
         return points

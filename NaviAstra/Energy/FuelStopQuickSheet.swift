@@ -34,7 +34,10 @@ struct FuelStopQuickSheet: View {
                 }
             } else {
                 NavigationStack {
-                    List(stations) { station in
+                    List(stations.sorted {
+                        let order = $0.identity.name.localizedStandardCompare($1.identity.name)
+                        return order == .orderedSame ? $0.id < $1.id : order == .orderedAscending
+                    }) { station in
                         Button { selected = station } label: {
                             Label(station.identity.name, systemImage: "fuelpump.fill")
                                 .foregroundStyle(Color.naviTextPrimary)

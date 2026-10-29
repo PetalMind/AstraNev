@@ -1,4 +1,6 @@
 // Konfiguracja aplikacji iOS dla Debug i Release.
 // Opcjonalne kafle otoczenia; adres można ustawić w Secrets.local.xcconfig.
 DETAILED_ENVIRONMENT_TILEJSON_URL =
+// Opcjonalna własna usługa współdzielonych zgłoszeń; puste = tylko lokalne.
+ROAD_REPORTS_SERVER_URL =
 #include "Secrets.local.xcconfig"

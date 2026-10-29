@@ -47,6 +47,13 @@ enum TransitousMapper {
         let to = coordinate(for: dto.to)
         var geometry = TransitousPolylineDecoder.decode(dto.legGeometry.points,
                                                         precision: dto.legGeometry.precision)
+        let resolvedGeometry = geometry
+        // A display connector between stops is not a routed path and cannot
+        // supply a missing distance. Keep backend distance or real route shape.
+        let routedDistance = dto.distance ?? (resolvedGeometry.count > 1 ? Self.distance(of: resolvedGeometry) : nil)
+        guard let routedDistance, routedDistance.isFinite, routedDistance >= 0 else {
+            throw TransitRouteError.decoding
+        }
         if geometry.isEmpty { geometry = [from, to] }
         let mode = mapMode(dto.mode)
         let stops = mode.isTransit
@@ -81,13 +88,14 @@ enum TransitousMapper {
             delaySeconds: delay,
             intermediateStops: stops,
             geometry: geometry,
-            distance: max(0, dto.distance ?? Self.distance(of: geometry)),
+            distance: routedDistance,
             realtimeAvailable: dto.realTime && mode.isTransit,
             routeID: dto.routeId.map { "\(TransitousTransitDataProvider.routeIDPrefix)\($0)" },
             tripID: dto.tripId.map { "\(TransitousTransitDataProvider.tripIDPrefix)\($0)" },
             lineColorHex: Self.colorValue(dto.routeColor),
             alerts: alerts,
-            isInterlined: dto.interlineWithPreviousLeg == true)
+            isInterlined: dto.interlineWithPreviousLeg == true,
+            hasResolvedGeometry: resolvedGeometry.count > 1)
     }
 
     private static func mapStops(_ places: [TransitousPlaceDTO], leg: TransitousLegDTO,

@@ -154,22 +154,14 @@ extension ContentView {
 
             Spacer(minLength: 16)
 
-            if !isMapBottomSheetExpanded {
-                mapControl(compact: geometry.size.height < 500)
-                    .padding(.horizontal, usesFullBleedNavigationPanel ? 16 : 0)
-            }
-
-            navigationMapPanel(in: geometry)
-                .onGeometryChange(for: CGFloat.self) {
-                    max(0, geometry.frame(in: .global).maxY - $0.frame(in: .global).minY) +
-                        (isNavigating ? 8 : geometry.safeAreaInsets.bottom + 12)
-                } action: { mapPanelInset = $0 }
+            mapBottomControls(in: geometry)
         }
         .frame(width: min(560, max(0, geometry.size.width - (usesFullBleedNavigationPanel ? 0 : 32))))
         .padding(.horizontal, usesFullBleedNavigationPanel ? 0 : 16)
         .padding(.top, 8)
         .padding(.bottom, usesFullBleedNavigationPanel ? -geometry.safeAreaInsets.bottom : 12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity,
+               alignment: usesFullBleedNavigationPanel && isNavigating && isOnRoadDrivingLeg ? .bottom : .center)
         .onChange(of: navigationStore.state.route?.id) { _, _ in
             journeyGuidanceExpanded = false
             currentStepExpandedOverride = nil
@@ -199,6 +191,91 @@ extension ContentView {
             }
         }
     }
+
+    @ViewBuilder
+    private func mapBottomControls(in geometry: GeometryProxy) -> some View {
+#if os(iOS)
+        AnyView(mapBottomControlsBody(in: geometry))
+#else
+        mapBottomControlsBody(in: geometry)
+#endif
+    }
+
+    private func mapBottomControlsBody(in geometry: GeometryProxy) -> some View {
+        VStack(spacing: mapBottomControlsSpacing) {
+#if os(iOS)
+            quickRoadReportFeedbackView
+                .padding(.horizontal, usesFullBleedNavigationPanel ? 16 : 0)
+            if isNavigating && isOnRoadDrivingLeg {
+                drivingMapDock(maximumAlertsHeight: geometry.size.height < 500 ? 64 : 128,
+                               availableWidth: min(560, geometry.size.width) - 32)
+            } else if !isMapBottomSheetExpanded {
+                mapControl(compact: geometry.size.height < 500)
+                    .padding(.horizontal, usesFullBleedNavigationPanel ? 16 : 0)
+            }
+#else
+            if !isMapBottomSheetExpanded {
+                mapControl(compact: geometry.size.height < 500)
+                    .padding(.horizontal, usesFullBleedNavigationPanel ? 16 : 0)
+            }
+#endif
+            navigationMapPanel(in: geometry)
+                .onGeometryChange(for: CGFloat.self) {
+                    max(0, geometry.frame(in: .global).maxY - $0.frame(in: .global).minY) +
+                        (isNavigating ? 8 : geometry.safeAreaInsets.bottom + 12)
+                } action: {
+                    if !(usesFullBleedNavigationPanel && isNavigating && isOnRoadDrivingLeg) {
+                        mapPanelInset = $0
+                    }
+                }
+        }
+        .onGeometryChange(for: CGFloat.self) {
+            max(0, geometry.frame(in: .global).maxY - $0.frame(in: .global).minY) + 8
+        } action: {
+            if usesFullBleedNavigationPanel && isNavigating && isOnRoadDrivingLeg {
+                mapPanelInset = $0
+            }
+        }
+    }
+
+    private var mapBottomControlsSpacing: CGFloat {
+#if os(iOS)
+        if isNavigating && isOnRoadDrivingLeg && isMapBottomSheetExpanded
+            && drivingRoadAlertsHeight <= 0 && quickRoadReportFeedback == nil {
+            return 0
+        }
+#endif
+        return 12
+    }
+
+#if os(iOS)
+    private func drivingMapDock(maximumAlertsHeight: CGFloat, availableWidth: CGFloat) -> some View {
+        VStack(spacing: drivingRoadAlertsHeight > 0 ? 10 : 0) {
+            ScrollView(.vertical) {
+                navigationRoadAlertsPanel
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height.rounded(.up) } action: {
+                        drivingRoadAlertsHeight = $0
+                    }
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .scrollIndicators(.visible)
+            .frame(height: min(drivingRoadAlertsHeight, maximumAlertsHeight))
+            .padding(drivingRoadAlertsHeight > 0 ? 10 : 0)
+            .modifier(NavigationStableSurface(radius: 16))
+            .opacity(drivingRoadAlertsHeight > 0 ? 1 : 0)
+            .accessibilityHidden(drivingRoadAlertsHeight <= 0)
+            if !isMapBottomSheetExpanded {
+                TimelineView(.periodic(from: .now, by: 5)) { context in
+                    drivingMapControls(at: context.date, availableWidth: availableWidth)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height.rounded(.up) } action: {
+            drivingMapDockHeight = $0
+        }
+    }
+#endif
 
     @ViewBuilder
     private func navigationMapPanel(in geometry: GeometryProxy) -> some View {
@@ -237,13 +314,12 @@ extension ContentView {
             if isNavigating {
                 let standardPanelHeight = min(geometry.size.height * 0.88,
                                               max(140, geometry.size.height - mapHeaderInset - 28))
-                VStack(spacing: 8) {
-                    if isOnRoadDrivingLeg && !isMapBottomSheetExpanded {
-                        navigationRoadAlertsPanel
-                            .padding(.horizontal, 16)
-                    }
-                    journeyNavigationPanel(maxHeight: standardPanelHeight)
-                }
+                let drivingDockInset = drivingMapDockHeight > 0 ? drivingMapDockHeight + 12 : 0
+                journeyNavigationPanel(
+                    maxHeight: isOnRoadDrivingLeg
+                        ? min(geometry.size.height * 0.88, max(180, standardPanelHeight - drivingDockInset))
+                        : standardPanelHeight,
+                    bottomInset: geometry.safeAreaInsets.bottom)
             } else {
                 activeScrollableMapPanel(in: geometry)
             }
@@ -296,32 +372,10 @@ extension ContentView {
                 .ignoresSafeArea()
             mapTopGradient
             mapInteractionLayer
-#if os(iOS)
-            navigationSpeedOverlay
-#endif
             parkedCarActionOverlay
             parkedCarToastOverlay
         }
     }
-
-#if os(iOS)
-    @ViewBuilder
-    private var navigationSpeedOverlay: some View {
-        if isNavigating && isOnRoadDrivingLeg && !isMapBottomSheetExpanded {
-            TimelineView(.periodic(from: .now, by: 5)) { context in
-                VStack(alignment: .leading, spacing: 8) {
-                    speedCard(at: context.date)
-                }
-            }
-            .frame(maxWidth: 100, alignment: .leading)
-            .frame(maxWidth: 560, maxHeight: .infinity, alignment: .bottomLeading)
-            .padding(.leading, 16)
-            .padding(.bottom, mapPanelInset + 12)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-            .zIndex(2)
-        }
-    }
-#endif
 
     private var mapCanvas: some View {
         // Keep the map and its camera across temporary scene interruptions, such as
@@ -615,6 +669,7 @@ extension ContentView {
                 }
             }
             .onChange(of: quickETADestinationFingerprint) { _, _ in
+                quickETAEstimates = [:]
                 Task { await refreshQuickDestinationETAs() }
             }
             .onChange(of: navigationStore.state.status) { previous, status in

@@ -17,20 +17,60 @@ UIBackgroundModes zawiera location i audio. LocationManager utrzymuje
 CLBackgroundActivitySession tylko podczas aktywnego prowadzenia i przy udzielonej
 zgodzie na lokalizację. Tradycyjne aktualizacje CLLocationManager pozostają źródłem
 punktów GPS. Zgoda When In Use pozwala kontynuować rozpoczętą nawigację z widocznym
-wskaźnikiem pracy w tle; istniejąca opcja Always dla podróży komunikacją pozostaje dostępna.
+wskaźnikiem pracy w tle; wcześniej udzielone uprawnienie Always również jest respektowane.
 
-## Live Activity
+## Live Activity w iOS 1.1.139 (141)
 
 NaviAstraWidgets jest osadzonym rozszerzeniem WidgetKit. Wspólny kontrakt w
-SharedNavigation zawiera manewr, nazwę drogi, odległości, czas, ETA, postęp oraz stan
-reroutingu/GPS. Nie zawiera geometrii ani współrzędnych GPS.
+SharedNavigation zawiera manewr, nazwę drogi, opcjonalne metryki po trasie, ETA,
+postęp, stan GPS/przeliczania oraz schemat najbliższego odcinka. Schemat ma do 36
+znormalizowanych punktów, pozycję i znacznik manewru, bez współrzędnych geograficznych
+ani adresu celu. Nie używa mapy, kafelków, sieci, tekstur 3D ani ciągłych animacji.
+Część prywatna jest oznaczona privacySensitive. Dane mają limit 3500 B z zapasem
+do 4 KB ActivityKit, a atrybut celu jest stałą ogólną etykietą.
 
 Activity jest rozpoczynana w aktywnej aplikacji, aktualizowana z sesji także w tle
-(zwykle co 5 sekund, od razu przy zmianie manewru/statusu) i kończona po dojeździe,
-anulowaniu lub zmianie celu. Aktualizacje są serializowane i scalane. Dane są
-oznaczane jako nieaktualne po 90 sekundach. Użytkownik może wyłączyć Live Activities
+(ruch w porcjach 40 m nie częściej niż co 5 sekund, od razu przy zmianie manewru,
+reroutingu lub sygnału GPS, odświeżenie aktualności po 30 sekundach) i kończona
+natychmiast po dojeździe lub anulowaniu. Aktualizacje są serializowane i scalane.
+Dane są oznaczane jako nieaktualne po 45 sekundach; nieaktualna pozycja ukrywa
+schemat i metryki. Pozycja poza trasą nie jest zastępowana fikcyjną pozycją na trasie.
+Szybki stop/start ma osobne generacje, więc stare zakończenie nie usuwa nowej sesji.
+Użytkownik może wyłączyć Live Activities
 w systemie; brak Activity nie blokuje prowadzenia. Zakończenie procesu nie oznacza
 automatycznego przywrócenia nawigacji; stare Activities są usuwane przy kolejnym starcie.
+
+LocationManager zachowuje ciągłą sesję GPS rozpoczętą na pierwszym planie przy
+przejściu do tła, zamiast zatrzymywać ją i uruchamiać ponownie podczas blokowania.
+Koniec prowadzenia wyłącza aktualizacje w tle. Funkcja nie wymusza zgody „Zawsze”.
+
+Zweryfikowany „iPhone (Dominik)” to iPhone 15 (iPhone15,4), iOS 27.2. Ten model
+nie obsługuje Always-On: podgląd jest dostępny po podświetleniu ekranu blokady
+i w Dynamic Island. Aplikacja nie wyświetla obrazu na fizycznie wyłączonym ekranie.
+Na obsługiwanych modelach przyciemniony widok podlega ustawieniom i budżetom iOS.
+System może zakończyć Live Activity po ośmiu godzinach. Źródła:
+[ActivityKit](https://developer.apple.com/documentation/ActivityKit/displaying-live-data-with-live-activities),
+[lokalizacja w tle](https://developer.apple.com/documentation/corelocation/handling-location-updates-in-the-background),
+[modele Always-On](https://support.apple.com/en-md/109351).
+
+## Weryfikacja wydania 1.1.139 (141) — 27 października 2026
+
+Podpisana kompilacja iOS oraz osadzonego rozszerzenia zakończyła się powodzeniem.
+Kompilacja pakietu testów iOS również przeszła; dwa wcześniej uszkodzone pliki
+`TransitousTests.swift` i `NaviAstraTests.swift` wyłączono wyłącznie parametrem
+komendy, bez zmiany ich źródeł. Brak zainstalowanego środowiska symulatora oznacza,
+że samo build-for-testing nie jest wykonaniem testów. Osobne narzędzia uruchomiły
+produkcjny kod: 7 krytycznych kontroli wyszukiwania i 4 kontroli Activity, GPS,
+metryk oraz geometrii Transitous przeszły. Kontrole godzin objęły święto, zmianę
+tygodnia, przedziały nocne oraz obie godziny 02:30 przy jesiennej zmianie czasu.
+
+Instalacja aktualizacji na iPhonie 15 została potwierdzona odczytem wersji z urządzenia.
+Przed i po instalacji zachowano wszystkie 431 ścieżek Application Support, w tym
+`DrivingLearning/NavigationLearning.sqlite`, miejsca, plany i historię podróży.
+Próba uruchomienia przez CoreDevice została odrzucona przez iOS z powodu blokady
+telefonu, również w trybie bez aktywowania aplikacji. Do uruchomienia i weryfikacji
+systemowego widoku Activity potrzebne jest odblokowanie urządzenia; nie potwierdzono
+jeszcze rzeczywistego przejazdu z tą wersją ani wyglądu podglądu na ekranie blokady.
 
 ## Ruch i maintenance
 

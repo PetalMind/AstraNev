@@ -11,11 +11,17 @@ private struct AppScene: View {
         ContentView(dependencies: dependencies)
             .environment(\.locale, PolishRegionalFormat.locale)
             .task {
+                #if DEBUG && os(iOS)
+                guard !IOSDebugDrivingScenario.isEnabled else { return }
+                #endif
                 dependencies.navigationStore.setAppIsForeground(appPhase == .active)
                 dependencies.navigationStore.startLocation()
                 updateScreenIdleTimer()
             }
             .onChange(of: appPhase) { _, phase in
+                #if DEBUG && os(iOS)
+                guard !IOSDebugDrivingScenario.isEnabled else { return }
+                #endif
                 dependencies.navigationStore.setAppIsForeground(phase == .active)
                 updateScreenIdleTimer()
                 if phase == .background { BackgroundMaintenance.schedule() }

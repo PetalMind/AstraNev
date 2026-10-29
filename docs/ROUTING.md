@@ -1,5 +1,13 @@
 # Jak NaviAstra wyznacza trasę
 
+## Odległości i wyszukiwanie w iOS 1.1.139 (141)
+
+Aktywny interfejs i widżet prezentują odległości wyznaczonych tras po drogach i ścieżkach dla wybranego środka transportu oraz rzeczywiście przejechane odcinki. Geometria prosta służy wewnętrznie obszarowi zapytania, dopasowaniu rekordów/GPS i deduplikacji. Nie jest zastępczym dystansem ani rankingiem dojazdu. Brak macierzy lub drogi daje stan obliczania/niedostępności, bez podstawienia 0 m lub czasu z prostej. Geokoder nie prezentuje odległości od wskazanego punktu, a promień zapytania nie udaje drogi do miejsca.
+
+Wyszukiwanie marek i kategorii rozpoczyna macierz po pierwszych wynikach, z opóźnieniem scalającym 150 ms, równolegle do pozostałych źródeł. Jedna macierz obejmuje do 16 kandydatów; lista pokazuje 8, a późniejsze odpowiedzi dodają tylko nowe cele. Błędy nie uruchamiają kaskady pełnych tras dla każdego wiersza. Kolejność przed poznaniem drogi jest tekstowa, potem uwzględnia prawidłowy czas i dystans trasy. Limit czasu Overpass obejmuje transport i serwery zapasowe. ETA ulubionych i pobliskich miejsc respektuje wybrany tryb; zmiana pozycji lub trybu unieważnia stare wyniki.
+
+Komunikacja nie zastępuje brakującej odległości linią pomiędzy przystankami. Nierozwiązane dojście nie służy obliczaniu metrów/minut ani rysowaniu schematu Live Activity. Prawidłowe odległości dostawcy pozostają zachowane. Wyszukiwanie przystanków bez macierzy jest tekstowe w wybranym obszarze; feed mapy nie wybiera automatycznie „najbliższego” przystanku w linii prostej. Warianty EV przechodzą końcowe wyznaczenie i walidację prawdziwej trasy; usunięto przeliczanie bocznego odsunięcia ładowarki na rzekome sekundy.
+
 Szczegółową dokumentację trybu samochodowego — podstawy wyboru drogi, uwzględniane dane, ETA, objazdy, EV i ograniczenia — zawiera [CAR_ROUTING.md](CAR_ROUTING.md).
 
 Stan dokumentacji samochodowej: 5 października 2026, wersja 1.1.48. Szczegóły rankingu, dopasowania zdarzeń i podejść do znaków opisano w CAR_ROUTING.md.
@@ -148,3 +156,9 @@ Wyników nie należy interpretować jako gwarancji najkrótszej drogi, dostępno
 ## Weryfikacja
 
 `NaviAstraTests/RoutingCriticalTests.swift` obejmuje nierównomierne czasy odcinków, zmierzony ruch bez podwójnego naliczania, świeżość danych, kierunek kontynuacji, osiągalność ładowarek, alternatywne zestawy postojów, spadek mocy ładowania i odrzucenie spóźnionej optymalizacji po zmianie celu. Testy dotyczą krytycznej logiki nawigacji.
+
+## Walidacja odpowiedzi w iOS 1.1.136
+
+Klient odrzuca współrzędne polyline6 poza Ziemią, ujemne lub wychodzące poza geometrię indeksy manewrów oraz niepołączone granice kolejnych etapów. Nie rysuje wymyślonego odcinka po pominięciu pierwszego punktu niepasującej geometrii. Macierze nie przyjmują ujemnych czasów lub dystansów. Optymalizacja wymaga pełnej permutacji punktów oraz zachowania początku i celu na krańcach listy.
+
+Język instrukcji `pl-PL` jest przekazywany w polu głównego żądania zgodnie z aktualnym API Valhalli. Awaria dodatkowej macierzy do oceny objazdu nie usuwa znalezionych miejsc ani wcześniej obliczonych czasów dojazdu. Przy timeoutcie routera automatyczny fallback offline uruchamia się tylko wtedy, gdy urządzenie ma aktywną paczkę; bez niej użytkownik otrzymuje polski komunikat o połączeniu z serwerem, zamiast mylącego polecenia pobrania paczki.

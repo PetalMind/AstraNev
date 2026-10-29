@@ -117,7 +117,7 @@ nonisolated private struct NavigationBottomSheetMeasurement: Equatable, Sendable
 }
 
 /// A map-attached sheet with shared detents, drag physics, and scroll handoff.
-struct NavigationBottomSheet<Content: View, Footer: View>: View {
+struct NavigationBottomSheet<Content: View, Footer: View, PinnedHeader: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding private var detent: NavigationBottomSheetDetent
     @Binding private var isDragging: Bool
@@ -131,8 +131,11 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
     private let hidesExpandedChevron: Bool
     private let resizesFromContent: Bool
     private let fitsCompactContent: Bool
+    private let fitsPeekToHeader: Bool
+    private let bottomContentInset: CGFloat
     private let onClose: (() -> Void)?
     private let closeAccessibilityLabel: String
+    private let pinnedHeader: (NavigationBottomSheetDetent, CGFloat) -> PinnedHeader
     private let content: (NavigationBottomSheetDetent, CGFloat) -> Content
     private let footer: (NavigationBottomSheetDetent, CGFloat) -> Footer
     private let scrollSpaceName = UUID().uuidString
@@ -143,6 +146,8 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
     @State private var ownsCurrentDrag = false
     @State private var contentHeights: [Int: CGFloat] = [:]
     @State private var footerHeights: [Int: CGFloat] = [:]
+    @State private var pinnedHeaderHeight: CGFloat = 0
+    @GestureState private var dragGestureIsActive = false
 
     init(detent: Binding<NavigationBottomSheetDetent>,
          maximumHeight: CGFloat,
@@ -156,8 +161,11 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
          hidesExpandedChevron: Bool = false,
          resizesFromContent: Bool = true,
          fitsCompactContent: Bool = false,
+         fitsPeekToHeader: Bool = false,
+         bottomContentInset: CGFloat = 0,
          onClose: (() -> Void)? = nil,
          closeAccessibilityLabel: String = "Zamknij panel",
+         @ViewBuilder pinnedHeader: @escaping (NavigationBottomSheetDetent, CGFloat) -> PinnedHeader = { _, _ in EmptyView() },
          @ViewBuilder content: @escaping (NavigationBottomSheetDetent, CGFloat) -> Content,
          @ViewBuilder footer: @escaping (NavigationBottomSheetDetent, CGFloat) -> Footer) {
         self._detent = detent
@@ -171,9 +179,12 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
         self.hidesExpandedChevron = hidesExpandedChevron
         self.resizesFromContent = resizesFromContent
         self.fitsCompactContent = fitsCompactContent
+        self.fitsPeekToHeader = fitsPeekToHeader
+        self.bottomContentInset = max(0, bottomContentInset)
         self.onClose = onClose
         self.closeAccessibilityLabel = closeAccessibilityLabel
         self._isDragging = isDragging
+        self.pinnedHeader = pinnedHeader
         self.content = content
         self.footer = footer
     }
@@ -184,6 +195,16 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
         let expanded = expandedHeight
         // Keep medium distinct from expanded on short screens and in landscape.
         let minimumMedium = min(minimumMediumHeight ?? 0, expanded * 0.8)
+        if fitsPeekToHeader {
+            // The summary keeps its position while the same details are revealed
+            // beneath it. Reserve the home indicator even in the compact state.
+            let peek = min(expanded - 2, max(minimumPeekHeight ?? 0,
+                dragHandleHeight + pinnedHeaderHeight + bottomContentInset
+                    + (footerHeights[detent.rawValue] ?? footerHeights.values.max() ?? 0)))
+            let medium = min(expanded - 1, max(peek + min(64, (expanded - peek) * 0.5),
+                                               expanded * mediumHeightFraction, minimumMedium))
+            return [peek, medium, expanded]
+        }
         if expanded < 240 {
             let basePeek = min(expanded * 0.6, max(84, expanded * 0.45))
             let maximumPeek = max(basePeek, expanded - 40)
@@ -208,8 +229,8 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
         // Reserve room for the entire content above the fixed footer, including
         // the grabber and the scroll position marker. On short screens the
         // maximum sheet height still wins and the content remains scrollable.
-        return dragHandleHeight + (contentHeights[detent.rawValue] ?? 0)
-            + (footerHeights[detent.rawValue] ?? 0) + 1
+        return dragHandleHeight + pinnedHeaderHeight + (contentHeights[detent.rawValue] ?? 0)
+            + (footerHeights[detent.rawValue] ?? 0) + bottomContentInset + 1
     }
 
     private var selectedIndex: Int {
@@ -229,8 +250,34 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
 
     private var cornerRadius: CGFloat { 32 - 12 * progress }
 
+    private var scrollsPinnedHeader: Bool {
+        fitsPeekToHeader && (expandedHeight < 240
+            || dragHandleHeight + pinnedHeaderHeight + bottomContentInset
+                + (footerHeights[detent.rawValue] ?? footerHeights.values.max() ?? 0) + 44 > expandedHeight)
+    }
+
+    private var contentOverflowsViewport: Bool {
+        let reserved = dragHandleHeight + (scrollsPinnedHeader ? 0 : pinnedHeaderHeight) + bottomContentInset
+            + (footerHeights[detent.rawValue] ?? 0)
+        let scrollContent = (contentHeights[detent.rawValue] ?? 0)
+            + (scrollsPinnedHeader ? pinnedHeaderHeight : 0) + 1
+        return scrollContent > max(0, height - reserved) + 1
+    }
+
     var body: some View {
         styledSheet
+            .onChange(of: dragGestureIsActive) { _, active in
+                guard fitsPeekToHeader, !active, ownsCurrentDrag else { return }
+                // GestureState also resets when iOS cancels a recognizer, when
+                // onEnded is not delivered (for example, an interruption).
+                let target = nearestDetent(to: height)
+                clearDragTracking()
+                moveDetent(to: target)
+            }
+            .onChange(of: maximumHeight) { _, _ in
+                if fitsPeekToHeader { resetDrag() }
+            }
+            .onDisappear { resetDrag() }
     }
 
     @ViewBuilder
@@ -247,6 +294,10 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
         VStack(spacing: 0) {
             dragHandle
 
+            if !scrollsPinnedHeader {
+                measuredPinnedHeader
+            }
+
             ScrollViewReader { proxy in
                 ScrollView(.vertical) {
                     VStack(spacing: 0) {
@@ -258,12 +309,18 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
                         .frame(height: 1)
                         .id("navigation-bottom-sheet-scroll-top")
 
+                        if scrollsPinnedHeader {
+                            measuredPinnedHeader
+                        }
+
                         content(detent, progress)
+                            .allowsHitTesting(!fitsPeekToHeader || detent != .peek)
+                            .accessibilityHidden(fitsPeekToHeader && (detent == .peek || isDragging))
                             .onGeometryChange(for: NavigationBottomSheetMeasurement.self) { geometry in
                                 NavigationBottomSheetMeasurement(
                                     detent: detent, height: geometry.size.height.rounded(.up))
                             } action: { measurement in
-                                guard fitsCompactContent, measurement.detent != .expanded else { return }
+                                guard fitsPeekToHeader || (fitsCompactContent && measurement.detent != .expanded) else { return }
                                 contentHeights[measurement.detent.rawValue] = measurement.height
                             }
                     }
@@ -271,14 +328,17 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
                 .coordinateSpace(name: scrollSpaceName)
                 .scrollIndicators(resizesFromContent ? .hidden : .visible)
                 .scrollBounceBehavior(.basedOnSize)
-                .scrollDisabled(detent == .peek || (detent == .medium && resizesFromContent))
+                .scrollDisabled(detent == .peek || (fitsPeekToHeader && ownsCurrentDrag)
+                    || (detent == .medium && resizesFromContent && !fitsPeekToHeader))
                 .simultaneousGesture(dragGesture(fromContent: true),
                                      including: resizesFromContent ? .all : .none)
+                .clipped()
+                .contentShape(Rectangle())
                 .onPreferenceChange(NavigationBottomSheetScrollOffsetKey.self) { minY in
                     scrollOffset = max(0, -minY)
                 }
                 .onChange(of: detent) { _, newValue in
-                    guard newValue != .expanded else { return }
+                    guard newValue != .expanded, !fitsPeekToHeader || newValue == .peek else { return }
                     scrollOffset = 0
                     proxy.scrollTo("navigation-bottom-sheet-scroll-top", anchor: .top)
                 }
@@ -290,15 +350,30 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
                     NavigationBottomSheetMeasurement(
                         detent: detent, height: geometry.size.height.rounded(.up))
                 } action: { measurement in
-                    guard fitsCompactContent, measurement.detent != .expanded else { return }
+                    guard fitsPeekToHeader || (fitsCompactContent && measurement.detent != .expanded) else { return }
                     footerHeights[measurement.detent.rawValue] = measurement.height
                 }
                 .simultaneousGesture(dragGesture(fromContent: false))
+
+            if bottomContentInset > 0 {
+                Color.clear.frame(height: bottomContentInset)
+                    .accessibilityHidden(true)
+            }
         }
         .frame(maxWidth: .infinity)
         .frame(height: height, alignment: .top)
         .clipShape(sheetShape)
         .animation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.86), value: detent)
+    }
+
+    private var measuredPinnedHeader: some View {
+        pinnedHeader(detent, progress)
+            .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height.rounded(.up) } action: {
+                pinnedHeaderHeight = $0
+            }
+            .simultaneousGesture(dragGesture(fromContent: false),
+                                 including: scrollsPinnedHeader ? .none : .all)
     }
 
     private var dragHandle: some View {
@@ -358,6 +433,7 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
     private func dragGesture(fromContent: Bool) -> some Gesture {
         // The sheet's top edge moves during resizing; measure in a stable space.
         DragGesture(minimumDistance: 7, coordinateSpace: .global)
+            .updating($dragGestureIsActive) { _, state, _ in state = true }
             .onChanged { value in
                 if dragStartHeight == nil {
                     guard abs(value.translation.height) > abs(value.translation.width) else { return }
@@ -367,13 +443,16 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
                         guard scrollOffset <= 1 else { return }
                         if isPullingUp {
                             guard canExpand else { return }
+                            // At the middle stop, long details scroll directly;
+                            // the pinned summary and handle still expand the sheet.
+                            if fitsPeekToHeader, detent == .medium, contentOverflowsViewport { return }
                         } else {
                             guard detent != .peek else { return }
                         }
                     }
                     dragStartHeight = restingHeight
                     // Only subtract motion already consumed by an expanded ScrollView.
-                    dragStartTranslation = fromContent && detent == .expanded
+                    dragStartTranslation = fromContent && (detent == .expanded || fitsPeekToHeader)
                         ? value.translation.height : 0
                     ownsCurrentDrag = true
                 }
@@ -404,9 +483,7 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
                 } else if velocity < -650 {
                     targetIndex = max(0, selectedIndex - 1)
                 }
-                ownsCurrentDrag = false
-                dragStartHeight = nil
-                dragStartTranslation = nil
+                clearDragTracking()
                 moveDetent(to: targetIndex)
             }
     }
@@ -414,6 +491,7 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
     private func rubberBanded(_ rawHeight: CGFloat) -> CGFloat {
         let minimum = detentHeights[0]
         let maximum = detentHeights.last!
+        if fitsPeekToHeader { return min(maximum, max(minimum, rawHeight)) }
         if rawHeight < minimum { return minimum - min(42, (minimum - rawHeight) * 0.24) }
         if rawHeight > maximum { return maximum + min(42, (rawHeight - maximum) * 0.24) }
         return rawHeight
@@ -440,16 +518,20 @@ struct NavigationBottomSheet<Content: View, Footer: View>: View {
             detent = nextDetent
             interactiveHeight = nil
         } completion: {
-            isDragging = false
+            if !ownsCurrentDrag { isDragging = false }
         }
     }
 
     private func resetDrag() {
         isDragging = false
+        clearDragTracking()
+        interactiveHeight = nil
+    }
+
+    private func clearDragTracking() {
         ownsCurrentDrag = false
         dragStartHeight = nil
         dragStartTranslation = nil
-        interactiveHeight = nil
     }
 
     private func selectionHaptic() {

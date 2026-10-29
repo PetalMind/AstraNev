@@ -134,7 +134,7 @@ struct SearchEngine {
 
     func search(_ query: String, context: SearchContext, includeUUGFallback: Bool = false,
                 routeEstimator: SearchRouteEstimator = { _, _, _ in nil },
-                onUpdate: @MainActor ([SearchResult]) -> Void = { _ in }) async throws -> [SearchResult] {
+                onUpdate: @escaping @MainActor ([SearchResult]) -> Void = { _ in }) async throws -> [SearchResult] {
         let intent = QueryClassifier().classify(query)
         if intent.alongRoute && context.route.count < 2 { throw SearchError.noActiveRoute }
         var center = context.area ?? context.origin
@@ -143,14 +143,39 @@ struct SearchEngine {
         }
         let searchCenter = center
         let routeOrigin = context.origin ?? searchCenter
+        let progressive: ProgressiveSearchEstimates?
+        if (intent.intent == .brand || intent.intent == .category), !intent.alongRoute,
+           context.mode != .transit, let origin = routeOrigin {
+            progressive = ProgressiveSearchEstimates(intent: intent, context: context, resolver: { targets in
+                var coordinates: [Coordinate] = []
+                for result in targets {
+                    let destination = result.navigationDestination
+                    let access = await POIAccessResolver.shared.cachedTarget(for: destination, mode: context.mode)
+                    coordinates.append(access?.coordinate ?? destination.coordinate)
+                }
+                let rows = try await matrix.searchMatrix(sources: [origin], targets: coordinates,
+                    mode: context.mode, preferences: context.preferences)
+                guard let row = rows.first else { return [:] }
+                var values: [String: ProgressiveSearchEstimates.Estimate] = [:]
+                for index in targets.indices where row.indices.contains(index) {
+                    if let time = row[index].time, let distance = row[index].distance {
+                        values[targets[index].placeIdentity.cacheKey] = .init(time: time, distance: distance * 1_000)
+                    }
+                }
+                return values
+            }, onUpdate: onUpdate)
+        } else { progressive = nil }
+        defer { progressive?.cancel() }
         // The suffix is part of the request, not only a geocoding hint. Searching
         // just "BP" loses the street even when the provider knows its address.
         let providerQuery = [intent.text, intent.location].compactMap { $0 }.joined(separator: ", ")
         // Publish provider replies before waiting for other sources or route estimates.
         let publishCandidates: ([SearchResult]) -> Void = { candidates in
-            onUpdate(Array(SearchDeduplicator.mergeAndRank(
+            let ranked = Array(SearchDeduplicator.mergeAndRank(
                 candidates, intent: intent, context: context,
-                searchCenter: searchCenter, routeOrigin: routeOrigin).prefix(8)))
+                searchCenter: searchCenter, routeOrigin: routeOrigin).prefix(progressive == nil ? 8 : 16))
+            if let progressive { progressive.publish(ranked) }
+            else { onUpdate(ranked) }
         }
         var candidates: [SearchResult]
         if let coordinate = intent.coordinate {
@@ -210,12 +235,14 @@ struct SearchEngine {
         try Task.checkCancellation()
         // Along-route road searches retain extra candidates to compare detours.
         // Transit needs a full journey plan per result, so only plan the visible rows.
-        let candidateLimit = intent.alongRoute && context.mode != .transit ? 20 : 8
+        let candidateLimit = intent.alongRoute && context.mode != .transit ? 20 : progressive == nil ? 8 : 16
         var results = Array(SearchDeduplicator.mergeAndRank(
             candidates, intent: intent, context: context,
             searchCenter: searchCenter, routeOrigin: routeOrigin).prefix(candidateLimit))
-        onUpdate(Array(results.prefix(8)))
-        if let origin = routeOrigin, !results.isEmpty {
+        if let progressive {
+            results = await progressive.complete(results)
+        } else if let origin = routeOrigin, !results.isEmpty {
+            onUpdate(Array(results.prefix(8)))
             if context.mode == .transit {
                 for index in results.indices {
                     try Task.checkCancellation()
@@ -277,16 +304,21 @@ struct SearchEngine {
                     }
                     if intent.alongRoute, rows != nil, let routeTarget = context.routeTarget {
                         // Compare the same routing model on both sides; never subtract a stale live ETA.
-                        let onward = try await matrix.searchMatrix(sources: [origin] + coordinates,
-                                                                    targets: [routeTarget], mode: context.mode,
-                                                                    preferences: context.preferences)
-                        if let baseline = onward[0][0].time {
-                            for (rowIndex, target) in routedTargets.enumerated() {
-                                if let first = results[target.index].travelTime,
-                                   let second = onward[rowIndex + 1][0].time {
-                                    results[target.index].detour = max(0, first + second - baseline)
+                        do {
+                            let onward = try await matrix.searchMatrix(sources: [origin] + coordinates,
+                                targets: [routeTarget], mode: context.mode, preferences: context.preferences)
+                            if let baseline = onward.first?.first?.time, baseline.isFinite, baseline >= 0 {
+                                for (rowIndex, target) in routedTargets.enumerated() where onward.indices.contains(rowIndex + 1) {
+                                    if let first = results[target.index].travelTime,
+                                       let second = onward[rowIndex + 1].first?.time, second.isFinite, second >= 0 {
+                                        results[target.index].detour = max(0, first + second - baseline)
+                                    }
                                 }
                             }
+                        } catch {
+                            try Task.checkCancellation()
+                            // An optional detour estimate must never discard places and
+                            // travel times already obtained from the first matrix.
                         }
                     }
                 }
@@ -373,7 +405,8 @@ struct POISearchProvider {
             var body = URLComponents()
             body.queryItems = [URLQueryItem(name: "data", value: query)]
             request.httpBody = body.percentEncodedQuery?.data(using: .utf8)
-            let (data, response) = try await OSMRequestTransport.shared.data(for: request, priority: true)
+            let (data, response) = try await OSMRequestTransport.shared.data(for: request, priority: true,
+                                                                          maximumDuration: remaining)
             guard let http = response as? HTTPURLResponse else { throw SearchError.unavailable }
             guard (200...299).contains(http.statusCode) else { throw SearchError.httpStatus(http.statusCode) }
             let decoded = try JSONDecoder().decode(Reply.self, from: data)

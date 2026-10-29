@@ -1,6 +1,6 @@
 # TomTom w NaviAstra iOS
 
-Stan opisany na podstawie bieżącego kodu: 14 października 2026 r. Dokument dotyczy aplikacji iOS. Opisuje implementację w repozytorium, a nie potwierdzone działanie konta TomTom, jego limitów lub usług na urządzeniu.
+Stan opisany na podstawie bieżącego kodu: 27 października 2026 r.; iOS 1.1.137 (139). Dokument dotyczy aplikacji iOS. Opisuje implementację w repozytorium, a nie potwierdzone działanie konta TomTom, jego limitów lub usług na urządzeniu.
 
 ## 1. Do czego używamy TomTom
 
@@ -199,3 +199,42 @@ Na liczbę żądań składają się: kafle mapy, pobliskie odczyty, wiele próbe
 Dokumentacja powiązana: [routing](ROUTING.md), [trasy samochodowe](CAR_ROUTING.md), [zdarzenia](ROAD_EVENTS.md), [nawigacja w tle](BACKGROUND_NAVIGATION.md), [planowane podróże](PLANNED_TRIPS.md).
 
 W razie rozbieżności opisów szczegółowych powyższe ustalenia wynikają z bieżącego kodu. Przykładowo renderer iOS pozostawia raster przepływu podczas prowadzenia; starszy opis ogólny w `ROUTING.md` sugeruje usunięcie całego rastra ruchu. Ten dokument nie zmienia zachowania aplikacji.
+
+## Uzupełnienia i kaskada źródeł w iOS 1.1.136
+
+`CombinedTrafficProvider` zachowuje TomTom jako źródło pomiarów prędkości, kafli przepływu i główne źródło zdarzeń. Jeśli odpowiedź o zdarzeniach jest dostępna i zawiera dane, nie pobiera tego samego obszaru z GDDKiA. Brak wyników, niedostępność lub brak klucza uruchamia uzupełnienie z oficjalnego biuletynu. Zgłoszenia użytkowników stanowią odrębne, niepotwierdzone obserwacje; nie są zamieniane w pomiary ruchu. Klient TomTom współdzieli aktywne identyczne żądania, ma cache 30 s dla Flow Segment Data i 60 s dla zdarzeń, najwyżej cztery pobrania równocześnie oraz wspólną przerwę po 429/503 zgodną z `Retry-After`.
+
+| Źródło | Dane i rzeczywisty zakres | Dostęp, aktualność i ograniczenia |
+| --- | --- | --- |
+| TomTom | Pomiar prędkości/ETA oraz zdarzenia objęte odpowiedzią usługi | Istniejący klucz aplikacji; nie włączano płatnego planu ani nie dodawano karty. To limit bezpłatnego planu, nie nieograniczona bezpłatność. |
+| GDDKiA | Oficjalne komunikaty na zarządzanych drogach krajowych; punkt przybliżonego środka odcinka | [Zbiór Otwarte Dane](https://dane.gov.pl/pl/dataset/2752), licencja CC0 1.0 według metadanych; [oficjalna specyfikacja i link XML](https://www.gov.pl/web/gddkia/dane-xml). Bez klucza i opłat. Publiczny serwer podczas sprawdzania 27.10.2026 nie odpowiedział w limicie czasu. Adapter jest podłączony, ale nie potwierdzono bieżącego odbioru. |
+| Zapis lokalny | Wypadek, zagrożenie, obserwacja korka, roboty lub kontrola policyjna wskazane przez użytkownika | Wyłącznie urządzenie, JSON w Application Support; 30 minut ważności. Brak wysyłania i konta. |
+| Opcjonalne wspólne zgłoszenia | Obserwacje innych użytkowników przy skonfigurowanej własnej usłudze | Klient i referencyjny serwer są w repozytorium. Usługa nie została wdrożona; w zainstalowanej konfiguracji jest wyłączona. Nie jest to działająca społeczność. |
+
+Aktualna [strona cenowa TomTom](https://docs.tomtom.com/pricing) podaje 20 tys. bezpłatnych żądań Flow Segment Data miesięcznie, 2,5 tys. Incident Details oraz 200 tys. kafli ruchu/zdarzeń. Warunki konkretnego konta i planu mogą się różnić i zmieniać; aplikacja nie odczytuje zużycia całego konta, a cache nie stanowi gwarancji zmieszczenia wszystkich instalacji w limicie. Zachowany klucz nie został ujawniony ani zapisany w śledzonych plikach.
+
+Biuletyn GDDKiA jest pobierany najwyżej co 5 minut i współdzieli równoczesne żądania. Klient wysyła tylko żądanie całego publicznego pliku, bez pozycji urządzenia. Waliduje datę `gen` (nie starszą niż 24 godziny i nie późniejszą o ponad 5 minut), zakres współrzędnych, początek i koniec zdarzenia. Odrzuca wygasłe i przyszłe wpisy, DTD/encje XML oraz pliki przekraczające 3 MB. Awaria nie nadaje starej kopii nowego czasu aktualizacji. Nie znamy gwarantowanego SLA ani opublikowanego stałego limitu żądań tej usługi. [KPD](https://kpd.gddkia.gov.pl/index.php/pl/profil-datex/) wymaga osobnej rejestracji/certyfikatu i nie zostało przedstawione jako gotowy dodatkowy pomiar prędkości.
+
+Punkt z GDDKiA nie staje się fikcyjną linią zamknięcia. Te komunikaty pozostają kontekstem na mapie, bez automatycznego przeliczania trasy lub korygowania ETA. Niepotwierdzone zgłoszenia lokalne/wspólne również nie korygują ETA i nie uruchamiają objazdów. Kontrola policyjna nigdy nie stanowi zamknięcia drogi. Deduplikacja zachowuje geometrię, opóźnienie i termin z wiarygodniejszego pierwotnego rekordu; nie sumuje opóźnień ani nie przedłuża ważności innym źródłem. Wymaga wspólnego numeru drogi, kategorii/przyczyny, bliskiego punktu i zgodnych czasów; sama bliskość nie łączy kontroli. Lokalny i udostępniony wpis o tym samym losowym UUID zgłoszenia są łączone.
+
+Awaria TomTom nie usuwa prawidłowych danych dodatkowego źródła. Jeśli żaden dostawca nie zwróci aktualnych zdarzeń, karta informuje o braku danych zamiast deklarować brak utrudnień. Komunikat o pustej poprawnej odpowiedzi mówi tylko o dostępnych zgłoszeniach w obszarze, nie o gwarantowanej przejezdności.
+
+### Zgłaszanie i prywatność
+
+Formularz „Zgłoś zdarzenie lub kontrolę” znajduje się w karcie ruchu. Wymaga pozycji GPS nie starszej niż minuta i dokładności do 50 m, sprawdzanych także przy zapisie. Domyślny zapis jest lokalny i wygasa po 30 minutach. Ponowienie nieudanej wysyłki korzysta z tego samego lokalnego wpisu. Usunięcie lokalnego wpisu nie usuwa opublikowanego zgłoszenia, które wygasa po swoim terminie; interfejs wyjaśnia tę różnicę.
+
+Udostępnienie wymaga jawnego przycisku oraz własnego publicznego adresu HTTPS `ROAD_REPORTS_SERVER_URL`. Wysyłane są jedynie rodzaj, losowy UUID zgłoszenia, punkt zaokrąglony do 0,001° i czas. Nie są przesyłane konta, identyfikatory urządzeń, tekst użytkownika ani historia trasy. Odczyt wspólnych zgłoszeń stosuje prostokąt zaokrąglony do siatki 0,05°, cache minutowy i współdzielenie identycznych aktywnych żądań. [Kod i kontrakt własnej usługi](../tools/road-reports/README.md) opisują HTTPS, limity, moderację i pozostałą konfigurację. Nie zamówiono hostingu, nie utworzono płatnej usługi i nie wysłano żadnego rzeczywistego zgłoszenia do publicznego backendu.
+
+## Weryfikacja wydania 27.10.2026
+
+Podpisany build iOS dla iPhone (Dominik) zakończył się `BUILD SUCCEEDED`. `devicectl` potwierdził instalację 1.1.136 (138), uruchomienie aplikacji i jej działający proces. Aktualizacja została wykonana bez odinstalowywania. iOS zmienił ścieżkę kontenera, a metadane potwierdziły pozostawienie istniejących plików z wcześniejszych dni, m.in. bazy nauki jazdy i danych aplikacji. Nie pobierano prywatnej historii GPS.
+
+Wykonano oddzielną weryfikację krytycznej logiki na produkcyjnych strukturach i parserach: kalendarze/strefy, polskie święta, wiosenna i jesienna zmiana czasu, godziny nocne, słoneczne, następna zmiana statusu, odrzucanie nieobsługiwanych warunków Wikidata i obcych współrzędnych, walidacja kolejności punktów i polyline6, daty i geometria GDDKiA, wygasanie, zapis/usuwanie lokalnych wpisów oraz deduplikacja z zachowaniem pojedynczego opóźnienia. Publiczny odczyt Wikidata potwierdził rzeczywisty harmonogram jednej polskiej placówki. Lokalny test protokołu serwera potwierdził precyzję, idempotencję, limity, walidację i usuwanie wygasłych rekordów.
+
+`build-for-testing` oznacza kompilację pakietu, nie uruchomienie testów. Brak zainstalowanego runtime symulatora uniemożliwia ich uruchomienie w tym środowisku. Zastane `TransitousTests.swift` i `NaviAstraTests.swift` mają niezwiązane błędy kompilacji (izolacja aktora, nieaktualne sygnatury i mutujące wywołania wewnątrz makr); podczas kompilacji pozostałych krytycznych zestawów zostały wyłączone wyłącznie argumentem polecenia, bez usuwania lub edycji tych plików. macOS nie był budowany ani rozwijany.
+
+## Aktualizacja iOS 1.1.137 (139)
+
+Przycisk „Zgłoś” przy mapie otwiera wyłącznie listę rodzajów zdarzenia. Wybór zapisuje lokalną obserwację od razu, z aktualną zaakceptowaną pozycją GPS (dokładność do 50 m, wiek do 60 s) i bieżącym czasem. Nie wymaga wpisywania danych, potwierdzania zapisu ani wyboru udostępniania. Polskie potwierdzenie lub błąd pojawia się pod obszarem prowadzenia. Rozbudowany panel pozostaje dostępny do zarządzania wpisami.
+
+Podpisana kompilacja iOS oraz kompilacja pakietu krytycznych testów zakończyły się powodzeniem. `devicectl` odczytał z „iPhone (Dominik)” wersję 1.1.137 (139), potwierdził udaną instalację i start procesu 22402; kolejny odczyt wykazał ten proces jako aktywny. Wszystkie 430 ścieżek istniejących w Application Support przed aktualizacją pozostało obecnych po niej. Nie odinstalowywano aplikacji ani nie usuwano historii. Nie wykonano rzeczywistego przejazdu weryfikacyjnego ani pełnego uruchomienia testów na symulatorze (brak runtime).

@@ -1,6 +1,16 @@
 import SwiftUI
 
 extension ContentView {
+    private var weatherForecastRoute: NavigationRoute? {
+        guard weatherRouteForecast, let route = navigationStore.state.route,
+              route.coordinates.count > 1, route.distance.isFinite, route.distance >= 0,
+              route.expectedTravelTime.isFinite, route.expectedTravelTime >= 0 else { return nil }
+        if route.journey?.legs.contains(where: {
+            $0.mode.uppercased() == "WALK" && !$0.hasResolvedWalkingGeometry
+        }) == true { return nil }
+        return route
+    }
+
     var weatherConfiguration: WeatherVisualConfiguration {
         WeatherVisualEngine.configuration(state: weatherStore.current, intensity: weatherIntensity,
                                           animations: weatherAnimations && !ProcessInfo.processInfo.isLowPowerModeEnabled, colors: weatherMapColors,
@@ -26,7 +36,7 @@ extension ContentView {
                     ? state.journeyTargetTime.addingTimeInterval(-(state.route?.expectedTravelTime ?? 0))
                     : state.journeyTargetTime
             } else { departure = Date() }
-            await weatherStore.refresh(location: state.location?.coordinate, route: weatherRouteForecast ? state.route : nil,
+            await weatherStore.refresh(location: state.location?.coordinate, route: weatherForecastRoute,
                                        progress: isNavigating ? state.routeGeometryProgress : 0,
                                        remainingTime: isNavigating ? state.progress?.remainingTime : nil,
                                        departure: max(Date(), departure))
@@ -35,7 +45,7 @@ extension ContentView {
     }
 
     var visibleWeatherSamples: [RouteWeatherSample] {
-        guard weatherEnabled, weatherRouteForecast, weatherStore.routeID == navigationStore.state.route?.id,
+        guard weatherEnabled, let route = weatherForecastRoute, weatherStore.routeID == route.id,
               let date = weatherStore.updatedAt, Date().timeIntervalSince(date) < 1800 else { return [] }
         return weatherStore.samples.filter { $0.weather.condition.isHazard }
     }
@@ -53,7 +63,7 @@ extension ContentView {
 
     private var weatherNoticeText: String {
         let state = navigationStore.state
-        return (weatherRouteForecast
+        return (weatherForecastRoute != nil
             ? weatherStore.upcoming(progress: isNavigating ? state.routeGeometryProgress : 0,
                                     route: state.route, remainingTime: state.progress?.remainingTime) : nil)
             ?? weatherStore.current?.condition.title ?? weatherStore.status
@@ -72,6 +82,22 @@ extension ContentView {
     @ViewBuilder var weatherMapControl: some View {
         if weatherEnabled {
             Button { showsWeatherDetails = true } label: {
+#if os(iOS)
+                VStack(spacing: 0) {
+                    WeatherIcon(state: weatherControlState, size: weatherDistanceLabel == nil ? 30 : 26,
+                                showsBackground: false)
+                    if let label = weatherDistanceLabel {
+                        Text(label)
+                            .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(Color.naviTextSecondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                    }
+                }
+                .frame(width: 44, height: 44)
+                .modifier(NavigationGlassSurface(radius: 22, interactive: true))
+                .contentShape(Circle())
+#else
                 circleSurface {
                     VStack(spacing: 1) {
                         WeatherIcon(state: weatherControlState, size: weatherDistanceLabel == nil ? 34 : 27,
@@ -85,6 +111,7 @@ extension ContentView {
                         }
                     }
                 }
+#endif
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Pogoda: \(weatherNoticeText)")
@@ -157,7 +184,7 @@ extension ContentView {
 
             Divider().opacity(0.6)
             if let updatedAt = weatherStore.updatedAt {
-                Label("Aktualizacja \(updatedAt.formatted(date: .omitted, time: .shortened)) · prognoza",
+                Label("Aktualizacja \(PolishRegionalFormat.time(updatedAt)) · prognoza",
                       systemImage: "clock")
                     .font(.caption2)
                     .foregroundStyle(Color.naviTextSecondary)
@@ -189,7 +216,7 @@ extension ContentView {
     }
 
     private func weatherNumber(_ value: Double) -> String {
-        value.formatted(.number.precision(.fractionLength(0...1)))
+        value.formatted(.number.locale(PolishRegionalFormat.locale).precision(.fractionLength(0...1)))
     }
 
     private func weatherVisibilityLabel(_ meters: Double?) -> String {

@@ -56,6 +56,7 @@ struct JourneyLeg: Identifiable, Sendable {
     var operatorName: String? = nil
     var distance: Double? = nil
     var isInterlined = false
+    var hasResolvedRouteGeometry = true
 
     var plannedWalkingDuration: TimeInterval {
         walkingDuration ?? max(0, arrival.timeIntervalSince(departure) - minimumTransferTime)

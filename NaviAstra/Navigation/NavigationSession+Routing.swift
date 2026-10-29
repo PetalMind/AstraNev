@@ -262,10 +262,21 @@ extension NavigationSession {
                 preferences: .init(), cancellationToken: nil)
             route = TransitNavigationRouteMapper.routes(from: journeys).first
         case .car, .walking, .bicycle:
-            return nil
+            let target = await POIAccessResolver.shared.cachedTarget(for: destination, mode: mode)?.coordinate
+                ?? destination.coordinate
+            try Task.checkCancellation()
+            let routes: [NavigationRoute]
+            if let provider = routeProvider as? AdvancedRouteProvider {
+                routes = try await provider.calculateRoutes(from: origin, to: target, through: [], mode: mode,
+                    preferences: state.routingPreferences, avoiding: [])
+            } else {
+                routes = try await routeProvider.calculateRoutes(from: origin, to: target, mode: mode)
+            }
+            route = routes.first
         }
-        guard let route, route.expectedTravelTime.isFinite, route.distance.isFinite else { return nil }
-        return SearchRouteEstimate(travelTime: route.expectedTravelTime, distanceMeters: route.distance)
+        try Task.checkCancellation()
+        guard let route, let metric = RoutedTravelMetrics(time: route.expectedTravelTime, distance: route.distance) else { return nil }
+        return SearchRouteEstimate(travelTime: metric.time, distanceMeters: metric.distance)
     }
 
     private func calculateEVRoutes(from: Coordinate, to: Coordinate, explicitStops: [Destination],

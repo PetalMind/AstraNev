@@ -58,6 +58,10 @@ nonisolated struct DetailedRoadQuery: Hashable, Codable, Sendable {
         south >= self.south && west >= self.west && north <= self.north && east <= self.east
     }
 
+    func intersects(_ other: DetailedRoadQuery) -> Bool {
+        north >= other.south && south <= other.north && east >= other.west && west <= other.east
+    }
+
     var overpassQL: String {
         let bounds = id
         let roads = "^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|service|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"
@@ -80,12 +84,20 @@ actor OverpassDetailedRoadProvider: DetailedRoadDataProvider {
         var isFresh: Bool { isUsable && Date().timeIntervalSince(fetchedAt) < 24 * 60 * 60 }
         var isUsable: Bool {
             let age = Date().timeIntervalSince(fetchedAt)
-            return age >= -300 && age < 7 * 24 * 60 * 60 && query.isValid
+            // These are decorative map surfaces, never routing or access data.
+            // Keep a bounded offline fallback while refreshing the 24-hour cache.
+            return age >= -300 && age < 30 * 24 * 60 * 60 && query.isValid
         }
     }
     private var cache: [String: Entry] = [:]
     private var restored = false
+    private let storageURL: URL?
     private let logger = Logger(subsystem: "NaviAstra", category: "DetailedRoads")
+
+    init(cacheDirectory: URL? = nil) {
+        storageURL = (cacheDirectory ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first)?
+            .appendingPathComponent("NaviAstra/DetailedRoads/v2.json")
+    }
 
     private var endpoint: URL {
         let configured = UserDefaults.standard.string(forKey: "overpassServer")
@@ -98,7 +110,7 @@ actor OverpassDetailedRoadProvider: DetailedRoadDataProvider {
     func cachedData(in query: DetailedRoadQuery) -> DetailedRoadData? {
         guard let cached = cachedRoads(in: query) else { return nil }
         return .roads(DetailedRoadSnapshot(roads: cached.roads, fetchedAt: cached.fetchedAt,
-            revision: key(query) + "|" + String(cached.fetchedAt.timeIntervalSince1970)))
+            revision: key(query) + "|" + cached.revision, coversQuery: cached.coversQuery))
     }
 
     func data(in query: DetailedRoadQuery) async throws -> DetailedRoadData {
@@ -108,15 +120,35 @@ actor OverpassDetailedRoadProvider: DetailedRoadDataProvider {
             revision: key(query) + "|" + String(fetchedAt.timeIntervalSince1970)))
     }
 
-    func cachedRoads(in query: DetailedRoadQuery) -> (roads: [DetailedRoad], fresh: Bool, fetchedAt: Date)? {
+    func cachedRoads(in query: DetailedRoadQuery) -> (roads: [DetailedRoad], coversQuery: Bool, fetchedAt: Date, revision: String)? {
         restore()
         let endpoint = endpoint.absoluteString
-        if let entry = cache[key(query)], entry.isUsable { return (entry.roads, entry.isFresh, entry.fetchedAt) }
-        let entry = cache.values.filter {
+        let entries = cache.values.filter {
             $0.endpoint == endpoint && $0.isUsable && $0.query.contains(
                 south: query.south, west: query.west, north: query.north, east: query.east)
-        }.max(by: { $0.fetchedAt < $1.fetchedAt })
-        return entry.map { ($0.roads, $0.isFresh, $0.fetchedAt) }
+        }.sorted { $0.fetchedAt > $1.fetchedAt }
+        if let entry = entries.first {
+            return (entry.roads, true, entry.fetchedAt,
+                    entry.query.id + "|" + String(entry.fetchedAt.timeIntervalSince1970))
+        }
+        // A small pan must not discard every previously downloaded carriageway.
+        // Partial coverage is publishable, but must never suppress a new request.
+        let overlapping = cache.values.filter {
+            $0.endpoint == endpoint && $0.isUsable && $0.query.intersects(query)
+        }.sorted { $0.fetchedAt > $1.fetchedAt }
+        guard let oldest = overlapping.last else { return nil }
+        var roads: [Int64: DetailedRoad] = [:]
+        var vertices = 0
+        for entry in overlapping {
+            for road in entry.roads where roads[road.id] == nil {
+                guard roads.count < 4_000, vertices + road.points.count <= 80_000 else { continue }
+                roads[road.id] = road
+                vertices += road.points.count
+            }
+        }
+        guard !roads.isEmpty else { return nil }
+        let revision = overlapping.map { $0.query.id + "|" + String($0.fetchedAt.timeIntervalSince1970) }.joined(separator: ";")
+        return (roads.values.sorted { $0.id < $1.id }, false, oldest.fetchedAt, revision)
     }
 
     func roads(in query: DetailedRoadQuery) async throws -> [DetailedRoad] {
@@ -184,10 +216,7 @@ actor OverpassDetailedRoadProvider: DetailedRoadDataProvider {
         return result
     }
 
-    private var cacheURL: URL? {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("NaviAstra/DetailedRoads/v2.json")
-    }
+    private var cacheURL: URL? { storageURL }
     private func restore() {
         guard !restored else { return }
         restored = true

@@ -9,6 +9,7 @@ extension NavigationSession {
     }
 
     func refreshTraffic(force: Bool = false, forceRouteRefresh: Bool = true) {
+        if force || state.traffic?.incidents.contains(where: { !$0.isActive() }) == true { publishTrafficSnapshot() }
         // Current traffic cannot describe a route planned for another departure/arrival time.
         guard state.status != .routePreview || state.journeyTimeMode == .now else { return }
         let energyPolicy = energyPolicyEngine.currentPolicy
@@ -201,12 +202,19 @@ extension NavigationSession {
         let routeFlowDataIsFresh = routeTrafficFlowUpdatedAt.map {
             now.timeIntervalSince($0) <= 240
         } ?? false
-        guard nearby != nil || routeDataIsFresh || routeFlowDataIsFresh else {
+        let boxes = state.location.map { [TrafficBoundingBox.around($0.coordinate, radiusMeters: 3_500)] } ?? []
+        let local = LocalRoadReportStore.shared.incidents(in: boxes)
+        guard nearby != nil || routeDataIsFresh || routeFlowDataIsFresh || !local.isEmpty else {
             state.traffic = nil
             return
         }
         var incidentsByID: [String: TrafficIncident] = [:]
-        for incident in (nearby?.incidents ?? []) + (routeDataIsFresh ? routeTrafficIncidents : []) {
+        let matchedLocal = state.route.map { route in
+            RouteTrafficMonitor.matching(local, to: route, from: 0, through: RouteProgressGeometry(route).length,
+                                         routeGeometry: RouteProgressGeometry(route))
+        } ?? []
+        for incident in ((nearby?.incidents ?? []) + local + (routeDataIsFresh ? routeTrafficIncidents : []) + matchedLocal)
+            where incident.isActive(at: now) && (!incident.sources.contains(.local) || local.contains(where: { $0.id == incident.id })) {
             incidentsByID[incident.id] = incident
         }
         let routeUpdatedAt = routeDataIsFresh ? (routeTrafficUpdatedAt ?? .distantPast) : .distantPast
@@ -230,9 +238,9 @@ extension NavigationSession {
             flow: nearby?.flow,
             incidents: Array(incidentsByID.values),
             routeFlowSegments: routeFlowDataIsFresh ? routeTrafficFlowSegments : [],
-            updatedAt: max(nearby?.updatedAt ?? .distantPast, max(routeUpdatedAt, flowUpdatedAt)),
+            updatedAt: local.isEmpty ? max(nearby?.updatedAt ?? .distantPast, max(routeUpdatedAt, flowUpdatedAt)) : now,
             partialError: nearby?.partialError,
-            incidentDataAvailable: (nearby?.incidentDataAvailable ?? false) || routeDataIsFresh,
+            incidentDataAvailable: (nearby?.incidentDataAvailable ?? false) || routeDataIsFresh || !local.isEmpty,
             routeColorSegments: colors)
     }
 

@@ -85,6 +85,10 @@ struct PlaceDetails: Codable, Identifiable {
     var fetchedAt: Date
     var cacheGroupFetchedAt: [String: Date]? = nil
     var openingHoursURL: String? = nil
+    var supplementalSource: PlaceSupplementalSource? = nil
+    var wikidataCheckedAt: Date? = nil
+    var websiteHoursSource: PlaceSupplementalSource? = nil
+    var websiteHoursCheckedAt: Date? = nil
 
     @MainActor var openingHoursInfo: PlaceOpeningHours? {
         guard let openingHours else { return nil }
@@ -186,10 +190,19 @@ struct PlaceDetails: Codable, Identifiable {
                      source: newer.source,
                      fetchedAt: newer.fetchedAt,
                      cacheGroupFetchedAt: newer.cacheGroupFetchedAt ?? cacheGroupFetchedAt,
-                     openingHoursURL: newer.openingHoursURL ?? openingHoursURL)
+                     openingHoursURL: newer.openingHoursURL ?? openingHoursURL,
+                     supplementalSource: newer.supplementalSource ?? supplementalSource,
+                     wikidataCheckedAt: newer.wikidataCheckedAt ?? wikidataCheckedAt,
+                     websiteHoursSource: newer.websiteHoursSource ?? websiteHoursSource,
+                     websiteHoursCheckedAt: newer.websiteHoursCheckedAt ?? websiteHoursCheckedAt)
     }
 
     nonisolated var needsCacheRefresh: Bool {
+        if officialHoursWeekExpired { return true }
+        if websiteHoursSource != nil,
+           Date().timeIntervalSince(websiteHoursCheckedAt ?? .distantPast) >= 6 * 3_600 { return true }
+        if supplementalSource?.fields.contains("godziny") == true,
+           Date().timeIntervalSince(wikidataCheckedAt ?? .distantPast) >= 3_600 { return true }
         let groups = cacheGroupFetchedAt ?? Self.legacyCacheGroups(for: self)
         let ttl: [String: TimeInterval] = [
             "identity": 30 * 24 * 60 * 60,
@@ -203,6 +216,12 @@ struct PlaceDetails: Codable, Identifiable {
             if now.timeIntervalSince(fetchedAt) >= lifetime { return true }
         }
         return false
+    }
+
+    nonisolated var officialHoursWeekExpired: Bool {
+        guard let source = websiteHoursSource,
+              source.title == "Biedronka · godziny orientacyjne" else { return false }
+        return OfficialStoreHoursParser.weekKey(at: source.fetchedAt) != OfficialStoreHoursParser.weekKey(at: Date())
     }
 
     nonisolated private static func legacyCacheGroups(for details: PlaceDetails) -> [String: Date] {
@@ -275,16 +294,6 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         }
         return URL(string: "https://overpass-api.de/api/interpreter")!
     }
-    private static let fallbackEndpoints = [
-        "https://overpass.private.coffee/api/interpreter",
-        "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
-    ].compactMap { URL(string: $0) }
-
-    private var requestEndpoints: [URL] {
-        var seen = Set<String>()
-        return ([endpoint] + Self.fallbackEndpoints).filter { seen.insert($0.absoluteString).inserted }
-    }
-
     /// Search responses already contain full OSM tags; reuse them instead of fetching the same object again.
     static func maintainCache() async {
         await PlaceDetailsCache.shared.maintain()
@@ -307,6 +316,30 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
 
     func cachedDetails(for identity: PlaceIdentity) async -> PlaceDetails? {
         await PlaceDetailsCache.shared.value(for: identity.cacheKey, allowExpired: true)
+    }
+
+    func supplementalDetails(_ details: PlaceDetails, for identity: PlaceIdentity,
+                             forceRefresh: Bool = false, hoursOnly: Bool = false) async -> PlaceDetails {
+        let suffix = identity.category == "parcel_pickup" ? "/parcel-pickup" : ""
+        let resolvedKey = details.id.hasSuffix(suffix) ? details.id : details.id + suffix
+        let keys = Array(Set([identity.cacheKey, resolvedKey]))
+        let revisions = await PlaceDetailsCache.shared.revisions(for: keys)
+        var base = details
+        if base.officialHoursWeekExpired {
+            base.openingHours = nil; base.websiteHoursCheckedAt = nil; base.websiteHoursSource = nil
+        }
+        var enriched = await OfficialStoreHoursProvider.enrich(base, for: identity, forceRefresh: forceRefresh)
+        enriched = await WebsiteOpeningHoursProvider.enrich(enriched, for: identity, forceRefresh: forceRefresh)
+        if !hoursOnly || enriched.openingHours == nil {
+            enriched = await WikidataPlaceDetailsProvider.enrich(enriched, for: identity, forceRefresh: forceRefresh)
+        }
+        if details.website == nil, enriched.website != nil, enriched.openingHours == nil {
+            enriched = await WebsiteOpeningHoursProvider.enrich(enriched, for: identity, forceRefresh: forceRefresh)
+        }
+        guard !Task.isCancelled else { return details }
+        await PlaceDetailsCache.shared.storeSupplement(enriched, for: keys, expectedRevisions: revisions,
+                                                       originalFetchedAt: details.fetchedAt)
+        return enriched
     }
 
     func details(for identity: PlaceIdentity) async throws -> PlaceDetails? {
@@ -348,80 +381,82 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         if let requestedID {
             selector = "\(requestedID.selector);"
         } else {
-            selector = "nwr(around:100,\(identity.coordinate.latitude),\(identity.coordinate.longitude))[~\"^(name(:.*)?|brand|operator)$\"~\".\"];"
+            selector = "nwr(around:150,\(identity.coordinate.latitude),\(identity.coordinate.longitude))[~\"^(name(:.*)?|official_name|short_name|alt_name|brand|operator)$\"~\".\"];"
         }
         let query = "[out:json][timeout:6];\(selector)out center tags;"
-        var receivedValidResponse = false
-        for (attempt, requestEndpoint) in requestEndpoints.enumerated() {
-            try Task.checkCancellation()
-            do {
-                let reply = try await fetchReply(query: query, from: requestEndpoint,
-                                                 timeout: attempt == 0 ? 8 : 6)
-                guard reply.remark == nil else { throw PlaceDetailsError.unavailable }
-                receivedValidResponse = true
+        // The shared transport owns failover. A valid empty/ambiguous reply is
+        // definitive; querying mirrors repeats the same data and can amplify 429s.
+        let requestEndpoint = endpoint
+        try Task.checkCancellation()
+        do {
+            let reply = try await fetchReply(query: query, from: requestEndpoint,
+                                             timeout: 8)
+            guard reply.remark == nil else { throw PlaceDetailsError.unavailable }
 
-                let element: Element?
-                if let requestedID {
-                    element = reply.elements.first(where: { $0.type == requestedID.type && $0.id == requestedID.value })
-                } else {
-                    let candidates = reply.elements.compactMap { candidate -> (element: Element, score: Double)? in
-                        guard let tags = candidate.tags,
-                              let coordinate = candidate.coordinate else { return nil }
-                        let distance = coordinate.distance(to: identity.coordinate)
-                        if identity.provider == .openFreeMap, let externalID = identity.externalID,
-                           let tileID = Int64(externalID), tileID != Int64.min,
-                           candidate.id == tileID || candidate.id == abs(tileID) {
-                            let categoryMatch = identity.category.map { Self.matchesCategory($0, tags: tags) } ?? false
-                            guard !Self.hasConflictingAddress(identity.address, tags: tags),
-                                  Self.matchesExactName(Self.normalized(identity.name), tags: tags) || categoryMatch,
-                                  distance <= 100 else { return nil }
-                            let categoryScore = categoryMatch ? 180.0 : 0
-                            return (candidate, 1_500 + categoryScore - distance)
-                        }
-
-                        guard distance <= 100,
-                              !Self.hasConflictingAddress(identity.address, tags: tags),
-                              let nameScore = Self.nameMatchScore(identity, tags: tags),
-                              nameScore >= 400 else { return nil }
-                        let categoryMatch = identity.category.map { Self.matchesCategory($0, tags: tags) } ?? false
-                        let addressMatch = Self.addressMatchScore(identity.address, tags: tags)
-                        guard distance <= 40 || nameScore >= 760 || categoryMatch || addressMatch >= 100 else { return nil }
-                        let score = nameScore + (categoryMatch ? 180 : 0) + addressMatch - distance * 2
-                        return (candidate, score)
-                    }
-                    let ranked = candidates.sorted { $0.score > $1.score }
-                    if let best = ranked.first,
-                       ranked.count == 1 || best.score - ranked[1].score >= 150 {
-                        element = best.element
-                    } else {
-                        element = nil
-                    }
-                }
-                guard let element,
-                      let resolvedID = OpenStreetMapObjectID("\(element.type):\(element.id)") else {
-                    logger.notice("No confident OSM match provider=\(identity.provider.rawValue, privacy: .public) candidates=\(reply.elements.count)")
-                    continue
-                }
-                let tags = element.tags ?? [:]
-                logger.info("Resolved OSM type=\(element.type, privacy: .public) id=\(element.id) hasHours=\(tags["opening_hours"] != nil)")
-                let resolvedKey = resolvedID.cacheKey
-                let isPickupService = identity.category == "parcel_pickup"
-                let downloaded = Self.makeDetails(id: resolvedKey, fallbackName: partial.name, tags: tags,
-                                                  includePickupServices: isPickupService)
-                let resolvedCacheKey = resolvedKey + (isPickupService ? "/parcel-pickup" : "")
-                await PlaceDetailsCache.shared.store(downloaded, for: Array(Set([resolvedCacheKey, requestKey])))
-                return partial.merging(downloaded)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                logger.error("Details host=\(requestEndpoint.host ?? "unknown", privacy: .public) failure=\(String(describing: error), privacy: .public)")
+            let element: Element?
+            if let requestedID {
+                element = reply.elements.first(where: { $0.type == requestedID.type && $0.id == requestedID.value })
+            } else {
+                element = Self.bestMatch(in: reply.elements, for: identity)
             }
+            guard let element,
+                  let resolvedID = OpenStreetMapObjectID("\(element.type):\(element.id)") else {
+                logger.notice("No confident OSM match provider=\(identity.provider.rawValue, privacy: .public) candidates=\(reply.elements.count)")
+                if requestedID != nil { return nil }
+                throw PlaceDetailsError.notMatched
+            }
+            let tags = element.tags ?? [:]
+            logger.info("Resolved OSM type=\(element.type, privacy: .public) id=\(element.id) hasHours=\(tags["opening_hours"] != nil)")
+            let resolvedKey = resolvedID.cacheKey
+            let isPickupService = identity.category == "parcel_pickup"
+            let downloaded = Self.makeDetails(id: resolvedKey, fallbackName: partial.name, tags: tags,
+                                              includePickupServices: isPickupService)
+            let resolvedCacheKey = resolvedKey + (isPickupService ? "/parcel-pickup" : "")
+            await PlaceDetailsCache.shared.store(downloaded, for: Array(Set([resolvedCacheKey, requestKey])))
+            return partial.merging(downloaded)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as PlaceDetailsError {
+            throw error
+        } catch {
+            logger.error("Details host=\(requestEndpoint.host ?? "unknown", privacy: .public) failure=\(String(describing: error), privacy: .public)")
+            throw PlaceDetailsError.unavailable
         }
-        if receivedValidResponse {
-            if requestedID != nil { return nil }
-            throw PlaceDetailsError.notMatched
+    }
+
+    static func bestMatch(in elements: [Element], for identity: PlaceIdentity) -> Element? {
+        let candidates = elements.compactMap { candidate -> (element: Element, score: Double)? in
+            guard let tags = candidate.tags,
+                  let coordinate = candidate.coordinate else { return nil }
+            let distance = coordinate.distance(to: identity.coordinate)
+            if identity.provider == .openFreeMap, let externalID = identity.externalID,
+               let tileID = Int64(externalID), tileID != Int64.min,
+               candidate.id == tileID || candidate.id == abs(tileID) {
+                let categoryMatch = identity.category.map { Self.matchesCategory($0, tags: tags) } ?? false
+                guard !Self.hasConflictingAddress(identity.address, tags: tags),
+                      Self.matchesExactName(Self.normalized(identity.name), tags: tags),
+                      distance <= 150 else { return nil }
+                let categoryScore = categoryMatch ? 180.0 : 0
+                return (candidate, 1_500 + categoryScore - distance)
+            }
+
+            guard distance <= 150,
+                  !Self.hasConflictingAddress(identity.address, tags: tags),
+                  let nameScore = Self.nameMatchScore(identity, tags: tags),
+                  nameScore >= 400 else { return nil }
+            let categoryMatch = identity.category.map { Self.matchesCategory($0, tags: tags) } ?? false
+            let addressMatch = Self.addressMatchScore(identity.address, tags: tags)
+            guard distance <= 40 || (nameScore >= 760 && (categoryMatch || addressMatch >= 100)) else { return nil }
+            let score = nameScore + (categoryMatch ? 180 : 0) + addressMatch - distance * 2
+            return (candidate, score)
         }
-        throw PlaceDetailsError.unavailable
+        let ranked = candidates.sorted { $0.score > $1.score }
+        if let best = ranked.first,
+           ranked.count == 1 || best.score - ranked[1].score >= 150 {
+            return best.element
+        } else {
+            return nil
+        }
     }
 
     private func fetchReply(query: String, from endpoint: URL, timeout: TimeInterval) async throws -> Reply {
@@ -435,7 +470,7 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         body.queryItems = [URLQueryItem(name: "data", value: query)]
         request.httpBody = body.percentEncodedQuery?.data(using: .utf8)
 
-        let (data, response) = try await OSMRequestTransport.shared.data(for: request, priority: true)
+        let (data, response) = try await OSMRequestTransport.shared.data(for: request, priority: true, maximumDuration: 14)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw PlaceDetailsError.unavailable
         }
@@ -453,10 +488,10 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
 
     private static func matchesExactName(_ expected: String, tags: [String: String]) -> Bool {
         guard !expected.isEmpty else { return false }
-        let taggedNames = [tags["name"], tags["brand"], tags["operator"],
+        let taggedNames = [tags["name"], tags["official_name"], tags["short_name"], tags["alt_name"], tags["brand"], tags["operator"],
                            ParcelPOI.name(tags: tags, fallback: "")].compactMap { $0 }
             + tags.filter { $0.key.lowercased().hasPrefix("name:") }.map(\.value)
-        for value in taggedNames {
+        for value in taggedNames.flatMap({ $0.split(separator: ";").map(String.init) }) {
             if normalized(value) == expected { return true }
         }
         return false
@@ -473,6 +508,9 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         if aliases.contains(where: { ["chargingstation", "evcharger", "evcharging"].contains($0) }) {
             aliases.append(contentsOf: ["chargingstation", "evcharger", "evcharging"])
         }
+        let appleAliases = ["foodmarket": ["supermarket", "convenience", "greengrocer", "deli"],
+                            "gasstation": ["fuel"], "parkinggarage": ["parking"], "store": ["shop"]]
+        for alias in aliases { aliases.append(contentsOf: appleAliases[alias] ?? []) }
         aliases = aliases.filter { !$0.isEmpty }
         guard !aliases.isEmpty else { return false }
         return ParcelPOI.category(tags: tags).map { aliases.contains(normalized($0)) } == true ||
@@ -481,10 +519,10 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
     }
 
     private static func nameMatchScore(_ identity: PlaceIdentity, tags: [String: String]) -> Double? {
-        let taggedNames = ([tags["name"], tags["brand"], tags["operator"],
+        let taggedNames = ([tags["name"], tags["official_name"], tags["short_name"], tags["alt_name"], tags["brand"], tags["operator"],
                             ParcelPOI.name(tags: tags, fallback: ""), ParcelPOI.brand(tags: tags),
                             ParcelPOI.operatorName(tags: tags)].compactMap { $0 }
-            + tags.filter { $0.key.lowercased().hasPrefix("name:") }.map(\.value)).map(normalized)
+            + tags.filter { $0.key.lowercased().hasPrefix("name:") }.map(\.value)).flatMap { $0.split(separator: ";").map { normalized(String($0)) } }
         guard !taggedNames.isEmpty else { return nil }
         let expected = [identity.name, identity.brand, identity.operatorName]
             .compactMap { $0 }.map(normalized).filter { !$0.isEmpty }
@@ -527,6 +565,8 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
     }
 
     private static func hasConflictingAddress(_ expected: String?, tags: [String: String]) -> Bool {
+        let actualStreet = [tags["addr:street"], tags["addr:housenumber"]].compactMap { $0 }.joined(separator: " ")
+        if PlaceAddressMatching.hasStreetConflict(expected, actual: actualStreet) { return true }
         guard let expected, let expectedNumber = PhotonSearchProvider.houseNumber(in: expected),
               let actualNumber = tags["addr:housenumber"].map(PhotonSearchProvider.normalized) else { return false }
         return expectedNumber != actualNumber
@@ -588,7 +628,8 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
                             operatorName: ParcelPOI.operatorName(tags: tags, includePickupServices: includePickupServices),
                             category: category,
                             address: address,
-                            openingHours: ParcelPOI.openingHours(tags: tags, includePickupServices: includePickupServices),
+                            openingHours: ParcelPOI.openingHours(tags: tags, includePickupServices: includePickupServices)
+                                .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 },
                             phone: phone,
                             website: website,
                             coordinate: nil,
@@ -621,7 +662,7 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
     }
 
     private struct Reply: Decodable { let elements: [Element]; let remark: String? }
-    private struct Element: Decodable {
+    struct Element: Decodable {
         let id: Int64
         let type: String
         let lat: Double?
@@ -634,7 +675,7 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
             return Coordinate(latitude: latitude, longitude: longitude)
         }
     }
-    private struct Center: Decodable { let lat: Double; let lon: Double }
+    struct Center: Decodable { let lat: Double; let lon: Double }
 }
 
 enum PlaceDetailsError: LocalizedError {
@@ -679,19 +720,31 @@ nonisolated struct OpenStreetMapObjectID {
 private enum PlaceDetailsRequests {
     static var pending: [String: Task<PlaceDetails?, Error>] = [:]
     static var missingUntil: [String: Date] = [:]
+    static var failures: [String: (until: Date, error: PlaceDetailsError)] = [:]
 
     static func load(key: String, forceRefresh: Bool = false,
                      operation: @escaping @MainActor () async throws -> PlaceDetails?) async throws -> PlaceDetails? {
         if let pending = pending[key] { return try await pending.value }
         if forceRefresh {
             missingUntil[key] = nil
+            failures[key] = nil
+        } else if let failure = failures[key], failure.until > Date() {
+            throw failure.error
         } else if let until = missingUntil[key], until > Date() {
             return nil
         }
         let task = Task { try await operation() }
         pending[key] = task
         defer { pending[key] = nil }
-        let value = try await task.value
+        let value: PlaceDetails?
+        do { value = try await task.value }
+        catch let error as PlaceDetailsError {
+            failures = failures.filter { $0.value.until > Date() }
+            if failures.count >= 200 { failures.removeAll() }
+            let lifetime: TimeInterval = if case .notMatched = error { 300 } else { 30 }
+            failures[key] = (Date().addingTimeInterval(lifetime), error)
+            throw error
+        }
         if value == nil {
             missingUntil = missingUntil.filter { $0.value > Date() }
             if missingUntil.count >= 200 { missingUntil.removeAll() }
@@ -705,6 +758,7 @@ private actor PlaceDetailsCache {
     static let shared = PlaceDetailsCache()
     private let fileURL: URL
     private var entries: [String: PlaceDetails] = [:]
+    private var versions: [String: UInt64] = [:]
 
     private init() {
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -723,8 +777,24 @@ private actor PlaceDetailsCache {
         return entry
     }
 
+    func revisions(for ids: [String]) -> [String: UInt64] {
+        Dictionary(uniqueKeysWithValues: ids.map { ($0, versions[$0, default: 0]) })
+    }
+
+    func storeSupplement(_ details: PlaceDetails, for ids: [String], expectedRevisions: [String: UInt64],
+                         originalFetchedAt: Date) {
+        guard !Task.isCancelled, ids.allSatisfy({ id in
+            versions[id, default: 0] == expectedRevisions[id] &&
+                (entries[id].map { $0.fetchedAt <= originalFetchedAt } ?? true)
+        }) else { return }
+        store(details, for: ids)
+    }
+
     func store(_ details: PlaceDetails, for ids: [String]) {
-        for id in ids { entries[id] = details }
+        for id in ids where entries[id].map({ $0.fetchedAt <= details.fetchedAt }) ?? true {
+            entries[id] = details
+            versions[id, default: 0] &+= 1
+        }
         if entries.count > 1_000 {
             let newestEntries = entries.sorted { $0.value.fetchedAt > $1.value.fetchedAt }
                 .prefix(1_000)
@@ -736,7 +806,11 @@ private actor PlaceDetailsCache {
 
     func store(_ details: [PlaceDetails], keySuffix: String = "") {
         guard !details.isEmpty else { return }
-        for detail in details { entries[detail.id + keySuffix] = detail }
+        for detail in details {
+            let key = detail.id + keySuffix
+            entries[key] = detail
+            versions[key, default: 0] &+= 1
+        }
         if entries.count > 1_000 {
             entries = Dictionary(uniqueKeysWithValues: entries.sorted { $0.value.fetchedAt > $1.value.fetchedAt }
                 .prefix(1_000).map { ($0.key, $0.value) })
@@ -752,6 +826,7 @@ private actor PlaceDetailsCache {
     }
 
     private func persist() {
+        versions = versions.filter { entries[$0.key] != nil }
         do {
             try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true)
@@ -760,5 +835,32 @@ private actor PlaceDetailsCache {
         } catch {
             // A cache write failure must not hide details that were just fetched.
         }
+    }
+}
+
+/// Compare street names only when both addresses explicitly identify their street
+/// and building number. A shared number on neighbouring streets is not a match.
+enum PlaceAddressMatching {
+    static func hasStreetConflict(_ expected: String?, actual: String?) -> Bool {
+        guard let expected, let actual,
+              let left = street(in: expected), let right = street(in: actual) else { return false }
+        return left != right
+    }
+    private static func street(in address: String) -> String? {
+        guard let number = PhotonSearchProvider.houseNumber(in: address) else { return nil }
+        for part in address.split(separator: ",").map(String.init) where PhotonSearchProvider.houseNumber(in: part) == number {
+            let pattern = #"(?<![\p{L}\p{N}])"# + NSRegularExpression.escapedPattern(for: number) + #"(?![\p{L}\p{N}])"#
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+                  let match = regex.matches(in: part, range: NSRange(part.startIndex..., in: part)).last,
+                  let range = Range(match.range, in: part) else { continue }
+            var street = String(part[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if street.isEmpty { street = String(part[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines) }
+            street = street.replacingOccurrences(of: #"^(?:ulica|ul\.?|aleja|al\.?|plac|pl\.?|osiedle|os\.?)\s+"#,
+                with: "", options: [.regularExpression, .caseInsensitive])
+            let value = street.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "pl_PL"))
+                .filter { $0.isLetter || $0.isNumber }
+            if value.count >= 3 { return value }
+        }
+        return nil
     }
 }

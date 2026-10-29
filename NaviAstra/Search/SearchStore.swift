@@ -119,7 +119,7 @@ final class SearchStore {
     func searchPlaces(_ rawQuery: String, context: SearchContext, includeUUGFallback: Bool,
                       routingServerAddress: String,
                       routeEstimator: SearchRouteEstimator = { _, _, _ in nil },
-                      onUpdate: @MainActor ([SearchResult]) -> Void) async throws -> [SearchResult] {
+                      onUpdate: @escaping @MainActor ([SearchResult]) -> Void) async throws -> [SearchResult] {
         let endpoint = URL(string: routingServerAddress) ?? URL(string: "https://valhalla1.openstreetmap.de")!
         let normalizedQuery = QueryClassifier.normalize(rawQuery)
         let effectiveQuery = alongRoute && !normalizedQuery.hasSuffix(" po trasie")

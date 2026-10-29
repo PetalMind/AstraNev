@@ -12,11 +12,17 @@ import UIKit
 private func applyRoadAuditCamera(to map: MLNMapView) -> Bool {
     guard let raw = ProcessInfo.processInfo.environment["NAVIASTRA_MAP_AUDIT_CAMERA"] else { return false }
     let values = raw.split(separator: ",").compactMap { Double($0) }
-    guard values.count == 3, values.allSatisfy(\.isFinite),
-          (-85...85).contains(values[0]), (-180...180).contains(values[1]), (16...20).contains(values[2]) else { return false }
+    guard (3...4).contains(values.count), values.allSatisfy(\.isFinite),
+          (-85...85).contains(values[0]), (-180...180).contains(values[1]), (14.5...20).contains(values[2]),
+          values.count == 3 || (0...60).contains(values[3]) else { return false }
     if abs(map.centerCoordinate.latitude - values[0]) > 0.0000001
         || abs(map.centerCoordinate.longitude - values[1]) > 0.0000001 || abs(map.zoomLevel - values[2]) > 0.001 {
         map.setCenter(CLLocationCoordinate2D(latitude: values[0], longitude: values[1]), zoomLevel: values[2], animated: false)
+    }
+    if values.count == 4, abs(map.camera.pitch - values[3]) > 0.1 {
+        let camera = map.camera
+        camera.pitch = values[3]
+        map.setCamera(camera, animated: false)
     }
     return true
 }
@@ -198,7 +204,17 @@ struct MapLibreView: UIViewRepresentable {
     var alightingTransitStopID: String? { scene.transit.alightingStopID }
     var transitLineCoordinates: [Coordinate] { scene.transit.lineCoordinates }
     var transitLineColor: UInt32? { scene.transit.lineColor }
-    var settings: MapSettings { scene.settings }
+    var settings: MapSettings {
+        #if DEBUG
+        var result = scene.settings
+        if ProcessInfo.processInfo.environment["NAVIASTRA_MAP_AUDIT_CONTEXT"] == "driving" {
+            result.context = .driving
+        }
+        return result
+        #else
+        return scene.settings
+        #endif
+    }
     var isSearchPresented: Bool { scene.isSearchPresented }
     var routePreviewExpanded: Bool { scene.routePreviewExpanded }
     var isBottomSheetDragging: Bool { scene.isBottomSheetDragging }
@@ -222,6 +238,7 @@ struct MapLibreView: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeUIView(context: Context) -> MLNMapView {
+        MapTileNetwork.prepare()
         let map = MLNMapView(frame: .zero, styleURL: styleURL)
         map.showsCompassView = false
         map.attributionButton.isHidden = false
@@ -285,6 +302,7 @@ struct MapLibreView: UIViewRepresentable {
     final class Coordinator: NSObject, MLNMapViewDelegate, UIGestureRecognizerDelegate {
         private let mapLogger = Logger(subsystem: "NaviAstra", category: "MapLibre")
         private var lastRenderingLogAt = Date.distantPast
+        private var standardTileLodPitchThreshold: Double?
         var parent: MapLibreView
         weak var map: MLNMapView?
         private var trafficLines: [StyledLine] = []
@@ -639,6 +657,20 @@ struct MapLibreView: UIViewRepresentable {
             mapLogger.error("Map loading failed: \(error.localizedDescription, privacy: .private)")
         }
 
+        nonisolated func mapView(_ mapView: MLNMapView, tileDidTriggerAction operation: MLNTileOperation,
+                                x: Int, y: Int, z: Int, wrap: Int, overscaledZ: Int, sourceID: String) {
+            guard sourceID.hasPrefix(SatelliteTileRecovery.sourcePrefix),
+                  operation == .error || operation == .endParse else { return }
+            let mapID = ObjectIdentifier(mapView)
+            // MapLibre delivers tile events from worker threads. Keep every
+            // mutation of style sources and layers on the main actor.
+            Task { @MainActor [weak self] in
+                guard let self, let currentMap = self.map, ObjectIdentifier(currentMap) == mapID else { return }
+                self.navigationStyle.satelliteTileOperation(operation, sourceID: sourceID,
+                    tile: SatelliteTileAddress(x: x, y: y, z: z))
+            }
+        }
+
         func mapView(_ mapView: MLNMapView, didFailToLoadImage imageName: String) -> UIImage? {
             detailedRoadRenderer.image(for: imageName)
         }
@@ -663,6 +695,8 @@ struct MapLibreView: UIViewRepresentable {
         func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
             mapLogger.info("Map style loaded: \(style.layers.count) layers, \(style.sources.count) sources")
             navigationStyle.reset()
+            navigationStyle.updateSatelliteRecovery(on: mapView, enabled: parent.settings.baseMap == .satellite,
+                renderingEnabled: parent.scene.energyPolicy.mapRenderingEnabled)
             detailedRoadRenderer.didLoadStyle(on: mapView)
             buildingFacadesNeedsUpdate = true
             buildingFacadesKey = ""
@@ -684,7 +718,22 @@ struct MapLibreView: UIViewRepresentable {
                 ? energyPolicy.mapFramesPerSecond : 1
             map.preferredFramesPerSecond = MLNMapViewPreferredFramesPerSecond(
                 rawValue: preferredFramesPerSecond)
-            map.prefetchesTiles = energyPolicy.enablesMapPrefetch
+            let satellite = parent.settings.baseMap == .satellite
+            navigationStyle.updateSatelliteRecovery(on: map, enabled: satellite,
+                renderingEnabled: energyPolicy.mapRenderingEnabled)
+            // MapLibre prefetch downloads coarser zoom levels, not imagery ahead
+            // of the vehicle. Let visible, detailed satellite tiles use the bandwidth.
+            map.prefetchesTiles = energyPolicy.enablesMapPrefetch && !satellite
+            if standardTileLodPitchThreshold == nil {
+                standardTileLodPitchThreshold = map.tileLodPitchThreshold
+            }
+            // The navigation camera is tilted. Do not replace satellite tiles
+            // farther ahead with lower zoom levels; restore the normal LOD policy
+            // when returning to a vector map.
+            let lodPitchThreshold = satellite ? Double.pi / 2 : standardTileLodPitchThreshold!
+            if map.tileLodPitchThreshold != lodPitchThreshold {
+                map.tileLodPitchThreshold = lodPitchThreshold
+            }
             map.isUserInteractionEnabled = energyPolicy.mapRenderingEnabled
             let displayLinkRate = Float(max(1, energyPolicy.mapFramesPerSecond))
             puckDisplayLink?.preferredFrameRateRange = CAFrameRateRange(
@@ -972,7 +1021,7 @@ struct MapLibreView: UIViewRepresentable {
             let lighting = MapBuildingLighting.resolve(appearance: parent.settings.appearance, coordinate: map.centerCoordinate)
             navigationStyle.updateBuildingFacadeVisibility(on: map, settings: parent.settings,
                 dark: usesDarkMapAppearance, renderingEnabled: parent.scene.energyPolicy.mapRenderingEnabled)
-            let facadeKey = "\(parent.settings.overlays.buildings3D)-\(parent.settings.cameraMode)-\(usesDarkMapAppearance)-\(lighting.level)-\(lighting.quiet)-\(map.zoomLevel >= 17.5)-\(map.camera.pitch > 35)"
+            let facadeKey = "\(parent.settings.overlays.buildings3D)-\(parent.settings.cameraMode)-\(usesDarkMapAppearance)-\(lighting.level)-\(lighting.quiet)-\(map.zoomLevel >= 17)-\(map.camera.pitch > 27)"
             if facadeKey != buildingFacadesKey {
                 buildingFacadesKey = facadeKey
                 scheduleBuildingFacadesRefresh(on: map)
@@ -1840,7 +1889,10 @@ struct MapLibreView: UIViewRepresentable {
             return routeLinePresentation(for: annotation, context: context)?.width ?? 2
         }
 
-        func stopMapDetailUpdates() { navigationStyle.suspendDetails() }
+        func stopMapDetailUpdates() {
+            navigationStyle.suspendDetails()
+            navigationStyle.stopSatelliteRecovery()
+        }
 
         func stopDetailedRoadUpdates() {
             detailedRoadRenderer.stop()

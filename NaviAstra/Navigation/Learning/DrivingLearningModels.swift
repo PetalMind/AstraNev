@@ -2,7 +2,7 @@ import Foundation
 import CryptoKit
 
 nonisolated struct DrivingLearningSettings: Codable, Equatable, Sendable {
-    var enabled = false
+    var enabled = true
     var shortcuts = true
     var roads = true
     var destinationApproach = true
@@ -163,9 +163,8 @@ nonisolated enum DrivingLearningMath {
     static func weight(tripCount: Int, confirmed: Bool = false) -> Double {
         let learned: Double
         switch tripCount {
-        case ..<10: learned = 0
-        case 10..<50: learned = 0.05
-        case 50..<200: learned = 0.15
+        case ..<3: learned = 0
+        case 3..<10: learned = 0.20
         default: learned = 0.25
         }
         return confirmed ? max(0.15, learned) : learned
@@ -176,6 +175,9 @@ nonisolated enum DrivingLearningMath {
     }
 
     static func similarity(_ a: [LearnedRoadSegment], _ b: [LearnedRoadSegment]) -> Double {
+        if a.contains(where: { $0.id.hasPrefix("trace:") }) || b.contains(where: { $0.id.hasPrefix("trace:") }) {
+            return overlap(a, geometry: RouteProgressGeometry(coordinates: b.flatMap(\.coordinates)))
+        }
         let ids = Set(b.map(\.id))
         let length = a.reduce(0) { $0 + $1.length }
         guard length > 0 else { return 0 }
@@ -188,6 +190,7 @@ nonisolated enum DrivingLearningMath {
             if let index = result.firstIndex(where: {
                 sameJourney($0.representative, trip) && similarity(trip.segments, $0.representative.segments) >= 0.85
                     && similarity($0.representative.segments, trip.segments) >= 0.85
+                    && compatibleChoices(trip, $0.representative)
             }) {
                 result[index].trips.append(trip)
             } else {
@@ -195,6 +198,19 @@ nonisolated enum DrivingLearningMath {
             }
         }
         return result.sorted { $0.usageCount > $1.usageCount }
+    }
+
+    /// Global overlap on a long journey must not combine three different one-off
+    /// detours into evidence that any particular detour was chosen three times.
+    static func compatibleChoices(_ a: LearnedDrivingTrip, _ b: LearnedDrivingTrip) -> Bool {
+        guard a.deviations.count == b.deviations.count else { return false }
+        return a.deviations.allSatisfy { choice in
+            b.deviations.contains { other in
+                choice.entry.distance(to: other.entry) <= 100 && choice.exit.distance(to: other.exit) <= 100
+                    && similarity(choice.preferred, other.preferred) >= 0.85
+                    && similarity(other.preferred, choice.preferred) >= 0.85
+            }
+        }
     }
 
     static func bearing(_ a: Coordinate, _ b: Coordinate) -> Double {

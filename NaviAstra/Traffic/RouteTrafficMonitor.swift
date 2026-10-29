@@ -39,7 +39,9 @@ struct RouteTrafficMonitor {
                                                geometry: RouteProgressGeometry,
                                                route: NavigationRoute? = nil, at date: Date = .now) -> RouteProjection? {
         guard incident.isActive(at: date) else { return nil }
-        guard incident.isActive() else { return nil }
+        // National bulletins locate only the approximate section centre.
+        // Keep them as map context unless a provider supplies verified geometry.
+        guard !incident.sources.contains(.gddkia) || incident.sources.contains(.tomTom) else { return nil }
         let points = incident.geometry.isEmpty ? [incident.coordinate] : incident.geometry
         let projection: RouteProjection?
         if points.count == 1 {
@@ -330,7 +332,8 @@ struct RouteTrafficMonitor {
                 distanceAlongRoute: best.alongRoute, roadNumbers: incident.roadNumbers,
                 geometryDirection: incident.geometryDirection, observedAt: incident.observedAt,
                 cause: incident.cause, events: incident.events, startsAt: incident.startsAt,
-                expiresAt: incident.expiresAt, community: incident.community)
+                expiresAt: incident.expiresAt, community: incident.community,
+                sources: incident.sources, sourceUpdatedAt: incident.sourceUpdatedAt)
             if let existing = matched[incident.id],
                (existing.distanceAlongRoute ?? .infinity) <= best.alongRoute { continue }
             matched[incident.id] = routeIncident

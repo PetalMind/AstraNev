@@ -96,7 +96,7 @@ extension ContentView {
             }
             Section("Usługi nawigacyjne") {
                 settingsCategory("Ruch drogowy",
-                                 subtitle: TrafficCredential.read() != nil ? "TomTom · konfiguracja aplikacji" : "TomTom · usługa niedostępna",
+                                 subtitle: TrafficCredential.read() != nil ? "TomTom, GDDKiA i zgłoszenia" : "GDDKiA i zgłoszenia · bez pomiaru TomTom",
                                  icon: "car.side.fill") {
                     settingsPage("Ruch drogowy") { settingsTrafficSection }
                 }
@@ -538,14 +538,14 @@ extension ContentView {
     }
 
     private var settingsTrafficSection: some View {
-        Section("Ruch na żywo · TomTom") {
+        Section("Ruch i zdarzenia drogowe") {
             NavigationLink {
                 ScrollView { trafficCard.padding() }
                     .navigationTitle("Ruch na żywo")
             } label: {
                 Label("Bieżące warunki", systemImage: "car.side")
             }
-            Text("Dane o ruchu są pobierane automatycznie z TomTom. Dostępność zależy od połączenia z internetem i odpowiedzi usługi.")
+            Text("TomTom dostarcza pomiary ruchu w granicach limitu konta. GDDKiA udostępnia biuletyn utrudnień na drogach krajowych. Zgłoszenia lokalne są widoczne tylko na urządzeniu; udostępnianie wymaga skonfigurowanej usługi. Każde źródło może być chwilowo niedostępne.")
                 .font(.footnote)
                 .foregroundStyle(Color.naviTextSecondary)
         }
@@ -718,6 +718,21 @@ extension ContentView {
                 .accessibilityLabel("Odśwież ruch")
             }
 
+#if os(iOS)
+            Button { showsRoadReportEditor = true } label: {
+                Label("Zgłoś zdarzenie lub kontrolę", systemImage: "plus.bubble.fill")
+            }
+            .sheet(isPresented: $showsRoadReportEditor) {
+                let location = navigationStore.state.location
+                let reliable = location.map { $0.accuracy >= 0 && $0.accuracy <= 50 &&
+                    (-5...60).contains(Date().timeIntervalSince($0.timestamp)) } == true
+                RoadReportEditor(coordinate: reliable ? location?.coordinate : nil, locationTimestamp: location?.timestamp) {
+                    navigationStore.refreshTraffic(force: true)
+                }
+            }
+#endif
+            Text("Pomiar ruchu: TomTom. Utrudnienia: GDDKiA i niepotwierdzone zgłoszenia. Utrudnienie nie jest pomiarem korka.")
+                .font(.caption).foregroundStyle(Color.naviTextSecondary)
             switch navigationStore.state.trafficStatus {
             case .notConfigured:
                 Label("Usługa ruchu jest niedostępna w tej konfiguracji aplikacji.", systemImage: "wifi.slash")
@@ -742,11 +757,16 @@ extension ContentView {
                 }
 
                 if let incidents = navigationStore.state.traffic?.incidents {
-                    Text(incidents.isEmpty
-                         ? "Brak zgłoszonych utrudnień na pobliskiej trasie."
-                         : "Utrudnienia na pobliskiej trasie: \(incidents.count)")
+                    if navigationStore.state.traffic?.incidentDataAvailable == true {
+                        Text(incidents.isEmpty
+                             ? "W dostępnych danych nie znaleziono zgłoszeń dla tego obszaru."
+                             : "Utrudnienia w pobliżu: \(incidents.count)")
+                    } else {
+                        Text("Brak aktualnych danych o zdarzeniach dla tego obszaru.")
+                            .foregroundStyle(Color.naviTextSecondary)
+                    }
                     ForEach(incidents.prefix(2)) { incident in
-                        Text("• \(incident.description)")
+                        Text("• \(incident.description) · \(incident.sources.map(\.title).joined(separator: ", "))")
                             .lineLimit(2)
                     }
                 }

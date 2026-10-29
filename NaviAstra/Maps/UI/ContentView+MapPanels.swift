@@ -131,12 +131,7 @@ extension ContentView {
 
     private func selectedMapPlaceCompactSummary(_ result: SearchResult) -> String {
         if let summary = result.travelSummary { return summary }
-        if let straightDistance = result.straightDistance {
-            return "W linii prostej · \(distance(straightDistance))"
-        }
-        return result.destination.address
-            ?? result.category.map(PlaceCategoryPresentation.title)
-            ?? "Wybrane miejsce"
+        return "Oczekiwanie na wyznaczenie trasy"
     }
 
     private func mapPlaceSelectionSubtitle(_ result: SearchResult) -> String {
@@ -147,8 +142,7 @@ extension ContentView {
     }
 
     private func mapPlaceSelectionDistance(_ result: SearchResult) -> String? {
-        guard let value = result.selectionDistanceFromTap else { return nil }
-        return "\(distance(value)) od wskazanego punktu"
+        result.travelSummary ?? "Wybierz miejsce, aby obliczyć trasę"
     }
 
     var selectedMapPlacesChoices: some View {
@@ -433,11 +427,15 @@ extension ContentView {
         Menu {
             mapLayerMenuActions
         } label: {
+#if os(iOS)
+            mapToolLabel(symbol: "square.3.layers.3d")
+#else
             circleSurface {
                 Image(systemName: "square.3.layers.3d")
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(Color.naviTextPrimary)
             }
+#endif
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Wygląd i warstwy mapy")
@@ -511,7 +509,18 @@ extension ContentView {
         .accessibilityHint("Otwiera wyszukiwanie miejsc, adresów i połączeń")
     }
 
+    @ViewBuilder
     var routeEndpointFields: some View {
+#if os(iOS)
+        // Keep endpoint and drag/drop metadata out of the enclosing preview's
+        // generic type. iOS 27 can exhaust the stack resolving that combined tree.
+        AnyView(routeEndpointFieldsBody)
+#else
+        routeEndpointFieldsBody
+#endif
+    }
+
+    private var routeEndpointFieldsBody: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Button { appRouter.present(.originPicker) } label: {
@@ -606,6 +615,15 @@ extension ContentView {
 
     @ViewBuilder
     func routeWaypointRows(darkStyle: Bool) -> some View {
+#if os(iOS)
+        AnyView(routeWaypointRowsBody(darkStyle: darkStyle))
+#else
+        routeWaypointRowsBody(darkStyle: darkStyle)
+#endif
+    }
+
+    @ViewBuilder
+    private func routeWaypointRowsBody(darkStyle: Bool) -> some View {
         ForEach(Array(navigationStore.state.waypoints.enumerated()), id: \.element.id) { index, waypoint in
             routeWaypointConnector(darkStyle: darkStyle)
             routeWaypointRow(waypoint, index: index, darkStyle: darkStyle)
@@ -630,7 +648,16 @@ extension ContentView {
         .accessibilityHidden(true)
     }
 
+    @ViewBuilder
     func routeWaypointRow(_ waypoint: Destination, index: Int, darkStyle: Bool) -> some View {
+#if os(iOS)
+        AnyView(routeWaypointRowBody(waypoint, index: index, darkStyle: darkStyle))
+#else
+        routeWaypointRowBody(waypoint, index: index, darkStyle: darkStyle)
+#endif
+    }
+
+    private func routeWaypointRowBody(_ waypoint: Destination, index: Int, darkStyle: Bool) -> some View {
         HStack(spacing: 10) {
             Text("\(index + 1)")
                 .font(.system(size: 12, weight: .bold, design: .rounded).monospacedDigit())
@@ -651,9 +678,15 @@ extension ContentView {
 
             Spacer(minLength: 3)
 
+#if os(iOS)
+            AnyView(routeStopDragHandle(identifier: waypoint.id.uuidString,
+                                        label: "przystanek \(index + 1)",
+                                        darkStyle: darkStyle))
+#else
             routeStopDragHandle(identifier: waypoint.id.uuidString,
                                 label: "przystanek \(index + 1)",
                                 darkStyle: darkStyle)
+#endif
 
             Button {
                 Task { await navigationStore.removeWaypoint(waypoint.id) }

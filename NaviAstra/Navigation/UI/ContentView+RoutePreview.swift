@@ -111,9 +111,10 @@ extension ContentView {
     @ViewBuilder
     var navigationTrafficIncidentBanner: some View {
         if isNavigating, navigationStore.state.transportMode == .car,
-           let incident = nextRouteTrafficIncident {
-            let routeDistance = navigationStore.state.progress?.traveledDistance ?? 0
-            let remainingDistance = max(0, (incident.distanceAlongRoute ?? routeDistance) - routeDistance)
+           let progress = navigationStore.state.progress,
+           let incident = nextRouteTrafficIncident,
+           let incidentDistance = incident.distanceAlongRoute {
+            let remainingDistance = max(0, incidentDistance - progress.traveledDistance)
             let incidentDetails = trafficIncidentDetails(incident)
             NavigationAlertDisclosure(
                 title: incident.alertTitle,
@@ -137,12 +138,17 @@ extension ContentView {
             details.append("Opóźnienie około \(max(1, Int((Double(delay) / 60).rounded()))) min")
         }
         details += incident.community?.labels ?? []
+        details.append("Źródło: " + incident.sources.map(\.title).joined(separator: ", "))
+        if let updated = incident.sourceUpdatedAt {
+            details.append("Stan źródła: " + updated.formatted(.dateTime.locale(Locale(identifier: "pl_PL")).day().month().hour().minute()))
+        }
         return details
     }
 
     @ViewBuilder
     var navigationRoadDataFooter: some View {
-        if case .loading = navigationStore.state.roadSafetyStatus {
+        if case .loading = navigationStore.state.roadSafetyStatus,
+           showsRoadSafetyLoadingStatus {
             Label("Pobieranie ostrzeżeń…", systemImage: "arrow.triangle.2.circlepath")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(Color.naviTextSecondary)
@@ -163,9 +169,19 @@ extension ContentView {
         }
     }
 
+    private var showsRoadSafetyLoadingStatus: Bool {
+#if os(iOS)
+        !(isNavigating && isOnRoadDrivingLeg)
+#else
+        true
+#endif
+    }
+
     var nextRouteTrafficIncident: TrafficIncident? {
-        guard navigationStore.state.route != nil else { return nil }
-        let traveledDistance = navigationStore.state.progress?.traveledDistance ?? 0
+        guard let route = navigationStore.state.route,
+              let progress = navigationStore.state.progress,
+              progress.geometryRouteID == route.id else { return nil }
+        let traveledDistance = progress.traveledDistance
         return SafetyAlertEngine.alerts(in: navigationStore.state.traffic?.incidents ?? [])
             .filter { incident in
                 guard let distance = incident.distanceAlongRoute else { return false }
@@ -192,10 +208,7 @@ extension ContentView {
         }
         let nextStop = tracking?.nextStop ?? liveNextStop ?? leg?.transitStops.first { $0.arrival > date }
         let waitingForDeparture = !isWalking && tracking?.isOnVehicle != true && (leg?.departure ?? date) > date
-        let walkingMinutes = tracking.map { Int(ceil($0.distanceToLegEnd / 1.25 / 60)) }
-        let remainingMinutes = isWalking
-            ? (walkingMinutes ?? max(0, Int(ceil((leg?.arrival ?? date).timeIntervalSince(date) / 60))))
-            : max(0, Int(ceil((leg?.arrival ?? date).timeIntervalSince(date) / 60)))
+        let walkingTime = leg.flatMap { transitWalkingRemainingTime(for: $0, at: date) }
         let title: String
         if isWalking {
             title = "Idź do \(leg?.to ?? "przystanku")"
@@ -208,7 +221,7 @@ extension ContentView {
         }
         let eta: String
         if isWalking {
-            eta = "\(remainingMinutes) min"
+            eta = walkingTime.map(time) ?? "Trasa niedostępna"
         } else if waitingForDeparture {
             eta = transitETA(leg?.departure ?? date, now: date)
         } else if let liveTrackedStop {
@@ -221,7 +234,7 @@ extension ContentView {
 
         let subtitle: String
         if isWalking {
-            subtitle = "Pieszo · około \(remainingMinutes) min"
+            subtitle = walkingTime.map { "Pieszo · około \(time($0))" } ?? "Dojście: trasa niedostępna"
         } else if tracking?.isOnVehicle == true {
             subtitle = "Linia \(leg?.line ?? "MPK") · wysiadka: \(leg?.to ?? "cel") · \(tracking?.stopsUntilAlighting ?? 0) przyst."
         } else {

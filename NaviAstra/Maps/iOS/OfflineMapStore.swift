@@ -58,7 +58,10 @@ final class OfflineMapStore {
     private(set) var deletingIDs: Set<String> = []
     var error: String?
 
-    @ObservationIgnored private let storage = MLNOfflineStorage.shared
+    @ObservationIgnored private let storage: MLNOfflineStorage = {
+        MapTileNetwork.prepare()
+        return MLNOfflineStorage.shared
+    }()
     @ObservationIgnored private var packsByID: [String: MLNOfflinePack] = [:]
     @ObservationIgnored private var removingPacks: [ObjectIdentifier: MLNOfflinePack] = [:]
     @ObservationIgnored private var packErrors: [String: String] = [:]

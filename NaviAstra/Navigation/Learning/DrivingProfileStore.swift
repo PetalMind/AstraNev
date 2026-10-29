@@ -28,7 +28,7 @@ nonisolated struct DrivingProfileSnapshot: Codable, Sendable {
     var ignoredShortcutIDs: Set<String> = []
     var ignoredApproachIDs: Set<UUID> = []
     var evidence: [PreferenceEvidence] = []
-    var schemaVersion = 2
+    var schemaVersion = 3
 }
 
 extension DrivingProfileSnapshot {
@@ -51,7 +51,8 @@ extension DrivingProfileSnapshot {
 }
 
 /// One atomic SQLite transaction commits history and settings together. GPS is
-/// retained only in a bounded pending queue; the learned archive stores road edges.
+/// retained in a bounded pending queue; learned observations store road edges or
+/// explicitly marked local geometry when no offline graph is installed.
 struct DrivingProfileStore {
     let url: URL
 

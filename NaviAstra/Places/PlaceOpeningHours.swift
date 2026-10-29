@@ -19,9 +19,6 @@ struct PlaceOpeningHours {
             return .unavailable(.timeZoneUnavailable)
         }
         let localCalendar = targetCalendar(from: calendar)
-        guard let parserDate = Self.parserDate(for: date, targetCalendar: localCalendar) else {
-            return .unavailable(.invalidDate)
-        }
         var weekCalendar = localCalendar
         weekCalendar.firstWeekday = 2
         weekCalendar.minimumDaysInFirstWeek = 4
@@ -31,20 +28,18 @@ struct PlaceOpeningHours {
         var dayRanges: [[Double]] = []
         for offset in 0..<7 {
             guard let start = weekCalendar.date(byAdding: .day, value: offset, to: weekStart),
-                  let end = weekCalendar.date(byAdding: .day, value: offset + 1, to: weekStart),
-                  let parserStart = Self.parserDate(for: start, targetCalendar: weekCalendar),
-                  let parserEnd = Self.parserDate(for: end, targetCalendar: weekCalendar) else {
+                  let end = weekCalendar.date(byAdding: .day, value: offset + 1, to: weekStart) else {
                 return .unavailable(.invalidDate)
             }
-            dayRanges.append([parserStart.timeIntervalSince1970 * 1_000,
-                              parserEnd.timeIntervalSince1970 * 1_000])
+            dayRanges.append([start.timeIntervalSince1970 * 1_000,
+                              end.timeIntervalSince1970 * 1_000])
         }
 
-        var result: OpeningHoursEvaluation
+        let result: OpeningHoursEvaluation
         do {
             result = try await OpeningHoursEngine.shared.evaluate(
                 rawValue: rawValue,
-                nowMilliseconds: parserDate.timeIntervalSince1970 * 1_000,
+                nowMilliseconds: date.timeIntervalSince1970 * 1_000,
                 weekRanges: dayRanges,
                 coordinate: coordinate,
                 countryCode: countryCode,
@@ -55,16 +50,12 @@ struct PlaceOpeningHours {
             return .unavailable(.invalidExpression)
         }
 
-        if let parserDate = result.nextChange,
-           let targetDate = Self.targetDate(fromParserDate: parserDate, calendar: localCalendar) {
-            result.nextChangeMilliseconds = targetDate.timeIntervalSince1970 * 1_000
-        }
         return OpeningHoursPresentation(
             isAvailable: true,
             isOpen: result.unknown ? nil : result.open,
             statusText: rawValue.trimmingCharacters(in: .whitespacesAndNewlines) == "24/7"
                 ? "Otwarte całą dobę" : Self.statusText(for: result, at: date, calendar: localCalendar),
-            weeklyRows: Self.weeklyRows(from: result),
+            weeklyRows: Self.weeklyRows(from: result, calendar: localCalendar),
             failure: nil)
     }
 
@@ -75,29 +66,19 @@ struct PlaceOpeningHours {
         return calendar
     }
 
-    private static func parserDate(for date: Date, targetCalendar: Calendar) -> Date? {
-        let components = targetCalendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
-        var systemCalendar = Calendar(identifier: .gregorian)
-        systemCalendar.timeZone = .current
-        return systemCalendar.date(from: components)
-    }
-
-    private static func targetDate(fromParserDate date: Date, calendar: Calendar) -> Date? {
-        var systemCalendar = Calendar(identifier: .gregorian)
-        systemCalendar.timeZone = .current
-        let components = systemCalendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
-        return calendar.date(from: components)
-    }
-
-    private static func weeklyRows(from result: OpeningHoursEvaluation) -> [OpeningHoursDayRow] {
-        let labels = ["Pon.", "Wt.", "Śr.", "Czw.", "Pt.", "Sob.", "Niedz."]
+    private static func weeklyRows(from result: OpeningHoursEvaluation, calendar: Calendar) -> [OpeningHoursDayRow] {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "pl_PL")
+        formatter.calendar = calendar
+        let symbols = formatter.shortWeekdaySymbols!
+        let labels = Array(symbols.dropFirst()) + [symbols[0]]
         return labels.enumerated().map { index, label in
             let intervals = index < result.days.count ? result.days[index] : []
             guard !intervals.isEmpty else { return OpeningHoursDayRow(day: label, hours: "Zamknięte") }
             let values = intervals.map { interval -> String in
-                let start = intervalTimeString(interval.start, calendar: .current,
+                let start = intervalTimeString(interval.start, calendar: calendar,
                                                clippedStart: interval.clippedStart)
-                let end = intervalTimeString(interval.end, calendar: .current,
+                let end = intervalTimeString(interval.end, calendar: calendar,
                                              clippedEnd: interval.clippedEnd)
                 let value = "\(start)–\(end)"
                 return interval.unknown ? "Niepewne · \(value)" : value
@@ -129,9 +110,7 @@ struct PlaceOpeningHours {
                                            clippedStart: Bool = false, clippedEnd: Bool = false) -> String {
         if clippedStart { return "00:00" }
         if clippedEnd { return "24:00" }
-        let hour = calendar.component(.hour, from: date)
-        let minute = calendar.component(.minute, from: date)
-        return String(format: "%02d:%02d", hour, minute)
+        return clockTimeString(date, calendar: calendar)
     }
 
     private static func clockTimeString(_ date: Date, calendar: Calendar) -> String {

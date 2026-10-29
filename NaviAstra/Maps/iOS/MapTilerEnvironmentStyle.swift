@@ -419,7 +419,7 @@ enum MapTilerEnvironmentStyle {
         insert(footprint, into: style, below: anchor)
         let building = MLNFillExtrusionStyleLayer(identifier: fallback ? fallbackBuildingID : buildingLayerID, source: source)
         building.sourceLayerIdentifier = fallback ? nil : "building"
-        building.minimumZoomLevel = 16
+        building.minimumZoomLevel = Float(MapEnvironmentModelPolicy.minimumZoom)
         building.predicate = NSPredicate(format: "(underground == nil OR underground != true) AND height > 0 AND (height_min == nil OR height_min < height)")
         building.fillExtrusionHeight = NSExpression(mglJSONObject: ["coalesce", ["get", "height"], 0])
         building.fillExtrusionBase = NSExpression(mglJSONObject: ["coalesce", ["get", "height_min"], 0])

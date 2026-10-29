@@ -336,7 +336,7 @@ nonisolated struct RoadEventCommunity: Sendable {
         default: break
         }
         if let lastReportAt {
-            result.append("Ostatnie zgłoszenie: \(lastReportAt.formatted(date: .abbreviated, time: .shortened))")
+            result.append("Ostatnie zgłoszenie: \(lastReportAt.formatted(.dateTime.locale(Locale(identifier: "pl_PL")).day().month().hour().minute()))")
         }
         return result
     }
@@ -366,6 +366,8 @@ nonisolated struct TrafficIncident: Identifiable, Sendable {
     let startsAt: Date?
     let expiresAt: Date?
     let community: RoadEventCommunity?
+    var sources: [RoadIncidentSource]
+    let sourceUpdatedAt: Date?
 
     init(id: String, description: String, coordinate: Coordinate, delaySeconds: Int?,
          category: TrafficIncidentCategory, severity: TrafficIncidentSeverity,
@@ -373,7 +375,7 @@ nonisolated struct TrafficIncident: Identifiable, Sendable {
          roadNumbers: [String] = [], geometryDirection: TrafficGeometryDirection = .unknown,
          observedAt: Date? = nil, cause: RoadEventCause? = nil,
          events: [RoadEventDetail] = [], startsAt: Date? = nil, expiresAt: Date? = nil,
-         community: RoadEventCommunity? = nil) {
+         community: RoadEventCommunity? = nil, sources: [RoadIncidentSource] = [.tomTom], sourceUpdatedAt: Date? = nil) {
         self.id = id
         self.description = description
         self.coordinate = coordinate
@@ -390,13 +392,15 @@ nonisolated struct TrafficIncident: Identifiable, Sendable {
         self.startsAt = startsAt
         self.expiresAt = expiresAt
         self.community = community
+        self.sources = sources
+        self.sourceUpdatedAt = sourceUpdatedAt
     }
 
     func isActive(at date: Date = .now) -> Bool {
         (startsAt.map { $0 <= date } ?? true) && (expiresAt.map { $0 > date } ?? true)
     }
 
-    var affectsRouting: Bool { cause != .policeCheckpoint }
+    var affectsRouting: Bool { cause != .policeCheckpoint && sources.contains(.tomTom) }
     var routingDelaySeconds: Int? { affectsRouting ? delaySeconds : nil }
     var isRoadClosure: Bool { affectsRouting && category == .roadClosed }
     var alertTitle: String { cause.label ?? category.mapLabel }
@@ -417,6 +421,7 @@ nonisolated struct TrafficIncident: Identifiable, Sendable {
             details.append("Opóźnienie około \(max(1, Int((Double(delaySeconds) / 60).rounded()))) min")
         }
         details += community?.labels ?? []
+        details.append("Źródło: " + sources.map(\.title).joined(separator: ", "))
         return details.joined(separator: " · ")
     }
 }
@@ -477,11 +482,16 @@ protocol TrafficProvider {
 }
 
 enum TrafficError: LocalizedError {
-    case invalidResponse, http(Int)
+    case invalidResponse, http(Int), sourceUnavailable(String), rateLimited
     var errorDescription: String? {
         switch self {
         case .invalidResponse: "Nieprawidłowa odpowiedź serwera ruchu."
-        case .http(let code): "Serwer ruchu zwrócił HTTP \(code)."
+        case .http(let code):
+            if code == 429 { "Osiągnięto limit usługi ruchu. Odświeżanie zostało wstrzymane." }
+            else if code == 401 || code == 403 { "Usługa ruchu jest niedostępna w tej konfiguracji aplikacji." }
+            else { "Usługa ruchu jest chwilowo niedostępna. Spróbuj ponownie później." }
+        case .rateLimited: "Usługa ruchu poprosiła o odczekanie. Odświeżanie zostało wstrzymane."
+        case .sourceUnavailable(let source): "Dane \(source) są chwilowo niedostępne."
         }
     }
 }
@@ -685,10 +695,7 @@ struct TomTomTrafficProvider: TrafficProvider {
     }
 
     private func load(_ request: URLRequest) async throws -> Data {
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let response = response as? HTTPURLResponse else { throw TrafficError.invalidResponse }
-        guard (200...299).contains(response.statusCode) else { throw TrafficError.http(response.statusCode) }
-        return data
+        try await TrafficHTTPTransport.shared.data(for: request)
     }
 
     private struct FlowResponse: Decodable { let flowSegmentData: FlowData }

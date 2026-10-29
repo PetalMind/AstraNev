@@ -174,3 +174,34 @@ struct RoutingP1CriticalTests {
         #expect(report.dataset.contains("syntetycznych"))
     }
 }
+
+@MainActor
+struct RoutingResponseCriticalTests {
+    @Test func optimizationPreservesEndpointsAndRequiresFullPermutation() throws {
+        func response(_ indexes: [Int]) throws -> Data {
+            try JSONSerialization.data(withJSONObject: ["trip": ["locations": indexes.map { ["original_index": $0] }]])
+        }
+        #expect(try ValhallaRouteProvider.decodeWaypointOrder(response([0, 2, 1, 3]), waypointCount: 2) == [1, 0])
+        for invalid in [[3, 2, 1, 0], [0, 2, 1], [0, 2, 1, 0, 3], [0, 2, 2, 3]] {
+            #expect(throws: RoutingError.self) {
+                try ValhallaRouteProvider.decodeWaypointOrder(response(invalid), waypointCount: 2)
+            }
+        }
+    }
+
+    @Test func geometryRejectsOutOfBoundsCoordinatesAndInvalidManeuverIndexes() throws {
+        #expect(Polyline6.decode("?").isEmpty)
+        #expect(Polyline6.decode("~~~~~~?").isEmpty)
+        let provider = ValhallaRouteProvider(endpoint: URL(string: "https://example.org")!)
+        // ??_ibE? is a valid polyline6 from (0,0) to (0.1,0).
+        func data(index: Int) throws -> Data {
+            try JSONSerialization.data(withJSONObject: ["trip": ["summary": ["length": 11.0, "time": 100],
+                "legs": [["shape": "??_ibE?", "maneuvers": [["type": 1, "instruction": "Jedź prosto",
+                    "begin_shape_index": index, "end_shape_index": 1, "time": 100]]]]]])
+        }
+        #expect(try provider.decodeRoutes(data(index: 0), mode: .walking, costing: "pedestrian").count == 1)
+        for index in [-1, 2, Int.max] {
+            #expect(throws: RoutingError.self) { try provider.decodeRoutes(data(index: index), mode: .walking, costing: "pedestrian") }
+        }
+    }
+}

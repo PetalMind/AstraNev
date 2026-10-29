@@ -3,8 +3,8 @@ import MapLibre
 import UIKit
 import OSLog
 
-/// Native extrusion geometry shares the map's 3D pass with buildings. No sprite
-/// billboards, downloaded models or external assets are needed for the bodies.
+/// Native silhouettes provide distant detail; bundled Kenney meshes replace
+/// eligible nearby objects in the same camera, with bounded GPU instancing.
 @MainActor
 final class MapStreetFurnitureRenderer {
     private static let prefix = MapEnvironmentStyle.prefix + "furniture-"
@@ -13,9 +13,9 @@ final class MapStreetFurnitureRenderer {
     private static let treesID = prefix + "trees"
     private static let probeID = prefix + "load"
     private static let treeProbeID = prefix + "load-trees"
-    static let minimumZoom = 16.0
-    private static let maximumModels = 256
-    private static let maximumTrees = 128
+    static let minimumZoom = MapEnvironmentModelPolicy.minimumZoom
+    private static let maximumModels = 384
+    private static let maximumTrees = 256
     private static let predicate = NSPredicate(format:
         "(class == %@ AND subclass IN %@) OR (class == %@ AND subclass IN %@) OR (class == %@ AND subclass IN %@)",
         "street", ["bench", "street_lamp", "traffic_signals", "fountain"],
@@ -56,6 +56,9 @@ final class MapStreetFurnitureRenderer {
     private static let treeIconsID = prefix + "tree-icons"
     private var signLayer: MapSignFaceLayer?
     private var lightLayer: MapStreetLampLightLayer?
+    private var modelLayer: MapEnvironmentModelLayer?
+    private let buildingModels = MapExternalBuildingModels()
+    private var dark = false
 
     static func usesModels(in style: MLNStyle, settings: MapSettings) -> Bool {
         settings.cameraMode == .threeD && settings.baseMap != .satellite
@@ -73,7 +76,11 @@ final class MapStreetFurnitureRenderer {
             && (style.source(withIdentifier: iconsSourceID) as? MLNShapeSource)?.shape != nil
     }
 
-    func suspend() { refreshTask?.cancel(); refreshTask = nil }
+    func suspend() {
+        refreshTask?.cancel(); refreshTask = nil
+        modelLayer?.isVisible = false
+        buildingModels.reset()
+    }
 
     static func isSourceProbe(_ identifier: String) -> Bool {
         identifier == probeID || identifier == treeProbeID || identifier.hasPrefix(prefix + "probe-")
@@ -96,6 +103,8 @@ final class MapStreetFurnitureRenderer {
         lightLayer = nil
         signLayer = nil
         projectionLayer = nil
+        modelLayer = nil
+        buildingModels.reset()
     }
 
     func configure(in style: MLNStyle) {
@@ -104,6 +113,7 @@ final class MapStreetFurnitureRenderer {
             signLayer = style.layer(withIdentifier: MapSignFaceLayer.layerID) as? MapSignFaceLayer
             lightLayer = style.layer(withIdentifier: MapStreetLampLightLayer.layerID) as? MapStreetLampLightLayer
             projectionLayer = style.layer(withIdentifier: MapFurnitureProjectionLayer.layerID) as? MapFurnitureProjectionLayer
+            modelLayer = style.layer(withIdentifier: MapEnvironmentModelLayer.layerID) as? MapEnvironmentModelLayer
             return
         }
         if let planet = style.source(withIdentifier: MapTilerEnvironmentStyle.sourceID) {
@@ -150,7 +160,7 @@ final class MapStreetFurnitureRenderer {
             options: [.maximumZoomLevel: 22, .buffer: 64, .simplificationTolerance: 0])
         style.addSource(source)
         let bodies = MLNFillExtrusionStyleLayer(identifier: Self.bodiesID, source: source)
-        bodies.predicate = NSPredicate(format: "_kind != %@", "tree")
+        bodies.predicate = NSPredicate(format: "_kind != %@ AND _external != YES", "tree")
         bodies.minimumZoomLevel = Float(Self.minimumZoom)
         bodies.fillExtrusionBase = NSExpression(forKeyPath: "_base")
         bodies.fillExtrusionHeight = NSExpression(forKeyPath: "_top")
@@ -173,7 +183,7 @@ final class MapStreetFurnitureRenderer {
         }
         // Trees are landscape, independent of the POI switch, as their 2D circles were.
         let trees = MLNFillExtrusionStyleLayer(identifier: Self.treesID, source: source)
-        trees.predicate = NSPredicate(format: "_kind == %@", "tree")
+        trees.predicate = NSPredicate(format: "_kind == %@ AND _external != YES", "tree")
         trees.minimumZoomLevel = bodies.minimumZoomLevel
         trees.fillExtrusionBase = bodies.fillExtrusionBase
         trees.fillExtrusionHeight = bodies.fillExtrusionHeight
@@ -181,8 +191,12 @@ final class MapStreetFurnitureRenderer {
         trees.fillExtrusionRoundedCornerDistance = NSExpression(forConstantValue: 0)
         trees.isVisible = false
         style.insertLayer(trees, above: bodies)
+        let models = MapEnvironmentModelLayer(identifier: MapEnvironmentModelLayer.layerID)
+        models.isVisible = false
+        style.insertLayer(models, above: trees)
+        modelLayer = models
         let faces = MapSignFaceLayer(identifier: MapSignFaceLayer.layerID)
-        style.insertLayer(faces, above: trees)
+        style.insertLayer(faces, above: models)
         signLayer = faces
         let lights = MapStreetLampLightLayer(identifier: MapStreetLampLightLayer.layerID)
         style.insertLayer(lights, above: faces)
@@ -215,8 +229,12 @@ final class MapStreetFurnitureRenderer {
     }
 
     func apply(to style: MLNStyle, settings: MapSettings, dark: Bool) {
+        self.dark = dark
         refreshTask?.cancel(); refreshTask = nil
         let models = Self.usesModels(in: style, settings: settings)
+        modelLayer?.updateVisibility(settings: settings, dark: dark)
+        if !models { buildingModels.reset(); modelLayer?.isVisible = false }
+        if !settings.overlays.buildings3D { buildingModels.reset() }
         style.layer(withIdentifier: Self.probeID)?.isVisible = models && settings.overlays.poi
         style.layer(withIdentifier: Self.treeProbeID)?.isVisible = models
         let palette = NSExpression(mglJSONObject: ["match", ["get", "_material"],
@@ -263,7 +281,7 @@ final class MapStreetFurnitureRenderer {
               let output = style.source(withIdentifier: Self.sourceID) as? MLNShapeSource,
               let icons = style.source(withIdentifier: Self.iconsSourceID) as? MLNShapeSource else { return }
         let body = style.layer(withIdentifier: Self.bodiesID) as? MLNFillExtrusionStyleLayer
-        let physical = NSPredicate(format: "_kind != %@", "tree")
+        let physical = NSPredicate(format: "_kind != %@ AND _external != YES", "tree")
         let street = NSPredicate(format: "_service != YES")
         let predicate: NSPredicate
         switch routeFilter {
@@ -289,6 +307,10 @@ final class MapStreetFurnitureRenderer {
         let showsNativeTrees = !visible || map.zoomLevel < Self.minimumZoom || icons.shape == nil
         if nativeTrees?.isVisible != showsNativeTrees { nativeTrees?.isVisible = showsNativeTrees }
         guard visible, map.zoomLevel >= Self.minimumZoom else { suspend(); return }
+        // The custom layer may become ready after the style's first appearance
+        // pass. Synchronize its visibility flags before publishing masked models.
+        modelLayer?.updateVisibility(settings: settings, dark: dark)
+        modelLayer?.isVisible = true
         if outputSource !== output {
             outputSource = output
             contentKey = nil
@@ -297,7 +319,8 @@ final class MapStreetFurnitureRenderer {
             geometry.removeAll()
             modeled.removeAll()
         }
-        guard Date().timeIntervalSince(refreshedAt) >= MapDetailPolicy.refreshInterval else { return }
+        let policy = MapEnvironmentModelPolicy(navigating: settings.context.isNavigating, constrained: MapDetailPolicy.constrained)
+        guard Date().timeIntervalSince(refreshedAt) >= policy.refreshInterval else { return }
         refreshTask?.cancel(); refreshTask = nil
         refreshedAt = .now
         let started = ProcessInfo.processInfo.systemUptime
@@ -420,7 +443,7 @@ final class MapStreetFurnitureRenderer {
             let candidate: Candidate
             let detail: Detail
             let score: Double
-            let span: CGFloat
+            let span: Double
         }
         var eligible: [VisibleCandidate] = []
         var tooSmall = 0, offscreen = 0, unsupportedPlane = 0
@@ -434,12 +457,12 @@ final class MapStreetFurnitureRenderer {
             let rect = projection?.bounds(at: pose.coordinate, model: model)
                 ?? approximateBounds(at: pose.coordinate, model: model, on: map)
             guard rect.intersects(viewport) else { offscreen += 1; continue }
-            let span = max(rect.width, rect.height)
+            let span = Double(max(rect.width, rect.height))
             let previous = modeled[candidate.key]
-            guard span >= (previous == nil ? 4 : 3) else { tooSmall += 1; continue }
-            var detail: Detail = span >= 16 ? .full : (span >= 9 ? .standard : .simple)
-            if previous == .full, span >= 13 { detail = .full }
-            else if previous == .standard, span >= 7, detail == .simple { detail = .standard }
+            guard span >= (previous == nil ? policy.entrySpan : policy.retainedSpan) else { tooSmall += 1; continue }
+            var detail: Detail = span >= policy.fullSpan ? .full : (span >= policy.standardSpan ? .standard : .simple)
+            if previous == .full, span >= policy.fullSpan - 3 { detail = .full }
+            else if previous == .standard, span >= policy.standardSpan - 2, detail == .simple { detail = .standard }
             if constrained, detail == .full { detail = .standard }
             // Start new objects at their actual projected detail. Both upgrades
             // and downgrades of existing models must settle before replacing geometry.
@@ -456,7 +479,7 @@ final class MapStreetFurnitureRenderer {
         }
         eligible.sort { $0.score == $1.score ? $0.candidate.key < $1.candidate.key : $0.score < $1.score }
         // Counts remain bounded; ring vertices additionally bound walls/roof complexity.
-        var streetBudget = constrained ? 6_000 : 14_000, treeBudget = constrained ? 4_000 : 12_000
+        var streetBudget = constrained ? 8_000 : 20_000, treeBudget = constrained ? 6_000 : 20_000
         var streetCount = 0, treeCount = 0, budgetRejected = 0, spent = 0, budgetSimplified = 0
         var selected: [(Candidate, Detail)] = []
         let desired = Dictionary(uniqueKeysWithValues: eligible.map { ($0.candidate.key, $0.detail) })
@@ -464,7 +487,7 @@ final class MapStreetFurnitureRenderer {
         // consume the entire budget before farther visible trees get a body.
         for item in eligible {
             let tree = item.candidate.kind == .tree
-            guard tree ? treeCount < (constrained ? 48 : Self.maximumTrees)
+            guard tree ? treeCount < (constrained ? 64 : Self.maximumTrees)
                        : streetCount < (constrained ? 96 : Self.maximumModels) else { budgetRejected += 1; continue }
             let cost = MapStreetFurnitureGeometry.cost(for: item.candidate.kind, detail: .simple)
             guard cost <= (tree ? treeBudget : streetBudget) else { budgetRejected += 1; continue }
@@ -512,10 +535,43 @@ final class MapStreetFurnitureRenderer {
             signFaces += faces; texturedSigns.insert(candidate.key)
         }
         var shapes: [MLNShape] = []
+        var externalModels: [MapEnvironmentModelInstance] = []
+        var externalKeys = Set<String>()
+        var triangleBudget = policy.totalTriangles
+        var furnitureBudget = triangleBudget - (settings.overlays.buildings3D ? policy.buildingReserve : 0)
+        if modelLayer?.isReady == true {
+            // Preserve selection order: visible objects near the user/route have priority.
+            for (candidate, detail) in selected {
+                let pose = candidate.pose ?? MapObjectPose(coordinate: candidate.coordinate)
+                guard let mesh = MapEnvironmentMeshCatalog.furniture(kind: candidate.kind, key: candidate.key,
+                          conifer: pose.conifer, simplified: detail != .full || constrained),
+                      mesh.triangleCount <= furnitureBudget,
+                      candidate.kind == .tree || settings.overlays.poi else { continue }
+                let bounds = MapStreetFurnitureGeometry.bounds(for: candidate.kind)
+                var meshPose = pose
+                if candidate.kind == .tree || candidate.kind == .bollard {
+                    meshPose.scale *= SIMD3(bounds.maximum.x - bounds.minimum.x,
+                        bounds.maximum.y - bounds.minimum.y, bounds.maximum.z)
+                } else if candidate.kind == .bench {
+                    let width = bounds.maximum.x - bounds.minimum.x
+                    let height = width / mesh.aspect.x
+                    meshPose.scale *= SIMD3(width, mesh.aspect.y * height, height)
+                } else {
+                    let height = bounds.maximum.z
+                    meshPose.scale *= SIMD3(mesh.aspect.x * height, mesh.aspect.y * height, height)
+                }
+                externalModels.append(MapEnvironmentModelInstance(key: candidate.key, mesh: mesh,
+                    pose: meshPose, isTree: candidate.kind == .tree))
+                externalKeys.insert(candidate.key); triangleBudget -= mesh.triangleCount; furnitureBudget -= mesh.triangleCount
+            }
+            buildingModels.refresh(on: map, settings: settings, availableTriangles: triangleBudget,
+                focus: focus, route: route, projection: projection)
+            externalModels += buildingModels.instances
+        } else { buildingModels.reset() }
         let now = ProcessInfo.processInfo.systemUptime
         for (candidate, detail) in selected.sorted(by: { $0.0.key < $1.0.key }) {
             let pose = candidate.pose ?? MapObjectPose(coordinate: candidate.coordinate)
-            let cacheKey = "\(candidate.key):\(pose.key):\(String(describing: candidate.input?.signs)):\(texturedSigns.contains(candidate.key)):\(detail.rawValue)"
+            let cacheKey = "\(candidate.key):\(pose.key):\(String(describing: candidate.input?.signs)):\(texturedSigns.contains(candidate.key)):\(detail.rawValue):\(externalKeys.contains(candidate.key))"
             if geometry[cacheKey] == nil {
                 var parts = MapStreetFurnitureGeometry.parts(for: candidate.kind, detail: detail, conifer: pose.conifer)
                 if texturedSigns.contains(candidate.key), let input = candidate.input {
@@ -529,20 +585,23 @@ final class MapStreetFurnitureRenderer {
                     let polygon = MLNPolygonFeature(coordinates: &coordinates, count: UInt(coordinates.count))
                     polygon.identifier = "\(cacheKey):\(index)" as NSString
                     polygon.attributes = ["_base": part.base * pose.scale.z, "_top": part.top * pose.scale.z, "_material": part.material,
-                        "_kind": candidate.kind.rawValue, "_service": candidate.input?.category != nil]
+                        "_kind": candidate.kind.rawValue, "_service": candidate.input?.category != nil,
+                        "_external": externalKeys.contains(candidate.key)]
                     return polygon
                 }
                 geometry[cacheKey] = CachedGeometry(shapes: partsShapes,
                     cost: MapStreetFurnitureGeometry.cost(for: candidate.kind, detail: detail), used: now)
             }
             geometry[cacheKey]?.used = now
-            shapes += geometry[cacheKey]?.shapes ?? []
+            let cached = geometry[cacheKey]?.shapes ?? []
+            for shape in cached { (shape as? MLNPolygonFeature)?.attributes["_external"] = externalKeys.contains(candidate.key) }
+            shapes += cached
         }
         // A brief exit from view does not discard ready geometry. Time + LRU cost
         // bound the cache independently of the active model/vertex budgets.
         geometry = geometry.filter { now - $0.value.used < 30 }
         var cacheCost = 0
-        let cacheLimit = constrained ? 25_000 : 60_000
+        let cacheLimit = constrained ? 32_000 : 80_000
         let retained = Set(geometry.sorted { $0.value.used > $1.value.used }.compactMap { key, entry -> String? in
             guard cacheCost + entry.cost <= cacheLimit else { return nil }
             cacheCost += entry.cost
@@ -552,7 +611,43 @@ final class MapStreetFurnitureRenderer {
         let linear = MapLinearObjectGeometry.build(from: planet, on: map, settings: settings)
         let platforms = MapPlatformGeometry.build(from: planet, on: map, settings: settings)
         shapes += linear.shapes + platforms.shapes
-        let key = linear.key + platforms.key + selected.map { "\($0.0.key):\($0.0.pose?.key ?? ""):\(String(describing: $0.0.input?.signs)):\(texturedSigns.contains($0.0.key)):\($0.1.rawValue)" }.sorted().joined(separator: "|")
+        let buildingLayers = Set(style.layers.compactMap { layer -> String? in
+            guard let building = layer as? MLNFillExtrusionStyleLayer,
+                  building.sourceLayerIdentifier == "building", building.isVisible else { return nil }
+            return building.identifier
+        })
+        let excluded = buildingModels.excludedIdentifiers
+        let buildings = map.visibleFeatures(in: map.bounds, styleLayerIdentifiers: buildingLayers).filter {
+            !excluded.contains($0.identifier.map { String(describing: $0) } ?? "")
+        }
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["NAVIASTRA_MAP_AUDIT_CAMERA"] != nil, Date().timeIntervalSince(lastLog) >= 10 {
+            let ids = buildings.prefix(8).map { String(describing: $0.identifier) }.joined(separator: ",")
+            print("Maska modeli: budynki=\(buildings.count), wykluczone=\(excluded.count), identyfikatory=\(ids)")
+        }
+        #endif
+        let occluders = buildings + shapes.compactMap { shape -> MLNFeature? in
+            guard let feature = shape as? MLNFeature, feature.attributes["_external"] as? Bool != true else { return nil }
+            return feature
+        }
+        let uploaded = modelLayer?.update(on: map, instances: externalModels, occluders: occluders, dark: dark) == true
+        if uploaded { buildingModels.applyMasks() }
+        else {
+            buildingModels.reset()
+            // Allocation/setup failure retains complete native bodies and symbols.
+            for shape in shapes {
+                (shape as? MLNPolygonFeature)?.attributes["_external"] = false
+            }
+        }
+        if let facade = style.layer(withIdentifier: MapBuildingFacadeLayer.layerID) as? MapBuildingFacadeLayer {
+            let ids = buildingModels.excludedIdentifiers
+            if facade.externalModelIdentifiers != ids {
+                facade.externalModelIdentifiers = ids
+                facade.updateGeometry(on: map, layerIDs: buildingLayers, heightKey: "height", baseKey: "height_min")
+            }
+        }
+        let key = linear.key + platforms.key + "\(uploaded):" + externalKeys.sorted().joined(separator: ";")
+            + selected.map { "\($0.0.key):\($0.0.pose?.key ?? ""):\(String(describing: $0.0.input?.signs)):\(texturedSigns.contains($0.0.key)):\($0.1.rawValue)" }.sorted().joined(separator: "|")
         if key != contentKey { contentKey = key; output.shape = MLNShapeCollectionFeature(shapes: shapes) }
         let nextIconKey = candidates.map { "\($0.key):\(modeled[$0.key] != nil)" }.joined(separator: "|")
         if nextIconKey != iconKey || icons.shape == nil {
@@ -574,6 +669,11 @@ final class MapStreetFurnitureRenderer {
         let treeFeatures = shapes.compactMap { $0 as? MLNFeature }.filter { $0.attributes["_kind"] as? String == "tree" }
         // The sorted model selection already prioritizes visible/user/route points.
         let lightCoordinates = selected.filter { $0.0.kind == .streetLamp }.prefix(constrained ? 24 : 64).map { candidate, _ in
+            if uploaded, let model = externalModels.first(where: { $0.key == candidate.key }), let lens = model.mesh.lampLens {
+                let offset = model.pose.horizontal(SIMD2(lens.x, lens.y))
+                return MapStreetLampPlacement(coordinate: model.pose.coordinate,
+                    offset: SIMD3(Float(offset.x), Float(-offset.y), Float(lens.z * model.pose.scale.z)))
+            }
             let pose = candidate.pose ?? MapObjectPose(coordinate: candidate.coordinate)
             let offset = pose.horizontal(SIMD2(0, Double(MapStreetFurnitureGeometry.lampLensNorthOffset)))
             return MapStreetLampPlacement(coordinate: pose.coordinate,
@@ -602,9 +702,12 @@ final class MapStreetFurnitureRenderer {
             let standard = selected.filter { $0.1 == .standard }.count
             let full = selected.filter { $0.1 == .full }.count
             let milliseconds = (ProcessInfo.processInfo.systemUptime - started) * 1_000
-            let report = "Modele mapy: z=\(map.zoomLevel), punkty=\(candidates.count), proste=\(simple), średnie=\(standard), pełne=\(full), za_małe=\(tooSmall), poza_widokiem=\(offscreen), poza_gruntem=\(unsupportedPlane), limit=\(budgetRejected), uproszczone_przez_budżet=\(budgetSimplified), koszt=\(spent), światła=\(lightCoordinates.count), macierz=\(projection != nil), ms=\(milliseconds)"
+            let report = "Modele mapy: z=\(map.zoomLevel), punkty=\(candidates.count), proste=\(simple), średnie=\(standard), pełne=\(full), za_małe=\(tooSmall), poza_widokiem=\(offscreen), poza_gruntem=\(unsupportedPlane), limit=\(budgetRejected), uproszczone_przez_budżet=\(budgetSimplified), koszt=\(spent), zewnętrzne=\(uploaded ? externalModels.count : 0), budynki_zewnętrzne=\(buildingModels.instances.count), trójkąty=\(externalModels.reduce(0) { $0 + $1.mesh.triangleCount }), światła=\(lightCoordinates.count), macierz=\(projection != nil), ms=\(milliseconds)"
             logger.debug("\(report, privacy: .public)")
             print(report)
+            if ProcessInfo.processInfo.environment["NAVIASTRA_MAP_AUDIT_CAMERA"] != nil {
+                print("Widok modeli: środek=\(map.centerCoordinate.latitude),\(map.centerCoordinate.longitude), pochylenie=\(map.camera.pitch), tryb=\(settings.cameraMode), Metal=\(modelLayer?.isReady == true), oszczędzanie=\(ProcessInfo.processInfo.isLowPowerModeEnabled), temperatura=\(ProcessInfo.processInfo.thermalState.rawValue), budynki: \(buildingModels.diagnostics)")
+            }
         }
         #endif
     }

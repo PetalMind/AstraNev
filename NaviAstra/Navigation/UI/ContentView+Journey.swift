@@ -232,7 +232,227 @@ extension ContentView {
         .accessibilityHint("Rozwiń informacje o kroku")
     }
 
-    func journeyNavigationPanel(maxHeight: CGFloat = 560) -> some View {
+    @ViewBuilder
+    func journeyNavigationPanel(maxHeight: CGFloat = 560, bottomInset: CGFloat = 0) -> some View {
+#if os(iOS)
+        if navigationStore.state.transportMode == .car {
+            drivingNavigationPanel(maxHeight: maxHeight, bottomInset: bottomInset)
+        } else {
+            standardJourneyNavigationPanel(maxHeight: maxHeight)
+        }
+#else
+        standardJourneyNavigationPanel(maxHeight: maxHeight)
+#endif
+    }
+
+#if os(iOS)
+    private func drivingNavigationPanel(maxHeight: CGFloat, bottomInset: CGFloat) -> some View {
+        NavigationBottomSheet(detent: $navigationPanelDetent,
+                              maximumHeight: maxHeight,
+                              accessibilityLabel: "Opcje podróży",
+                              isDragging: $isMapBottomSheetDragging,
+                              mediumHeightFraction: 0.52,
+                              minimumMediumHeight: 350,
+                              dragHandleHeight: 44,
+                              hidesExpandedChevron: true,
+                              fitsPeekToHeader: true,
+                              bottomContentInset: bottomInset,
+                              pinnedHeader: { _, _ in
+            drivingNavigationSummary(compact: maxHeight < 300)
+        }) { detent, progress in
+            // Keep the same layout through every detent. The growing viewport
+            // reveals details below the pinned summary during the drag itself.
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 8) {
+                    drivingNavigationDestination
+                    routeTrafficDelaySummary
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                drivingNavigationPrimaryActions
+
+                VStack(alignment: .leading, spacing: 8) {
+                    drivingNavigationSectionTitle("Trasa i mapa")
+                    drivingNavigationRouteOptions
+                }
+
+                if let confidence = navigationStore.state.etaConfidence {
+                    Label {
+                        Text(confidence.explanation)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: "info.circle")
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(Color.naviTextSecondary)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            .padding(.bottom, 20)
+            // A drag must never turn into an accidental action on newly exposed
+            // controls. Clipped details also stay out of the compact VO order.
+            .allowsHitTesting(detent != .peek && !isMapBottomSheetDragging)
+            .accessibilityHidden(detent == .peek || isMapBottomSheetDragging || progress <= 0)
+        } footer: { _, _ in
+            VStack(spacing: 0) {
+                Divider()
+                Button(role: .destructive) { navigationStore.stop() } label: {
+                    Label("Zakończ nawigację", systemImage: "stop.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .foregroundStyle(Color(naviHex: NaviAstraColorPalette.danger))
+                        .background(Color(naviHex: NaviAstraColorPalette.danger).opacity(0.1),
+                                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(isMapBottomSheetDragging)
+                .accessibilityHint("Kończy bieżącą podróż i prowadzenie do celu")
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
+            }
+        }
+    }
+
+    private func drivingNavigationSummary(compact: Bool) -> some View {
+        let remainingTime = journeyRemainingTime
+        let remainingDistance = navigationStore.state.progress?.remainingDistance
+        let arrival = remainingTime.map {
+            PolishRegionalFormat.time(navigationStore.state.estimatedArrival
+                ?? Date().addingTimeInterval(max(0, $0)))
+        } ?? "—"
+        let duration = remainingTime.map(time) ?? "—"
+        let remaining = remainingDistance.map(distance) ?? "—"
+
+        return Button {
+            withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.86)) {
+                navigationPanelDetent = navigationPanelDetent == .expanded ? .peek
+                    : (navigationPanelDetent == .peek ? .medium : .expanded)
+            }
+        } label: {
+            HStack(alignment: .center, spacing: compact ? 8 : 12) {
+                DrivingNavigationMetric(value: arrival, caption: "Przyjazd", prominent: true, compact: compact)
+                Divider().frame(height: compact ? 24 : 36).accessibilityHidden(true)
+                DrivingNavigationMetric(value: duration, caption: "Pozostało", compact: compact)
+                DrivingNavigationMetric(value: remaining, caption: "Do celu", compact: compact)
+            }
+            .frame(maxWidth: .infinity, minHeight: compact ? 44 : 60)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Przyjazd o \(arrival), pozostało \(duration), do celu \(remaining)")
+        .accessibilityHint(navigationPanelDetent == .expanded
+            ? "Zwiń opcje podróży" : "Rozwiń opcje podróży")
+        .padding(.horizontal, 20)
+        .padding(.bottom, compact ? 4 : 14)
+        .overlay(alignment: .bottom) {
+            Divider().padding(.horizontal, 20)
+        }
+    }
+
+    private var drivingNavigationDestination: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "flag.checkered")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 36, height: 36)
+                .background(Color.accentColor.opacity(0.1),
+                            in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(currentJourneyLeg?.following == nil ? "Cel podróży" : "Najbliższy przystanek")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color.naviTextSecondary)
+                Text(currentJourneyLeg?.current.name ?? navigationStore.state.destination?.name ?? "Cel")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.naviTextPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let following = currentJourneyLeg?.following {
+                    Text("Następnie: \(following.name)")
+                        .font(.subheadline)
+                        .foregroundStyle(Color.naviTextSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var drivingNavigationPrimaryActions: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                Menu {
+                    ForEach(activeJourneyNearbyCategories) { category in
+                        Button(category.title, systemImage: category.symbol) {
+                            presentNearbyAfterMenuDismissal(category)
+                        }
+                    }
+                } label: {
+                    DrivingNavigationActionLabel(title: "Po trasie", symbol: "magnifyingglass", prominent: true)
+                }
+                Button {
+                    addingWaypoint = true
+                    appRouter.present(.search)
+                } label: {
+                    DrivingNavigationActionLabel(title: "Dodaj przystanek", symbol: "plus.circle")
+                }
+                .disabled(navigationStore.state.waypoints.count >= 8)
+                .accessibilityHint(navigationStore.state.waypoints.count >= 8
+                    ? "Osiągnięto limit ośmiu przystanków" : "Wyszukaj miejsce i dodaj je do trasy")
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var drivingNavigationRouteOptions: some View {
+        VStack(spacing: 0) {
+            if upcomingRoadManeuvers.count > 1 {
+                Button {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                        journeyGuidanceExpanded.toggle()
+                        if journeyGuidanceExpanded { navigationPanelDetent = .expanded }
+                    }
+                } label: {
+                    DrivingNavigationOptionLabel(title: "Kolejne manewry", symbol: "list.bullet",
+                                                 expanded: journeyGuidanceExpanded)
+                }
+                .accessibilityHint(journeyGuidanceExpanded
+                    ? "Ukryj listę kolejnych manewrów" : "Pokaż listę kolejnych manewrów")
+                if journeyGuidanceExpanded {
+                    journeyRoadManeuverTimeline
+                        .padding(.vertical, 8)
+                }
+                Divider().padding(.leading, 42)
+            }
+
+            Button { presentNearby(.parking, nearDestination: true) } label: {
+                DrivingNavigationOptionLabel(title: "Parking przy celu", symbol: "parkingsign.circle")
+            }
+            Divider().padding(.leading, 42)
+            Button { appRouter.present(.trafficDetails) } label: {
+                DrivingNavigationOptionLabel(title: "Ruch na żywo", symbol: "car.side")
+            }
+            Divider().padding(.leading, 42)
+            Menu {
+                mapLayerMenuActions
+            } label: {
+                DrivingNavigationOptionLabel(title: "Wygląd i warstwy", symbol: "square.3.layers.3d")
+            }
+            .accessibilityLabel("Wygląd i warstwy mapy")
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func drivingNavigationSectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(Color.naviTextSecondary)
+            .accessibilityAddTraits(.isHeader)
+    }
+#endif
+
+    private func standardJourneyNavigationPanel(maxHeight: CGFloat) -> some View {
         NavigationBottomSheet(detent: $navigationPanelDetent,
                               maximumHeight: maxHeight,
                               accessibilityLabel: "Panel prowadzenia",
@@ -403,6 +623,16 @@ extension ContentView {
         }
     }
 
+    func transitWalkingRemainingTime(for leg: JourneyLeg, at date: Date) -> TimeInterval? {
+        guard leg.mode.uppercased() == "WALK", leg.hasResolvedWalkingGeometry else { return nil }
+        if let tracking = transitProgress(for: leg),
+           tracking.distanceToLegEnd.isFinite, tracking.distanceToLegEnd >= 0 {
+            return tracking.distanceToLegEnd / 1.25
+        }
+        let scheduled = leg.arrival.timeIntervalSince(date)
+        return scheduled.isFinite ? max(0, scheduled) : nil
+    }
+
     private func transitCompactNavigationSummary(_ leg: JourneyLeg) -> some View {
         TimelineView(.periodic(from: .now, by: 20)) { context in
             let remainingStops = transitProgress(for: leg)?.stopsUntilAlighting
@@ -411,10 +641,8 @@ extension ContentView {
             let firstStop = leg.transitStops.min { $0.sequence < $1.sequence }
             let departure = firstStop.flatMap { liveTransitStop($0.stopID, for: leg)?.departure }
                 ?? firstStop?.departure ?? leg.departure
-            let remainingTime = leg.mode.uppercased() == "WALK"
-                ? (transitProgress(for: leg).map { $0.distanceToLegEnd / 1.25 }
-                   ?? max(0, arrival.timeIntervalSince(context.date)))
-                : max(0, arrival.timeIntervalSince(context.date))
+            let walkingTime = transitWalkingRemainingTime(for: leg, at: context.date)
+            let remainingTime = max(0, arrival.timeIntervalSince(context.date))
 
             HStack(spacing: 12) {
                 transitNavigationLineBadge(for: leg)
@@ -425,7 +653,7 @@ extension ContentView {
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                     Text(leg.mode.uppercased() == "WALK"
-                         ? "Pieszo · około \(compactRouteTime(remainingTime))"
+                         ? (walkingTime.map { "Pieszo · około \(compactRouteTime($0))" } ?? "Dojście: trasa niedostępna")
                          : boarding ? "Odjazd \(departure.formatted(date: .omitted, time: .shortened))"
                          : "\(remainingStops.map { transitStopCountText($0) + " · " } ?? "")\(compactRouteTime(remainingTime))")
                         .font(.caption.weight(.medium))
@@ -450,8 +678,7 @@ extension ContentView {
             let arrival = activeTransitArrival(for: leg)
             let nextStop = upcomingTransitStops(for: leg, at: context.date, tracking: tracking).first
             let remainingStops = tracking?.stopsUntilAlighting
-            let walkingTime = tracking.map { $0.distanceToLegEnd / 1.25 }
-                ?? max(0, arrival.timeIntervalSince(context.date))
+            let walkingTime = transitWalkingRemainingTime(for: leg, at: context.date)
 
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .top, spacing: 12) {
@@ -474,7 +701,7 @@ extension ContentView {
                 }
 
                 if walking {
-                    Label("Około \(compactRouteTime(walkingTime)) pieszo", systemImage: "figure.walk")
+                    Label(walkingTime.map { "Około \(compactRouteTime($0)) pieszo" } ?? "Dojście: trasa niedostępna", systemImage: "figure.walk")
                         .font(.subheadline.weight(.semibold))
                     if let legs = navigationStore.state.route?.journey?.legs,
                        let index = legs.firstIndex(where: { $0.id == leg.id }),
@@ -1304,9 +1531,7 @@ extension ContentView {
 
     func transitWalkNavigationCard(_ leg: JourneyLeg) -> some View {
         TimelineView(.periodic(from: .now, by: 20)) { context in
-            let tracking = transitProgress(for: leg)
-            let remaining = tracking.map { max(0, Int(ceil($0.distanceToLegEnd / 1.25 / 60))) }
-                ?? max(0, Int(ceil(leg.arrival.timeIntervalSince(context.date) / 60)))
+            let remaining = transitWalkingRemainingTime(for: leg, at: context.date)
             let nextRide = navigationStore.state.route?.journey?.legs.first {
                 $0.mode != "WALK" && $0.departure >= leg.arrival && $0.from == leg.to
             }
@@ -1317,7 +1542,8 @@ extension ContentView {
                         .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 11))
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Idź do \(leg.to)").font(.subheadline.weight(.semibold)).lineLimit(1)
-                        Text("Pieszo · około \(remaining) min").font(.caption).foregroundStyle(Color.naviTextSecondary)
+                        Text(remaining.map { "Pieszo · około \(compactRouteTime($0))" } ?? "Dojście: trasa niedostępna")
+                            .font(.caption).foregroundStyle(Color.naviTextSecondary)
                     }
                     Spacer(minLength: 0)
                     if let nextRide {

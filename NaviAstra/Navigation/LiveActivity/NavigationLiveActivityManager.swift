@@ -1,5 +1,3 @@
-// Temporarily disabled for distribution without the widget extension.
-// Re-enable NAVIGATION_WIDGETS_ENABLED together with extension embedding and Live Activities support.
 import Foundation
 import OSLog
 #if os(iOS) && NAVIGATION_WIDGETS_ENABLED
@@ -12,10 +10,9 @@ final class NavigationLiveActivityManager {
     private var activity: Activity<NavigationActivityAttributes>?
     private var pending: NavigationActivityAttributes.ContentState?
     private var worker: Task<Void, Never>?
-    private var ending = false
     private var lastPublished: NavigationActivityAttributes.ContentState?
-    private var lastPublishedAt = Date.distantPast
-    private var attemptedStart = false
+    private var updatePolicy = NavigationActivityUpdatePolicy()
+    private var lifecycle = NavigationActivityLifecyclePolicy()
     private let logger = Logger(subsystem: "NaviAstra", category: "LiveActivity")
 
     init() {
@@ -27,56 +24,56 @@ final class NavigationLiveActivityManager {
 
     func update(destinationName: String, state: NavigationActivityAttributes.ContentState,
                 canStart: Bool) {
-        guard !ending else { return }
+        guard NavigationActivityPayload.isWithinBudget(state) else { return }
         let now = Date()
+        let maneuverKey = "\(state.maneuver)|\(state.roadName)|\(state.instruction)|\(state.isRerouting)|\(state.gpsSignalLost)"
         if activity == nil {
-            guard canStart, !attemptedStart, ActivityAuthorizationInfo().areActivitiesEnabled else { return }
-            attemptedStart = true
+            guard lifecycle.requestStart(isForeground: canStart,
+                systemAuthorized: ActivityAuthorizationInfo().areActivitiesEnabled) else { return }
             do {
                 activity = try Activity.request(
-                    attributes: NavigationActivityAttributes(destinationName: destinationName),
-                    content: ActivityContent(state: state, staleDate: now.addingTimeInterval(90)),
+                    attributes: NavigationActivityAttributes(destinationName: "Aktywna trasa"),
+                    content: ActivityContent(state: state, staleDate: now.addingTimeInterval(45)),
                     pushType: nil)
                 lastPublished = state
-                lastPublishedAt = now
+                updatePolicy.didPublish(maneuverKey: maneuverKey, movementBucket: state.movementBucket, at: now)
             } catch { logger.error("Cannot start navigation activity: \(error.localizedDescription)") }
             return
         }
-        let changedManeuver = lastPublished?.maneuver != state.maneuver ||
-            lastPublished?.roadName != state.roadName || lastPublished?.instruction != state.instruction ||
-            lastPublished?.isRerouting != state.isRerouting || lastPublished?.gpsSignalLost != state.gpsSignalLost
-        guard changedManeuver || now.timeIntervalSince(lastPublishedAt) >= 5 else { return }
+        guard updatePolicy.shouldPublish(maneuverKey: maneuverKey,
+            movementBucket: state.movementBucket, at: now) else { return }
         pending = state
         drain()
     }
 
     func end() {
-        attemptedStart = false
+        // Detach immediately, so a new foreground trip can start even while the
+        // previous ActivityKit dismissal is still finishing asynchronously.
+        let previous = activity
+        activity = nil
         pending = nil
-        guard activity != nil else { return }
-        ending = true
-        drain()
+        lifecycle.end()
+        updatePolicy.end()
+        worker?.cancel()
+        worker = nil
+        lastPublished = nil
+        if let previous { Task { await previous.end(nil, dismissalPolicy: .immediate) } }
     }
 
     private func drain() {
         guard worker == nil else { return }
+        let generation = lifecycle.generation
         worker = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { self.worker = nil }
-            while let activity = self.activity {
-                if self.ending {
-                    await activity.end(nil, dismissalPolicy: .immediate)
-                    self.activity = nil
-                    self.ending = false
-                    self.lastPublished = nil
-                    return
-                }
+            defer { if self.lifecycle.generation == generation { self.worker = nil } }
+            while !Task.isCancelled, self.lifecycle.generation == generation, let activity = self.activity {
                 guard let state = self.pending else { return }
                 self.pending = nil
                 self.lastPublished = state
-                self.lastPublishedAt = Date()
+                let key = "\(state.maneuver)|\(state.roadName)|\(state.instruction)|\(state.isRerouting)|\(state.gpsSignalLost)"
+                self.updatePolicy.didPublish(maneuverKey: key, movementBucket: state.movementBucket, at: Date())
                 await activity.update(ActivityContent(state: state,
-                    staleDate: Date().addingTimeInterval(90)))
+                    staleDate: Date().addingTimeInterval(45)))
             }
         }
     }
@@ -88,25 +85,43 @@ final class NavigationLiveActivityManager {
 extension NavigationSession {
     func updateLiveActivity() {
 #if os(iOS) && NAVIGATION_WIDGETS_ENABLED
-        guard state.status == .navigating || state.status == .rerouting else { return }
+        guard state.status == .navigating || state.status == .rerouting else {
+            liveActivity.end()
+            return
+        }
         guard let progress = state.progress, let destination = state.destination else { return }
         let maneuver = progress.nextManeuver
         let instruction = maneuver?.displayInstruction ?? state.transitProgress?.nextStop?.name ?? "Kontynuuj do celu"
-        liveActivity.update(destinationName: destination.name,
-            state: NavigationActivityAttributes.ContentState(
-                maneuver: maneuver?.type ?? 0,
-                symbolName: maneuver?.iconName ?? (usesJourneyVoiceGuidance ? "tram.fill" : "arrow.up"),
-                instruction: instruction,
-                roadName: maneuver?.streetName ?? "",
-                maneuverDistance: progress.distanceToNextManeuver.isFinite ? max(0, progress.distanceToNextManeuver) : nil,
-                remainingDistance: max(0, progress.remainingDistance),
-                remainingTime: max(0, progress.remainingTime),
-                arrivalTime: state.estimatedArrival ?? Date().addingTimeInterval(progress.remainingTime),
-                routeProgress: min(1, max(0, progress.traveledDistance / max(1, progress.traveledDistance + progress.remainingDistance))),
-                isRerouting: state.status == .rerouting,
-                roundabout: maneuver?.roundabout,
-                gpsSignalLost: state.gpsQuality == .noSignal || state.weakGPS),
-            canStart: appIsForeground)
+        let metric = state.route == nil ? nil : RoutedTravelMetrics(time: progress.remainingTime, distance: progress.remainingDistance)
+        let location = state.location
+        let freshGPS = location.map {
+            (-1...15).contains(Date().timeIntervalSince($0.timestamp)) && $0.accuracy.isFinite && (0...50).contains($0.accuracy)
+        } ?? false
+        let signalLost = !freshGPS || state.gpsQuality == .noSignal || state.weakGPS
+        let total = progress.traveledDistance + progress.remainingDistance
+        let routeProgress = total.isFinite && total > 0 && progress.traveledDistance.isFinite
+            ? min(1, max(0, progress.traveledDistance / total)) : 0
+        var content = NavigationActivityAttributes.ContentState(
+            maneuver: maneuver?.type ?? 0,
+            symbolName: maneuver?.iconName ?? (usesJourneyVoiceGuidance ? "tram.fill" : "arrow.up"),
+            instruction: String(instruction.prefix(100)),
+            roadName: String((maneuver?.streetName ?? "").prefix(60)),
+            maneuverDistance: progress.distanceToNextManeuver.isFinite && progress.distanceToNextManeuver >= 0
+                ? progress.distanceToNextManeuver : nil,
+            remainingDistance: metric?.distance,
+            remainingTime: metric?.time,
+            arrivalTime: metric.flatMap { metric in state.estimatedArrival ?? Date().addingTimeInterval(metric.time) },
+            routeProgress: routeProgress,
+            isRerouting: state.status == .rerouting,
+            roundabout: maneuver?.roundabout,
+            gpsSignalLost: signalLost,
+            routeSketch: signalLost ? nil : state.route.flatMap {
+                NavigationActivitySketchBuilder.make(route: $0, progress: progress,
+                    location: location?.coordinate, course: location?.course)
+            },
+            movementBucket: progress.traveledDistance.isFinite ? Int(max(0, min(400_000_000, progress.traveledDistance)) / 40) : 0)
+        if !NavigationActivityPayload.isWithinBudget(content) { content.routeSketch = nil; content.roundabout = nil }
+        liveActivity.update(destinationName: destination.name, state: content, canStart: appIsForeground)
 #endif
     }
 }

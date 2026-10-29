@@ -30,7 +30,7 @@ Niezależna kontrola Shapely sprawdza poprawność wielokątów, oczekiwaną lic
 
 Grafiki są rzutem geometrii, nie zrzutami MapLibre. Do akceptacji wizualnej potrzebna jest również kompilacja iOS i kontrola obrazu na urządzeniu: kolejność warstw, etykiety, pochylenie, motyw i zachowanie przy zmianie kadru. Sam wynik „bez wykrytych luk” nie oznacza pełnej oceny wyglądu.
 
-W kompilacji Debug zmienna procesu `NAVIASTRA_MAP_AUDIT_CAMERA=lat,lon,zoom` ustawia powtarzalny kadr 16…20 bez zapisywania ustawień i bez zmiany pozycji GPS. Brak zmiennej zachowuje zwykłą kamerę aplikacji. W Release ten kod nie istnieje.
+W kompilacji Debug zmienna procesu `NAVIASTRA_MAP_AUDIT_CAMERA=lat,lon,zoom` ustawia powtarzalny kadr 14,5…20 bez zapisywania ustawień i bez zmiany pozycji GPS. Opcjonalny czwarty parametr `lat,lon,zoom,pitch` ustawia pochylenie 0–60° podczas kontroli modeli 3D. `NAVIASTRA_MAP_AUDIT_CONTEXT=driving` pozwala sprawdzić reguły szczegółowości renderera podczas prowadzenia; nie rozpoczyna podróży ani nie symuluje GPS. Brak zmiennych zachowuje zwykłą kamerę i kontekst aplikacji. W Release ten kod nie istnieje.
 
 ## Wynik przebiegu z 14 października 2026
 

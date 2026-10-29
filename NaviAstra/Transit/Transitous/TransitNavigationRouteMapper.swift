@@ -22,13 +22,14 @@ enum TransitNavigationRouteMapper {
                 tripID: leg.tripID,
                 lineColorHex: leg.lineColorHex,
                 transitStops: leg.intermediateStops,
-                hasResolvedWalkingGeometry: leg.mode == .walk && leg.geometry.count > 1,
+                hasResolvedWalkingGeometry: leg.mode == .walk && leg.hasResolvedGeometry,
                 scheduledDeparture: leg.scheduledDeparture,
                 scheduledArrival: leg.scheduledArrival,
                 direction: leg.direction,
                 operatorName: leg.operatorName,
                 distance: leg.distance,
-                isInterlined: leg.isInterlined)
+                isInterlined: leg.isInterlined,
+                hasResolvedRouteGeometry: leg.hasResolvedGeometry)
         }
         let coordinates = journey.legs.reduce(into: [Coordinate]()) { result, leg in
             if result.last == leg.geometry.first {

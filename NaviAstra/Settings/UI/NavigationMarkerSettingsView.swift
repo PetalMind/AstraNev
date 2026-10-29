@@ -118,6 +118,13 @@ struct NavigationMarkerSettingsView: View {
                     .accessibilityAddTraits(selectedModel == model ? [.isSelected] : [])
                 }
             }
+            if selectedTransport == .car {
+                Text("Modele samochodów są dostępne bez internetu.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Link("Modele: Kenney Car Kit · licencja CC0",
+                     destination: URL(string: "https://kenney.nl/assets/car-kit")!)
+                    .font(.footnote)
+            }
         }
     }
 

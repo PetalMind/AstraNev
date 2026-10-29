@@ -29,7 +29,7 @@ struct AppDependencies {
         session.selectedVehicleID = { [weak energyStore] in energyStore?.selectedVehicle?.id }
         session.onTripFinished = { [weak placeStore] trip in placeStore?.addTrip(trip) }
         let navigationStore = NavigationStore(session: session)
-        return AppDependencies(
+        let dependencies = AppDependencies(
             tripPlanning: .shared,
             energyStore: energyStore,
             router: AppRouter(),
@@ -39,5 +39,13 @@ struct AppDependencies {
             routePlanningStore: RoutePlanningStore(),
             transitStore: TransitStore(repository: transitDataProvider),
             mapStore: MapStore())
+        #if DEBUG && os(iOS)
+        if IOSDebugDrivingScenario.isEnabled {
+            IOSDebugDrivingScenario.prepare(dependencies.navigationStore)
+        } else {
+            IOSDebugRoutePlanningScenario.prepare(dependencies.navigationStore)
+        }
+        #endif
+        return dependencies
     }
 }

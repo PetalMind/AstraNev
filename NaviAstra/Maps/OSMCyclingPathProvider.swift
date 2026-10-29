@@ -254,8 +254,9 @@ actor OSMRequestTransport {
     private func download(_ request: URLRequest, priority: Bool,
                           maximumDuration: TimeInterval?) async throws -> (Data, URLResponse) {
         guard let maximumDuration else { return try await download(request, priority: priority) }
+        let deadline = Date().addingTimeInterval(maximumDuration)
         return try await withThrowingTaskGroup(of: (Data, URLResponse).self) { group in
-            group.addTask { try await self.download(request, priority: priority) }
+            group.addTask { try await self.download(request, priority: priority, deadline: deadline) }
             group.addTask {
                 try await Task.sleep(for: .seconds(maximumDuration))
                 throw URLError(.timedOut)
@@ -266,21 +267,25 @@ actor OSMRequestTransport {
         }
     }
 
-    private func download(_ request: URLRequest, priority: Bool) async throws -> (Data, URLResponse) {
+    private func download(_ request: URLRequest, priority: Bool,
+                          deadline: Date? = nil) async throws -> (Data, URLResponse) {
         var endpoints = [request.url].compactMap { $0 }
         if let fallback = URL(string: "https://overpass.private.coffee/api/interpreter"),
            !endpoints.contains(fallback) { endpoints.append(fallback) }
         var lastError: Error = URLError(.badServerResponse)
-        for endpoint in endpoints {
+        for (index, endpoint) in endpoints.enumerated() {
             if let until = unavailableUntil[endpoint.absoluteString], until > .now { continue }
             var candidate = request
             candidate.url = endpoint
             do {
-                let result = try await downloadFrom(candidate, priority: priority)
+                let result = try await downloadFrom(candidate, priority: priority,
+                    deadline: deadline, remainingEndpoints: endpoints.count - index)
                 guard let response = result.1 as? HTTPURLResponse else { throw URLError(.badServerResponse) }
-                if response.statusCode == 429 {
-                    let delay = Double(response.value(forHTTPHeaderField: "Retry-After") ?? "") ?? 30
-                    unavailableUntil[endpoint.absoluteString] = Date().addingTimeInterval(max(30, delay))
+                if [429, 406].contains(response.statusCode) {
+                    unavailableUntil[endpoint.absoluteString] = HTTPRetryDelay.date(from: response, minimum: 30)
+                }
+                if response.statusCode == 503, response.value(forHTTPHeaderField: "Retry-After") != nil {
+                    unavailableUntil[endpoint.absoluteString] = HTTPRetryDelay.date(from: response, minimum: 30)
                 }
                 guard (200...299).contains(response.statusCode) else { throw URLError(.badServerResponse) }
                 guard let json = try JSONSerialization.jsonObject(with: result.0) as? [String: Any],
@@ -297,19 +302,34 @@ actor OSMRequestTransport {
         throw lastError
     }
 
-    private func downloadFrom(_ request: URLRequest, priority: Bool) async throws -> (Data, URLResponse) {
-        for attempt in 0...1 {
+    private func downloadFrom(_ request: URLRequest, priority: Bool,
+                              deadline: Date? = nil, remainingEndpoints: Int = 1) async throws -> (Data, URLResponse) {
+        // With a whole-operation budget, give each host a chance. Two full
+        // timeouts against the primary previously consumed the entire budget
+        // before the fallback was ever contacted.
+        let retries = deadline == nil ? 1 : 0
+        for attempt in 0...retries {
             guard await OSMCyclingRequestGate.shared.waitUntilAllowed(priority: priority) else {
                 throw CancellationError()
             }
+            var candidate = request
+            if let deadline {
+                let remaining = deadline.timeIntervalSinceNow
+                guard remaining > 0.5 else {
+                    await OSMCyclingRequestGate.shared.requestDidFinish()
+                    throw URLError(.timedOut)
+                }
+                candidate.timeoutInterval = min(request.timeoutInterval,
+                    max(0.25, (remaining - 0.25) / Double(max(1, remainingEndpoints))))
+            }
             let result: (Data, URLResponse)
             do {
-                result = try await URLSession.shared.data(for: request)
+                result = try await URLSession.shared.data(for: candidate)
                 await OSMCyclingRequestGate.shared.requestDidFinish()
             } catch {
                 await OSMCyclingRequestGate.shared.requestDidFinish()
                 logger.error("Overpass host=\(request.url?.host ?? "unknown", privacy: .public) network=\(String(describing: error), privacy: .public)")
-                if attempt == 0, let error = error as? URLError,
+                if attempt < retries, let error = error as? URLError,
                    [.timedOut, .networkConnectionLost].contains(error.code) {
                     try await Task.sleep(for: .seconds(1))
                     continue
@@ -318,16 +338,35 @@ actor OSMRequestTransport {
             }
             let status = (result.1 as? HTTPURLResponse)?.statusCode ?? 0
             logger.info("Overpass host=\(request.url?.host ?? "unknown", privacy: .public) status=\(status) bytes=\(result.0.count)")
-            if attempt == 0, [429, 502, 503, 504].contains(status) {
-                let header = (result.1 as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After")
-                let delay = max(1, Double(header ?? "") ?? 1)
+            if attempt < retries, [406, 429, 502, 503, 504].contains(status) {
+                let delay = (result.1 as? HTTPURLResponse).map {
+                    max(1, HTTPRetryDelay.date(from: $0, minimum: 1).timeIntervalSinceNow)
+                } ?? 1
                 // Switch servers instead of repeating against an explicit long cooldown.
-                if status == 429 || delay > 5 { return result }
+                if status == 429 || status == 406 || delay > 5 { return result }
                 try await Task.sleep(for: .seconds(delay))
                 continue
             }
             return result
         }
         throw URLError(.badServerResponse)
+    }
+}
+
+/// Retry-After permits both delay-seconds and an RFC 9110 HTTP date.
+nonisolated enum HTTPRetryDelay {
+    static func date(from response: HTTPURLResponse, minimum: TimeInterval, now: Date = Date()) -> Date {
+        let value = response.value(forHTTPHeaderField: "Retry-After")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let value, let seconds = Double(value), seconds.isFinite, seconds >= 0 {
+            return now.addingTimeInterval(max(minimum, seconds))
+        }
+        if let value {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+            if let date = formatter.date(from: value) { return max(now.addingTimeInterval(minimum), date) }
+        }
+        return now.addingTimeInterval(minimum)
     }
 }

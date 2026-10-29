@@ -1,0 +1,684 @@
+[
+  {
+    "aspect" : [
+      0.44207000000000002,
+      0.38284000000000001
+    ],
+    "coarseTriangles" : 72,
+    "id" : "tree-rounded",
+    "pack" : "nature",
+    "source" : "tree_default.obj",
+    "triangles" : 114
+  },
+  {
+    "aspect" : [
+      0.63576999999999995,
+      0.57159000000000004
+    ],
+    "coarseTriangles" : 243,
+    "id" : "tree-branched",
+    "pack" : "nature",
+    "source" : "tree_detailed.obj",
+    "triangles" : 402
+  },
+  {
+    "aspect" : [
+      0.52237,
+      0.60318000000000005
+    ],
+    "coarseTriangles" : 111,
+    "id" : "tree-broad",
+    "pack" : "nature",
+    "source" : "tree_oak.obj",
+    "triangles" : 194
+  },
+  {
+    "aspect" : [
+      0.25252999999999998,
+      0.25624000000000002
+    ],
+    "coarseTriangles" : 104,
+    "id" : "tree-conifer",
+    "pack" : "nature",
+    "source" : "tree_pineTallA_detailed.obj",
+    "triangles" : 134
+  },
+  {
+    "aspect" : [
+      1.5596099999999999,
+      1.23346
+    ],
+    "coarseTriangles" : 568,
+    "id" : "house-a",
+    "pack" : "suburban",
+    "source" : "building-type-a.obj",
+    "triangles" : 2312
+  },
+  {
+    "aspect" : [
+      1.60703,
+      1.0022
+    ],
+    "coarseTriangles" : 617,
+    "id" : "house-b",
+    "pack" : "suburban",
+    "source" : "building-type-b.obj",
+    "triangles" : 3458
+  },
+  {
+    "aspect" : [
+      1.2446299999999999,
+      0.99477000000000004
+    ],
+    "coarseTriangles" : 551,
+    "id" : "house-c",
+    "pack" : "suburban",
+    "source" : "building-type-c.obj",
+    "triangles" : 2360
+  },
+  {
+    "aspect" : [
+      0.68335999999999997,
+      0.72699000000000003
+    ],
+    "coarseTriangles" : 591,
+    "id" : "commercial-a",
+    "pack" : "commercial",
+    "source" : "building-a.obj",
+    "triangles" : 2494
+  },
+  {
+    "aspect" : [
+      0.75019000000000002,
+      0.72699000000000003
+    ],
+    "coarseTriangles" : 533,
+    "id" : "commercial-b",
+    "pack" : "commercial",
+    "source" : "building-b.obj",
+    "triangles" : 2536
+  },
+  {
+    "aspect" : [
+      0.074069999999999997,
+      0.33333000000000002
+    ],
+    "coarseTriangles" : 84,
+    "id" : "street-lamp",
+    "pack" : "roads",
+    "source" : "light-curved.obj",
+    "triangles" : 184
+  },
+  {
+    "aspect" : [
+      0.22835,
+      0.17476
+    ],
+    "coarseTriangles" : 178,
+    "id" : "traffic-signal",
+    "pack" : "roads",
+    "source" : "traffic-light.obj",
+    "triangles" : 412
+  },
+  {
+    "aspect" : [
+      1.53457,
+      0.86528000000000005
+    ],
+    "coarseTriangles" : 156,
+    "id" : "bench",
+    "pack" : "holiday",
+    "source" : "bench.obj",
+    "triangles" : 320
+  },
+  {
+    "aspect" : [
+      1.4193,
+      0.83070999999999995
+    ],
+    "coarseTriangles" : 844,
+    "id" : "house-d",
+    "pack" : "suburban",
+    "source" : "building-type-d.obj",
+    "triangles" : 3476
+  },
+  {
+    "aspect" : [
+      1.14286,
+      0.90373999999999999
+    ],
+    "coarseTriangles" : 814,
+    "id" : "house-e",
+    "pack" : "suburban",
+    "source" : "building-type-e.obj",
+    "triangles" : 3414
+  },
+  {
+    "aspect" : [
+      1.2553799999999999,
+      1.2359500000000001
+    ],
+    "coarseTriangles" : 743,
+    "id" : "house-f",
+    "pack" : "suburban",
+    "source" : "building-type-f.obj",
+    "triangles" : 3208
+  },
+  {
+    "aspect" : [
+      1.88751,
+      1.5334399999999999
+    ],
+    "coarseTriangles" : 509,
+    "id" : "house-g",
+    "pack" : "suburban",
+    "source" : "building-type-g.obj",
+    "triangles" : 2118
+  },
+  {
+    "aspect" : [
+      1.76271,
+      1.24203
+    ],
+    "coarseTriangles" : 417,
+    "id" : "house-h",
+    "pack" : "suburban",
+    "source" : "building-type-h.obj",
+    "triangles" : 1508
+  },
+  {
+    "aspect" : [
+      1.74424,
+      1.3938999999999999
+    ],
+    "coarseTriangles" : 457,
+    "id" : "house-i",
+    "pack" : "suburban",
+    "source" : "building-type-i.obj",
+    "triangles" : 1582
+  },
+  {
+    "aspect" : [
+      0.80110000000000003,
+      0.88727
+    ],
+    "coarseTriangles" : 484,
+    "id" : "house-k",
+    "pack" : "suburban",
+    "source" : "building-type-k.obj",
+    "triangles" : 2028
+  },
+  {
+    "aspect" : [
+      1.9362699999999999,
+      1.9362699999999999
+    ],
+    "coarseTriangles" : 564,
+    "id" : "house-m",
+    "pack" : "suburban",
+    "source" : "building-type-m.obj",
+    "triangles" : 2204
+  },
+  {
+    "aspect" : [
+      1.5685899999999999,
+      1.21133
+    ],
+    "coarseTriangles" : 518,
+    "id" : "house-n",
+    "pack" : "suburban",
+    "source" : "building-type-n.obj",
+    "triangles" : 3210
+  },
+  {
+    "aspect" : [
+      1.35076,
+      1.07843
+    ],
+    "coarseTriangles" : 568,
+    "id" : "house-p",
+    "pack" : "suburban",
+    "source" : "building-type-p.obj",
+    "triangles" : 2522
+  },
+  {
+    "aspect" : [
+      0.90085000000000004,
+      0.89383999999999997
+    ],
+    "coarseTriangles" : 547,
+    "id" : "house-r",
+    "pack" : "suburban",
+    "source" : "building-type-r.obj",
+    "triangles" : 2036
+  },
+  {
+    "aspect" : [
+      1.23607,
+      0.95506000000000002
+    ],
+    "coarseTriangles" : 537,
+    "id" : "house-s",
+    "pack" : "suburban",
+    "source" : "building-type-s.obj",
+    "triangles" : 2394
+  },
+  {
+    "aspect" : [
+      1.2553799999999999,
+      0.95555000000000001
+    ],
+    "coarseTriangles" : 591,
+    "id" : "house-u",
+    "pack" : "suburban",
+    "source" : "building-type-u.obj",
+    "triangles" : 2656
+  },
+  {
+    "aspect" : [
+      0.98946000000000001,
+      1.2205999999999999
+    ],
+    "coarseTriangles" : 651,
+    "id" : "block-c",
+    "pack" : "commercial",
+    "source" : "building-c.obj",
+    "triangles" : 2380
+  },
+  {
+    "aspect" : [
+      0.64964999999999995,
+      0.69606000000000001
+    ],
+    "coarseTriangles" : 591,
+    "id" : "block-d",
+    "pack" : "commercial",
+    "source" : "building-d.obj",
+    "triangles" : 2174
+  },
+  {
+    "aspect" : [
+      1.8365100000000001,
+      1.12866
+    ],
+    "coarseTriangles" : 740,
+    "id" : "block-e",
+    "pack" : "commercial",
+    "source" : "building-e.obj",
+    "triangles" : 2952
+  },
+  {
+    "aspect" : [
+      0.49615999999999999,
+      0.60838999999999999
+    ],
+    "coarseTriangles" : 815,
+    "id" : "block-f",
+    "pack" : "commercial",
+    "source" : "building-f.obj",
+    "triangles" : 3460
+  },
+  {
+    "aspect" : [
+      0.57294999999999996,
+      0.54459999999999997
+    ],
+    "coarseTriangles" : 806,
+    "id" : "block-g",
+    "pack" : "commercial",
+    "source" : "building-g.obj",
+    "triangles" : 3938
+  },
+  {
+    "aspect" : [
+      0.68335999999999997,
+      0.77949999999999997
+    ],
+    "coarseTriangles" : 634,
+    "id" : "block-h",
+    "pack" : "commercial",
+    "source" : "building-h.obj",
+    "triangles" : 2988
+  },
+  {
+    "aspect" : [
+      0.73809999999999998,
+      0.77500000000000002
+    ],
+    "coarseTriangles" : 796,
+    "id" : "block-i",
+    "pack" : "commercial",
+    "source" : "building-i.obj",
+    "triangles" : 5046
+  },
+  {
+    "aspect" : [
+      1.23071,
+      0.79149000000000003
+    ],
+    "coarseTriangles" : 2009,
+    "id" : "block-j",
+    "pack" : "commercial",
+    "source" : "building-j.obj",
+    "triangles" : 10342
+  },
+  {
+    "aspect" : [
+      1.4174100000000001,
+      0.64081999999999995
+    ],
+    "coarseTriangles" : 1099,
+    "id" : "block-k",
+    "pack" : "commercial",
+    "source" : "building-k.obj",
+    "triangles" : 5778
+  },
+  {
+    "aspect" : [
+      0.60351999999999995,
+      0.61761999999999995
+    ],
+    "coarseTriangles" : 1102,
+    "id" : "block-l",
+    "pack" : "commercial",
+    "source" : "building-l.obj",
+    "triangles" : 6966
+  },
+  {
+    "aspect" : [
+      0.39365,
+      0.39428999999999997
+    ],
+    "coarseTriangles" : 936,
+    "id" : "block-m",
+    "pack" : "commercial",
+    "source" : "building-m.obj",
+    "triangles" : 7266
+  },
+  {
+    "aspect" : [
+      0.93547999999999998,
+      0.73387000000000002
+    ],
+    "coarseTriangles" : 1011,
+    "id" : "block-n",
+    "pack" : "commercial",
+    "source" : "building-n.obj",
+    "triangles" : 8496
+  },
+  {
+    "aspect" : [
+      0.47221999999999997,
+      0.47221999999999997
+    ],
+    "coarseTriangles" : 798,
+    "id" : "tower-a",
+    "pack" : "commercial",
+    "source" : "building-skyscraper-a.obj",
+    "triangles" : 2564
+  },
+  {
+    "aspect" : [
+      0.30357000000000001,
+      0.30357000000000001
+    ],
+    "coarseTriangles" : 846,
+    "id" : "tower-b",
+    "pack" : "commercial",
+    "source" : "building-skyscraper-b.obj",
+    "triangles" : 3164
+  },
+  {
+    "aspect" : [
+      0.31373000000000001,
+      0.34016999999999997
+    ],
+    "coarseTriangles" : 676,
+    "id" : "tower-c",
+    "pack" : "commercial",
+    "source" : "building-skyscraper-c.obj",
+    "triangles" : 3378
+  },
+  {
+    "aspect" : [
+      0.23400000000000001,
+      0.25373000000000001
+    ],
+    "coarseTriangles" : 767,
+    "id" : "tower-d",
+    "pack" : "commercial",
+    "source" : "building-skyscraper-d.obj",
+    "triangles" : 3760
+  },
+  {
+    "aspect" : [
+      0.31740000000000002,
+      0.30441000000000001
+    ],
+    "coarseTriangles" : 529,
+    "id" : "tower-e",
+    "pack" : "commercial",
+    "source" : "building-skyscraper-e.obj",
+    "triangles" : 2278
+  },
+  {
+    "aspect" : [
+      1.4174100000000001,
+      0.84489999999999998
+    ],
+    "coarseTriangles" : 641,
+    "id" : "industrial-a",
+    "pack" : "industrial",
+    "source" : "building-a.obj",
+    "triangles" : 4036
+  },
+  {
+    "aspect" : [
+      1.31105,
+      1.0027999999999999
+    ],
+    "coarseTriangles" : 583,
+    "id" : "industrial-g",
+    "pack" : "industrial",
+    "source" : "building-g.obj",
+    "triangles" : 2424
+  },
+  {
+    "aspect" : [
+      1.8018400000000001,
+      1.78586
+    ],
+    "coarseTriangles" : 320,
+    "id" : "industrial-h",
+    "pack" : "industrial",
+    "source" : "building-h.obj",
+    "triangles" : 1378
+  },
+  {
+    "aspect" : [
+      1.40161,
+      1.77223
+    ],
+    "coarseTriangles" : 373,
+    "id" : "industrial-i",
+    "pack" : "industrial",
+    "source" : "building-i.obj",
+    "triangles" : 1590
+  },
+  {
+    "aspect" : [
+      1.1921600000000001,
+      1.50962
+    ],
+    "coarseTriangles" : 408,
+    "id" : "industrial-j",
+    "pack" : "industrial",
+    "source" : "building-j.obj",
+    "triangles" : 1756
+  },
+  {
+    "aspect" : [
+      1.6860200000000001,
+      1.1822699999999999
+    ],
+    "coarseTriangles" : 360,
+    "id" : "industrial-k",
+    "pack" : "industrial",
+    "source" : "building-k.obj",
+    "triangles" : 1400
+  },
+  {
+    "aspect" : [
+      0.86653999999999998,
+      1.1191500000000001
+    ],
+    "coarseTriangles" : 692,
+    "id" : "industrial-m",
+    "pack" : "industrial",
+    "source" : "building-m.obj",
+    "triangles" : 3338
+  },
+  {
+    "aspect" : [
+      2.3561399999999999,
+      1.38828
+    ],
+    "coarseTriangles" : 539,
+    "id" : "industrial-p",
+    "pack" : "industrial",
+    "source" : "building-p.obj",
+    "triangles" : 2300
+  },
+  {
+    "aspect" : [
+      2.4318200000000001,
+      2.0112399999999999
+    ],
+    "coarseTriangles" : 879,
+    "id" : "industrial-q",
+    "pack" : "industrial",
+    "source" : "building-q.obj",
+    "triangles" : 4066
+  },
+  {
+    "aspect" : [
+      2.53349,
+      1.0949899999999999
+    ],
+    "coarseTriangles" : 460,
+    "id" : "industrial-s",
+    "pack" : "industrial",
+    "source" : "building-s.obj",
+    "triangles" : 1748
+  },
+  {
+    "aspect" : [
+      1.69703,
+      1.3700600000000001
+    ],
+    "coarseTriangles" : 675,
+    "id" : "industrial-t",
+    "pack" : "industrial",
+    "source" : "building-t.obj",
+    "triangles" : 3136
+  },
+  {
+    "aspect" : [
+      0.31947999999999999,
+      0.36891000000000002
+    ],
+    "coarseTriangles" : 62,
+    "id" : "tree-small",
+    "pack" : "nature",
+    "source" : "tree_small.obj",
+    "triangles" : 62
+  },
+  {
+    "aspect" : [
+      0.23676,
+      0.27339000000000002
+    ],
+    "coarseTriangles" : 72,
+    "id" : "tree-tall",
+    "pack" : "nature",
+    "source" : "tree_tall.obj",
+    "triangles" : 72
+  },
+  {
+    "aspect" : [
+      0.65629999999999999,
+      0.56837000000000004
+    ],
+    "coarseTriangles" : 50,
+    "id" : "tree-fat",
+    "pack" : "nature",
+    "source" : "tree_fat.obj",
+    "triangles" : 50
+  },
+  {
+    "aspect" : [
+      0.45657999999999999,
+      0.41369
+    ],
+    "coarseTriangles" : 174,
+    "id" : "tree-thin",
+    "pack" : "nature",
+    "source" : "tree_thin.obj",
+    "triangles" : 228
+  },
+  {
+    "aspect" : [
+      0.48964999999999997,
+      0.5242
+    ],
+    "coarseTriangles" : 178,
+    "id" : "tree-plateau",
+    "pack" : "nature",
+    "source" : "tree_plateau.obj",
+    "triangles" : 215
+  },
+  {
+    "aspect" : [
+      0.34411999999999998,
+      0.34411999999999998
+    ],
+    "coarseTriangles" : 154,
+    "id" : "tree-pineDefaultA",
+    "pack" : "nature",
+    "source" : "tree_pineDefaultA.obj",
+    "triangles" : 230
+  },
+  {
+    "aspect" : [
+      0.45155000000000001,
+      0.52141000000000004
+    ],
+    "coarseTriangles" : 139,
+    "id" : "tree-pineRoundA",
+    "pack" : "nature",
+    "source" : "tree_pineRoundA.obj",
+    "triangles" : 204
+  },
+  {
+    "aspect" : [
+      0.16667000000000001,
+      0.16667000000000001
+    ],
+    "coarseTriangles" : 38,
+    "id" : "bollard-column",
+    "pack" : "building-kit",
+    "source" : "column-thin.obj",
+    "triangles" : 76
+  },
+  {
+    "aspect" : [
+      1.53457,
+      0.86528000000000005
+    ],
+    "coarseTriangles" : 156,
+    "id" : "bench-park",
+    "pack" : "graveyard",
+    "source" : "bench.obj",
+    "triangles" : 320
+  }
+]

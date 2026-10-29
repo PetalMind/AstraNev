@@ -79,7 +79,7 @@ struct NearbyPlaceCandidate: Identifiable {
         }
         return await PlaceOpeningHours(rawValue: openingHours,
                                        coordinate: destination.coordinate,
-                                       countryCode: countryCode,
+                                       countryCode: countryCode ?? PlaceTimeZoneResolver.cachedCountryCode(for: destination.coordinate),
                                        timeZoneIdentifier: resolvedTimeZoneIdentifier).presentation()
     }
 

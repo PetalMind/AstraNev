@@ -177,10 +177,22 @@ struct PlaceDetailsView: View {
                 if let loadedAt {
                     let sourceTitle = details?.source.title ?? "OpenStreetMap"
                     let sources = hasAppleDetails && details?.source != .mapKit ? "Apple Maps + " + sourceTitle : sourceTitle
-                    Text("\(sources) · pobrano \(loadedAt.formatted(date: .abbreviated, time: .shortened))")
+                    Text("\(sources) · pobrano \(loadedAt.formatted(.dateTime.locale(Locale(identifier: "pl_PL")).day().month(.abbreviated).year().hour().minute()))")
                         .font(.caption2).foregroundStyle(Color.naviTextSecondary)
                 } else if let details {
                     Text(details.source.title).font(.caption2).foregroundStyle(Color.naviTextSecondary)
+                }
+                ForEach([details?.supplementalSource, details?.websiteHoursSource].compactMap { $0 }, id: \.url) { source in
+                    if let url = URL(string: source.url) {
+                        Link("Uzupełnienie: \(source.title) · \(source.fields.joined(separator: ", "))", destination: url)
+                            .font(.caption2)
+                        Text("Pobrano \(source.fetchedAt.formatted(.dateTime.locale(Locale(identifier: "pl_PL")).day().month(.abbreviated).year().hour().minute()))")
+                            .font(.caption2).foregroundStyle(Color.naviTextSecondary)
+                        if let modified = source.modifiedAt {
+                            Text("Edycja rekordu: \(modified.formatted(.dateTime.locale(Locale(identifier: "pl_PL")).day().month(.abbreviated).year())). Nie potwierdza aktualności godzin.")
+                                .font(.caption2).foregroundStyle(Color.naviTextSecondary)
+                        }
+                    }
                 }
             }
         }
@@ -320,13 +332,25 @@ struct PlaceDetailsView: View {
             guard result.isPOI, !isNavigating, let current = details else { return }
             await loadPlacePhoto(for: current, forceRefresh: retry > 0)
         }
-        .task(id: timeZoneRefreshKey) {
-            guard result.isPOI, details?.timeZoneIdentifier == nil else { return }
+        .task(id: supplementalRefreshKey) {
+            guard !isLoading, result.isPOI, let original = details, original.wikidataID != nil || original.website != nil else { return }
             let key = result.placeIdentity.cacheKey
-            let identifier = await PlaceTimeZoneResolver.identifier(for: result.destination.coordinate)
+            let enriched = await provider.supplementalDetails(original, for: result.placeIdentity, forceRefresh: retry > 0)
             guard !Task.isCancelled, key == result.placeIdentity.cacheKey,
-                  let identifier else { return }
-            details?.timeZoneIdentifier = identifier
+                  details?.fetchedAt == original.fetchedAt else { return }
+            let timeZone = details?.timeZoneIdentifier
+            let countryCode = details?.countryCode
+            details = enriched
+            if details?.timeZoneIdentifier == nil { details?.timeZoneIdentifier = timeZone }
+            if details?.countryCode == nil { details?.countryCode = countryCode }
+        }
+        .task(id: timeZoneRefreshKey) {
+            guard result.isPOI, details?.timeZoneIdentifier == nil || details?.countryCode == nil else { return }
+            let key = result.placeIdentity.cacheKey
+            let context = await PlaceTimeZoneResolver.context(for: result.destination.coordinate)
+            guard !Task.isCancelled, key == result.placeIdentity.cacheKey, let context else { return }
+            if details?.timeZoneIdentifier == nil { details?.timeZoneIdentifier = context.timeZoneIdentifier }
+            if details?.countryCode == nil { details?.countryCode = context.countryCode }
         }
         .onChange(of: isFavoriteFromParent) { _, newValue in
             isSaved = newValue
@@ -355,13 +379,15 @@ struct PlaceDetailsView: View {
             }
             return
         }
-        async let appleDetails = try? MapKitPlaceDetailsProvider().details(for: result.placeIdentity)
         defer { if !Task.isCancelled { isLoading = false } }
         if let cached = await provider.cachedDetails(for: result.placeIdentity) {
             guard !Task.isCancelled else { return }
             details = details?.merging(cached) ?? cached
             loadedAt = cached.fetchedAt
         }
+        let needsAppleContact = result.placeProvider == .mapKit &&
+            (details?.phone == nil || details?.website == nil || details?.countryCode == nil || details?.timeZoneIdentifier == nil)
+        async let appleDetails = needsAppleContact ? (try? await MapKitPlaceDetailsProvider().details(for: result.placeIdentity)) : nil
         do {
             async let refreshedDetails = provider.details(for: result.placeIdentity, forceRefresh: retry > 0)
             let native = await appleDetails
@@ -374,18 +400,18 @@ struct PlaceDetailsView: View {
                 guard !Task.isCancelled else { return }
                 // A fresh response replaces stale fields; removed hours/contact data must disappear.
                 let timeZone = details?.timeZoneIdentifier
+                let countryCode = details?.countryCode
                 if let native {
                     details = native.merging(loaded)
-                } else if result.placeProvider == .mapKit {
-                    details = PlaceDetails.partial(for: result)?.merging(loaded) ?? loaded
                 } else {
                     details = loaded
                 }
                 if details?.timeZoneIdentifier == nil { details?.timeZoneIdentifier = timeZone }
+                if details?.countryCode == nil { details?.countryCode = countryCode }
                 loadedAt = loaded.fetchedAt
             } else {
                 // An identified object that disappeared must not keep displaying its old cached hours.
-                details = native ?? PlaceDetails.partial(for: result)
+                details = native ?? PlaceDetails.partial(for: result.placeIdentity)
                 loadedAt = native?.fetchedAt
             }
         } catch {
@@ -481,8 +507,13 @@ struct PlaceDetailsView: View {
          details?.brandWikidataID ?? ""].joined(separator: "|")
     }
 
+    private var supplementalRefreshKey: String {
+        detailsRefreshKey + "/" + String(isLoading) + "/" + (details?.wikidataID ?? "") + "/" +
+            String(details?.fetchedAt.timeIntervalSince1970 ?? 0)
+    }
+
     private var timeZoneRefreshKey: String {
-        detailsRefreshKey + "/" + (details?.timeZoneIdentifier ?? "unknown")
+        detailsRefreshKey + "/" + (details?.timeZoneIdentifier ?? "unknown") + "/" + (details?.countryCode ?? "unknown")
     }
 
     private var placePhotoSection: some View {
@@ -627,6 +658,7 @@ private extension PlaceDetails {
 }
 
 struct PlaceSearchResultRow: View {
+    @Environment(\.scenePhase) private var hoursScenePhase
     let result: SearchResult
     let index: Int
     let isSaved: Bool
@@ -644,12 +676,16 @@ struct PlaceSearchResultRow: View {
     var primaryMetaLine: String? = nil
     var onExpand: (() -> Void)? = nil
     var showsQuickRouteAction = false
+    var showsOpeningHours = false
 
     @State private var savedOverride: Bool? = nil
     @State private var favoriteFeedback: FavoriteFeedback? = nil
     @State private var showRemoveFavoriteConfirmation = false
     @State private var showRenamePrompt = false
     @State private var savedName = ""
+    @State private var listHours: OpeningHoursPresentation?
+    @State private var arrivalHours: OpeningHoursPresentation?
+    @State private var hoursSource: String?
 
     private var showsAsSaved: Bool { savedOverride ?? isSaved }
 
@@ -691,6 +727,22 @@ struct PlaceSearchResultRow: View {
                                     .font(.caption.weight(.medium))
                                     .foregroundStyle(Color.naviTextSecondary)
                                     .lineLimit(1)
+                            }
+                            if showsOpeningHours, result.isPOI, !result.isContact {
+                                Text(listHours?.statusText ?? "Brak danych o godzinach")
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(listHours?.isOpen == true ? Color.green
+                                        : listHours?.isOpen == false ? Color.orange : Color.naviTextSecondary)
+                                if let arrivalHours {
+                                    Text(arrivalHours.isOpen == true ? "Przy dojeździe: otwarte"
+                                        : arrivalHours.isOpen == false ? "Przy dojeździe: zamknięte" : "Przy dojeździe: brak danych")
+                                        .font(.caption)
+                                        .foregroundStyle(Color.naviTextSecondary)
+                                }
+                                if let hoursSource {
+                                    Text("Godziny: \(hoursSource)").font(.caption2)
+                                        .foregroundStyle(Color.naviTextSecondary).lineLimit(1)
+                                }
                             }
                             ForEach(supplementalDetails, id: \.self) { detail in
                                 Text(detail)
@@ -781,6 +833,31 @@ struct PlaceSearchResultRow: View {
         .onChange(of: isSaved) { _, _ in
             savedOverride = nil
         }
+        .task(id: listHoursRefreshKey) {
+            guard showsOpeningHours, hoursScenePhase == .active, result.isPOI, !result.isContact else { return }
+            while !Task.isCancelled {
+                guard var details = await PlaceSearchOpeningHours.seed(result), !Task.isCancelled else { return }
+                await applyListHours(details)
+                if details.openingHours == nil {
+                    details = await PlaceSearchOpeningHours.enrich(details, result: result)
+                    guard !Task.isCancelled else { return }
+                    await applyListHours(details)
+                }
+                do { try await Task.sleep(for: .seconds(60)) } catch { return }
+            }
+        }
+    }
+
+    private var listHoursRefreshKey: String {
+        let eta = result.travelTime.flatMap { $0.isFinite && (0...31_536_000).contains($0) ? Int($0 / 60) : nil }
+        return "\(result.placeIdentity.cacheKey)|\(result.openingHours ?? "")|\(eta ?? -1)|\(hoursScenePhase == .active)"
+    }
+
+    @MainActor private func applyListHours(_ details: PlaceDetails) async {
+        let values = await PlaceSearchOpeningHours.presentations(details, travelTime: result.travelTime)
+        guard !Task.isCancelled else { return }
+        listHours = values.now; arrivalHours = values.arrival
+        hoursSource = details.openingHours == nil ? nil : details.websiteHoursSource?.title ?? details.supplementalSource?.title
     }
 
     private func toggleFavorite() {

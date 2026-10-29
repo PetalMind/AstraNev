@@ -1,0 +1,41 @@
+{
+  "tool": "image_gen.imagegen (built-in)",
+  "purpose": "Pięć propozycji ikony iOS NaviAstra do wyboru, bez wdrożenia",
+  "variants": [
+    {
+      "number": 1,
+      "name": "01-astra",
+      "prompt": "Use case: logo-brand. Asset type: professional minimalist iOS app icon for NaviAstra, a Polish navigation app. Generate exactly ONE square icon, edge-to-edge opaque flat background, NO rounded outer corners (iOS applies its own mask), NO surrounding mockup, NO border, NO text, NO labels, NO watermark. Masterful geometric graphic design, strong distinctive silhouette readable at 40px, centered mark occupying about 58% of canvas, ample negative space. Matte flat vector-like shapes with precise optical balance. No 3D, no bevels, no glass, no glow, no lens flare, no textures, no tiny decorative details. This is a new standalone icon concept, not a sheet of variants. Concept 1 — ASTRA. Solid deep midnight navy #0B121B background. One bold abstract capital A that doubles as a forward navigation arrowhead, formed by two precisely balanced solid geometric wings. The only interior cutout is a small clean four-point north star made of negative space at the crossbar. Mark is cool off-white #F2F5F8 with one restrained violet #8B2FE0 facet on its right leg. Modern, understated, iconic; compact coherent single glyph. Flat geometry only.",
+      "source": "/Users/dominik/.codex/generated_images/01a1751f-53ad-7323-9a9a-feca2dd51156/exec-f565d1c3-21af-4e6a-8a1c-905f8cdf92f5.png",
+      "file": "/Users/dominik/Documents/Fjiolkowo/AstraNev/output/imagegen/naviastra-2026-10-25/01-astra.png"
+    },
+    {
+      "number": 2,
+      "name": "02-kompas",
+      "prompt": "Use case: logo-brand. Asset type: professional minimalist iOS app icon for NaviAstra, a Polish navigation app. Generate exactly ONE square icon, edge-to-edge opaque flat background, NO rounded outer corners (iOS applies its own mask), NO surrounding mockup, NO border, NO text, NO labels, NO watermark. Masterful geometric graphic design, strong distinctive silhouette readable at 40px, centered mark occupying about 58% of canvas, ample negative space. Matte flat vector-like shapes with precise optical balance. No 3D, no bevels, no glass, no glow, no lens flare, no textures, no tiny decorative details. This is a new standalone icon concept, not a sheet of variants. Concept 2 — COMPASS. Solid saturated yet refined brand violet #8B2FE0 background. Center a bold minimalist compass needle, pointing to upper right, constructed from two asymmetrical clean geometric faces, off-white #F2F5F8 main face and pale lilac #C08BFF secondary face. Needle has a slightly concave tail and confident crisp silhouette. A single nearly complete off-white circular arc with a deliberate opening toward the needle tip frames the mark. No tick marks, no letters, no compass rose, no extra stars. Restrained professional navigation identity.",
+      "source": "/Users/dominik/.codex/generated_images/01a1751f-53ad-7323-9a9a-feca2dd51156/exec-eec21d8f-daa8-4d98-a467-f336ed17c1a6.png",
+      "file": "/Users/dominik/Documents/Fjiolkowo/AstraNev/output/imagegen/naviastra-2026-10-25/02-kompas.png"
+    },
+    {
+      "number": 3,
+      "name": "03-gwiazda",
+      "prompt": "Use case: logo-brand. Asset type: professional minimalist iOS app icon for NaviAstra, a Polish navigation app. Generate exactly ONE square icon, edge-to-edge opaque flat background, NO rounded outer corners (iOS applies its own mask), NO surrounding mockup, NO border, NO text, NO labels, NO watermark. Masterful geometric graphic design, strong distinctive silhouette readable at 40px, centered mark occupying about 58% of canvas, ample negative space. Matte flat vector-like shapes with precise optical balance. No 3D, no bevels, no glass, no glow, no lens flare, no textures, no tiny decorative details. This is a new standalone icon concept, not a sheet of variants. Concept 3 — NORTH STAR. Solid deep midnight navy #0B121B background. A single bold elegant four-point navigation star, its upward point slightly longer and subtly suggesting a forward arrow. Star is built of just two large flat interlocking geometric halves, left off-white #F2F5F8 and right muted cyan #00B8D9, with no gap between halves. Concave sides smoothly drawn, sharp clean tips, poised and symmetrical horizontally. No surrounding ring or other symbols. Restrained premium clarity.",
+      "source": "/Users/dominik/.codex/generated_images/01a1751f-53ad-7323-9a9a-feca2dd51156/exec-42fc808f-48ee-4006-b669-fabd8ec02b79.png",
+      "file": "/Users/dominik/Documents/Fjiolkowo/AstraNev/output/imagegen/naviastra-2026-10-25/03-gwiazda.png"
+    },
+    {
+      "number": 4,
+      "name": "04-monogram",
+      "prompt": "Use case: logo-brand. Asset type: professional minimalist iOS app icon for NaviAstra, a Polish navigation app. Generate exactly ONE square icon, edge-to-edge opaque flat background, NO rounded outer corners (iOS applies its own mask), NO surrounding mockup, NO border, NO text, NO labels, NO watermark. Masterful geometric graphic design, strong distinctive silhouette readable at 40px, centered mark occupying about 58% of canvas, ample negative space. Matte flat vector-like shapes with precise optical balance. No 3D, no bevels, no glass, no glow, no lens flare, no textures, no tiny decorative details. This is a new standalone icon concept, not a sheet of variants. Concept 4 — NA MONOGRAM. Solid warm off-white #F2F5F8 background. One custom angular abstract monogram combining the strokes of N and A into a single compact geometric route-like zigzag that points north-east. Dark midnight navy #0B121B main mark, with just the last ascending segment in brand violet #8B2FE0. Thick consistent strokes, a maximum of three major stroke segments, clean chamfered joints and optical kerning within a coherent symbol. It should read as a memorable navigation brand glyph, no typeset letters or words, no surrounding elements. Mature editorial minimalism.",
+      "source": "/Users/dominik/.codex/generated_images/01a1751f-53ad-7323-9a9a-feca2dd51156/exec-c4ed93d0-903c-49f2-b303-b136baf601cf.png",
+      "file": "/Users/dominik/Documents/Fjiolkowo/AstraNev/output/imagegen/naviastra-2026-10-25/04-monogram.png"
+    },
+    {
+      "number": 5,
+      "name": "05-trasa",
+      "prompt": "Use case: logo-brand. Asset type: professional minimalist iOS app icon for NaviAstra, a Polish navigation app. Generate exactly ONE square icon, edge-to-edge opaque flat background, NO rounded outer corners (iOS applies its own mask), NO surrounding mockup, NO border, NO text, NO labels, NO watermark. Masterful geometric graphic design, strong distinctive silhouette readable at 40px, centered mark occupying about 58% of canvas, ample negative space. Matte flat vector-like shapes with precise optical balance. No 3D, no bevels, no glass, no glow, no lens flare, no textures, no tiny decorative details. This is a new standalone icon concept, not a sheet of variants. Concept 5 — ROUTE. Solid brand violet #8B2FE0 background. Center a single off-white #F2F5F8 bold continuous route glyph: from a small solid circular start point in the lower left, a thick smooth path travels right, makes one simple clean upward bend, and terminates in a confident broad triangular north-pointing arrowhead in the upper center. One continuous integrated symbol, visually balanced, restrained and legible, no map backdrop or road markings. Softly rounded inside turn and precise arrowhead. The route silhouette should subtly evoke an A without drawing a literal letter.",
+      "source": "/Users/dominik/.codex/generated_images/01a1751f-53ad-7323-9a9a-feca2dd51156/exec-98473dd4-ffe9-4750-bf7e-fe230eae858c.png",
+      "file": "/Users/dominik/Documents/Fjiolkowo/AstraNev/output/imagegen/naviastra-2026-10-25/05-trasa.png"
+    }
+  ]
+}

@@ -17,8 +17,9 @@ enum SearchRanking {
                          intent: ClassifiedQuery, context: SearchContext,
                          withTravelEstimates: Bool = false) -> Bool {
         if lhs.isContact != rhs.isContact { return lhs.isContact }
-        if withTravelEstimates, intent.alongRoute, lhs.detour != rhs.detour {
-            return (lhs.detour ?? .infinity) < (rhs.detour ?? .infinity)
+        if withTravelEstimates, intent.alongRoute {
+            let left = validTravelTime(lhs.detour), right = validTravelTime(rhs.detour)
+            if left != right { return (left ?? .infinity) < (right ?? .infinity) }
         }
         if intent.intent == .brand || intent.intent == .category {
             if let location = intent.location {
@@ -26,31 +27,40 @@ enum SearchRanking {
                 let rightMatch = locationMatch(rhs, location: location)
                 if leftMatch != rightMatch { return leftMatch > rightMatch }
             }
-            // Extra provider metadata must not push a nearby branch out of the top 8.
-            // Keep the same order while ETA values are being filled in.
-            if !intent.alongRoute, lhs.straightDistance != rhs.straightDistance {
-                return (lhs.straightDistance ?? .infinity) < (rhs.straightDistance ?? .infinity)
+            // Until road estimates arrive, use textual relevance. A geometric
+            // offset must never be presented as the order of nearest branches.
+            if withTravelEstimates, !intent.alongRoute {
+                let left = validTravelTime(lhs.travelTime), right = validTravelTime(rhs.travelTime)
+                if left != right { return (left ?? .infinity) < (right ?? .infinity) }
             }
         }
         let leftRelevance = relevance(lhs, intent: intent)
         let rightRelevance = relevance(rhs, intent: intent)
         if leftRelevance != rightRelevance { return leftRelevance > rightRelevance }
-        if withTravelEstimates, !intent.alongRoute, lhs.travelTime != rhs.travelTime {
-            return (lhs.travelTime ?? .infinity) < (rhs.travelTime ?? .infinity)
-        }
-        if intent.alongRoute {
-            let leftOffset = MapMatcher.project(lhs.destination.coordinate, onto: context.route)?
-                .distanceFromRoute ?? .infinity
-            let rightOffset = MapMatcher.project(rhs.destination.coordinate, onto: context.route)?
-                .distanceFromRoute ?? .infinity
-            if leftOffset != rightOffset { return leftOffset < rightOffset }
+        if withTravelEstimates, !intent.alongRoute {
+            let left = validTravelTime(lhs.travelTime), right = validTravelTime(rhs.travelTime)
+            if left != right { return (left ?? .infinity) < (right ?? .infinity) }
         }
         if withTravelEstimates {
             let leftLocal = context.localDestinations.contains { $0.coordinate.distance(to: lhs.destination.coordinate) < 20 }
             let rightLocal = context.localDestinations.contains { $0.coordinate.distance(to: rhs.destination.coordinate) < 20 }
             if leftLocal != rightLocal { return leftLocal }
         }
-        return (lhs.straightDistance ?? .infinity) < (rhs.straightDistance ?? .infinity)
+        let leftDistance = lhs.travelDistance.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+        let rightDistance = rhs.travelDistance.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+        if withTravelEstimates, leftDistance != rightDistance {
+            return (leftDistance ?? .infinity) < (rightDistance ?? .infinity)
+        }
+        let leftText = [lhs.destination.name, lhs.destination.address].compactMap { $0 }.joined(separator: " ")
+        let rightText = [rhs.destination.name, rhs.destination.address].compactMap { $0 }.joined(separator: " ")
+        let order = leftText.compare(rightText, options: [.caseInsensitive, .diacriticInsensitive, .numeric],
+                                     locale: Locale(identifier: "pl_PL"))
+        if order != .orderedSame { return order == .orderedAscending }
+        return (lhs.osmID ?? lhs.providerID ?? lhs.id.uuidString) < (rhs.osmID ?? rhs.providerID ?? rhs.id.uuidString)
+    }
+
+    private static func validTravelTime(_ value: Double?) -> Double? {
+        value.flatMap { $0.isFinite && (0...31_536_000).contains($0) ? $0 : nil }
     }
 
     static func relevance(_ result: SearchResult, intent: ClassifiedQuery) -> Double {

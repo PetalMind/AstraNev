@@ -126,6 +126,7 @@ final class NavigationSession {
     var learningContext: DrivingPreferenceContext?
     var learningCosting = "auto"
     var learningAllowsDeviations = true
+    var learningTrafficCheckedAt: Date?
     var learningRecordingGeneration: Int?
     var learningOfferedRoutes: [NavigationRoute] = []
     var learningSelectedRouteID: UUID?
@@ -463,7 +464,8 @@ final class NavigationSession {
             learningContext = DrivingPreferenceContext(date: Date(),
                 trafficLevel: DrivingPreferenceContext.measuredTrafficLevel(state.traffic))
             learningCosting = state.routingPreferences.advanced.costing(for: state.transportMode)
-            learningAllowsDeviations = state.traffic?.incidents.isEmpty != false
+            learningAllowsDeviations = true
+            learningTrafficCheckedAt = nil
         }
         invalidateSpeedLimit(preservingRoadBuffer: true)
         if usesRoadVoiceGuidance, let location = state.location {
@@ -554,8 +556,17 @@ final class NavigationSession {
         tripSession?.record(navigationLocation,
                             speedLimitKph: state.transportMode == .car
                                 ? drivingSpeedLimit(at: navigationLocation) : nil)
-        if state.traffic?.incidents.contains(where: { $0.affectsRouting && $0.isActive() }) == true {
-            learningAllowsDeviations = false
+        if learningAllowsDeviations, let original = learningOriginalRoute,
+           let traffic = state.traffic, traffic.updatedAt != learningTrafficCheckedAt,
+           abs(Date().timeIntervalSince(traffic.updatedAt)) <= 120 {
+            learningTrafficCheckedAt = traffic.updatedAt
+            let geometry = RouteProgressGeometry(original)
+            if traffic.incidents.contains(where: { incident in
+               incident.affectsRouting && (incident.isRoadClosure || (incident.delaySeconds ?? 0) >= 120)
+                   && RouteTrafficMonitor.incidentProjection(incident, geometry: geometry, route: original) != nil
+            }) {
+                learningAllowsDeviations = false
+            }
         }
         updateProgress()
         if appIsForeground, state.transportMode == .walking,

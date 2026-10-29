@@ -908,7 +908,9 @@ struct DestinationSearchSheet: View {
                         onSelect: { selectResult(result) },
                         isNavigating: alongRoute || QueryClassifier().classify(query).alongRoute,
                         primaryActionTitle: savingKind != nil ? "Zapisz miejsce" : selectingRouteOrigin ? "Ustaw punkt startowy" : alongRoute || QueryClassifier().classify(query).alongRoute ? "Dodaj przystanek" : "Wyznacz trasę",
-                        onExpand: { isSearchFocused = false })
+                        onExpand: { isSearchFocused = false },
+                        showsQuickRouteAction: true,
+                        showsOpeningHours: true)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 4)
                         .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 18))

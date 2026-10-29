@@ -11,3 +11,27 @@ Copyright (c) 2026, Volodymyr Agafonkin.
 License: BSD 2-Clause License.
 License text: Resources/Vendor/OpeningHours/suncalc-BSD-2-Clause.txt.
 Source: https://github.com/mourner/suncalc
+
+Kenney Car Kit 3.1
+Created/distributed by Kenney (www.kenney.nl).
+License: Creative Commons Zero (CC0 1.0 Universal).
+License notice: Resources/Vendor/NavigationCars/kenney-car-kit-license.txt.
+Source: https://kenney.nl/assets/car-kit
+Selected OBJ models converted to local indexed meshes; body paint is customizable.
+
+Kenney environment models (iOS)
+Created/distributed by Kenney (www.kenney.nl).
+License: Creative Commons Zero (CC0 1.0 Universal).
+Nature Kit 2.1: https://kenney.nl/assets/nature-kit
+City Kit Suburban 2.0: https://kenney.nl/assets/city-kit-suburban
+City Kit Commercial 2.1: https://kenney.nl/assets/city-kit-commercial
+City Kit Roads 2.2: https://kenney.nl/assets/city-kit-roads
+Holiday Kit 2.0 (bench only): https://kenney.nl/assets/holiday-kit
+City Kit Industrial 2.0: https://kenney.nl/assets/city-kit-industrial
+Building Kit 1.0 (column/bollard only): https://kenney.nl/assets/building-kit
+Graveyard Kit 5.0 (plain park bench only): https://kenney.nl/assets/graveyard-kit
+Original license notices: Resources/Vendor/EnvironmentModels/kenney-*-license.txt.
+Selected OBJ models converted to normalized local meshes with sampled material colors.
+Coarse derivatives use vertex clustering with original face-plane error minimization.
+Tree colors and roof colors are adapted to the map; traffic signal lenses are unlit.
+Generic architecture is fitted only to eligible observed building footprints.

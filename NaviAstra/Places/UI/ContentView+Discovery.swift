@@ -132,10 +132,8 @@ extension ContentView {
                         Image(systemName: "tram.fill").foregroundStyle(Color.accentColor)
                         Text("Transport w pobliżu").font(.subheadline.weight(.semibold)).foregroundStyle(Color.naviTextPrimary)
                         Spacer()
-                        if let location = navigationStore.state.location?.coordinate {
-                            Text(distance(location.distance(to: stop.coordinate)))
-                                .font(.caption.monospacedDigit()).foregroundStyle(Color.naviTextSecondary)
-                        }
+                        Text("Dojście: trasa niewyznaczona")
+                            .font(.caption).foregroundStyle(Color.naviTextSecondary)
                         Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
                     }
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
@@ -208,6 +206,10 @@ extension ContentView {
                                             let routeDistance = shortcut.estimatedDistanceMeters.map(distance)
                                             Text(routeDistance.map { "\(estimatedMinutes) min · \($0)" } ?? "\(estimatedMinutes) min")
                                                 .font(.caption.weight(.medium).monospacedDigit())
+                                                .foregroundStyle(Color.naviTextSecondary)
+                                        } else {
+                                            Text(quickETAInFlight ? "Obliczanie trasy…" : "Trasa niedostępna")
+                                                .font(.caption.weight(.medium))
                                                 .foregroundStyle(Color.naviTextSecondary)
                                         }
                                     }
@@ -314,6 +316,7 @@ extension ContentView {
         return elapsed >= 0 ? "\(value) temu" : "za \(value)"
     }
 
+#if !os(iOS)
     func mapControl(compact: Bool) -> some View {
         let layout = compact ? AnyLayout(HStackLayout(spacing: 10)) : AnyLayout(VStackLayout(spacing: 10))
         return HStack(alignment: .bottom) {
@@ -429,4 +432,5 @@ extension ContentView {
             }
         }
     }
+#endif
 }

@@ -2,7 +2,8 @@ import Foundation
 
 /// Visual preferences only. A model never selects a routing profile.
 enum NavigationMarkerModel: String, CaseIterable, Codable, Identifiable {
-    case compact, sedan, suv, estate, cityBike, roadBike, pedestrian, bus, tram, train, ferry
+    case compact, sedan, suv, estate, sportsSedan, luxurySUV, van, race
+    case cityBike, roadBike, pedestrian, bus, tram, train, ferry
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -10,6 +11,10 @@ enum NavigationMarkerModel: String, CaseIterable, Codable, Identifiable {
         case .sedan: "Sedan"
         case .suv: "SUV"
         case .estate: "Kombi"
+        case .sportsSedan: "Sedan sportowy"
+        case .luxurySUV: "SUV luksusowy"
+        case .van: "Van"
+        case .race: "Wyścigowy"
         case .cityBike: "Rower"
         case .roadBike: "Rower sportowy"
         case .pedestrian: "Pieszy"
@@ -21,7 +26,7 @@ enum NavigationMarkerModel: String, CaseIterable, Codable, Identifiable {
     }
     var transportIcon: NavigationPositionIcon {
         switch self {
-        case .compact, .sedan, .suv, .estate: .car
+        case .compact, .sedan, .suv, .estate, .sportsSedan, .luxurySUV, .van, .race: .car
         case .cityBike, .roadBike: .bicycle
         case .pedestrian: .pedestrian
         case .bus: .bus
@@ -30,8 +35,22 @@ enum NavigationMarkerModel: String, CaseIterable, Codable, Identifiable {
         case .ferry: .ferry
         }
     }
-    static let cars: [Self] = [.compact, .sedan, .suv]
+    static let cars: [Self] = [.compact, .sedan, .suv, .sportsSedan, .luxurySUV, .van, .race]
     static let bicycles: [Self] = [.cityBike]
+
+    /// Local meshes converted from Kenney Car Kit 3.1 (CC0); no runtime downloads.
+    var carAssetName: String? {
+        switch self {
+        case .compact: "hatchback-sports"
+        case .sedan, .estate: "sedan"
+        case .suv: "suv"
+        case .sportsSedan: "sedan-sports"
+        case .luxurySUV: "suv-luxury"
+        case .van: "van"
+        case .race: "race"
+        default: nil
+        }
+    }
 }
 
 enum NavigationMarkerPaint: String, CaseIterable, Codable, Identifiable {

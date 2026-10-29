@@ -448,7 +448,7 @@ struct TransitRouteProgressGeometry {
         routeID = route.id
         let journeyLegs = route.journey?.legs ?? []
         legs = journeyLegs.map { leg in
-            let geometry = RouteProgressGeometry(coordinates: leg.coordinates)
+            let geometry = RouteProgressGeometry(coordinates: leg.hasResolvedRouteGeometry ? leg.coordinates : [])
             let orderedStops = leg.transitStops.sorted { $0.sequence < $1.sequence }
             let projectedStops = orderedStops.enumerated().compactMap { order, stop -> ProjectedStop? in
                 guard let projection = geometry.project(stop.coordinate),
@@ -516,7 +516,7 @@ struct TransitRouteProgressGeometry {
             distanceToLegEnd: max(0, match.2 - legDistance),
             distanceFromRoute: match.1.distanceFromRoute,
             nextStop: nextStop,
-            distanceToNextStop: nextStop.map { coordinate.distance(to: $0.coordinate) },
+            distanceToNextStop: nextPosition.map { max(0, $0.alongRoute - legDistance) },
             stopsUntilAlighting: leg.mode.uppercased() == "WALK" ? nil : upcomingStops.count,
             routeProjection: routeProjection)
     }

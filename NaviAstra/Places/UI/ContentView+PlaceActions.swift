@@ -55,15 +55,24 @@ extension ContentView {
     }
 
     var quickETADestinationFingerprint: String {
-        placeStore.places.map { place in
+        let places = placeStore.places.map { place in
             let coordinate = place.destination.coordinate
             return "\(place.id.uuidString):\(coordinate.latitude),\(coordinate.longitude)"
         }.joined(separator: "|")
+        return "\(navigationStore.state.transportMode.rawValue)|\(places)"
     }
 
     func refreshQuickDestinationETAs() async {
         guard scenePhase == .active else { return }
-        guard !quickETAInFlight, let origin = navigationStore.state.location?.coordinate else { return }
+        guard let location = navigationStore.state.location,
+              location.accuracy.isFinite, location.accuracy >= 0,
+              (-5...60).contains(Date().timeIntervalSince(location.timestamp)) else {
+            quickETAEstimates = [:]
+            quickETAUpdatedAt = .distantPast
+            return
+        }
+        guard !quickETAInFlight else { return }
+        let origin = location.coordinate
         let destinations = placeStore.places
         guard !destinations.isEmpty else {
             quickETAEstimates = [:]
@@ -79,9 +88,8 @@ extension ContentView {
         quickETAInFlight = true
         quickETAOrigin = origin
         quickETADestinationKey = destinationKey
-        var estimates = quickETAEstimates.filter { key, _ in
-            destinations.contains(where: { $0.id.uuidString == key })
-        }
+        let mode = navigationStore.state.transportMode
+        var estimates: [String: PlaceRouteEstimate] = [:]
         quickETAEstimates = estimates
         defer {
             quickETAUpdatedAt = Date()
@@ -100,12 +108,20 @@ extension ContentView {
             guard placeStore.places.contains(where: {
                 $0.id == place.id && $0.destination.coordinate == place.destination.coordinate
             }) else { continue }
-            if let estimate = await navigationStore.estimatedCarRouteEstimate(
-                to: place.navigationDestination, from: origin) {
-                estimates[place.id.uuidString] = estimate
+            if let estimate = try? await navigationStore.estimatedSearchRoute(
+                from: origin, to: place.navigationDestination, mode: mode),
+               estimate.travelTime.isFinite, estimate.travelTime >= 0,
+               estimate.distanceMeters.isFinite, estimate.distanceMeters >= 0 {
+                guard quickETADestinationFingerprint == destinationKey,
+                      navigationStore.state.location.map({ $0.coordinate.distance(to: origin) < 750 }) == true else { return }
+                estimates[place.id.uuidString] = PlaceRouteEstimate(
+                    minutes: max(1, Int(ceil(estimate.travelTime / 60))),
+                    distanceMeters: estimate.distanceMeters)
                 quickETAEstimates = estimates
             }
         }
+        guard quickETADestinationFingerprint == destinationKey,
+              navigationStore.state.location.map({ $0.coordinate.distance(to: origin) < 750 }) == true else { return }
         quickETAEstimates = estimates
     }
 
@@ -146,7 +162,7 @@ extension ContentView {
     }
 
     @ViewBuilder
-    func speedCard(at now: Date) -> some View {
+    func speedCard(at now: Date, compact: Bool = false, condensed: Bool = false) -> some View {
         let fresh = navigationStore.state.location.map { now.timeIntervalSince($0.timestamp) < 15 } ?? false
         let speed = navigationStore.state.location?.speed
         let current: Int? = speed.flatMap { value -> Int? in
@@ -161,9 +177,29 @@ extension ContentView {
             speedDescription,
             navigationStore.state.speedLimitSource.map { "Źródło limitu: \($0.shortTitle)" }
         ].compactMap { $0 }.joined(separator: ", ")
+#if os(iOS)
+        if compact {
+            DrivingSpeedInstrument(speed: current, limit: limit, exceedsLimit: aboveLimit, condensed: condensed)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(accessibilityDescription)
+        } else {
+            legacySpeedCard(current: current, limit: limit, aboveLimit: aboveLimit,
+                            accessibilityDescription: accessibilityDescription, fresh: fresh, compact: compact)
+        }
+#else
+        legacySpeedCard(current: current, limit: limit, aboveLimit: aboveLimit,
+                        accessibilityDescription: accessibilityDescription, fresh: fresh, compact: compact)
+#endif
+    }
 
-        VStack(alignment: .leading, spacing: 7) {
-            VStack(alignment: .leading, spacing: 6) {
+    private func legacySpeedCard(current: Int?, limit: Int?, aboveLimit: Bool,
+                                 accessibilityDescription: String, fresh: Bool, compact: Bool) -> some View {
+        let instrumentsLayout = compact
+            ? AnyLayout(HStackLayout(alignment: .top, spacing: 8))
+            : AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
+
+        return VStack(alignment: .leading, spacing: 7) {
+            instrumentsLayout {
                 if let limit {
                     VStack(spacing: 3) {
                         Text(String(limit))
@@ -181,7 +217,7 @@ extension ContentView {
                                 .lineLimit(1)
                         }
                     }
-                    .frame(width: 76)
+                    .frame(width: compact ? 54 : 76)
                 }
 
                 VStack(spacing: 0) {
@@ -210,7 +246,8 @@ extension ContentView {
                       systemImage: "location.slash")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(Color.naviTextSecondary)
-                    .lineLimit(1)
+                    .lineLimit(compact ? 3 : 1)
+                    .fixedSize(horizontal: false, vertical: compact)
             }
         }
         .frame(maxWidth: 230, alignment: .leading)
@@ -237,9 +274,9 @@ extension ContentView {
 
     @ViewBuilder
     private var upcomingRoadSafetyBanner: some View {
-        if let alert = nextNavigationRoadSafetyAlert {
-            let remainingDistance = max(0, (alert.distanceAlongRoute ?? navigationStore.state.roadAlertRouteDistance)
-                                        - navigationStore.state.roadAlertRouteDistance)
+        if let alert = nextNavigationRoadSafetyAlert,
+           let alertDistance = alert.distanceAlongRoute {
+            let remainingDistance = max(0, alertDistance - navigationStore.state.roadAlertRouteDistance)
             NavigationAlertDisclosure(
                 title: alert.title,
                 distanceText: distance(remainingDistance),
@@ -250,12 +287,21 @@ extension ContentView {
                 cornerRadius: 15,
                 symbol: roadAlertSymbol(alert))
                 .id("\(navigationStore.state.route?.id.uuidString ?? "no-route")-\(alert.id)")
-        } else if let message = navigationStore.state.speedLimitMessage {
+        } else if let message = navigationStore.state.speedLimitMessage,
+                  showsSpeedLimitStatusMessage {
             Label(message, systemImage: "exclamationmark.triangle")
                 .font(.caption2)
                 .foregroundStyle(Color.naviTextSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private var showsSpeedLimitStatusMessage: Bool {
+#if os(iOS)
+        !(isNavigating && isOnRoadDrivingLeg)
+#else
+        true
+#endif
     }
 
     var nextNavigationRoadSafetyAlert: RoadSafetyAlert? {
@@ -375,18 +421,14 @@ extension ContentView {
         let mode = navigationStore.state.transportMode
         let canRequestETA = origin != nil && mode != .transit
         var selected = result
+        selected.straightDistance = nil
+        selected.detourDistance = nil
+        selected.travelTime = nil
+        selected.travelDistance = nil
+        selected.detour = nil
         selected.requiresRouteEstimate = true
         selected.travelEstimateStatus = canRequestETA ? .calculating : .unavailable
 
-        if navigationActive {
-            if let origin, let route = navigationStore.state.route?.coordinates,
-               let currentProjection = MapMatcher.project(origin, onto: route) {
-                let futureRoute = Array(route.dropFirst(currentProjection.segment))
-                selected.detourDistance = MapMatcher.project(result.destination.coordinate, onto: futureRoute)?.distanceFromRoute
-            }
-        } else if let origin {
-            selected.straightDistance = origin.distance(to: result.destination.coordinate)
-        }
         withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
             selectedMapPlaceDetent = .medium
             placeStore.selectedMapPlaces = [selected]
@@ -573,6 +615,7 @@ extension ContentView {
     }
 
     func distance(_ meters: Double) -> String {
+        guard meters.isFinite, meters >= 0 else { return "Odległość niedostępna" }
         guard meters >= 1000 else { return "\(Int(meters)) m" }
         let formatter = NumberFormatter()
         formatter.locale = Locale(identifier: "pl_PL")
@@ -583,6 +626,7 @@ extension ContentView {
     }
 
     func time(_ seconds: TimeInterval) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "Czas niedostępny" }
         let totalMinutes = max(1, Int(ceil(seconds / 60)))
         let hours = totalMinutes / 60
         let minutes = totalMinutes % 60

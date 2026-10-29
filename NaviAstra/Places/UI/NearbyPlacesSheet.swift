@@ -133,6 +133,16 @@ struct NearbyPlacesSheet: View {
             if let selectedConnector,
                !(candidate.chargingStation?.connectorTypes.contains(selectedConnector) ?? false) { return false }
             return true
+        }.sorted { left, right in
+            func valid(_ value: Double?) -> Double? { value.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil } }
+            let leftTime = valid(nearestSearch || nearDestination ? left.travelTime : left.detourSeconds)
+            let rightTime = valid(nearestSearch || nearDestination ? right.travelTime : right.detourSeconds)
+            if leftTime != rightTime { return (leftTime ?? .infinity) < (rightTime ?? .infinity) }
+            let leftDistance = valid(left.travelDistance), rightDistance = valid(right.travelDistance)
+            if leftDistance != rightDistance { return (leftDistance ?? .infinity) < (rightDistance ?? .infinity) }
+            let order = left.candidate.destination.name.compare(right.candidate.destination.name,
+                options: [.caseInsensitive, .diacriticInsensitive, .numeric], locale: Locale(identifier: "pl_PL"))
+            return order == .orderedSame ? left.id < right.id : order == .orderedAscending
         }
     }
 
@@ -423,18 +433,17 @@ struct NearbyPlacesSheet: View {
 
     private var searchDescription: String {
         if nearDestination {
-            return "Do 2 km od celu. Brak danych o wolnych miejscach parkingowych."
+            return "Parkingi w okolicy celu. Brak danych o wolnych miejscach parkingowych. Odległość pokazujemy po wyznaczeniu drogi."
         }
         if nearestSearch {
-            let radius = expandedRadius ? 15 : 5
-            return "\(category.title) w promieniu do \(radius) km od Twojej lokalizacji."
+            return "\(category.title) w wybranym obszarze. Kolejność uwzględnia dostępne czasy trasy po drogach i ścieżkach."
         }
-        return "Do 1,5 km od pozostałej trasy. Czas objazdu pokazujemy, jeśli jest dostępny."
+        return "Miejsca w obszarze pozostałej trasy. Czas objazdu pokazujemy po jego wyznaczeniu."
     }
 
     private var searchStatusTitle: String {
-        if nearDestination { return "Szukam parkingów do 2 km od celu…" }
-        return nearestSearch ? "Szukam najbliższych miejsc…" : "Szukam miejsc wzdłuż trasy…"
+        if nearDestination { return "Szukam parkingów w okolicy celu…" }
+        return nearestSearch ? "Szukam miejsc i sprawdzam dojazd…" : "Szukam miejsc wzdłuż trasy…"
     }
 
     private var navigationTitle: String {
@@ -519,7 +528,7 @@ struct NearbyPlacesSheet: View {
                 Text("Wyniki · \(filteredSuggestions.count)")
                     .font(.headline)
                 Spacer()
-                Text(nearDestination ? "Przy celu" : nearestSearch ? "Najbliżej najpierw" : "Wzdłuż trasy")
+                Text(nearDestination ? "Przy celu" : nearestSearch ? "Według dostępnego czasu trasy" : "Wzdłuż trasy")
                     .font(.caption)
                     .foregroundStyle(Color.naviTextSecondary)
             }
@@ -584,7 +593,7 @@ struct NearbyPlacesSheet: View {
             Button {
                 expandedRadius = true
             } label: {
-                Label("Pokaż więcej · do 15 km", systemImage: "arrow.down.circle")
+                Label("Powiększ obszar wyszukiwania", systemImage: "arrow.down.circle")
                     .font(.subheadline.weight(.semibold))
                     .frame(maxWidth: .infinity, minHeight: 44)
             }
@@ -702,18 +711,6 @@ struct NearbyPlacesSheet: View {
             osmID = nil
         }
 
-        let straightDistance: Double?
-        if nearDestination {
-            straightDistance = navigationStore.state.destination.map {
-                $0.coordinate.distance(to: candidate.destination.coordinate)
-            }
-        } else if nearestSearch {
-            straightDistance = navigationStore.state.location?.coordinate.distance(
-                to: candidate.destination.coordinate)
-        } else {
-            straightDistance = nil
-        }
-
         return SearchResult(destination: candidate.destination, street: nil, houseNumber: nil,
                             city: nil, countryCode: candidate.countryCode, isPOI: true,
                             osmID: osmID,
@@ -724,9 +721,9 @@ struct NearbyPlacesSheet: View {
                             operatorName: poi?.operatorName ?? candidate.operatorName,
                             openingHours: candidate.openingHours,
                             timeZoneIdentifier: candidate.timeZoneIdentifier,
-                            straightDistance: straightDistance,
                             travelTime: suggestion.travelTime, travelDistance: suggestion.travelDistance,
-                            detour: suggestion.detourSeconds, travelEstimateStatus: suggestion.estimateStatus)
+                            detour: suggestion.detourSeconds, travelEstimateStatus: suggestion.estimateStatus,
+                            requiresRouteEstimate: true)
     }
 
 }

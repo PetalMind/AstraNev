@@ -41,16 +41,23 @@ final class DrivingLearningEngine {
         let store = store ?? DrivingProfileStore()
         self.store = store
         do { snapshot = try store.load() }
-        catch { message = "Nie udało się odczytać preferencji tras: \(error.localizedDescription)" }
+        catch { message = "Nie udało się odczytać preferencji tras na urządzeniu." }
         let cutoff = Date().addingTimeInterval(-365 * 86_400)
         snapshot.trips = Array(snapshot.trips.filter { $0.startedAt >= cutoff }.prefix(300))
         snapshot.pending = Array(snapshot.pending.filter { $0.startedAt >= cutoff }.suffix(10))
+        // Enable automatic local learning for the existing installation once.
+        // Remote matching remains a separate opt-in; subsequent disable is kept.
+        let upgradedAutomaticLearning = snapshot.schemaVersion < 3
+        if upgradedAutomaticLearning { snapshot.settings.enabled = true }
         settings = snapshot.settings
         let existing = Set(snapshot.evidence.compactMap(\.tripID))
         let migrated = snapshot.trips.filter { !existing.contains($0.id) }
         for trip in migrated { snapshot.evidence += DrivingEvidenceMath.observations(for: trip, migrated: true) }
-        snapshot.schemaVersion = 2
-        if !migrated.isEmpty { do { try store.save(snapshot) } catch { message = error.localizedDescription } }
+        snapshot.schemaVersion = 3
+        if !migrated.isEmpty || upgradedAutomaticLearning {
+            do { try store.save(snapshot) }
+            catch { message = "Nie udało się zapisać ustawień uczenia tras na urządzeniu." }
+        }
         rebuild()
     }
 
@@ -189,28 +196,50 @@ final class DrivingLearningEngine {
             for pending in waiting {
                 guard !Task.isCancelled, self.revision == generation, self.settings.enabled else { return }
                 do {
-                    let actual = try await matcher.match(pending.trace.map(\.coordinate), costing: pending.costing, recorded: true)
+                    var actual: [LearnedRoadSegment] = []
+                    var proposed: [LearnedRoadSegment] = []
+                    var localGeometry = false
+                    do {
+                        actual = try await matcher.match(pending.trace.map(\.coordinate), costing: pending.costing, recorded: true)
+                        // Matching the proposed geometry is needed only for deviation evidence.
+                        if !pending.proposedCoordinates.isEmpty && (pending.allowAutomaticDeviations || pending.confirmed) {
+                            proposed = try await matcher.match(pending.proposedCoordinates, costing: pending.costing, recorded: false)
+                        } else { proposed = [] }
+                    } catch {
+                        try Task.checkCancellation()
+                        if let failure = error as? DrivingLearningFailure, case .incompleteTrace = failure {
+                            throw failure
+                        }
+                        // Missing/out-of-coverage offline graph or an unavailable
+                        // opted-in matcher must not prevent validated local learning.
+                        actual = try DrivingTraceLearning.segments(trace: pending.trace)
+                        proposed = pending.allowAutomaticDeviations || pending.confirmed
+                            ? DrivingTraceLearning.segments(coordinates: pending.proposedCoordinates) : []
+                        localGeometry = true
+                    }
                     guard !actual.isEmpty else { throw DrivingLearningFailure.incompleteTrace }
-                    // Matching the proposed geometry is needed only for deviation/avoidance evidence.
-                    let proposed: [LearnedRoadSegment]
-                    if !pending.proposedCoordinates.isEmpty && (pending.allowAutomaticDeviations || pending.confirmed) {
-                        proposed = try await matcher.match(pending.proposedCoordinates, costing: pending.costing, recorded: false)
-                    } else { proposed = [] }
                     try Task.checkCancellation()
                     guard self.revision == generation else { return }
                     var offered: [DrivingObservedVariant] = []
                     if pending.allowAutomaticDeviations {
                         for variant in pending.offeredVariants {
                             do {
-                                let matched = variant.id == pending.proposedVariantID ? proposed
-                                    : try await matcher.match(variant.coordinates, costing: pending.costing, recorded: false)
+                                let matched: [LearnedRoadSegment]
+                                if localGeometry {
+                                    matched = DrivingTraceLearning.segments(coordinates: variant.coordinates)
+                                } else {
+                                    matched = variant.id == pending.proposedVariantID ? proposed
+                                        : try await matcher.match(variant.coordinates, costing: pending.costing, recorded: false)
+                                }
                                 if !matched.isEmpty { offered.append(DrivingObservedVariant(id: variant.id, segments: matched)) }
                             } catch { try Task.checkCancellation() } // Missing offer evidence is unknown, not zero.
                         }
                     }
                     try Task.checkCancellation()
                     guard self.revision == generation else { return }
-                    let deviations = DrivingDeviationDetector.detect(actual: actual, proposed: proposed, trace: pending.trace)
+                    let deviations = localGeometry
+                        ? DrivingTraceLearning.deviations(actual: actual, proposed: proposed, trace: pending.trace)
+                        : DrivingDeviationDetector.detect(actual: actual, proposed: proposed, trace: pending.trace)
                     let learned = LearnedDrivingTrip(id: pending.id, destinationName: pending.destinationName,
                         origin: pending.trace[0].coordinate, destination: pending.destination, startedAt: pending.startedAt,
                         duration: pending.duration, context: pending.context, segments: actual,
@@ -233,9 +262,10 @@ final class DrivingLearningEngine {
                 } catch is CancellationError { return }
                 catch {
                     guard self.revision == generation else { return }
-                    self.message = error.localizedDescription
-                    // Keep the compact pending trace for retry after a map is installed.
-                    return
+                    self.message = (error as? DrivingLearningFailure)?.errorDescription
+                        ?? "Nie udało się przeanalizować przejazdu. Spróbujemy ponownie później."
+                    // One uncertain observation must not block subsequent valid journeys.
+                    continue
                 }
             }
         }
@@ -270,7 +300,8 @@ final class DrivingLearningEngine {
     }
 
     func shouldSuggest(_ tripID: UUID) -> Bool {
-        hasDeviation(tripID) && !snapshot.ignoredTripIDs.contains(tripID)
+        hasDeviation(tripID) && snapshot.trips.first(where: { $0.id == tripID })?.automaticPreferenceEligible == false
+            && !snapshot.ignoredTripIDs.contains(tripID)
             && (patterns.first { $0.trips.contains { $0.id == tripID } }?.confidence ?? 0) < 0.7
     }
 
@@ -300,6 +331,7 @@ final class DrivingLearningEngine {
                let trip = next.trips.first(where: { $0.id == id }) {
                 let peers = { (all: [LearnedDrivingTrip]) in all.filter {
                     DrivingLearningMath.sameJourney($0, trip) && DrivingLearningMath.similarity($0.segments, trip.segments) >= 0.85
+                        && DrivingLearningMath.compatibleChoices($0, trip)
                 } }
                 next.evidence[index].confidenceBefore = DrivingEvidenceMath.metrics(trips: peers(snapshot.trips), at: Date()).confidence
                 next.evidence[index].confidenceAfter = DrivingEvidenceMath.metrics(trips: peers(next.trips), at: Date()).confidence
@@ -311,7 +343,7 @@ final class DrivingLearningEngine {
             rebuild()
             return true
         } catch {
-            message = "Nie udało się zapisać preferencji tras: \(error.localizedDescription)"
+            message = "Nie udało się zapisać preferencji tras na urządzeniu."
             return false
         }
     }
@@ -481,7 +513,7 @@ final class DrivingLearningEngine {
     func isPreferred(_ route: NavigationRoute) -> Bool {
         guard settings.enabled else { return false }
         let assessment = assessment(route)
-        return assessment.score >= 0.7 && (assessment.confirmed || learnedTripCount >= 10)
+        return assessment.score >= 0.7 && (assessment.confirmed || learnedTripCount >= 3)
     }
 
     private func metrics(for trips: [LearnedDrivingTrip], at date: Date,
@@ -573,11 +605,21 @@ final class DrivingLearningEngine {
             let trip = pattern.representative
             let affinity = pattern.trips.map { context.affinity(to: $0.context) }.max() ?? 0
             let value = metrics(for: pattern.trips, at: Date(), context: context)
-            guard affinity >= 0.5, value.effective >= 0.20 else { continue }
+            guard affinity >= 0.5, value.effective >= 0.15 else { continue }
             if trip.origin.distance(to: origin) <= 250, trip.destination.distance(to: destination) <= 150 {
-                let coordinates = trip.coordinates
-                let points = ValhallaServices.sample(coordinates, limit: 5)
-                if points.count >= 3 { hints.append(Array(points.dropFirst().dropLast())) }
+                // A short repeated alternative on a long journey can fall between
+                // evenly sampled points. Put hints inside the actual deviation.
+                if let deviation = trip.deviations.max(by: {
+                    $0.preferred.reduce(0) { $0 + $1.length } < $1.preferred.reduce(0) { $0 + $1.length }
+                }) {
+                    let path = RouteProgressGeometry(coordinates: deviation.preferred.flatMap(\.coordinates))
+                    let points = [0.33, 0.67].compactMap { path.coordinate(at: path.length * $0) }
+                    if !points.isEmpty { hints.append(points) }
+                } else {
+                    let path = RouteProgressGeometry(coordinates: trip.coordinates)
+                    let points = [0.25, 0.5, 0.75].compactMap { path.coordinate(at: path.length * $0) }
+                    if !points.isEmpty { hints.append(points) }
+                }
             }
             if hints.count >= 2 { break }
         }
@@ -597,7 +639,7 @@ final class DrivingLearningEngine {
         if settings.shortcuts, hints.count < 2, let geometry = baselineGeometry {
             for shortcut in shortcuts {
                 let users = patterns.flatMap(\.trips).filter { $0.deviations.contains { $0.id == shortcut.id } }
-                guard metrics(for: users, at: Date(), context: context).effective >= 0.2 else { continue }
+                guard metrics(for: users, at: Date(), context: context).effective >= 0.15 else { continue }
                 let deviation = shortcut.deviation
                 guard let entry = geometry.project(deviation.entry, within: 75),
                       let exit = geometry.project(deviation.exit, within: 75),

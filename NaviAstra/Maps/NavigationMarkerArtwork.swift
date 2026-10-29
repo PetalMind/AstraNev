@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-/// Small authored 3D meshes projected into cached transparent 2.5D sprites.
+/// Bundled car meshes and authored transport meshes projected into cached transparent 2.5D sprites.
 /// No map SDK, SwiftUI tree, network resource or live 3D scene is needed to draw a model.
 @MainActor
 enum NavigationMarkerArtwork {
@@ -26,12 +26,53 @@ enum NavigationMarkerArtwork {
         let image: CGImage
         init(_ image: CGImage) { self.image = image }
     }
+    private final class CachedMesh: NSObject {
+        let faces: [Face]
+        init(_ faces: [Face]) { self.faces = faces }
+    }
     private static let cache: NSCache<NSString, CachedImage> = {
         let value = NSCache<NSString, CachedImage>()
         value.totalCostLimit = 12 * 1024 * 1024
         return value
     }()
-    private static var meshes: [String: [Face]] = [:]
+    private static let meshes: NSCache<NSString, CachedMesh> = {
+        let value = NSCache<NSString, CachedMesh>()
+        value.countLimit = 12
+        return value
+    }()
+
+    private struct CarMesh: Decodable {
+        let vertices: [[Double]]
+        /// Three vertex indices followed by RGB, or -1 for the user's selected paint.
+        let triangles: [[Int]]
+    }
+    private static var carAssets: [String: CarMesh] = [:]
+
+    private static func carMesh(_ name: String, paint: UInt32) -> [Face]? {
+        let mesh: CarMesh
+        if let cached = carAssets[name] { mesh = cached }
+        else {
+            guard let url = Bundle.main.url(forResource: "kenney-" + name, withExtension: "json"),
+                  let data = try? Data(contentsOf: url),
+                  let decoded = try? JSONDecoder().decode(CarMesh.self, from: data),
+                  !decoded.vertices.isEmpty, !decoded.triangles.isEmpty,
+                  decoded.vertices.allSatisfy({ $0.count == 3 && $0.allSatisfy(\.isFinite) }),
+                  decoded.triangles.allSatisfy({ triangle in
+                      triangle.count == 4 && triangle.prefix(3).allSatisfy(decoded.vertices.indices.contains)
+                          && (-1...0xFFFFFF).contains(triangle[3])
+                  }) else {
+                NSLog("NavigationMarkerArtwork: unavailable or invalid bundled car mesh %@", name)
+                return nil
+            }
+            carAssets[name] = decoded
+            mesh = decoded
+        }
+        let points = mesh.vertices.map { Point(x: $0[0], y: $0[1], z: $0[2]) }
+        return mesh.triangles.map { triangle in
+            Face(points: triangle.prefix(3).map { points[$0] },
+                 color: triangle[3] == -1 ? paint : UInt32(triangle[3]))
+        }
+    }
 
     /// Angles are sampled only for tilted maps. A top-down image rotates continuously in the view.
     static func image(model: NavigationMarkerModel, paint: NavigationMarkerPaint,
@@ -40,12 +81,12 @@ enum NavigationMarkerArtwork {
         let tilt = Int((max(0, min(60, pitch)) / 5).rounded()) * 5
         let key = "\(model.rawValue):\(paint.rawValue):\(yaw):\(tilt):\(night)" as NSString
         if let cached = cache.object(forKey: key) { return cached.image }
-        let meshKey = "\(model.rawValue):\(paint.rawValue)"
+        let meshKey = "\(model.rawValue):\(paint.rawValue)" as NSString
         let faces: [Face]
-        if let stored = meshes[meshKey] { faces = stored }
+        if let stored = meshes.object(forKey: meshKey) { faces = stored.faces }
         else {
             faces = makeMesh(model, paint: paint.hex)
-            meshes[meshKey] = faces
+            meshes.setObject(CachedMesh(faces), forKey: meshKey)
         }
         let pixels = 160
         guard let context = CGContext(data: nil, width: pixels, height: pixels,
@@ -134,6 +175,9 @@ enum NavigationMarkerArtwork {
     }
 
     private static func makeMesh(_ model: NavigationMarkerModel, paint: UInt32) -> [Face] {
+        // Keep the existing lightweight projection, anchor, lighting and image cache.
+        // The authored car below is a visible fallback if a bundled asset cannot be read.
+        if let name = model.carAssetName, let faces = carMesh(name, paint: paint) { return faces }
         var faces: [Face] = []
         let glass: UInt32 = 0x253F58
         let tire: UInt32 = 0x202938
@@ -193,9 +237,9 @@ enum NavigationMarkerArtwork {
             }
         }
         switch model {
-        case .compact, .sedan, .suv, .estate:
-            let sedan = model == .sedan || model == .estate
-            let suv = model == .suv
+        case .compact, .sedan, .suv, .estate, .sportsSedan, .luxurySUV, .van, .race:
+            let sedan = model == .sedan || model == .estate || model == .sportsSedan || model == .race
+            let suv = model == .suv || model == .luxurySUV || model == .van
             let length = sedan ? 4.05 : (suv ? 3.85 : 3.35)
             let width = suv ? 1.78 : (sedan ? 1.65 : 1.62)
             let shoulder = suv ? 0.95 : 0.78

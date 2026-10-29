@@ -33,6 +33,10 @@ struct ContentView: View {
     @State var fuelStopEntryCandidates: [FuelStopStation] = []
     @State var weatherStore = WeatherStore()
     @State var showsWeatherDetails = false
+#if os(iOS)
+    @State var showsRoadReportEditor = false
+    @State var quickRoadReportFeedback: QuickRoadReportFeedback?
+#endif
     @AppStorage("weatherEnabled") var weatherEnabled = true
     @AppStorage("weatherIntensity") var weatherIntensity = WeatherEffectIntensity.subtle.rawValue
     @AppStorage("weatherAnimations") var weatherAnimations = true
@@ -94,6 +98,8 @@ struct ContentView: View {
     @State var currentStepExpandedOverride: Bool? = nil
 #if os(iOS)
     @State var currentStepGuidancePresentation: CurrentStepGuidancePresentation?
+    @State var drivingRoadAlertsHeight: CGFloat = 0
+    @State var drivingMapDockHeight: CGFloat = 0
 #endif
     @State var routePlanningDetailsExpanded = false
     @State var expandedTransitStopsLegID: UUID?
@@ -127,6 +133,11 @@ struct ContentView: View {
         _transitStore = State(initialValue: dependencies.transitStore)
         _mapStore = State(initialValue: dependencies.mapStore)
         _placeStore = State(initialValue: dependencies.placeStore)
+        #if DEBUG && os(iOS)
+        if IOSDebugDrivingScenario.isEnabled {
+            _navigationPanelDetent = State(initialValue: IOSDebugDrivingScenario.panelDetent)
+        }
+        #endif
     }
 
 

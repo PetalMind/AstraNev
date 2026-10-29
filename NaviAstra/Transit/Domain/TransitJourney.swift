@@ -45,6 +45,7 @@ struct TransitLeg: Identifiable, Sendable {
     let lineColorHex: UInt32?
     let alerts: [String]
     let isInterlined: Bool
+    var hasResolvedGeometry = true
 
     var duration: TimeInterval { max(0, estimatedArrival.timeIntervalSince(estimatedDeparture)) }
     var isTransit: Bool { mode.isTransit }

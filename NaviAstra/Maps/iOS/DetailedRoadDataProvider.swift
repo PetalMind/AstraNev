@@ -5,9 +5,10 @@ nonisolated struct DetailedRoadSnapshot: Sendable {
     let roads: [DetailedRoad]
     let fetchedAt: Date
     let revision: String
+    var coversQuery = true
     var isFresh: Bool {
         let age = Date().timeIntervalSince(fetchedAt)
-        return age >= -300 && age < 24 * 60 * 60
+        return coversQuery && age >= -300 && age < 24 * 60 * 60
     }
 }
 

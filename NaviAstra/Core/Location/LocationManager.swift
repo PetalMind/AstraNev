@@ -24,6 +24,7 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
     }
 
     func apply(_ policy: LocationPolicy, appIsForeground: Bool) {
+        let previousPolicy = appliedPolicy
         let changed = appliedPolicy != policy || self.appIsForeground != appIsForeground
         appliedPolicy = policy
         self.appIsForeground = appIsForeground
@@ -34,6 +35,14 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
             return
         }
 
+        // Preserve the foreground-started location session when locking the
+        // phone. Stopping and restarting it in the background can lose delivery.
+        if NavigationBackgroundLocationPolicy.preservesContinuousSession(previous: previousPolicy, next: policy) {
+            configure(policy)
+            applyBackgroundLocationSettings(manager.authorizationStatus)
+            setHeadingUpdatesEnabled(policy.updatesHeading)
+            return
+        }
         manager.stopUpdatingLocation()
         switch policy.demand {
         case .stopped:
@@ -153,11 +162,11 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
     func requestTransitBackgroundAuthorization() -> Bool {
 #if os(iOS)
         guard backgroundLocationModeEnabled else { return false }
-        if manager.authorizationStatus == .authorizedAlways {
-            applyBackgroundLocationSettings(.authorizedAlways)
+        if manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse {
+            applyBackgroundLocationSettings(manager.authorizationStatus)
             return true
         }
-        manager.requestAlwaysAuthorization()
+        prepareAuthorization()
 #endif
         return false
     }
@@ -172,16 +181,15 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
 
     private func applyBackgroundLocationSettings(_ authorization: CLAuthorizationStatus) {
 #if os(iOS)
-        let wantsBackgroundUpdates = appliedPolicy?.demand == .continuous
-            && appliedPolicy?.allowsBackgroundUpdates == true
-        let isAuthorized = authorization == .authorizedAlways || authorization == .authorizedWhenInUse
-        let enabled = !appIsForeground && wantsBackgroundUpdates
-            && isAuthorized && backgroundLocationModeEnabled
+        let enabled = NavigationBackgroundLocationPolicy.allowsDelivery(
+            demandIsContinuous: appliedPolicy?.demand == .continuous,
+            navigationAllowsBackground: appliedPolicy?.allowsBackgroundUpdates == true,
+            authorization: authorization, backgroundModeEnabled: backgroundLocationModeEnabled)
         guard enabled else { stopBackgroundNavigationUpdates(); return }
-        // Enable background delivery only as the app leaves the foreground.
-        // When In Use authorization supplies its required system indicator automatically.
+        // Configure this while the navigation session is still in the foreground.
+        // The energy policy turns delivery off on stop/arrival and during browsing.
         manager.allowsBackgroundLocationUpdates = true
-        manager.showsBackgroundLocationIndicator = false
+        manager.showsBackgroundLocationIndicator = true
         manager.pausesLocationUpdatesAutomatically = false
 #endif
     }

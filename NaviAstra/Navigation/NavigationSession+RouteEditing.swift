@@ -43,14 +43,16 @@ extension NavigationSession {
                 let routes = try await provider.calculateRoutes(
                     from: origin, to: target, through: [], mode: .car,
                     preferences: state.routingPreferences, avoiding: [])
-                guard let route = routes.first else { return nil }
-                return PlaceRouteEstimate(minutes: max(1, Int(ceil(route.expectedTravelTime / 60))),
-                                          distanceMeters: route.distance)
+                guard let route = routes.first,
+                      let metric = RoutedTravelMetrics(time: route.expectedTravelTime, distance: route.distance) else { return nil }
+                return PlaceRouteEstimate(minutes: max(1, Int(ceil(metric.time / 60))),
+                                          distanceMeters: metric.distance)
             }
             let routes = try await routeProvider.calculateRoutes(from: origin, to: target, mode: .car)
-            guard let route = routes.first else { return nil }
-            return PlaceRouteEstimate(minutes: max(1, Int(ceil(route.expectedTravelTime / 60))),
-                                      distanceMeters: route.distance)
+            guard let route = routes.first,
+                  let metric = RoutedTravelMetrics(time: route.expectedTravelTime, distance: route.distance) else { return nil }
+            return PlaceRouteEstimate(minutes: max(1, Int(ceil(metric.time / 60))),
+                                      distanceMeters: metric.distance)
         } catch {
             return nil
         }

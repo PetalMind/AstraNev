@@ -176,13 +176,18 @@ extension TransitRepository {
             return TransitSearchResults(stops: [], lines: [])
         }
         let normalized = TransitSearchText.normalize(query)
-        let matchingStops = database.stopsForSearch.compactMap { stop -> (stop: GTFSStop, distance: Double)? in
-            guard database.normalizedStopNames[stop.id]?.contains(normalized) == true else { return nil }
-            return (stop, coordinate.map { stop.coordinate.distance(to: $0) } ?? .infinity)
-        }.sorted { lhs, rhs in
-            if lhs.distance != rhs.distance { return lhs.distance < rhs.distance }
-            return lhs.stop.name.localizedStandardCompare(rhs.stop.name) == .orderedAscending
-        }.prefix(12).map { Self.publicStop($0.stop, database: database) }
+        let matching = database.stopsForSearch.filter {
+            database.normalizedStopNames[$0.id]?.contains(normalized) == true
+        }
+        // Geometry scopes a query area; it does not assert which stop is fastest
+        // to reach across bridges, fences or railway tracks.
+        let local = coordinate.map { center in matching.filter { center.distance(to: $0.coordinate) <= 30_000 } } ?? []
+        let matchingStops = (local.isEmpty ? matching : local).sorted { lhs, rhs in
+            let order = lhs.name.compare(rhs.name, options: [.caseInsensitive, .diacriticInsensitive, .numeric],
+                                         locale: Locale(identifier: "pl_PL"))
+            return order == .orderedSame ? lhs.id < rhs.id : order == .orderedAscending
+        }.prefix(12).map { Self.publicStop($0, database: database) }
+
 
         let matchingLines = database.routes.values.filter {
             database.normalizedRouteNames[$0.id]?.contains(normalized) == true
@@ -414,15 +419,9 @@ extension TransitRepository {
         let stops = database.stops.filter {
             database.servedStopIDs.contains($0.id) && coordinate.distance(to: $0.coordinate) <= 30_000
         }.map { Self.publicStop($0, database: database) }
-        let closestStop = stops.min { coordinate.distance(to: $0.coordinate) < coordinate.distance(to: $1.coordinate) }
-        let nearbyDepartures: [TransitDeparture]
-        if let closestStop, coordinate.distance(to: closestStop.coordinate) <= 1_000 {
-            nearbyDepartures = Self.departures(database: database, realtime: realtimeSnapshot ?? .empty,
-                                               stopID: closestStop.id, after: Date(), limit: 4)
-        } else {
-            nearbyDepartures = []
-        }
+        // A map feed has no routed walking estimates, so it cannot select a
+        // supposedly nearest accessible stop. Departures follow an explicit stop.
         return TransitVehicleFeed(vehicles: Array(vehicles.prefix(200)), updatedAt: vehiclesUpdatedAt,
-                                  stops: stops, nearbyStop: closestStop, nearbyDepartures: nearbyDepartures)
+                                  stops: stops, nearbyStop: nil, nearbyDepartures: [])
     }
 }
