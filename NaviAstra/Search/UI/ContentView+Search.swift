@@ -6,6 +6,7 @@ extension ContentView {
             navigationStore: navigationStore,
             searchStore: searchStore,
             selectingRouteOrigin: selectingRouteOriginInSearch,
+            addingWaypoint: addingWaypoint,
             places: placeStore.places,
             recentDestinations: recentDestinations,
             recentSearches: placeStore.searches,

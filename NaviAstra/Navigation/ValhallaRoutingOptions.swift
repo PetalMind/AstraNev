@@ -158,6 +158,37 @@ nonisolated struct ValhallaRoutingOptions: Codable, Equatable {
     }
 }
 
+/// Optional candidate searches only adjust documented path penalties. They
+/// preserve the selected vehicle, exclusions, access rules and ETA model.
+nonisolated enum ValhallaRouteCandidateCosting: CaseIterable, Sendable {
+    case fewerManeuvers, fewerServiceRoads
+
+    static func profiles(for preference: RoutePreference) -> [Self] {
+        switch preference {
+        case .balanced, .personalized: [.fewerManeuvers]
+        case .comfortable: [.fewerManeuvers, .fewerServiceRoads]
+        case .fastest, .shortest: []
+        }
+    }
+
+    func apply(to payload: inout [String: Any], costing: String) {
+        guard ["auto", "bus", "truck", "taxi"].contains(costing),
+              var models = payload["costing_options"] as? [String: [String: Any]],
+              var options = models[costing] else { return }
+        switch self {
+        case .fewerManeuvers:
+            options["maneuver_penalty"] = 45.0
+        case .fewerServiceRoads:
+            options["service_penalty"] = 90.0
+            options["service_factor"] = 2.0
+            options["alley_penalty"] = 60.0
+        }
+        models[costing] = options
+        payload["costing_options"] = models
+        payload["alternates"] = 0
+    }
+}
+
 nonisolated extension Coordinate {
     var isValidValhallaCoordinate: Bool {
         latitude.isFinite && longitude.isFinite && (-90...90).contains(latitude) && (-180...180).contains(longitude)
@@ -267,6 +298,7 @@ extension RoutingPreferences {
             throw ValhallaFeatureError.message("Obszary omijane muszą mieć 3–32 wierzchołki bez przecięć. Maksymalnie 8 obszarów.")
         }
         let polygons = profile.avoidAreas.map(\.closedRing) + RoadRoutingContext.closurePolygons
+            + RoadRoutingContext.congestionAvoidancePolygons
         if !polygons.isEmpty { payload["exclude_polygons"] = polygons }
         payload["date_time"] = (RoadRoutingContext.planningTime ?? ValhallaPlanningTime(type: 0)).payload
     }

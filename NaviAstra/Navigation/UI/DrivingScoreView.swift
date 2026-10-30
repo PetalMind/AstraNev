@@ -4,12 +4,16 @@ import SwiftUI
 struct DrivingScoreSummaryCard: View {
     let trip: TripRecord
     @State private var showsReport = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         Button {
             showsReport = true
         } label: {
-            HStack(spacing: 14) {
+            let layout = dynamicTypeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 14))
+                : AnyLayout(HStackLayout(spacing: 14))
+            layout {
                 if let score = trip.drivingScore {
                     DrivingScoreGauge(score: score, size: 64)
                 } else {
@@ -22,7 +26,7 @@ struct DrivingScoreSummaryCard: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Ocena prowadzenia")
                         .font(.subheadline.weight(.semibold))
-                    Text(trip.drivingScore?.headline ?? "Za mało danych do oceny")
+                    Text(trip.drivingScore?.headline ?? trip.scoreUnavailableReason ?? "Ocena niedostępna")
                         .font(.caption)
                         .foregroundStyle(Color.naviTextSecondary)
                     Text("Zobacz szczegóły")
@@ -39,7 +43,13 @@ struct DrivingScoreSummaryCard: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(Color.naviTextPrimary)
+        #if os(iOS)
+        .iosCardSurface(radius: 20)
+        #else
         .modifier(NavigationGlassSurface(radius: 17))
+        #endif
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Otwiera szczegółową ocenę prowadzenia")
         .sheet(isPresented: $showsReport) {
             NavigationStack {
                 DrivingScoreReport(trip: trip)
@@ -78,8 +88,10 @@ struct DrivingScoreHistoryLabel: View {
 private struct DrivingScoreGauge: View {
     let score: DrivingScore
     var size: CGFloat = 112
+    @ScaledMetric(relativeTo: .title) private var textScale = 1.0
 
     var body: some View {
+        let dimension = size * textScale
         ZStack {
             Circle().stroke(Color.primary.opacity(0.08), lineWidth: 6)
             Circle()
@@ -88,14 +100,14 @@ private struct DrivingScoreGauge: View {
                 .rotationEffect(.degrees(-90))
             VStack(spacing: 0) {
                 Text("\(score.score)")
-                    .font(.system(size: size * 0.32, weight: .bold, design: .rounded))
+                    .font(.system(size: dimension * 0.32, weight: .bold, design: .rounded))
                     .monospacedDigit()
                 Text("/ 100")
-                    .font(.system(size: size * 0.12, weight: .medium))
+                    .font(.system(size: dimension * 0.12, weight: .medium))
                     .foregroundStyle(Color.naviTextSecondary)
             }
         }
-        .frame(width: size, height: size)
+        .frame(width: dimension, height: dimension)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Wynik \(score.score) na 100")
     }
@@ -130,6 +142,9 @@ struct DrivingScoreReport: View {
         .environment(\.locale, TripHistoryFormat.locale)
         .navigationTitle("Ocena prowadzenia")
         .inlineDrivingScoreTitle()
+        #if os(iOS)
+        .background(Color(uiColor: .systemGroupedBackground))
+        #endif
     }
 
     private func scoredContent(_ score: DrivingScore) -> some View {
@@ -214,13 +229,9 @@ struct DrivingScoreReport: View {
 
     private var unavailableContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Za mało danych do oceny", systemImage: "waveform.path")
+            Label("Ocena niedostępna", systemImage: "waveform.path")
                 .font(.headline)
-            if trip.distanceMeters < 2_000 || trip.movingSeconds < 90 {
-                Text("Ocena wymaga co najmniej 2 km trasy i 90 sekund jazdy. W tej podróży nie osiągnięto tych progów.")
-            } else {
-                Text("Nie zebrano wystarczającej liczby wiarygodnych pomiarów GPS lub danych do oceny co najmniej 3 kategorii.")
-            }
+            Text(trip.scoreUnavailableReason ?? "W tym przejeździe nie zapisano oceny prowadzenia.")
             Text("Brak wyniku nie oznacza złej jazdy. Aplikacja nie zastępuje brakujących pomiarów domyślną oceną.")
                 .foregroundStyle(Color.naviTextSecondary)
         }

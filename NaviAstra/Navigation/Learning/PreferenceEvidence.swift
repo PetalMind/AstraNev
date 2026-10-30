@@ -15,7 +15,7 @@ nonisolated enum AlternativePathKind: String, Codable, Sendable {
 nonisolated enum LearningReason: String, Codable, Sendable {
     case normalTraversal, offeredAlternatives, selectedAlternative, repeatedDeviation
     case repeatedSegmentChoice, destinationApproach, manualRouteSave, manualPreferenceRemoval
-    case tripRemoved, legacyImport
+    case tripRemoved, legacyImport, historyRecovery
     var title: String {
         switch self {
         case .normalTraversal: "Zwykły przejazd"
@@ -28,6 +28,7 @@ nonisolated enum LearningReason: String, Codable, Sendable {
         case .manualPreferenceRemoval: "Usunięcie preferencji"
         case .tripRemoved: "Usunięcie przejazdu"
         case .legacyImport: "Migracja wcześniejszej obserwacji"
+        case .historyRecovery: "Odzyskany przejazd z historii"
         }
     }
 }
@@ -123,7 +124,7 @@ nonisolated enum DrivingEvidenceMath {
             ? Set(trip.offeredVariants.first?.segments.map(\.id) ?? []).subtracting(selected) : []
         let bypassed = trip.automaticPreferenceEligible
             ? Set(trip.deviations.flatMap { $0.avoided.map(\.id) }).union(rejectedPrimary).subtracting(selected) : []
-        let source: LearningReason = migrated ? .legacyImport : trip.selectedAgainstAlternative ? .selectedAlternative
+        let source: LearningReason = trip.recoveredFromHistory ? .historyRecovery : migrated ? .legacyImport : trip.selectedAgainstAlternative ? .selectedAlternative
             : trip.deviations.isEmpty ? .normalTraversal : .repeatedDeviation
         var result = [PreferenceEvidence(source: source, tripID: trip.id, timestamp: trip.startedAt,
             context: trip.context, subject: subject,
@@ -180,7 +181,7 @@ extension DrivingPreferenceContext {
 extension LearnedDrivingTrip {
     nonisolated enum CodingKeys: String, CodingKey {
         case id, destinationName, origin, destination, startedAt, duration, context, segments, deviations
-        case confirmed, automaticPreferenceEligible, offeredVariants, selectedVariantID, selectedAgainstAlternative
+        case confirmed, automaticPreferenceEligible, offeredVariants, selectedVariantID, selectedAgainstAlternative, recoveredFromHistory
     }
     nonisolated init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -199,6 +200,7 @@ extension LearnedDrivingTrip {
         offeredVariants = try values.decodeIfPresent([DrivingObservedVariant].self, forKey: .offeredVariants) ?? []
         selectedVariantID = try values.decodeIfPresent(String.self, forKey: .selectedVariantID)
         selectedAgainstAlternative = try values.decodeIfPresent(Bool.self, forKey: .selectedAgainstAlternative) ?? false
+        recoveredFromHistory = try values.decodeIfPresent(Bool.self, forKey: .recoveredFromHistory) ?? false
     }
 }
 

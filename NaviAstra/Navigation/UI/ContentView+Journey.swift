@@ -251,6 +251,7 @@ extension ContentView {
                               maximumHeight: maxHeight,
                               accessibilityLabel: "Opcje podróży",
                               isDragging: $isMapBottomSheetDragging,
+                              isTrackingFinger: $isNavigationPanelTrackingFinger,
                               mediumHeightFraction: 0.52,
                               minimumMediumHeight: 350,
                               dragHandleHeight: 44,

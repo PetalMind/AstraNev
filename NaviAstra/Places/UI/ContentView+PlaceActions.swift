@@ -515,7 +515,7 @@ extension ContentView {
     func replayTrip(_ trip: TripRecord) {
         appRouter.dismiss(.history)
         navigationStore.state.waypoints = trip.waypoints
-        Task { await navigationStore.previewNewTrip(trip.destination) }
+        Task { await navigationStore.previewNewTrip(trip.destination, transportMode: trip.transportMode) }
     }
 
     func saveCurrentPlace(as kind: PlaceKind) {

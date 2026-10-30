@@ -172,12 +172,14 @@ extension TransitRepository {
     }
 
     func search(_ query: String, near coordinate: Coordinate?) async -> TransitSearchResults {
-        guard query.count >= 2, let database = try? await loadDatabase(), !Task.isCancelled else {
+        let normalized = TransitSearchText.normalize(query)
+        let isSingleDigitLine = normalized.count == 1 && normalized.first?.isNumber == true
+        guard normalized.count >= 2 || isSingleDigitLine,
+              let database = try? await loadDatabase(), !Task.isCancelled else {
             return TransitSearchResults(stops: [], lines: [])
         }
-        let normalized = TransitSearchText.normalize(query)
         let matching = database.stopsForSearch.filter {
-            database.normalizedStopNames[$0.id]?.contains(normalized) == true
+            !isSingleDigitLine && database.normalizedStopNames[$0.id]?.contains(normalized) == true
         }
         // Geometry scopes a query area; it does not assert which stop is fastest
         // to reach across bridges, fences or railway tracks.
@@ -192,7 +194,11 @@ extension TransitRepository {
         let matchingLines = database.routes.values.filter {
             database.normalizedRouteNames[$0.id]?.contains(normalized) == true
         }.sorted {
-            let comparison = $0.displayName.localizedStandardCompare($1.displayName)
+            let leftExact = database.normalizedRouteNames[$0.id] == normalized
+            let rightExact = database.normalizedRouteNames[$1.id] == normalized
+            if leftExact != rightExact { return leftExact }
+            let comparison = $0.displayName.compare($1.displayName,
+                options: [.caseInsensitive, .diacriticInsensitive, .numeric], locale: Locale(identifier: "pl_PL"))
             return comparison == .orderedSame ? $0.id < $1.id : comparison == .orderedAscending
         }
             .prefix(8).map { route in

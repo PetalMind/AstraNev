@@ -120,15 +120,28 @@ extension NavigationSession {
             priorityWaypointIDs: state.pendingWaypointIDs)
     }
     func calculateRoutes(from: Coordinate, to: Coordinate, through: [Coordinate]? = nil,
-                                 commitEVStops: Bool = true) async throws -> [NavigationRoute] {
+                                 commitEVStops: Bool = true,
+                                 publishDiagnostics: Bool = true) async throws -> [NavigationRoute] {
         let started = ProcessInfo.processInfo.systemUptime
         let preferences = state.routingPreferences, mode = state.transportMode
         let generation = requestGeneration
-        let routes = try await RoadRoutingContext.$heading.withValue(routingHeading(from: from)) {
-            try await calculateRoutesForCurrentPlan(from: from, to: to, through: through,
-                                                    commitEVStops: commitEVStops)
+        knownRoadClosures = knownRoadClosures.filter { $0.value.isFresh() }
+        let avoidances = mode == .car ? try knownRoadClosures.values.map { try $0.avoidance() } : []
+        var polygons = RoadRoutingContext.closurePolygons
+        for polygon in avoidances.flatMap(\.polygons) where !polygons.contains(polygon) { polygons.append(polygon) }
+        guard polygons.count <= 256 else {
+            throw ValhallaFeatureError.message("Nie udało się bezpiecznie uwzględnić wszystkich zamknięć drogi.")
         }
-        if mode == .car, RoadRoutingContext.allowsPersonalization, generation == requestGeneration, preferences == state.routingPreferences {
+        let calculated = try await RoadRoutingContext.$closurePolygons.withValue(polygons) {
+            try await RoadRoutingContext.$heading.withValue(routingHeading(from: from)) {
+                try await calculateRoutesForCurrentPlan(from: from, to: to, through: through,
+                                                        commitEVStops: commitEVStops)
+            }
+        }
+        let routes = calculated.filter { route in !avoidances.contains { $0.intersects(route) } }
+        guard !routes.isEmpty else { throw RoutingError.invalidResponse }
+        if publishDiagnostics, mode == .car, RoadRoutingContext.allowsPersonalization,
+           generation == requestGeneration, preferences == state.routingPreferences {
             RoutingDiagnostics.shared.publish(.make(routes: routes, preference: preferences.advanced.effectiveRoutePreference,
                 selected: routes.first?.id, source: preferences.evPlanningEnabled ? "ev-plan" : "road-plan",
                 calculationSeconds: ProcessInfo.processInfo.systemUptime - started,
@@ -150,7 +163,7 @@ extension NavigationSession {
         #endif
         if state.transportMode == .transit {
             return try await transitProvider.calculateRoutes(from: from, to: to,
-                                                            departingAt: Date())
+                                                            departingAt: Date(), preferences: state.routingPreferences.transit)
         }
         let waypoints = state.waypoints
         let evStops = state.evChargingStops
@@ -259,7 +272,7 @@ extension NavigationSession {
             let journeys = try await transitProvider.routes(
                 from: origin, to: target, time: departure,
                 arriveBy: state.journeyTimeMode == .arriveBy,
-                preferences: .init(), cancellationToken: nil)
+                preferences: state.routingPreferences.transit, cancellationToken: nil)
             route = TransitNavigationRouteMapper.routes(from: journeys).first
         case .car, .walking, .bicycle:
             let target = await POIAccessResolver.shared.cachedTarget(for: destination, mode: mode)?.coordinate
@@ -294,9 +307,9 @@ extension NavigationSession {
         guard preferences.evRangeKilometers.isFinite, preferences.evRangeKilometers > 0,
               preferences.evConsumptionKWhPer100Km.isFinite, preferences.evConsumptionKWhPer100Km > 0,
               preferences.evMaximumChargingPowerKW.isFinite, preferences.evMaximumChargingPowerKW > 0 else { throw EVPlanningError.rangeNotConfigured }
-        let availableRange = preferences.availableEVRangeKilometers * 1_000
+        let availableRange = availableEVRangeMeters(for: preferences)
         let fullRange = preferences.evRangeKilometers * 1_000
-        guard availableRange > 0 else { throw EVPlanningError.rangeNotConfigured }
+        guard availableRange > 0 else { throw EVPlanningError.batteryDepleted }
         let baseRoutes = try await provider.calculateRoutes(
             from: from, to: to, through: routedExplicitStops.map(\.coordinate), mode: .car,
             preferences: preferences, avoiding: avoiding)
@@ -322,17 +335,20 @@ extension NavigationSession {
                 continue
             }
             try RoadRoutingContext.checkCancellation()
-            let eligible = chargers.filter { candidate in
+            let eligible = chargers.compactMap { candidate -> NearbyPlaceCandidate? in
                 guard let station = candidate.chargingStation,
                       station.availability != .unavailable, station.publicAccess != false,
-                      let power = station.maximumPowerKW, power > 0,
-                      !station.connectorTypes.isEmpty else { return false }
-                if preferences.evConnectorTypes.isEmpty { return true }
-                let connectors = Set(station.connectorTypes)
-                return preferences.evConnectorTypes.contains { selected in
-                    selected == "ccs" ? (connectors.contains("ccs") || connectors.contains("type2_combo"))
-                        : connectors.contains(selected)
+                      let power = station.powerKW(for: preferences.evConnectorTypes) else { return nil }
+                let selected = Set(preferences.evConnectorTypes.map(ChargingStationCapabilities.normalizedConnector))
+                let compatible = station.connectorTypes.filter {
+                    selected.isEmpty || selected.contains(ChargingStationCapabilities.normalizedConnector($0))
                 }
+                var candidate = candidate
+                candidate.chargingStation = ChargingStationCapabilities(connectorTypes: compatible,
+                    maximumPowerKW: power, chargingPointCount: station.chargingPointCount,
+                    publicAccess: station.publicAccess, availability: station.availability,
+                    connectorPowerKW: station.connectorPowerKW)
+                return candidate
             }.sorted { $0.distanceFromRoute < $1.distanceFromRoute }
             let plans = EVStopPlanner.plans(chargers: eligible, routeLength: length,
                                            initialRange: availableRange, fullRange: fullRange,
@@ -448,10 +464,11 @@ extension NavigationSession {
               let destinationID = state.destination?.id,
               !rerouteController.hasAutomaticClosureReroute else { return }
         guard let closureIncident = confirmedClosureAhead(in: snapshot, on: route, progress: progress) else { return }
-        guard let generation = rerouteController.beginAutomaticClosureReroute(for: closureIncident.id) else { return }
+        let closureRequestID = "\(route.id.uuidString):\(closureIncident.id)"
+        guard let generation = rerouteController.beginAutomaticClosureReroute(for: closureRequestID) else { return }
         let routeID = route.id
-        let closureGeometry = closureIncident.geometry.isEmpty
-            ? [closureIncident.coordinate] : closureIncident.geometry
+        let closures = Array(knownRoadClosures.values.filter { $0.isFresh() })
+        let requestedPreferences = state.routingPreferences
         state.status = .rerouting
         updateLiveActivity()
         if state.cameraState != .freeLook {
@@ -468,15 +485,29 @@ extension NavigationSession {
                     guard let self else { return }
                     defer {
                         self.rerouteController.finishAutomaticClosureReroute(generation: generation)
+                        if self.roadRerouteCancellationToken === token { self.roadRerouteCancellationToken = nil }
+                        // Preference changes can invalidate this result without starting
+                        // another request. Do not leave our navigation state suspended.
+                        if self.rerouteController.isCurrent(generation), self.state.status == .rerouting,
+                           self.state.route?.id == routeID, self.state.destination?.id == destinationID {
+                            self.state.status = .navigating
+                            self.updateNavigationCameraState()
+                            self.updateLiveActivity()
+                        }
                     }
 
                     do {
-                        let avoidance = try RoadClosureAvoidance(geometry: closureGeometry)
+                        let avoidances = try closures.map { try $0.avoidance() }
+                        let polygons = avoidances.flatMap(\.polygons)
+                        guard !polygons.isEmpty, polygons.count <= 256 else {
+                            throw ValhallaFeatureError.message("Nie udało się bezpiecznie uwzględnić wszystkich zamknięć drogi.")
+                        }
                         let stops = self.unvisitedStops(from: location)
                         let routedStops = await self.routedDestinations(stops, mode: .car)
                         guard self.rerouteController.isCurrent(generation),
                               self.state.status == .rerouting,
                               self.state.route?.id == routeID,
+                              self.state.routingPreferences == requestedPreferences,
                               self.state.destination?.id == destinationID else { return }
                         guard let currentDestination = self.state.destination else { return }
                         let destination = self.destinationRouteCoordinate(for: currentDestination)
@@ -485,23 +516,24 @@ extension NavigationSession {
                             let mandatoryStops = stops.filter { stop in
                                 self.state.waypoints.contains(where: { $0.id == stop.id })
                             }
-                            routes = try await RoadRoutingContext.$closurePolygons.withValue(avoidance.polygons) {
+                            routes = try await RoadRoutingContext.$closurePolygons.withValue(polygons) {
                                 try await self.calculateEVRoutes(from: location, to: destination,
                                     explicitStops: mandatoryStops, provider: provider,
                                     avoiding: [], commitChargingStops: false)
                             }
                         } else {
-                            routes = try await RoadRoutingContext.$closurePolygons.withValue(avoidance.polygons) {
+                            routes = try await RoadRoutingContext.$closurePolygons.withValue(polygons) {
                                 try await provider.calculateRoutes(from: location, to: destination,
                                     through: routedStops.map(\.coordinate), mode: .car,
-                                    preferences: self.state.routingPreferences, avoiding: [])
+                                    preferences: requestedPreferences, avoiding: [])
                             }
                         }
                         guard self.rerouteController.isCurrent(generation),
                               self.state.status == .rerouting,
                               self.state.route?.id == routeID,
+                              self.state.routingPreferences == requestedPreferences,
                               self.state.destination?.id == destinationID else { return }
-                        let safeRoutes = routes.filter { !avoidance.intersects($0) }
+                        let safeRoutes = routes.filter { route in !avoidances.contains { $0.intersects(route) } }
                         let ranked = DrivingLearningEngine.shared.ranked(safeRoutes,
                             preference: self.state.routingPreferences.advanced.effectiveRoutePreference)
                         guard let alternative = ranked.first else { throw RoutingError.invalidResponse }
@@ -512,6 +544,7 @@ extension NavigationSession {
                             guard self.rerouteController.isCurrent(generation),
                                   self.state.status == .rerouting,
                                   self.state.route?.id == routeID,
+                                  self.state.routingPreferences == requestedPreferences,
                                   self.state.destination?.id == destinationID else { return }
                             self.state.evChargingStops = chargingStops
                             for (stop, target) in zip(chargingStops, chargingTargets) where stop.poi != nil {
@@ -530,7 +563,7 @@ extension NavigationSession {
                         self.state.route = alternative
                         self.state.routeOptions = ranked
                         self.state.pendingWaypointIDs = []
-                        self.rerouteController.markClosureRerouted(closureIncident.id)
+                        self.rerouteController.markClosureRerouted(closureRequestID)
                         self.loadRoadData(for: alternative)
                         self.tripSession?.rerouteCount += 1
                         self.invalidateTraffic()
@@ -549,8 +582,8 @@ extension NavigationSession {
                               self.state.destination?.id == destinationID else { return }
                         self.state.status = .navigating
                         self.updateNavigationCameraState()
-                        self.state.errorMessage = "Nie udało się ominąć zgłoszonego zamknięcia: \(error.localizedDescription)"
-                        self.rerouteController.scheduleClosureRetry(closureIncident.id, after: 60)
+                        self.state.errorMessage = "Nie udało się ominąć zgłoszonego zamknięcia: spróbuję ponownie za chwilę."
+                        self.rerouteController.scheduleClosureRetry(closureRequestID, after: 60)
                     }
                 }
             }
@@ -558,25 +591,18 @@ extension NavigationSession {
     }
 
     func confirmedClosureAhead(in snapshot: TrafficSnapshot, on route: NavigationRoute,
-                                       progress: RouteProgress?) -> TrafficIncident? {
+                                       progress: RouteProgress?) -> ConfirmedRoadClosure? {
         let traveledDistance = progress?.traveledDistance ?? 0
         let lookAheadEnd = traveledDistance + RouteTrafficMonitor.lookAheadDistance(for: route, progress: progress)
-        return snapshot.incidents.compactMap { incident -> (TrafficIncident, Double)? in
-            let updatedAt = incident.distanceAlongRoute != nil
-                ? routeTrafficUpdatedAt
-                : latestNearbyTrafficSnapshot?.updatedAt
-            guard let updatedAt, Date().timeIntervalSince(incident.observedAt ?? updatedAt) <= 120 else { return nil }
-            guard incident.isRoadClosure,
-                  let distance = closureDistanceAlongRoute(for: incident, on: route),
-                  distance > traveledDistance + 100,
-                  distance < lookAheadEnd else { return nil }
-            return (incident, distance)
+        knownRoadClosures = knownRoadClosures.filter { $0.value.isFresh() }
+        for closure in ConfirmedRoadClosure.evidence(in: snapshot, route: route) {
+            knownRoadClosures[closure.id] = closure
+        }
+        return knownRoadClosures.values.compactMap { closure -> (ConfirmedRoadClosure, Double)? in
+            guard let distance = closure.distanceAhead(on: route, after: traveledDistance,
+                                                       through: lookAheadEnd) else { return nil }
+            return (closure, distance)
         }.min { $0.1 < $1.1 }?.0
-    }
-
-    private func closureDistanceAlongRoute(for incident: TrafficIncident,
-                                           on route: NavigationRoute) -> Double? {
-        RouteTrafficMonitor.incidentProjection(incident, geometry: RouteProgressGeometry(route), route: route)?.alongRoute
     }
 
     func clearEVChargingStops() {

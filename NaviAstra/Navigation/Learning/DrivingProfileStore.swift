@@ -29,11 +29,14 @@ nonisolated struct DrivingProfileSnapshot: Codable, Sendable {
     var ignoredApproachIDs: Set<UUID> = []
     var evidence: [PreferenceEvidence] = []
     var schemaVersion = 3
+    // One-time recovery of observations rejected by the old all-or-nothing GPS rule.
+    // Fresh and explicitly reset profiles must not import old history.
+    var historyRecoveryVersion = 1
 }
 
 extension DrivingProfileSnapshot {
     nonisolated enum CodingKeys: String, CodingKey {
-        case settings, trips, pending, ignoredTripIDs, ignoredRoadIDs, ignoredShortcutIDs, ignoredApproachIDs, evidence, schemaVersion
+        case settings, trips, pending, ignoredTripIDs, ignoredRoadIDs, ignoredShortcutIDs, ignoredApproachIDs, evidence, schemaVersion, historyRecoveryVersion
     }
 
     nonisolated init(from decoder: Decoder) throws {
@@ -47,6 +50,7 @@ extension DrivingProfileSnapshot {
         ignoredApproachIDs = try values.decodeIfPresent(Set<UUID>.self, forKey: .ignoredApproachIDs) ?? []
         evidence = try values.decodeIfPresent([PreferenceEvidence].self, forKey: .evidence) ?? []
         schemaVersion = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        historyRecoveryVersion = try values.decodeIfPresent(Int.self, forKey: .historyRecoveryVersion) ?? 0
     }
 }
 

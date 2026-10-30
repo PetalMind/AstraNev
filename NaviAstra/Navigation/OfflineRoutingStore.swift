@@ -2,6 +2,7 @@
 import Foundation
 import Network
 import Observation
+import OSLog
 
 nonisolated struct OfflineRoutingDownload: Identifiable, Decodable, Sendable {
     let name: String
@@ -63,7 +64,10 @@ final class OfflineRoutingStore {
         if activePack == nil { preferOffline = false }
         Task {
             do { try await OfflineRoutingEngine.shared.discardInterruptedInstallations() }
-            catch { self.error = "Nie udało się usunąć przerwanych instalacji: \(error.localizedDescription)" }
+            catch {
+                self.error = Self.message(for: error,
+                    fallback: "Nie udało się uporządkować przerwanych instalacji. Spróbuj ponownie po ponownym uruchomieniu aplikacji.")
+            }
         }
         monitor.pathUpdateHandler = { [weak self] path in
             let unavailable = path.status == .unsatisfied
@@ -84,7 +88,10 @@ final class OfflineRoutingStore {
                         FileManager.default.fileExists(atPath: directory.appendingPathComponent("tiles.tar").path) else { return nil }
                     return pack
                 }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            self.error = Self.message(for: error,
+                fallback: "Nie udało się odczytać zapisanych paczek drogowych. Spróbuj ponownie.")
+        }
     }
 
     func loadCatalog() async {
@@ -105,7 +112,10 @@ final class OfflineRoutingStore {
                     && $0.size > 0 && $0.browserDownloadURL.scheme == "https" && $0.browserDownloadURL.host == "github.com"
             }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         } catch is CancellationError {}
-        catch { self.error = "Nie udało się odczytać katalogu paczek drogowych: \(error.localizedDescription)" }
+        catch {
+            self.error = Self.message(for: error,
+                fallback: "Nie udało się odczytać katalogu paczek drogowych. Sprawdź połączenie i spróbuj ponownie.")
+        }
     }
 
     func download(url: URL, name: String, motorVehiclesOnly: Bool, expectedSHA256: String? = nil) {
@@ -132,7 +142,10 @@ final class OfflineRoutingStore {
                 activeID = pack.id
             } catch is CancellationError {}
             catch {
-                if !Task.isCancelled { self.error = "Nie udało się pobrać danych drogowych: \(error.localizedDescription)" }
+                if !Task.isCancelled {
+                    self.error = Self.message(for: error,
+                        fallback: "Nie udało się pobrać danych drogowych. Sprawdź połączenie i spróbuj ponownie.")
+                }
             }
             finishTransfer()
         }
@@ -150,7 +163,10 @@ final class OfflineRoutingStore {
                 refresh()
                 activeID = pack.id
             } catch is CancellationError {}
-            catch { self.error = "Nie udało się zaimportować danych drogowych: \(error.localizedDescription)" }
+            catch {
+                self.error = Self.message(for: error,
+                    fallback: "Nie udało się zaimportować danych drogowych. Sprawdź dostęp do pliku i spróbuj ponownie.")
+            }
         }
     }
 
@@ -164,7 +180,10 @@ final class OfflineRoutingStore {
             do {
                 try await OfflineRoutingEngine.shared.remove(pack.id)
                 refresh()
-            } catch { self.error = error.localizedDescription }
+            } catch {
+                self.error = Self.message(for: error,
+                    fallback: "Nie udało się usunąć paczki drogowej. Spróbuj ponownie.")
+            }
             removingIDs.remove(pack.id)
         }
     }
@@ -182,5 +201,32 @@ final class OfflineRoutingStore {
         transferTask = nil
         transferID = nil
     }
+
+    /// Keep known, translated domain errors useful without exposing native engine details.
+    private static func message(for error: Error, fallback: String) -> String {
+        Logger(subsystem: "NaviAstra", category: "OfflineRouting")
+            .error("\(fallback, privacy: .public) Szczegóły: \(String(describing: error), privacy: .private)")
+        if let failure = error as? OfflineRoutingFailure {
+            switch failure {
+            case .missingPack, .unsupportedProfile, .invalidArchive:
+                return failure.errorDescription ?? fallback
+            case .incompleteCoverage:
+                return "Dane drogowe nie obejmują całej trasy lub nie obsługują wybranego sposobu podróży. Wybierz odpowiednią paczkę albo połącz się z internetem."
+            }
+        }
+        if let failure = error as? CocoaError {
+            switch failure.code {
+            case .fileWriteOutOfSpace:
+                return "Brakuje miejsca na urządzeniu. Zwolnij pamięć i spróbuj ponownie."
+            case .fileReadNoPermission, .fileWriteNoPermission:
+                return "Brak dostępu do plików paczki drogowej. Wybierz plik, do którego masz dostęp, lub spróbuj pobrać paczkę ponownie."
+            case .fileReadNoSuchFile:
+                return "Nie znaleziono pliku paczki drogowej. Wybierz go ponownie lub pobierz dane jeszcze raz."
+            default: break
+            }
+        }
+        return fallback
+    }
+
 }
 #endif

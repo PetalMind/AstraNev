@@ -1,5 +1,7 @@
 # Jak NaviAstra wyznacza trasę
 
+Aktualizacja iOS 1.1.157 (159): bieżące zasady rankingu, personalizacji, ruchu, EV i komunikacji opisuje [ROUTING_IMPROVEMENTS.md](ROUTING_IMPROVEMENTS.md). W tych obszarach zastępuje wcześniejsze zasady opisane poniżej.
+
 ## Odległości i wyszukiwanie w iOS 1.1.139 (141)
 
 Aktywny interfejs i widżet prezentują odległości wyznaczonych tras po drogach i ścieżkach dla wybranego środka transportu oraz rzeczywiście przejechane odcinki. Geometria prosta służy wewnętrznie obszarowi zapytania, dopasowaniu rekordów/GPS i deduplikacji. Nie jest zastępczym dystansem ani rankingiem dojazdu. Brak macierzy lub drogi daje stan obliczania/niedostępności, bez podstawienia 0 m lub czasu z prostej. Geokoder nie prezentuje odległości od wskazanego punktu, a promień zapytania nie udaje drogi do miejsca.

@@ -24,7 +24,9 @@ final class SearchStore {
     var searchArea: Coordinate?
     var alongRoute = false
 
+    private(set) var isShowingPreviousResults = false
     private(set) var currentRequestID = UUID()
+    @ObservationIgnored private var resultIdentities = SearchResultIdentityRegistry()
     private var placeSearchTask: Task<Void, Never>?
     private var transitSearchTask: Task<Void, Never>?
 
@@ -45,19 +47,44 @@ final class SearchStore {
         didCompleteSearchWithNoResults = false
         isSearching = false
         isTransitSearching = false
+        isShowingPreviousResults = false
+        resultIdentities = SearchResultIdentityRegistry()
         currentRequestID = UUID()
     }
 
-    func beginRequest() -> UUID {
+    func beginRequest(preservingResults: Bool = false) -> UUID {
         cancelSearches()
         currentRequestID = UUID()
         searchError = nil
         didCompleteSearchWithNoResults = false
         isSearching = false
         isTransitSearching = false
+        isShowingPreviousResults = preservingResults
+            && (!results.isEmpty || !transitResults.stops.isEmpty || !transitResults.lines.isEmpty)
+        if !preservingResults {
+            results = []
+            transitResults = TransitSearchResults(stops: [], lines: [])
+            resultIdentities = SearchResultIdentityRegistry()
+        }
+        return currentRequestID
+    }
+
+    func publishResults(_ results: [SearchResult]) {
+        self.results = resultIdentities.stabilize(results)
+        isShowingPreviousResults = false
+    }
+
+    func publishTransitResults(_ results: TransitSearchResults) {
+        transitResults = results
+        isShowingPreviousResults = false
+    }
+
+    func discardPreviousResults() {
+        guard isShowingPreviousResults else { return }
         results = []
         transitResults = TransitSearchResults(stops: [], lines: [])
-        return currentRequestID
+        isShowingPreviousResults = false
+        resultIdentities = SearchResultIdentityRegistry()
     }
 
     func isCurrentRequest(_ id: UUID) -> Bool {
@@ -83,14 +110,20 @@ final class SearchStore {
     }
 
     func cancelSearches() {
+        // A provider may finish after cancellation. Invalidate its callbacks even
+        // when the next action closes the sheet instead of starting another query.
+        currentRequestID = UUID()
         cancelPlaceSearch()
         cancelTransitSearch()
+        isSearching = false
+        isTransitSearching = false
     }
 
     func searchContext(navigation state: NavigationState, places: [SavedPlace],
                        recentSearches: [SearchHistoryEntry]) async -> SearchContext {
         var remainingRoute: [Coordinate] = []
-        if state.status == .navigating, let route = state.route, let origin = state.location?.coordinate,
+        if state.status == .navigating || state.status == .rerouting,
+           let route = state.route, let origin = state.location?.coordinate,
            let projection = MapMatcher.project(origin, onto: route.coordinates) {
             remainingRoute = [projection.coordinate] + Array(route.coordinates.dropFirst(projection.segment + 1))
         }

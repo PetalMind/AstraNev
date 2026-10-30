@@ -94,6 +94,68 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
 
     func calculateRoutes(from: Coordinate, to: Coordinate, through: [Coordinate], mode: TransportMode,
                          preferences: RoutingPreferences, avoiding: [Coordinate]) async throws -> [NavigationRoute] {
+        let request = try makeRouteRequest(from: from, to: to, through: through, mode: mode,
+            preferences: preferences, avoiding: avoiding, personalHints: RoadRoutingContext.personalRoutingHints)
+        let (data, offline) = try await routeData(for: request, mode: mode)
+        try RoadRoutingContext.checkCancellation()
+        let costing = preferences.advanced.costing(for: mode)
+        var routes = try decodeRoutes(data, mode: mode, costing: costing, offline: offline)
+        guard mode == .car else { return routes }
+        let preference = preferences.advanced.effectiveRoutePreference
+        var familiarCandidateIDs: Set<UUID> = []
+        var optionalRequests: [(request: URLRequest, familiar: Bool)] = []
+        if !preferences.evPlanningEnabled, !RoadRoutingContext.personalRoutingHints,
+           RoadRoutingContext.congestionAvoidancePolygons.isEmpty {
+            if preference == .personalized, RoadRoutingContext.allowsPersonalization, through.isEmpty {
+                let hints = DrivingLearningEngine.shared.candidateHints(from: from, to: to,
+                    context: DrivingPreferenceContext(date: RoadRoutingContext.preferenceDate ?? Date()), baseline: routes.first)
+                // Keep one request for a distinct comfort profile when available.
+                for points in hints.prefix(1) {
+                    let request = try makeRouteRequest(from: from, to: to, through: points, mode: mode,
+                        preferences: preferences, avoiding: avoiding, personalHints: true)
+                    optionalRequests.append((request, true))
+                }
+            }
+            // Offline graph calculations can be expensive and may not support
+            // interruption. The online budget must never start a local fallback.
+            if !offline, ["auto", "bus", "truck", "taxi"].contains(costing) {
+                for profile in ValhallaRouteCandidateCosting.profiles(for: preference) {
+                    let request = try makeRouteRequest(from: from, to: to, through: through, mode: mode,
+                        preferences: preferences, avoiding: avoiding, candidateCosting: profile)
+                    optionalRequests.append((request, false))
+                }
+            }
+        }
+        let deadline = ProcessInfo.processInfo.systemUptime + Self.supplementarySearchBudget
+        for candidate in optionalRequests.prefix(Self.maximumSupplementaryRequests) {
+            try RoadRoutingContext.checkCancellation()
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            guard remaining >= 0.25 else { break }
+            do {
+                let alternatives = try await supplementaryRoutes(for: candidate.request, mode: mode,
+                    costing: costing, budget: remaining, offline: offline)
+                routes.append(contentsOf: alternatives)
+                if candidate.familiar { familiarCandidateIDs.formUnion(alternatives.map(\.id)) }
+            } catch {
+                try RoadRoutingContext.checkCancellation()
+                // Optional searches cannot replace a valid ordinary plan with an error.
+            }
+        }
+        let ranked = RoadRoutingContext.allowsPersonalization
+            ? DrivingLearningEngine.shared.ranked(routes, preference: preference,
+                date: RoadRoutingContext.preferenceDate ?? Date())
+            : RouteScoringEngine.ranked(routes, preference: preference)
+        return RouteSimilarity.diverse(ranked, preserving: familiarCandidateIDs)
+    }
+
+    static let maximumSupplementaryRequests = 2
+    static let supplementarySearchBudget: TimeInterval = 6
+
+    /// Building the request separately keeps every candidate on the same access,
+    /// vehicle, waypoint, closure and planning-time contract. No recursive search.
+    func makeRouteRequest(from: Coordinate, to: Coordinate, through: [Coordinate], mode: TransportMode,
+                          preferences: RoutingPreferences, avoiding: [Coordinate], personalHints: Bool = false,
+                          candidateCosting: ValhallaRouteCandidateCosting? = nil) throws -> URLRequest {
         guard endpoint.scheme == "https" else { throw RoutingError.invalidEndpoint }
         guard mode != .transit else { throw RoutingError.invalidEndpoint }
         var request = URLRequest(url: endpoint.appendingPathComponent("route"))
@@ -106,7 +168,7 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
             "costing": preferences.advanced.costing(for: mode),
             "units": "kilometers",
             "language": "pl-PL",
-            "alternates": through.isEmpty ? 2 : 0,
+            "alternates": through.isEmpty && RoadRoutingContext.congestionAvoidancePolygons.isEmpty ? 2 : 0,
             "turn_lanes": true,
             "roundabout_exits": true,
             "admin_crossings": true
@@ -117,7 +179,7 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
             locations[0]["heading_tolerance"] = 45
             payload["locations"] = locations
         }
-        if RoadRoutingContext.personalRoutingHints, !through.isEmpty {
+        if personalHints, !through.isEmpty {
             var locations = payload["locations"] as! [[String: Any]]
             for index in 1..<(locations.count - 1) { locations[index]["type"] = "via" }
             payload["locations"] = locations
@@ -125,17 +187,8 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
         if !avoiding.isEmpty {
             payload["exclude_locations"] = avoiding.map { ["lat": $0.latitude, "lon": $0.longitude] }
         }
-        if mode == .car {
-            var carOptions: [String: Any] = ["shortest": false, "maneuver_penalty": 12.0,
-                                              "use_highways": preferences.avoidHighways ? 0.0 : 1.0,
-                                              "use_living_streets": 0.0, "service_penalty": 30.0]
-            if preferences.avoidTolls { carOptions["use_tolls"] = 0.0 }
-            if preferences.avoidHighways { carOptions["use_highways"] = 0.0 }
-            if preferences.avoidFerries { carOptions["use_ferry"] = 0.0 }
-            if preferences.avoidUnpaved { carOptions["exclude_unpaved"] = true }
-            if !carOptions.isEmpty { payload["costing_options"] = ["auto": carOptions] }
-        }
         try preferences.applyValhallaOptions(to: &payload, mode: mode)
+        if mode == .car { candidateCosting?.apply(to: &payload, costing: preferences.advanced.costing(for: mode)) }
         if through.isEmpty, (RoadRoutingContext.planningTime?.type ?? 0) == 0 {
             // Time-dependent A* returns only one path. For departure now, use
             // bidirectional A* to obtain alternatives while retaining date_time
@@ -144,33 +197,37 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
             payload["prioritize_bidirectional"] = true
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-        let (data, offline) = try await routeData(for: request, mode: mode)
-        try RoadRoutingContext.checkCancellation()
-        var routes = try decodeRoutes(data, mode: mode, costing: preferences.advanced.costing(for: mode), offline: offline)
-        guard mode == .car else { return routes }
-        if RoadRoutingContext.allowsPersonalization, through.isEmpty, !preferences.evPlanningEnabled,
-           preferences.advanced.effectiveRoutePreference != .shortest {
-            let hints = DrivingLearningEngine.shared.candidateHints(from: from, to: to,
-                context: DrivingPreferenceContext(date: RoadRoutingContext.preferenceDate ?? Date()), baseline: routes.first)
-            for points in hints {
-                try RoadRoutingContext.checkCancellation()
-                do {
-                    // Every historical variant is recalculated using today's restrictions.
-                    routes += try await RoadRoutingContext.$personalRoutingHints.withValue(true) {
-                        try await calculateRoutes(from: from, to: to, through: points, mode: mode,
-                                                  preferences: preferences, avoiding: avoiding)
-                    }
-                } catch {
-                    try RoadRoutingContext.checkCancellation()
-                    // An unavailable familiar road must never make the ordinary plan fail.
-                }
+        return request
+    }
+
+    private func supplementaryRoutes(for request: URLRequest, mode: TransportMode, costing: String,
+                                     budget: TimeInterval, offline: Bool) async throws -> [NavigationRoute] {
+        var request = request
+        request.timeoutInterval = min(request.timeoutInterval, budget)
+        let operation = Task {
+            let data: Data
+            if offline {
+                data = try await routeData(for: request, mode: mode).0
+            } else {
+                try await ValhallaRequestGate.shared.waitUntilAllowed(for: endpoint)
+                let result = try await RoadRoutingContext.data(for: request)
+                try ValhallaServices.validate(data: result.0, response: result.1)
+                data = result.0
             }
+            try RoadRoutingContext.checkCancellation()
+            return try decodeRoutes(data, mode: mode, costing: costing, offline: offline)
         }
-        let ranked = RoadRoutingContext.allowsPersonalization
-            ? DrivingLearningEngine.shared.ranked(routes, preference: preferences.advanced.effectiveRoutePreference,
-                date: RoadRoutingContext.preferenceDate ?? Date())
-            : RouteScoringEngine.ranked(routes, preference: preferences.advanced.effectiveRoutePreference)
-        return RouteSimilarity.diverse(ranked)
+        let timeout = Task {
+            do { try await Task.sleep(for: .seconds(budget)) }
+            catch { return }
+            operation.cancel()
+        }
+        defer { timeout.cancel() }
+        return try await withTaskCancellationHandler {
+            try await operation.value
+        } onCancel: {
+            operation.cancel()
+        }
     }
 
     private func routeData(for request: URLRequest, mode: TransportMode) async throws -> (Data, Bool) {

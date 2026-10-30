@@ -29,25 +29,27 @@ import Testing
         return (DrivingLearningEngine(store: store), store, route)
     }
 
-    @Test func confirmedHistoryReordersSimilarRoutesWithoutChangingETAOrStrictShortest() throws {
+    @Test func personalProfileReordersSimilarRoutesWithoutChangingETAOrExplicitPreferences() throws {
         let (engine, store, familiar) = try fixture()
         defer { try? FileManager.default.removeItem(at: store.url.deletingLastPathComponent()) }
         let ordinary = NavigationRoute(coordinates: [origin, destination], distance: 2_224,
                                        expectedTravelTime: 300, maneuvers: [])
-        let ranked = engine.ranked([ordinary, familiar], preference: .fastest)
+        let ranked = engine.ranked([ordinary, familiar], preference: .personalized)
         #expect(ranked.first?.id == familiar.id)
         #expect(ranked.first?.expectedTravelTime == 310)
         #expect(ranked.last?.expectedTravelTime == 300)
         #expect(ranked.first?.coordinates == familiar.coordinates)
-        let decision = RoutingDecisionRecord.make(routes: [ordinary, familiar], preference: .fastest,
+        let decision = RoutingDecisionRecord.make(routes: [ordinary, familiar], preference: .personalized,
             selected: familiar.id, source: "personalization-fixture", calculationSeconds: nil,
             personalOrder: ranked.map(\.id))
         #expect(decision.recommendedRouteID == familiar.id)
         #expect(RoutingBenchmarkSuite.replay([decision]).failures == 0)
-        #expect(engine.ranked([ordinary, familiar], preference: .shortest).first?.id == ordinary.id)
+        for preference in [RoutePreference.fastest, .shortest, .balanced, .comfortable] {
+            #expect(engine.ranked([familiar, ordinary], preference: preference).first?.id == ordinary.id)
+        }
         var disabled = engine.settings; disabled.enabled = false
         engine.updateSettings(disabled)
-        #expect(engine.ranked([ordinary, familiar], preference: .fastest).first?.id == ordinary.id)
+        #expect(engine.ranked([ordinary, familiar], preference: .personalized).first?.id == ordinary.id)
         #expect(DrivingLearningEngine(store: store).settings.enabled == false)
     }
 
@@ -56,11 +58,11 @@ import Testing
         defer { try? FileManager.default.removeItem(at: store.url.deletingLastPathComponent()) }
         let ordinary = NavigationRoute(coordinates: [origin, destination], distance: 2_224,
                                        expectedTravelTime: 300, maneuvers: [])
-        #expect(unconfirmed.ranked([ordinary, familiar], preference: .fastest).first?.id == ordinary.id)
+        #expect(unconfirmed.ranked([ordinary, familiar], preference: .personalized).first?.id == ordinary.id)
         #expect(unconfirmed.patterns.first?.confidence == 0)
         unconfirmed.remember(unconfirmed.patterns[0].id, endpoint: URL(string: "https://example.invalid")!)
         var slow = familiar; slow.expectedTravelTime = 900
-        #expect(unconfirmed.ranked([ordinary, slow], preference: .fastest).first?.id == ordinary.id)
+        #expect(unconfirmed.ranked([ordinary, slow], preference: .personalized).first?.id == ordinary.id)
         #expect(unconfirmed.ranked([ordinary, slow], preference: .balanced).first?.id == ordinary.id)
     }
 
@@ -111,8 +113,38 @@ import Testing
                        Coordinate(latitude: 52.009, longitude: 21.0027)])
         let measured = TrafficSnapshot(flow: nil, incidents: [closure], updatedAt: Date(),
             partialError: nil, incidentDataAvailable: true)
-        #expect(engine.ranked([familiar, ordinary], preference: .fastest,
+        #expect(engine.ranked([familiar, ordinary], preference: .personalized,
             traffic: [familiar.id: measured]).first?.id == ordinary.id)
+    }
+
+    @Test func closureRankingUsesObservationFreshnessAvailabilityAndRemainingRoute() throws {
+        let (engine, store, _) = try fixture()
+        defer { try? FileManager.default.removeItem(at: store.url.deletingLastPathComponent()) }
+        let now = Date()
+        let route = NavigationRoute(coordinates: [origin, destination], distance: 2_224,
+                                    expectedTravelTime: 300, maneuvers: [])
+        let closureRoad = [Coordinate(latitude: 52.006, longitude: 21),
+                           Coordinate(latitude: 52.009, longitude: 21)]
+        func snapshot(observedAt: Date, available: Bool = true) -> TrafficSnapshot {
+            let incident = TrafficIncident(id: "closure", description: "Zamknięcie",
+                coordinate: closureRoad[0], delaySeconds: nil, category: .roadClosed,
+                severity: .major, geometry: closureRoad, observedAt: observedAt)
+            return TrafficSnapshot(flow: nil, incidents: [incident], updatedAt: now,
+                partialError: nil, incidentDataAvailable: available)
+        }
+        let staleIncident = snapshot(observedAt: now.addingTimeInterval(-121))
+        let freshIncident = snapshot(observedAt: now)
+        for preference in [RoutePreference.fastest, .personalized] {
+            // A fresh envelope does not refresh the underlying observation.
+            #expect(engine.ranked([route], preference: preference,
+                traffic: [route.id: staleIncident], date: now).map(\.id) == [route.id])
+            #expect(engine.ranked([route], preference: preference, from: [route.id: 1_500],
+                traffic: [route.id: freshIncident], date: now).map(\.id) == [route.id])
+            #expect(engine.ranked([route], preference: preference, from: [route.id: 100],
+                traffic: [route.id: freshIncident], date: now).isEmpty)
+            #expect(engine.ranked([route], preference: preference,
+                traffic: [route.id: snapshot(observedAt: now, available: false)], date: now).map(\.id) == [route.id])
+        }
     }
 
     @Test func approachLearnsAcrossDifferentOriginsAndRoadRemovalPersists() throws {
@@ -361,7 +393,7 @@ import Testing
             if index < 2 {
                 #expect(engine.candidateHints(from: origin, to: destination,
                     context: context, baseline: ordinary).isEmpty)
-                #expect(engine.ranked([ordinary, familiar], preference: .fastest, date: recentStart).first?.id == ordinary.id)
+                #expect(engine.ranked([ordinary, familiar], preference: .personalized, date: recentStart).first?.id == ordinary.id)
             }
         }
         let restored = DrivingLearningEngine(store: store)
@@ -371,12 +403,13 @@ import Testing
         let hints = restored.candidateHints(from: origin, to: destination, context: context, baseline: ordinary)
         #expect(!hints.isEmpty)
         #expect(hints.flatMap { $0 }.contains { abs($0.longitude - 21.005) < 0.001 })
-        #expect(restored.ranked([ordinary, familiar], preference: .fastest, date: recentStart).first?.id == familiar.id)
+        #expect(restored.ranked([ordinary, familiar], preference: .personalized, date: recentStart).first?.id == familiar.id)
+        #expect(restored.ranked([familiar, ordinary], preference: .fastest, date: recentStart).first?.id == ordinary.id)
         #expect(restored.ranked([ordinary, familiar], preference: .shortest, date: recentStart).first?.id == ordinary.id)
         #expect(familiar.expectedTravelTime == 301)
     }
 
-    @Test func localLearningRejectsGapsAndNoiseAndDoesNotPromoteTemporaryDetours() async throws {
+    @Test func localLearningPreservesGapsAndRejectsNoiseWithoutPromotingTemporaryDetours() async throws {
         let (engine, store, ordinary, familiar) = localLearningFixture()
         defer { try? FileManager.default.removeItem(at: store.url.deletingLastPathComponent()) }
         let start = Date().addingTimeInterval(-600)
@@ -384,7 +417,14 @@ import Testing
         let middle = broken.count / 2
         broken[middle] = TripTracePoint(coordinate: broken[middle].coordinate,
             timestamp: broken[middle].timestamp, speedKph: broken[middle].speedKph, startsSegment: true)
-        #expect(throws: DrivingLearningFailure.self) { try DrivingTraceLearning.segments(trace: broken) }
+        let brokenSegments = try DrivingTraceLearning.segments(trace: broken)
+        #expect(brokenSegments.filter(\.startsObservation).count == 2)
+        let left = broken[middle - 1].coordinate, right = broken[middle].coordinate
+        let gapMiddle = Coordinate(latitude: (left.latitude + right.latitude) / 2,
+            longitude: (left.longitude + right.longitude) / 2)
+        #expect(!brokenSegments.contains {
+            (RouteProgressGeometry(coordinates: $0.coordinates).project(gapMiddle, within: 3)?.distanceFromRoute ?? .infinity) <= 3
+        })
         let noiseCoordinates = ordinary.coordinates.enumerated().map { index, coordinate in
             Coordinate(latitude: coordinate.latitude, longitude: coordinate.longitude + (index == 0 ? 0.0001 : -0.0001))
         }
@@ -438,7 +478,7 @@ import Testing
         #expect(engine.patterns.first?.confidence == 0)
         #expect(engine.candidateHints(from: origin, to: destination,
             context: DrivingPreferenceContext(date: start), baseline: ordinary).isEmpty)
-        #expect(engine.ranked([ordinary, familiar], preference: .fastest).first?.id == ordinary.id)
+        #expect(engine.ranked([ordinary, familiar], preference: .personalized).first?.id == ordinary.id)
     }
 
     @Test func automaticLocalLearningMigrationPreservesRemotePrivacyAndLaterDisable() throws {
@@ -494,6 +534,352 @@ import Testing
         // A common final approach may be learned, but no one-off side road is repeated.
         let hints = engine.candidateHints(from: origin, to: farDestination, context: context, baseline: ordinary)
         #expect(!hints.flatMap { $0 }.contains { $0.longitude > 21.003 })
+    }
+
+
+    private func traceWithStationaryGap(_ route: NavigationRoute, start: Date,
+                                        pause: TimeInterval) -> [TripTracePoint] {
+        let original = continuousTrace(route, start: start)
+        let midpoint = original.count / 2
+        var result: [TripTracePoint] = []
+        for (index, point) in original.enumerated() {
+            result.append(TripTracePoint(coordinate: point.coordinate,
+                timestamp: point.timestamp.addingTimeInterval(index > midpoint ? pause : 0),
+                speedKph: index == midpoint ? 0 : point.speedKph, startsSegment: point.startsSegment))
+            if index == midpoint {
+                result.append(TripTracePoint(coordinate: point.coordinate,
+                    timestamp: point.timestamp.addingTimeInterval(pause), speedKph: 0, startsSegment: true))
+            }
+        }
+        return result
+    }
+
+    private func historicalGapTrip(_ route: NavigationRoute, start: Date,
+                                   pause: TimeInterval = 60) -> TripRecord {
+        let trace = traceWithStationaryGap(route, start: start, pause: pause)
+        return TripRecord(destination: Destination(name: "Cel", coordinate: destination),
+            startedAt: start, endedAt: trace.last!.timestamp, distanceMeters: route.distance,
+            movingSeconds: route.distance / 9, rerouteCount: 4, arrived: true, transportMode: .car, trace: trace)
+    }
+
+    @Test func repeatedStationaryGapsPreserveLearnedRoutesAcrossReload() async throws {
+        let (engine, store, ordinary, familiar) = localLearningFixture()
+        defer { try? FileManager.default.removeItem(at: store.url.deletingLastPathComponent()) }
+        let endpoint = URL(string: "https://example.invalid")!
+        for (index, pause) in [40.0, 60.0, 90.0].enumerated() {
+            let start = Date().addingTimeInterval(-600 - Double(index) * 86_400)
+            let trip = historicalGapTrip(familiar, start: start, pause: pause)
+            let chunks = try DrivingTraceLearning.observationChunks(trace: trip.trace)
+            #expect(chunks.count == 2)
+            #expect(!DrivingTraceLearning.hasUncertainGaps(trace: trip.trace))
+            let boundary = try #require(trip.trace.indices.dropFirst().first { trip.trace[$0].startsSegment })
+            #expect(DrivingTraceLearning.isStationaryGap(from: trip.trace[boundary - 1], to: trip.trace[boundary]))
+            engine.enqueue(trip, proposed: ordinary, costing: "auto",
+                context: DrivingPreferenceContext(date: start), allowAutomaticDeviations: true,
+                recordingGeneration: engine.recordingGeneration, offeredRoutes: [ordinary], selectedRouteID: ordinary.id)
+            engine.processPending(endpoint: endpoint)
+            try await waitForLocalLearning(engine)
+            #expect(engine.learnedTripCount == index + 1)
+            #expect(engine.pendingCount == 0)
+        }
+        let saved = try store.load()
+        #expect(saved.trips.count == 3)
+        #expect(saved.trips.allSatisfy { $0.segments.filter(\.startsObservation).count == 2 })
+        #expect(saved.trips.allSatisfy { $0.automaticPreferenceEligible && !$0.confirmed })
+        let referenceTrace = continuousTrace(familiar, start: Date())
+        let observedLength = zip(referenceTrace, referenceTrace.dropFirst()).reduce(0.0) {
+            $0 + $1.0.coordinate.distance(to: $1.1.coordinate)
+        }
+        #expect(saved.trips.allSatisfy { abs($0.segments.reduce(0) { $0 + $1.length } - observedLength) < 2 })
+        let restored = DrivingLearningEngine(store: store)
+        #expect(restored.learnedTripCount == 3)
+        #expect(restored.patterns.flatMap(\.trips).allSatisfy {
+            $0.segments.filter(\.startsObservation).count == 2
+        })
+        #expect(!restored.settings.allowRemoteMatching)
+    }
+
+    @Test func missingMovingSectionNeverCreatesRoadOrDeviationAcrossGap() throws {
+        let (_, store, ordinary, familiar) = localLearningFixture()
+        defer { try? FileManager.default.removeItem(at: store.url.deletingLastPathComponent()) }
+        let complete = continuousTrace(familiar, start: Date().addingTimeInterval(-600))
+        let lower = complete.count / 3, upper = complete.count * 2 / 3
+        var broken = Array(complete.prefix(lower)) + Array(complete.suffix(from: upper))
+        let resumed = broken[lower]
+        broken[lower] = TripTracePoint(coordinate: resumed.coordinate, timestamp: resumed.timestamp,
+            speedKph: resumed.speedKph, startsSegment: true)
+        let chunks = try DrivingTraceLearning.observationChunks(trace: broken)
+        let segments = try DrivingTraceLearning.segments(trace: broken)
+        #expect(chunks.count == 2)
+        #expect(DrivingTraceLearning.hasUncertainGaps(trace: broken))
+        #expect(segments.filter(\.startsObservation).count == 2)
+        let observedLength = chunks.reduce(0.0) { total, chunk in
+            total + zip(chunk, chunk.dropFirst()).reduce(0) { $0 + $1.0.coordinate.distance(to: $1.1.coordinate) }
+        }
+        #expect(abs(segments.reduce(0) { $0 + $1.length } - observedLength) < 2)
+        #expect(familiar.distance - observedLength > 500)
+        let missingPoint = complete[(lower + upper) / 2].coordinate
+        #expect(!segments.contains {
+            (RouteProgressGeometry(coordinates: $0.coordinates).project(missingPoint, within: 25)?.distanceFromRoute ?? .infinity) <= 25
+        })
+        #expect(DrivingTraceLearning.deviations(actual: segments,
+            proposed: DrivingTraceLearning.segments(coordinates: ordinary.coordinates), trace: broken).isEmpty)
+
+        // A boundary flag does not make an unmarked impossible jump inside a
+        // retained observation trustworthy.
+        var jumping = complete
+        let midpoint = jumping.count / 2
+        jumping[midpoint] = TripTracePoint(coordinate: Coordinate(latitude: 52.5, longitude: 21.5),
+            timestamp: jumping[midpoint].timestamp, speedKph: 32.4, startsSegment: false)
+        #expect(throws: DrivingLearningFailure.self) {
+            try DrivingTraceLearning.observationChunks(trace: jumping)
+        }
+    }
+
+    @Test func historyRecoveryImportsAllQualifiedGapTripsOnceWithoutInventingChoices() throws {
+        let (_, store, familiar) = try fixture(confirmed: false)
+        defer { try? FileManager.default.removeItem(at: store.url.deletingLastPathComponent()) }
+        var old = try store.load()
+        old.historyRecoveryVersion = 0
+        try store.save(old)
+        let engine = DrivingLearningEngine(store: store)
+        let records = (0..<11).map { index in
+            historicalGapTrip(familiar, start: Date().addingTimeInterval(-600 - Double(index) * 86_400))
+        }
+        engine.recoverHistoricalTrips(records)
+        let recovered = try store.load()
+        let imported = recovered.trips.filter(\.recoveredFromHistory)
+        #expect(imported.count == 11)
+        #expect(engine.learnedTripCount == 12)
+        #expect(recovered.pending.isEmpty)
+        #expect(recovered.historyRecoveryVersion == 1)
+        #expect(Set(imported.map(\.id)) == Set(records.map(\.id)))
+        #expect(imported.allSatisfy {
+            !$0.confirmed && $0.deviations.isEmpty && $0.offeredVariants.isEmpty
+                && !$0.selectedAgainstAlternative && $0.selectedVariantID == nil
+                && $0.segments.filter(\.startsObservation).count == 2
+        })
+        let importedIDs = Set(imported.map(\.id))
+        let observations = recovered.evidence.filter { $0.tripID.map { importedIDs.contains($0) } ?? false }
+        #expect(observations.contains { $0.source == .historyRecovery })
+        #expect(observations.allSatisfy {
+            !$0.userConfirmed && $0.offeredAlternative == nil && $0.offeredSegments == nil
+                && $0.selectedVariant == nil && $0.avoidedSegments.isEmpty
+        })
+        let restored = DrivingLearningEngine(store: store)
+        restored.recoverHistoricalTrips(records)
+        let repeated = try store.load()
+        #expect(repeated.trips.count == recovered.trips.count)
+        #expect(repeated.evidence.count == recovered.evidence.count)
+        #expect(!restored.settings.allowRemoteMatching)
+
+        restored.removeTrip(records[0].id)
+        DrivingLearningEngine(store: store).recoverHistoricalTrips(records)
+        #expect(!((try store.load()).trips.contains { $0.id == records[0].id }))
+        restored.clear()
+        DrivingLearningEngine(store: store).recoverHistoricalTrips(records)
+        #expect(try store.load().trips.isEmpty)
+    }
+
+    @Test func historyRecoveryRespectsDisabledEmptyAndPreviouslyRemovedProfiles() throws {
+        let (_, store, familiar) = try fixture(confirmed: false)
+        defer { try? FileManager.default.removeItem(at: store.url.deletingLastPathComponent()) }
+        let trip = historicalGapTrip(familiar, start: Date().addingTimeInterval(-600))
+        var old = try store.load()
+        old.historyRecoveryVersion = 0
+        old.settings.enabled = false
+        try store.save(old)
+        let disabled = DrivingLearningEngine(store: store)
+        disabled.recoverHistoricalTrips([trip])
+        #expect(try store.load().trips.count == 1)
+        #expect(try store.load().historyRecoveryVersion == 1)
+        var settings = disabled.settings
+        settings.enabled = true
+        disabled.updateSettings(settings)
+        disabled.recoverHistoricalTrips([trip])
+        #expect(!((try store.load()).trips.contains { $0.id == trip.id }))
+
+        var empty = DrivingProfileSnapshot()
+        empty.historyRecoveryVersion = 0
+        try store.save(empty)
+        DrivingLearningEngine(store: store).recoverHistoricalTrips([trip])
+        #expect(try store.load().trips.isEmpty)
+        #expect(try store.load().historyRecoveryVersion == 1)
+
+        // Removing an old preference before migration cannot bring that history
+        // back while another, unrelated learned trip remains in the profile.
+        old.settings.enabled = true
+        old.historyRecoveryVersion = 0
+        var related = old.trips[0]
+        related = LearnedDrivingTrip(id: trip.id, destinationName: trip.destination.name,
+            origin: familiar.coordinates[0], destination: destination, startedAt: trip.startedAt,
+            duration: trip.duration, context: DrivingPreferenceContext(date: trip.startedAt),
+            segments: related.segments, deviations: [], confirmed: false)
+        old.trips.append(related)
+        try store.save(old)
+        let removed = DrivingLearningEngine(store: store)
+        removed.removeTrip(trip.id)
+        removed.recoverHistoricalTrips([trip])
+        #expect(!((try store.load()).trips.contains { $0.id == trip.id }))
+    }
+
+
+    @Test func recoveredRepeatedGeometryChangesNextProposalWithoutInventingHistoricalAlternatives() throws {
+        let (_, store, ordinary, familiar) = localLearningFixture()
+        defer { try? FileManager.default.removeItem(at: store.url.deletingLastPathComponent()) }
+        let recent = Date().addingTimeInterval(-600)
+        var old = DrivingProfileSnapshot()
+        old.historyRecoveryVersion = 0
+        old.trips = [LearnedDrivingTrip(id: UUID(), destinationName: "Inny cel",
+            origin: origin, destination: destination, startedAt: recent, duration: 300,
+            context: DrivingPreferenceContext(date: recent),
+            segments: DrivingTraceLearning.segments(coordinates: ordinary.coordinates), deviations: [], confirmed: false)]
+        try store.save(old)
+        let engine = DrivingLearningEngine(store: store)
+        let records = (0..<3).map { index in
+            // A habit remains useful when visits happen at different hours.
+            historicalGapTrip(familiar, start: recent.addingTimeInterval(-Double(index) * 7 * 86_400 - Double(index) * 3 * 3_600))
+        }
+        engine.recoverHistoricalTrips(records)
+        let restored = DrivingLearningEngine(store: store)
+        let context = DrivingPreferenceContext(date: recent)
+        let hints = restored.candidateHints(from: origin, to: destination, context: context, baseline: ordinary)
+        #expect(!hints.isEmpty)
+        #expect(hints.flatMap { $0 }.contains { $0.longitude > 21.003 })
+        #expect(restored.ranked([ordinary, familiar], preference: .personalized, date: recent).first?.id == familiar.id)
+        #expect(restored.ranked([familiar, ordinary], preference: .fastest, date: recent).first?.id == ordinary.id)
+        #expect(restored.ranked([ordinary, familiar], preference: .shortest, date: recent).first?.id == ordinary.id)
+        #expect(familiar.expectedTravelTime == 301)
+        let recovered = try store.load().trips.filter(\.recoveredFromHistory)
+        #expect(recovered.allSatisfy { !$0.confirmed && $0.offeredVariants.isEmpty && $0.deviations.isEmpty })
+
+        // Three records of one day's drive must not impersonate three independent
+        // days of observed behaviour.
+        let oneDay = recovered.map { trip in
+            LearnedDrivingTrip(id: UUID(), destinationName: trip.destinationName,
+                origin: trip.origin, destination: trip.destination, startedAt: recent,
+                duration: trip.duration, context: context, segments: trip.segments, deviations: [], confirmed: false)
+        }
+        #expect(DrivingHabitPreference.candidates(trips: oneDay, origin: origin,
+            destination: destination, context: context, baseline: ordinary, date: Date()).isEmpty)
+    }
+
+
+    @Test func shortPersonalSectionOnLongRouteSurvivesDiversityButExactCopyDoesNot() {
+        let farDestination = Coordinate(latitude: 52.4, longitude: 21)
+        let baseline = NavigationRoute(coordinates: [origin, farDestination], distance: 44_478,
+            expectedTravelTime: 3_600, maneuvers: [])
+        let points = [origin,
+            Coordinate(latitude: 52.18, longitude: 21),
+            Coordinate(latitude: 52.1804, longitude: 21.002),
+            Coordinate(latitude: 52.181, longitude: 21.002),
+            Coordinate(latitude: 52.1814, longitude: 21), farDestination]
+        let personal = NavigationRoute(coordinates: points,
+            distance: RouteProgressGeometry(coordinates: points).length,
+            expectedTravelTime: 3_620, maneuvers: [])
+        let exactCopy = NavigationRoute(coordinates: points, distance: personal.distance,
+            expectedTravelTime: personal.expectedTravelTime, maneuvers: [])
+        #expect(RouteSimilarity.overlap(baseline, personal) > 0.98)
+        #expect(RouteSimilarity.diverse([baseline, personal]).count == 1)
+        let kept = RouteSimilarity.diverse([baseline, personal, exactCopy],
+            preserving: [personal.id, exactCopy.id])
+        #expect(kept.map(\.id) == [baseline.id, personal.id])
+    }
+
+
+    @Test func asyncHistoryRecoveryRespectsResetAndParentCancellation() async throws {
+        let (_, store, familiar) = try fixture(confirmed: false)
+        defer { try? FileManager.default.removeItem(at: store.url.deletingLastPathComponent()) }
+        var old = try store.load()
+        old.historyRecoveryVersion = 0
+        try store.save(old)
+        let historical = historicalGapTrip(familiar, start: Date().addingTimeInterval(-600))
+        let resetEngine = DrivingLearningEngine(store: store)
+        var resetReads = 0
+        await resetEngine.recoverHistoricalTripsAfterLaunch(records: {
+            resetReads += 1
+            if resetReads == 1 { resetEngine.clear() }
+            return [historical]
+        }, historyRevision: { 0 })
+        #expect(resetReads == 1)
+        #expect(try store.load().trips.isEmpty)
+        #expect(try store.load().historyRecoveryVersion == 1)
+
+        try store.save(old)
+        let cancelledEngine = DrivingLearningEngine(store: store)
+        var recovery: Task<Void, Never>?
+        var cancellationReads = 0
+        recovery = Task { @MainActor in
+            await cancelledEngine.recoverHistoricalTripsAfterLaunch(records: {
+                cancellationReads += 1
+                recovery?.cancel()
+                return [historical]
+            }, historyRevision: { 0 })
+        }
+        await recovery?.value
+        let cancelled = try store.load()
+        #expect(cancellationReads == 1)
+        #expect(cancelled.trips.count == old.trips.count)
+        #expect(cancelled.historyRecoveryVersion == 0)
+        #expect(!cancelled.trips.contains { $0.id == historical.id })
+
+        // Cancellation must release the operation so a later visible view can retry.
+        await cancelledEngine.recoverHistoricalTripsAfterLaunch(records: { [historical] }, historyRevision: { 0 })
+        #expect(try store.load().trips.contains { $0.id == historical.id })
+        #expect(try store.load().historyRecoveryVersion == 1)
+    }
+
+    @Test func asyncHistoryRecoveryRetriesWithoutOverwritingNewPendingTrip() async throws {
+        let (_, store, familiar) = try fixture(confirmed: false)
+        defer { try? FileManager.default.removeItem(at: store.url.deletingLastPathComponent()) }
+        var old = try store.load()
+        old.historyRecoveryVersion = 0
+        try store.save(old)
+        let historical = historicalGapTrip(familiar, start: Date().addingTimeInterval(-86_400))
+        let newlyCompleted = historicalGapTrip(familiar, start: Date().addingTimeInterval(-600))
+        let engine = DrivingLearningEngine(store: store)
+        var reads = 0
+        await engine.recoverHistoricalTripsAfterLaunch(records: {
+            reads += 1
+            if reads == 1 {
+                engine.enqueue(newlyCompleted, proposed: familiar, costing: "auto",
+                    context: DrivingPreferenceContext(date: newlyCompleted.startedAt),
+                    allowAutomaticDeviations: true, recordingGeneration: engine.recordingGeneration)
+            }
+            return [historical]
+        }, historyRevision: { 0 })
+        let saved = try store.load()
+        #expect(reads == 2)
+        #expect(saved.trips.contains { $0.id == historical.id && $0.recoveredFromHistory })
+        #expect(saved.pending.contains { $0.id == newlyCompleted.id })
+        #expect(!saved.trips.contains { $0.id == newlyCompleted.id })
+        #expect(saved.historyRecoveryVersion == 1)
+    }
+
+    @Test func asyncHistoryRecoveryRereadsHistoryAfterDeletionDuringPreparation() async throws {
+        let (_, store, familiar) = try fixture(confirmed: false)
+        defer { try? FileManager.default.removeItem(at: store.url.deletingLastPathComponent()) }
+        var old = try store.load()
+        old.historyRecoveryVersion = 0
+        try store.save(old)
+        let deleted = historicalGapTrip(familiar, start: Date().addingTimeInterval(-86_400))
+        let retained = historicalGapTrip(familiar, start: Date().addingTimeInterval(-600))
+        let engine = DrivingLearningEngine(store: store)
+        var revision: UInt64 = 0
+        var reads = 0
+        await engine.recoverHistoricalTripsAfterLaunch(records: {
+            reads += 1
+            if reads == 1 {
+                revision &+= 1
+                return [deleted, retained]
+            }
+            return [retained]
+        }, historyRevision: { revision })
+        let saved = try store.load()
+        #expect(reads == 2)
+        #expect(!saved.trips.contains { $0.id == deleted.id })
+        #expect(saved.trips.contains { $0.id == retained.id && $0.recoveredFromHistory })
+        #expect(saved.historyRecoveryVersion == 1)
     }
 
 }

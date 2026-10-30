@@ -100,6 +100,21 @@ struct SavedPlace: Identifiable, Codable {
     }
 }
 
+enum TripTerminationReason: String, Codable, Sendable {
+    case completed, userStopped, replaced, interruptedRecovered
+}
+
+enum TripTraceUnavailableReason: String, Codable, Sendable {
+    case legacyRecord, retention, noReliableLocations
+}
+
+/// Accepted measurement intervals remain available after map geometry expires.
+nonisolated struct TripDistanceSample: Codable, Sendable {
+    let startedAt: Date
+    let endedAt: Date
+    let distanceMeters: Double
+}
+
 struct TripRecord: Identifiable, Codable {
     var vehicleID: UUID? = nil
     var id = UUID()
@@ -116,9 +131,44 @@ struct TripRecord: Identifiable, Codable {
     var transportMode: TransportMode? = nil
     var trace: [TripTracePoint] = []
     var maximumSpeedKph: Double? = nil
-    var duration: TimeInterval { endedAt.timeIntervalSince(startedAt) }
+    var measuredStoppedSeconds: TimeInterval? = nil
+    var terminationReason: TripTerminationReason? = nil
+    var traceUnavailableReason: TripTraceUnavailableReason? = nil
+    var distanceSamples: [TripDistanceSample] = []
+    var routingQuality: RouteQualityMeasurement? = nil
+    var duration: TimeInterval { max(0, endedAt.timeIntervalSince(startedAt)) }
     var averageSpeedKph: Double { movingSeconds > 0 ? distanceMeters / movingSeconds * 3.6 : 0 }
-    var stoppedSeconds: TimeInterval { max(0, duration - movingSeconds) }
+    var stoppedSeconds: TimeInterval { max(0, measuredStoppedSeconds ?? 0) }
+    var recordedSeconds: TimeInterval { min(duration, max(0, movingSeconds) + stoppedSeconds) }
+    var unknownSeconds: TimeInterval { max(0, duration - recordedSeconds) }
+    var recordingCoverage: Double { duration > 0 ? recordedSeconds / duration : 0 }
+    var terminationDescription: String {
+        switch terminationReason {
+        case .completed: "Dotarto do celu"
+        case .userStopped: "Przerwano podróż"
+        case .replaced: "Rozpoczęto inną podróż"
+        case .interruptedRecovered: "Przejazd odzyskany po nieoczekiwanym zamknięciu aplikacji"
+        case nil: arrived ? "Dotarto do celu" : "Przerwano podróż"
+        }
+    }
+    var traceAvailabilityDescription: String {
+        guard trace.isEmpty else { return "Zapisany ślad GPS" }
+        return switch traceUnavailableReason {
+        case .retention: "Ślad GPS usunięto zgodnie z okresem przechowywania. Statystyki przejazdu zachowano."
+        case .noReliableLocations: "Nie udało się zapisać wiarygodnych pomiarów GPS podczas tej podróży."
+        case .legacyRecord, nil: "Ten starszy wpis nie zawiera zapisanego śladu GPS."
+        }
+    }
+    var drivingScoreUnavailableReason: String? {
+        guard drivingScore == nil else { return nil }
+        guard transportMode == .car else { return "Ocena prowadzenia jest dostępna dla przejazdów samochodem." }
+        if terminationReason == .interruptedRecovered {
+            return "Przejazd odzyskano po zamknięciu aplikacji. Pełna ocena prowadzenia nie jest dostępna."
+        }
+        if !arrived { return "Ocena prowadzenia jest dostępna po dotarciu do celu." }
+        return "Dla tego przejazdu nie zapisano oceny prowadzenia."
+    }
+    var scoreUnavailableReason: String? { drivingScoreUnavailableReason }
     var delaySeconds: TimeInterval? {
         guard arrived, let originalExpectedTravelTime else { return nil }
         return duration - originalExpectedTravelTime
@@ -128,13 +178,16 @@ struct TripRecord: Identifiable, Codable {
         case id, destination, waypoints, startedAt, endedAt, distanceMeters, movingSeconds
         case rerouteCount, arrived, originalExpectedTravelTime, drivingScore
         case transportMode, trace, maximumSpeedKph, vehicleID
+        case measuredStoppedSeconds, terminationReason, traceUnavailableReason, distanceSamples, routingQuality
     }
 
     init(id: UUID = UUID(), destination: Destination, waypoints: [Destination] = [], startedAt: Date,
          endedAt: Date, distanceMeters: Double, movingSeconds: TimeInterval, rerouteCount: Int,
          arrived: Bool, originalExpectedTravelTime: TimeInterval? = nil,
          drivingScore: DrivingScore? = nil, transportMode: TransportMode? = nil,
-         trace: [TripTracePoint] = [], maximumSpeedKph: Double? = nil, vehicleID: UUID? = nil) {
+         trace: [TripTracePoint] = [], maximumSpeedKph: Double? = nil, vehicleID: UUID? = nil,
+         measuredStoppedSeconds: TimeInterval? = nil, terminationReason: TripTerminationReason? = nil,
+         traceUnavailableReason: TripTraceUnavailableReason? = nil, distanceSamples: [TripDistanceSample] = []) {
         self.vehicleID = vehicleID
         self.id = id
         self.destination = destination
@@ -150,6 +203,10 @@ struct TripRecord: Identifiable, Codable {
         self.transportMode = transportMode
         self.trace = trace
         self.maximumSpeedKph = maximumSpeedKph
+        self.measuredStoppedSeconds = measuredStoppedSeconds
+        self.terminationReason = terminationReason
+        self.traceUnavailableReason = traceUnavailableReason
+        self.distanceSamples = distanceSamples
     }
 
     init(from decoder: Decoder) throws {
@@ -171,6 +228,36 @@ struct TripRecord: Identifiable, Codable {
         trace = try values.decodeIfPresent([TripTracePoint].self, forKey: .trace) ?? []
         maximumSpeedKph = try values.decodeIfPresent(Double.self, forKey: .maximumSpeedKph)
         vehicleID = try values.decodeIfPresent(UUID.self, forKey: .vehicleID)
+        measuredStoppedSeconds = try values.decodeIfPresent(TimeInterval.self, forKey: .measuredStoppedSeconds)
+        terminationReason = try values.decodeIfPresent(String.self, forKey: .terminationReason)
+            .flatMap(TripTerminationReason.init(rawValue:))
+        traceUnavailableReason = try values.decodeIfPresent(String.self, forKey: .traceUnavailableReason)
+            .flatMap(TripTraceUnavailableReason.init(rawValue:))
+        distanceSamples = try values.decodeIfPresent([TripDistanceSample].self, forKey: .distanceSamples) ?? []
+        routingQuality = try? values.decodeIfPresent(RouteQualityMeasurement.self, forKey: .routingQuality)
+        // Invalid optional diagnostics must not make a valid trip history unreadable.
+        if routingQuality?.isValid == false { routingQuality = nil }
+        let safeNumericLimit = Double(Int.max) / 1_000
+        guard startedAt.timeIntervalSinceReferenceDate.isFinite,
+              endedAt.timeIntervalSinceReferenceDate.isFinite,
+              endedAt >= startedAt, duration.isFinite, duration < safeNumericLimit,
+              distanceMeters.isFinite, (0..<safeNumericLimit).contains(distanceMeters),
+              movingSeconds.isFinite, (0..<safeNumericLimit).contains(movingSeconds), rerouteCount >= 0,
+              averageSpeedKph.isFinite, (0..<safeNumericLimit).contains(averageSpeedKph),
+              originalExpectedTravelTime.map({ $0.isFinite && (0..<safeNumericLimit).contains($0) }) ?? true,
+              measuredStoppedSeconds.map({ $0.isFinite && (0..<safeNumericLimit).contains($0) }) ?? true,
+              maximumSpeedKph.map({ $0.isFinite && (0..<safeNumericLimit).contains($0) }) ?? true,
+              trace.allSatisfy({ point in
+                  point.coordinate.isValidParkedCarCoordinate && point.timestamp.timeIntervalSinceReferenceDate.isFinite
+                      && (point.speedKph.map { $0.isFinite && (0..<safeNumericLimit).contains($0) } ?? true)
+              }), distanceSamples.allSatisfy({ sample in
+                  sample.startedAt.timeIntervalSinceReferenceDate.isFinite && sample.endedAt.timeIntervalSinceReferenceDate.isFinite
+                      && sample.endedAt > sample.startedAt && sample.distanceMeters.isFinite
+                      && (0..<safeNumericLimit).contains(sample.distanceMeters)
+              }) else {
+            throw DecodingError.dataCorruptedError(forKey: .distanceMeters, in: values,
+                debugDescription: "Nieprawidłowe pomiary w zapisanym przejeździe.")
+        }
     }
 }
 
@@ -217,25 +304,38 @@ struct ParkedCar: Identifiable, Codable, Equatable, Sendable {
 @MainActor @Observable
 final class LocalDataStore {
     private(set) var places: [SavedPlace] = []
-    private(set) var trips: [TripRecord] = []
+    private(set) var trips: [TripRecord] = [] {
+        didSet { historyRevision &+= 1 }
+    }
+    private(set) var historyRevision: UInt64 = 0
     private(set) var searches: [SearchHistoryEntry] = []
     private(set) var parkedCar: ParkedCar?
     var errorMessage: String?
     private let directory: URL
+    @ObservationIgnored private var canWriteHistory = true
+    @ObservationIgnored private var canWriteDeletionJournal = true
+    @ObservationIgnored private var historyNotice: String?
+    @ObservationIgnored private var pendingTrips: [UUID: TripRecord] = [:]
+    @ObservationIgnored private var committedTripIDs: Set<UUID> = []
+    @ObservationIgnored private var protectedJournalFiles: Set<String> = []
+    @ObservationIgnored private var deletionTombstones: Set<UUID> = []
+    @ObservationIgnored private var activeTrip: TripRecord?
+    @ObservationIgnored private let removeLearningTrip: (UUID) -> Bool
 
-    init(directory: URL? = nil) {
+    init(directory: URL? = nil, removeLearningTrip: ((UUID) -> Bool)? = nil) {
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("NaviAstra", isDirectory: true)
+        self.removeLearningTrip = removeLearningTrip ?? { DrivingLearningEngine.shared.removeTrip($0) }
         do { try FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true) }
-        catch { errorMessage = "Nie udało się przygotować lokalnego zapisu: \(error.localizedDescription)" }
+        catch { report(error, message: "Nie udało się przygotować lokalnego zapisu na urządzeniu.") }
         do { places = try Self.read([SavedPlace].self, from: self.directory.appendingPathComponent("places.json")) ?? [] }
-        catch { errorMessage = "Nie udało się wczytać ulubionych: \(error.localizedDescription)" }
-        do { trips = try Self.read([TripRecord].self, from: self.directory.appendingPathComponent("trips.json")) ?? [] }
-        catch { errorMessage = "Nie udało się wczytać historii: \(error.localizedDescription)" }
+        catch { report(error, message: "Nie udało się wczytać ulubionych na urządzeniu.") }
+        loadTripHistory()
         do { searches = try Self.read([SearchHistoryEntry].self, from: self.directory.appendingPathComponent("searches.json")) ?? [] }
-        catch { errorMessage = "Nie udało się wczytać historii wyszukiwania: \(error.localizedDescription)" }
+        catch { report(error, message: "Nie udało się wczytać historii wyszukiwania na urządzeniu.") }
         do { parkedCar = try Self.read(ParkedCar.self, from: self.directory.appendingPathComponent("parked-car.json")) }
-        catch { errorMessage = "Nie udało się wczytać miejsca samochodu: \(error.localizedDescription)" }
+        catch { report(error, message: "Nie udało się wczytać miejsca samochodu na urządzeniu.") }
+        recoverTripJournal()
     }
 
     @discardableResult
@@ -278,10 +378,10 @@ final class LocalDataStore {
                 try? FileManager.default.removeItem(at: parkedCarPhotoURL(for: photoPath))
             }
             parkedCar = nil
-            errorMessage = nil
+            errorMessage = durabilityNotice
             return true
         } catch {
-            errorMessage = "Nie udało się usunąć miejsca samochodu: \(error.localizedDescription)"
+            report(error, message: "Nie udało się usunąć miejsca samochodu na urządzeniu.")
             return false
         }
     }
@@ -298,7 +398,7 @@ final class LocalDataStore {
             }
             return fileName
         } catch {
-            errorMessage = "Nie udało się zapisać zdjęcia samochodu: \(error.localizedDescription)"
+            report(error, message: "Nie udało się zapisać zdjęcia samochodu na urządzeniu.")
             return nil
         }
     }
@@ -375,19 +475,113 @@ final class LocalDataStore {
         var updated = trips
         guard let index = updated.firstIndex(where: { $0.id == tripID }), updated[index].transportMode == .car else { return false }
         updated[index].vehicleID = vehicleID
+        if pendingTrips[tripID] != nil {
+            guard persist(updated[index], file: pendingFile(tripID)) else { return false }
+            pendingTrips[tripID] = updated[index]
+        }
         guard persist(updated, file: "trips.json") else { return false }
         trips = updated
+        committedTripIDs = Set(updated.map(\.id))
         return true
     }
 
-    func addTrip(_ trip: TripRecord) {
-        var updated = trips
-        updated.insert(trip, at: 0)
-        let cutoff = Date().addingTimeInterval(-365 * 86_400)
-        for index in updated.indices where index >= 300 || updated[index].startedAt < cutoff {
-            updated[index].trace = []
+    /// Checkpoints are a separate atomic file, never a rewrite of the archive.
+    @discardableResult
+    func saveActiveTrip(_ trip: TripRecord) -> Bool {
+        guard !deletionTombstones.contains(trip.id) else { return false }
+        if !canWriteDeletionJournal {
+            // An unreadable deletion journal must not let a new session replace
+            // an older checkpoint whose deletion status we cannot establish.
+            return persist(trip, file: isolatedActiveFile(trip.id))
         }
-        if persist(updated, file: "trips.json") { trips = updated }
+        if activeTrip == nil {
+            let url = directory.appendingPathComponent("active-trip.json")
+            do { activeTrip = try Self.read(TripRecord.self, from: url) }
+            catch {
+                preserveUnreadableJournal(url)
+                guard !FileManager.default.fileExists(atPath: url.path) else { return false }
+            }
+        }
+        if let previous = activeTrip, previous.id != trip.id, !committedTripIDs.contains(previous.id) {
+            var finalized = pendingTrips[previous.id] ?? previous
+            if pendingTrips[previous.id] == nil {
+                finalized.arrived = false
+                finalized.terminationReason = .interruptedRecovered
+                finalized.drivingScore = nil
+            }
+            guard persist(finalized, file: pendingFile(finalized.id)) else { return false }
+            pendingTrips[finalized.id] = finalized
+        }
+        guard persist(trip, file: "active-trip.json") else { return false }
+        activeTrip = trip
+        return true
+    }
+
+    /// The final record is journaled before replacing the archive. Failed writes
+    /// remain queued and cannot erase the last durable active-trip checkpoint.
+    @discardableResult
+    func addTrip(_ trip: TripRecord) -> Bool {
+        guard !deletionTombstones.contains(trip.id) else { return false }
+        pendingTrips[trip.id] = trip
+        let journaled = persist(trip, file: pendingFile(trip.id))
+        retryPendingHistoryWrites()
+        if pendingTrips[trip.id] == nil { return true }
+        if journaled {
+            // A durable journal also lets the user inspect the unsynced record.
+            upsertVisibleTrip(trip)
+            errorMessage = "Przejazd zabezpieczono w zapisie roboczym. Zapis historii zostanie ponowiony."
+        }
+        return false
+    }
+
+    /// Called on launch and when returning to the foreground; all steps are
+    /// idempotent so a process exit between two files cannot resurrect a trip.
+    func retryPendingHistoryWrites() {
+        guard !pendingTrips.isEmpty || !deletionTombstones.isEmpty else { return }
+        // A small final journal may fit even when replacing the full archive
+        // fails. Retry it independently for records previously held only in RAM.
+        for trip in pendingTrips.values where !deletionTombstones.contains(trip.id) {
+            _ = persist(trip, file: pendingFile(trip.id))
+        }
+        var updated = trips.filter { !deletionTombstones.contains($0.id) }
+        for trip in pendingTrips.values where !deletionTombstones.contains(trip.id) {
+            updated.removeAll { $0.id == trip.id }
+            updated.append(trip)
+        }
+        updated.sort { $0.startedAt > $1.startedAt }
+        retainHistoryGeometry(in: &updated)
+        let archiveSaved = persist(updated, file: "trips.json")
+        if archiveSaved {
+            trips = updated
+            committedTripIDs = Set(updated.map(\.id))
+        }
+        var cleanupFailed = false
+        for id in Array(pendingTrips.keys) where archiveSaved {
+            guard removeActiveJournal(for: id), removeJournalFile(isolatedActiveFile(id)) else {
+                cleanupFailed = true
+                continue
+            }
+            guard removeJournalFile(pendingFile(id)) else { cleanupFailed = true; continue }
+            pendingTrips.removeValue(forKey: id)
+        }
+        var remaining = deletionTombstones
+        for id in deletionTombstones {
+            let removedPending = removeJournalFile(pendingFile(id))
+            let removedActive = removeActiveJournal(for: id) && removeJournalFile(isolatedActiveFile(id))
+            let removedLearning = removeLearningTrip(id)
+            if archiveSaved && removedPending && removedActive && removedLearning {
+                remaining.remove(id)
+            } else { cleanupFailed = true }
+        }
+        if remaining != deletionTombstones {
+            if persist(remaining, file: "trip-deletions.json") { deletionTombstones = remaining }
+            else { cleanupFailed = true }
+        }
+        if cleanupFailed && archiveSaved {
+            errorMessage = "Zmianę historii zapisano. Usuwanie pozostałych danych przejazdu zostanie ponowione."
+        } else if archiveSaved {
+            errorMessage = durabilityNotice
+        }
     }
     func recordSearch(_ destination: Destination) {
         var updated = searches.filter { $0.destination.coordinate != destination.coordinate }
@@ -399,24 +593,244 @@ final class LocalDataStore {
         let updated = searches.filter { $0.id != id }
         if persist(updated, file: "searches.json") { searches = updated }
     }
-    func removeTrip(_ id: UUID) {
-        let updated = trips.filter { $0.id != id }
-        if persist(updated, file: "trips.json") {
-            trips = updated
-            DrivingLearningEngine.shared.removeTrip(id)
+    @discardableResult
+    func removeTrip(_ id: UUID) -> Bool {
+        guard canWriteDeletionJournal else {
+            errorMessage = durabilityNotice
+            return false
         }
+        var tombstones = deletionTombstones
+        tombstones.insert(id)
+        guard persist(tombstones, file: "trip-deletions.json") else { return false }
+        deletionTombstones = tombstones
+        trips.removeAll { $0.id == id }
+        pendingTrips.removeValue(forKey: id)
+        retryPendingHistoryWrites()
+        return true
     }
     @discardableResult private func persist<T: Encodable>(_ value: T, file: String) -> Bool {
+        guard !protectedJournalFiles.contains(file) else {
+            errorMessage = "Nie można zastąpić nieczytelnego zapisu roboczego, dopóki jego kopia nie zostanie zabezpieczona."
+            return false
+        }
+        if file == "trips.json", !canWriteHistory {
+            errorMessage = historyNotice ?? "Historia wymaga odzyskania. Oryginalny plik pozostawiono bez zmian."
+            return false
+        }
         do {
             let data = try JSONEncoder().encode(value)
             try data.write(to: directory.appendingPathComponent(file), options: .atomic)
-            errorMessage = nil
+            errorMessage = durabilityNotice
             return true
         } catch {
-            errorMessage = "Nie udało się zapisać danych na urządzeniu: \(error.localizedDescription)"
+            report(error, message: "Nie udało się zapisać danych na urządzeniu. Zwolnij miejsce i spróbuj ponownie.")
             return false
         }
     }
+
+    private func loadTripHistory() {
+        do {
+            deletionTombstones = try Self.read(Set<UUID>.self,
+                from: directory.appendingPathComponent("trip-deletions.json")) ?? []
+        } catch {
+            canWriteHistory = false
+            canWriteDeletionJournal = false
+            historyNotice = "Nie udało się odczytać oczekujących usunięć historii. Zapis historii wstrzymano, aby chronić dane."
+            report(error, message: historyNotice!)
+        }
+        let url = directory.appendingPathComponent("trips.json")
+        do {
+            trips = try Self.read([TripRecord].self, from: url) ?? []
+        } catch {
+            report(error, message: "Nie udało się odczytać całej historii przejazdów.")
+            do {
+                // Preserve the exact source before allowing any repaired writes.
+                let original = try Data(contentsOf: url)
+                let initialBackup = directory.appendingPathComponent("trips-recovery-original.json")
+                if (try? Data(contentsOf: initialBackup)) != original {
+                    let backup = FileManager.default.fileExists(atPath: initialBackup.path)
+                        ? directory.appendingPathComponent("trips-recovery-\(UUID().uuidString).json") : initialBackup
+                    try original.write(to: backup, options: .atomic)
+                }
+                let elements = try JSONSerialization.jsonObject(with: original) as? [Any] ?? []
+                var recovered: [TripRecord] = []
+                var identifiers: Set<UUID> = []
+                for element in elements {
+                    guard JSONSerialization.isValidJSONObject(element),
+                          let data = try? JSONSerialization.data(withJSONObject: element),
+                          let trip = try? JSONDecoder().decode(TripRecord.self, from: data),
+                          identifiers.insert(trip.id).inserted else { continue }
+                    recovered.append(trip)
+                }
+                guard !recovered.isEmpty else { throw HistoryRecoveryFailure.noReadableRecords }
+                trips = recovered
+                historyNotice = "Odzyskano poprawne wpisy historii. Część wpisów jest nieczytelna; oryginalny plik zachowano w kopii odzyskiwania."
+                errorMessage = historyNotice
+            } catch {
+                canWriteHistory = false
+                historyNotice = "Nie udało się wczytać historii. Oryginalny plik pozostawiono bez zmian; nowe przejazdy są zabezpieczane osobno."
+                report(error, message: historyNotice!)
+            }
+        }
+        trips.removeAll { deletionTombstones.contains($0.id) }
+        if !canWriteDeletionJournal { trips = [] }
+        trips.sort { $0.startedAt > $1.startedAt }
+        committedTripIDs = Set(trips.map(\.id))
+    }
+
+    private func recoverTripJournal() {
+        guard canWriteDeletionJournal else { return }
+        do {
+            let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            for file in files where file.lastPathComponent.hasPrefix("pending-trip-") && file.pathExtension == "json" {
+                do {
+                    guard let trip = try Self.read(TripRecord.self, from: file) else { continue }
+                    if deletionTombstones.contains(trip.id) { continue }
+                    // A completed archive write may precede journal cleanup.
+                    // Never replace later edits with such an old journal copy.
+                    if trips.contains(where: { $0.id == trip.id }) {
+                        _ = removeJournalFile(file.lastPathComponent)
+                    } else { pendingTrips[trip.id] = trip }
+                } catch {
+                    preserveUnreadableJournal(file)
+                    report(error, message: "Nie udało się odczytać jednego zapisu roboczego przejazdu. Plik zachowano do odzyskania.")
+                }
+            }
+            for file in files where file.lastPathComponent.hasPrefix("isolated-active-trip-") && file.pathExtension == "json" {
+                do {
+                    guard var checkpoint = try Self.read(TripRecord.self, from: file) else { continue }
+                    if deletionTombstones.contains(checkpoint.id) { continue }
+                    if committedTripIDs.contains(checkpoint.id) {
+                        _ = removeJournalFile(file.lastPathComponent)
+                    } else if pendingTrips[checkpoint.id] == nil {
+                        checkpoint.arrived = false
+                        checkpoint.terminationReason = .interruptedRecovered
+                        checkpoint.drivingScore = nil
+                        pendingTrips[checkpoint.id] = checkpoint
+                        _ = persist(checkpoint, file: pendingFile(checkpoint.id))
+                    }
+                } catch {
+                    preserveUnreadableJournal(file)
+                    report(error, message: "Nie udało się odczytać jednego zapisu roboczego przejazdu. Plik zachowano do odzyskania.")
+                }
+            }
+        } catch {
+            report(error, message: "Nie udało się odczytać katalogu zapisów roboczych. Zachowano je na urządzeniu.")
+        }
+        // Read the active checkpoint independently of directory enumeration.
+        do {
+            let activeURL = directory.appendingPathComponent("active-trip.json")
+            let checkpoint: TripRecord?
+            do { checkpoint = try Self.read(TripRecord.self, from: activeURL) }
+            catch {
+                preserveUnreadableJournal(activeURL)
+                report(error, message: "Nie udało się odczytać ostatniego zapisu roboczego podróży. Plik zachowano do odzyskania.")
+                checkpoint = nil
+            }
+            if var checkpoint {
+                activeTrip = checkpoint
+                if deletionTombstones.contains(checkpoint.id) {
+                    // The tombstone cleanup also removes the active checkpoint.
+                } else if trips.contains(where: { $0.id == checkpoint.id }) {
+                    if removeJournalFile("active-trip.json") { activeTrip = nil }
+                } else if pendingTrips[checkpoint.id] == nil {
+                    checkpoint.arrived = false
+                    checkpoint.terminationReason = .interruptedRecovered
+                    checkpoint.drivingScore = nil
+                    pendingTrips[checkpoint.id] = checkpoint
+                    _ = persist(checkpoint, file: pendingFile(checkpoint.id))
+                }
+            }
+        }
+        retryPendingHistoryWrites()
+        for trip in pendingTrips.values where !deletionTombstones.contains(trip.id) { upsertVisibleTrip(trip) }
+    }
+
+    private func retainHistoryGeometry(in trips: inout [TripRecord]) {
+        let cutoff = Calendar(identifier: .gregorian).date(byAdding: .day, value: -365, to: Date()) ?? .distantPast
+        for index in trips.indices where (index >= 300 || trips[index].startedAt < cutoff) && !trips[index].trace.isEmpty {
+            if trips[index].distanceSamples.isEmpty {
+                // This mirrors legacy fuel-distance acceptance; expiry must not
+                // change the contribution of a trip crossing a fuel purchase.
+                let trip = trips[index]
+                trips[index].distanceSamples = zip(trip.trace, trip.trace.dropFirst()).compactMap { left, right in
+                    let seconds = right.timestamp.timeIntervalSince(left.timestamp)
+                    guard !right.startsSegment, seconds > 0, seconds <= 30,
+                          left.timestamp >= trip.startedAt, right.timestamp <= trip.endedAt,
+                          [left.coordinate, right.coordinate].allSatisfy(\.isValidParkedCarCoordinate) else { return nil }
+                    let distance = left.coordinate.distance(to: right.coordinate)
+                    guard distance.isFinite, distance <= max(30, seconds * 60),
+                          (right.speedKph.map { $0.isFinite && $0 >= 1.8 } ?? (distance / seconds >= 0.5)) else { return nil }
+                    return TripDistanceSample(startedAt: left.timestamp, endedAt: right.timestamp, distanceMeters: distance)
+                }
+            }
+            trips[index].trace = []
+            trips[index].traceUnavailableReason = .retention
+        }
+    }
+
+    private func upsertVisibleTrip(_ trip: TripRecord) {
+        trips.removeAll { $0.id == trip.id }
+        trips.append(trip)
+        trips.sort { $0.startedAt > $1.startedAt }
+    }
+
+    private func pendingFile(_ id: UUID) -> String { "pending-trip-\(id.uuidString).json" }
+    private func isolatedActiveFile(_ id: UUID) -> String { "isolated-active-trip-\(id.uuidString).json" }
+
+    private var durabilityNotice: String? {
+        if let historyNotice { return historyNotice }
+        if !pendingTrips.isEmpty { return "Nie wszystkie przejazdy zapisano w historii. Zapis zostanie ponowiony." }
+        if !deletionTombstones.isEmpty { return "Usuwanie pozostałych danych przejazdu zostanie ponowione." }
+        return nil
+    }
+
+    private func removeActiveJournal(for id: UUID) -> Bool {
+        do {
+            // Verify the file itself: a failed earlier directory listing or
+            // decode is not evidence that an active checkpoint does not exist.
+            let stored = try Self.read(TripRecord.self, from: directory.appendingPathComponent("active-trip.json"))
+            guard stored?.id == id else { return true }
+            guard removeJournalFile("active-trip.json") else { return false }
+            if activeTrip?.id == id { activeTrip = nil }
+            return true
+        } catch {
+            report(error, message: "Nie udało się sprawdzić zapisu roboczego usuwanej podróży. Usunięcie zostanie ponowione.")
+            return false
+        }
+    }
+
+    private func preserveUnreadableJournal(_ url: URL) {
+        do {
+            let backup = directory.appendingPathComponent("history-journal-recovery-\(UUID().uuidString).json")
+            try FileManager.default.copyItem(at: url, to: backup)
+            protectedJournalFiles.remove(url.lastPathComponent)
+            // The preserved copy prevents repeated recovery of the same bad file.
+            try? FileManager.default.removeItem(at: url)
+        } catch {
+            protectedJournalFiles.insert(url.lastPathComponent)
+            report(error, message: "Nie udało się zabezpieczyć nieczytelnego zapisu roboczego. Oryginalny plik pozostawiono bez zmian.")
+        }
+    }
+
+    private func removeJournalFile(_ name: String) -> Bool {
+        let url = directory.appendingPathComponent(name)
+        do {
+            if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+            return true
+        } catch {
+            report(error, message: "Nie udało się usunąć pomocniczego zapisu przejazdu. Usunięcie zostanie ponowione.")
+            return false
+        }
+    }
+
+    private func report(_ error: Error, message: String) {
+        NSLog("[LocalDataStore] %@", String(describing: error))
+        errorMessage = message
+    }
+
+    private enum HistoryRecoveryFailure: Error { case noReadableRecords }
+
     private static func read<T: Decodable>(_ type: T.Type, from url: URL) throws -> T? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         return try JSONDecoder().decode(type, from: Data(contentsOf: url))

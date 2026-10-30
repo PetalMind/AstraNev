@@ -40,6 +40,8 @@ final class NavigationState {
     var navigationTarget: POINavigationTarget?
     var waypoints: [Destination] = []
     var evChargingStops: [Destination] = []
+    var evEstimatedBatteryPercent: Double?
+    var evEstimatedRangeKilometers: Double?
     var waypointNavigationTargets: [UUID: POINavigationTarget] = [:]
     var pendingWaypointIDs: [UUID] = []
     var routingPreferences = RoutingPreferences()
@@ -115,7 +117,7 @@ enum NearbySearchStatus: Equatable {
 }
 
 enum EVPlanningError: LocalizedError {
-    case rangeNotConfigured, consumptionNotConfigured, chargersUnavailable
+    case rangeNotConfigured, consumptionNotConfigured, chargersUnavailable, batteryDepleted
 
     var errorDescription: String? {
         switch self {
@@ -125,6 +127,8 @@ enum EVPlanningError: LocalizedError {
             "Wpisz zużycie energii oraz maksymalną moc ładowania auta w ustawieniach EV."
         case .chargersUnavailable:
             "Nie znaleziono wystarczającej liczby publicznych ładowarek ze znanym złączem i mocą w danych OpenStreetMap."
+        case .batteryDepleted:
+            "Szacowany zasięg baterii został wykorzystany. Potwierdź aktualny poziom baterii w ustawieniach EV, aby przeliczyć trasę."
         }
     }
 }

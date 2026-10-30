@@ -5,35 +5,49 @@ enum TransitJourneyRanker {
     private static let logger = Logger(subsystem: "STDMSolution.NaviAstra", category: "TransitRouting")
 
     static func ranked(_ journeys: [TransitJourney], profile: TransitRouteProfile,
+                       requestedTime: Date? = nil, arriveBy: Bool = false,
                        limit: Int = 5) -> [TransitJourney] {
         let candidates = journeys.filter { $0.legs.contains(where: { $0.isTransit }) || $0.legs.contains(where: { $0.mode == .walk }) }
         let unique = deduplicated(candidates)
         let ordered = unique.sorted {
-            score($0, profile: profile) < score($1, profile: profile)
+            let left = score($0, profile: profile, requestedTime: requestedTime, arriveBy: arriveBy)
+            let right = score($1, profile: profile, requestedTime: requestedTime, arriveBy: arriveBy)
+            if left != right { return left < right }
+            if arriveBy, $0.departure != $1.departure { return $0.departure > $1.departure }
+            if $0.arrival != $1.arrival { return $0.arrival < $1.arrival }
+            return signature($0) < signature($1)
         }
         let result = diversified(ordered, limit: limit)
         logger.info("Ranked journeys; received=\(journeys.count, privacy: .public) valid=\(unique.count, privacy: .public) selected=\(result.count, privacy: .public)")
         return result
     }
 
-    static func score(_ journey: TransitJourney, profile: TransitRouteProfile) -> Double {
+    static func score(_ journey: TransitJourney, profile: TransitRouteProfile,
+                      requestedTime: Date? = nil, arriveBy: Bool = false) -> Double {
         let risk = transferRiskPenalty(journey.legs)
         let positiveDelay = journey.legs.compactMap(\.delaySeconds).reduce(0) { $0 + max(0, $1) }
+        // Account for time outside the itinerary: waiting before departure, or
+        // arriving unnecessarily early. Otherwise a later short ride can beat
+        // a connection which actually gets the passenger there sooner.
+        let scheduleCost = requestedTime.map { requested in
+            arriveBy ? max(0, requested.timeIntervalSince(journey.arrival))
+                : max(0, journey.departure.timeIntervalSince(requested))
+        } ?? 0
         switch profile {
         case .balanced:
-            return journey.duration + journey.walkingDuration * 0.35
+            return scheduleCost + journey.duration + journey.walkingDuration * 0.35
                 + journey.walkingDistance * 0.16 + journey.waitingDuration * 0.15
                 + Double(journey.transfers) * 300 + risk + Double(positiveDelay) * 0.35
         case .fastest:
-            return journey.duration + journey.walkingDuration * 0.1
+            return scheduleCost + journey.duration + journey.walkingDuration * 0.1
                 + journey.walkingDistance * 0.03 + Double(journey.transfers) * 100
                 + risk + Double(positiveDelay) * 0.2
         case .leastWalking:
-            return journey.duration * 0.45 + journey.walkingDuration * 1.9
+            return scheduleCost + journey.duration * 0.45 + journey.walkingDuration * 1.9
                 + journey.walkingDistance * 0.25 + Double(journey.transfers) * 220
                 + risk + Double(positiveDelay) * 0.2
         case .fewestTransfers:
-            return journey.duration * 0.55 + journey.walkingDuration * 0.25
+            return scheduleCost + journey.duration * 0.55 + journey.walkingDuration * 0.25
                 + journey.walkingDistance * 0.08 + Double(journey.transfers) * 720
                 + risk + Double(positiveDelay) * 0.2
         }
@@ -48,6 +62,7 @@ enum TransitJourneyRanker {
             let nextIndex = rideIndices[index]
             let previousRide = legs[previousIndex]
             let nextRide = legs[nextIndex]
+            guard !nextRide.isInterlined else { continue }
             let walkingBetween = legs[(previousIndex + 1)..<nextIndex]
                 .filter { $0.mode == .walk }
                 .reduce(0.0) { $0 + $1.duration }

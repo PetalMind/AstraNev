@@ -165,8 +165,8 @@ extension NavigationSession {
             if let published = self.state.traffic {
                 let closureAhead = self.confirmedClosureAhead(in: published, on: route,
                                                               progress: self.state.progress) != nil
-                if !closureAhead, self.state.status == .navigating,
-                   let location = self.state.location?.coordinate {
+                if self.state.status == .routePreview || (!closureAhead && self.state.status == .navigating),
+                   let location = self.state.location?.coordinate ?? route.coordinates.first {
                     self.selectTrafficAdjustedRoute(from: published, currentRoute: route,
                                                     location: location)
                 }
@@ -244,142 +244,244 @@ extension NavigationSession {
             routeColorSegments: colors)
     }
 
-    private func selectTrafficAdjustedRoute(from snapshot: TrafficSnapshot,
-                                            currentRoute: NavigationRoute,
-                                            location: Coordinate) {
-        guard state.transportMode == .car, state.status == .navigating,
-              state.routingPreferences.advanced.effectiveRoutePreference != .shortest,
+    func selectTrafficAdjustedRoute(from snapshot: TrafficSnapshot,
+                                    currentRoute: NavigationRoute,
+                                    location: Coordinate) {
+        let isPreview = state.status == .routePreview
+        guard state.transportMode == .car, isPreview || state.status == .navigating,
+              state.journeyTimeMode == .now,
+              isPreview || state.routingPreferences.advanced.effectiveRoutePreference != .shortest,
               state.route?.id == currentRoute.id else { return }
-        let routes = state.routeOptions.isEmpty ? [currentRoute] : state.routeOptions
-        guard routes.count > 1 else { return }
+        let origin = isPreview ? (currentRoute.coordinates.first ?? location) : location
+        let start = isPreview ? 0 : (RouteProgressGeometry(currentRoute).project(origin)?.alongRoute ?? 0)
+        let baseline = RoadRouteETA.estimate(currentRoute, from: start, traffic: nil)
+        let observed = RoadRouteETA.estimate(currentRoute, from: start, traffic: snapshot)
+        let closureAhead = confirmedClosureAhead(in: snapshot, on: currentRoute,
+                                                  progress: isPreview ? nil : state.progress) != nil
+        let preservesManualSelection = isPreview && learningExplicitlySelectedRouteID == currentRoute.id
+        if preservesManualSelection && closureAhead { publishManualPreviewClosureWarning(for: currentRoute.id) }
+        let shouldGenerateCandidates = !preservesManualSelection &&
+            Date().timeIntervalSince(lastTrafficCandidateRefresh) >= 300 &&
+            ((isPreview && closureAhead) || (!isPreview && baseline.isFinite && observed.isFinite &&
+                observed - baseline >= max(120, baseline * 0.15)))
+        let existing = state.routeOptions.isEmpty ? [currentRoute] : state.routeOptions
+        guard isPreview || existing.count > 1 || shouldGenerateCandidates else { return }
         guard let provider = trafficProvider, !trafficComparisonInFlight,
               Date().timeIntervalSince(lastTrafficComparison) >= 180 else { return }
         trafficComparisonInFlight = true
         lastTrafficComparison = Date()
+        if shouldGenerateCandidates { lastTrafficCandidateRefresh = Date() }
         trafficRouteSelectionGeneration += 1
         let selectionGeneration = trafficRouteSelectionGeneration
         let generation = trafficGeneration
+        let planGeneration = requestGeneration
         let currentRouteID = currentRoute.id
         let requestedPreferences = state.routingPreferences
+        let requestedSelection = learningExplicitlySelectedRouteID
+        let requestedStatus = state.status
         let accuracy = state.location?.accuracy ?? 70
-        let heading = routingHeading(from: location)
-        Task { @MainActor [weak self] in
+        let heading = isPreview ? nil : routingHeading(from: origin)
+        let token = TransitPlanningCancellationToken()
+        trafficCandidateCancellationToken = token
+        trafficComparisonTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { if generation == self.trafficGeneration { self.trafficComparisonInFlight = false } }
-            var scores: [(route: NavigationRoute, eta: Double)] = []
-            var snapshots: [UUID: TrafficSnapshot] = [:]
-            var starts: [UUID: Double] = [:]
-            var coverages: [UUID: TrafficCoverage] = [:]
+            defer {
+                if generation == self.trafficGeneration && selectionGeneration == self.trafficRouteSelectionGeneration {
+                    self.trafficComparisonInFlight = false
+                    self.trafficComparisonTask = nil
+                }
+                if self.trafficCandidateCancellationToken === token { self.trafficCandidateCancellationToken = nil }
+            }
+            @MainActor func isCurrent() -> Bool {
+                !Task.isCancelled && !token.isCancelled && generation == self.trafficGeneration &&
+                    selectionGeneration == self.trafficRouteSelectionGeneration &&
+                    planGeneration == self.requestGeneration && self.state.route?.id == currentRouteID &&
+                    self.state.status == requestedStatus && self.state.journeyTimeMode == .now &&
+                    self.state.routingPreferences == requestedPreferences &&
+                    self.learningExplicitlySelectedRouteID == requestedSelection
+            }
             let comparisonStarted = ProcessInfo.processInfo.systemUptime
-            var totalQueries = 0
-            for route in routes {
-                guard generation == self.trafficGeneration,
-                      selectionGeneration == self.trafficRouteSelectionGeneration,
-                      self.state.route?.id == currentRouteID, self.state.status == .navigating,
-                      self.state.routingPreferences == requestedPreferences else { return }
-                let geometry = RouteProgressGeometry(route)
-                guard let projection = geometry.project(location, within: max(50, accuracy * 2)),
-                      projection.distanceFromRoute <= max(50, accuracy * 2),
-                      RoadRouteETA.canFollow(route, projection: projection, heading: heading) else { continue }
-                let start = projection.alongRoute
-                let horizon = min(geometry.length - start,
-                                  RouteTrafficMonitor.lookAheadDistance(for: route, progress: nil))
-                let end = start + horizon
-                let boxes = RouteTrafficMonitor.queryBoxes(for: route.coordinates, from: start, through: end)
-                let queries = RouteTrafficMonitor.flowQueries(for: route, from: start, through: end, incidents: snapshot.incidents,
-                    budget: TrafficSamplingBudget.resolved(isNavigating: true, isForeground: self.appIsForeground,
-                        problemDetected: snapshot.incidents.contains { ($0.delaySeconds ?? 0) >= 120 }))
-                totalQueries += queries.count
-                async let incidentRequest = provider.incidents(in: boxes)
-                async let flowRequest = provider.routeFlowSamples(at: queries)
-                let incidents: [TrafficIncident]
-                do { incidents = try await incidentRequest } catch { return }
-                let samples = await flowRequest
-                // A failed or mostly missing corridor must not make an alternative look faster.
-                guard !queries.isEmpty, samples.count >= max(1, Int(ceil(Double(queries.count) * 0.75))) else { return }
-                let segments = RouteTrafficMonitor.coloredSegments(
-                    on: route, from: start, through: end, queries: queries, samples: samples, geometry: geometry)
-                guard !segments.isEmpty else { return }
-                let matched = RouteTrafficMonitor.matching(incidents, to: route, from: start,
-                                                           through: end, routeGeometry: geometry)
-                let traffic = TrafficSnapshot(flow: nil, incidents: matched, routeFlowSegments: segments,
-                                              updatedAt: Date(), partialError: nil, incidentDataAvailable: true)
-                snapshots[route.id] = traffic
-                starts[route.id] = start
-                coverages[route.id] = TrafficCoverage.measure(route: route, from: start, through: end, traffic: traffic)
-                scores.append((route, RoadRouteETA.estimate(route, from: start, traffic: traffic)))
+            do {
+                try await RoadRoutingContext.$cancellationToken.withValue(token) {
+                    var candidates = existing
+                    if shouldGenerateCandidates, let destination = self.state.destination {
+                        let closures = self.knownRoadClosures.values.filter { $0.isFresh() }
+                        let avoidances = try closures.map { try $0.avoidance() }
+                        let polygons = avoidances.flatMap(\.polygons)
+                        guard polygons.count <= 256 else { return }
+                        let stops = isPreview ? self.state.waypoints : self.unvisitedStops(from: origin)
+                        let fresh = try await RoadRoutingContext.$closurePolygons.withValue(polygons) {
+                            try await self.calculateRoutes(from: origin,
+                                to: self.destinationRouteCoordinate(for: destination),
+                                through: stops.map(\.coordinate), commitEVStops: false)
+                        }
+                        guard isCurrent() else { return }
+                        candidates = fresh.filter { route in !avoidances.contains { $0.intersects(route) } } + existing
+                        let target = self.destinationRouteCoordinate(for: destination)
+                        if !isPreview, let congestion = CongestionDetourCandidate.largest(on: currentRoute,
+                            after: start, traffic: snapshot,
+                            mandatoryCoordinates: [origin, target] + stops.map(\.coordinate)) {
+                            do {
+                                if let detour = try await self.congestionDetour(from: origin, to: target,
+                                    through: stops.map(\.coordinate), avoiding: congestion) {
+                                    candidates.insert(detour, at: 0)
+                                }
+                            } catch {
+                                try RoadRoutingContext.checkCancellation()
+                                // This optional candidate cannot discard ordinary route options.
+                            }
+                            guard isCurrent() else { return }
+                        }
+                    }
+                    candidates = Array(RouteSimilarity.diverse([currentRoute] + candidates.filter { $0.id != currentRouteID },
+                                                               preserving: [currentRouteID]).prefix(4))
+                    var starts: [UUID: Double] = [:]
+                    candidates = candidates.filter { route in
+                        if isPreview {
+                            guard let first = route.coordinates.first, first.distance(to: origin) <= 100 else { return false }
+                            starts[route.id] = 0
+                            return true
+                        }
+                        let geometry = RouteProgressGeometry(route)
+                        guard let projection = geometry.project(origin, within: max(50, accuracy * 2)),
+                              projection.distanceFromRoute <= max(50, accuracy * 2),
+                              RoadRouteETA.canFollow(route, projection: projection, heading: heading) else { return false }
+                        starts[route.id] = projection.alongRoute
+                        return true
+                    }
+                    guard isPreview || candidates.count > 1, starts[currentRouteID] != nil, isCurrent() else { return }
+                    let snapshots = try await TrafficRouteEvaluator.snapshots(for: candidates, starts: starts,
+                        provider: provider, isNavigating: !isPreview, isForeground: self.appIsForeground,
+                        requireComparableCoverage: !isPreview)
+                    guard isCurrent(), isPreview ||
+                        (self.state.location?.coordinate.distance(to: origin) ?? .infinity) < 100 else { return }
+                    for route in candidates {
+                        guard let traffic = snapshots[route.id] else { continue }
+                        for closure in ConfirmedRoadClosure.evidence(in: traffic, route: route) {
+                            self.knownRoadClosures[closure.id] = closure
+                        }
+                    }
+                    guard let currentTraffic = snapshots[currentRouteID] else { return }
+                    let currentClosed = self.confirmedClosureAhead(in: currentTraffic, on: currentRoute,
+                        progress: isPreview ? nil : self.state.progress) != nil
+                    if preservesManualSelection {
+                        if currentClosed { self.publishManualPreviewClosureWarning(for: currentRouteID) }
+                        else if self.state.errorMessage == Self.manualPreviewClosureMessage { self.state.errorMessage = nil }
+                    }
+                    // Closures remain actionable even when speed samples are missing. ETA comparison
+                    // still requires the same coverage for every displayed candidate.
+                    guard !isPreview || TrafficRouteEvaluator.hasComparableCoverage(routes: candidates,
+                        starts: starts, traffic: snapshots) else { return }
+                    guard let comparisonUpdatedAt = snapshots.values.map(\.updatedAt).min(),
+                          !isPreview || (0...120).contains(Date().timeIntervalSince(comparisonUpdatedAt)) else { return }
+                    let ranked = DrivingLearningEngine.shared.ranked(candidates,
+                        preference: requestedPreferences.advanced.effectiveRoutePreference, from: starts, traffic: snapshots)
+                    guard let selected = preservesManualSelection ? currentRoute : ranked.first,
+                          let selectedTraffic = snapshots[selected.id] else { return }
+                    let currentETA = RoadRouteETA.estimate(currentRoute, from: starts[currentRouteID] ?? 0,
+                                                           traffic: currentTraffic)
+                    let selectedETA = RoadRouteETA.estimate(selected, from: starts[selected.id] ?? 0,
+                                                            traffic: selectedTraffic)
+                    guard selectedETA.isFinite || (preservesManualSelection && currentClosed) else { return }
+                    if !isPreview {
+                        if currentClosed {
+                            self.handleConfirmedClosure(in: currentTraffic, near: origin)
+                            return
+                        }
+                        guard selected.id != currentRouteID, currentETA.isFinite,
+                              currentETA - selectedETA >= max(120, currentETA * 0.15) else { return }
+                    }
+                    guard isCurrent() else { return }
+                    RoutingDiagnostics.shared.publish(.make(routes: ranked,
+                        preference: requestedPreferences.advanced.effectiveRoutePreference,
+                        selected: selected.id, source: isPreview ? "traffic-preview" : "traffic-switch",
+                        calculationSeconds: ProcessInfo.processInfo.systemUptime - comparisonStarted,
+                        samplingBudget: self.state.trafficSamplingBudget,
+                        gpsMatchQuality: self.state.routeMatch?.match.confidence, starts: starts, traffic: snapshots,
+                        personalOrder: DrivingLearningEngine.shared.settings.enabled ? ranked.map(\.id) : nil,
+                        personalEvidence: DrivingLearningEngine.shared.diagnosticAssessments(ranked,
+                            preference: requestedPreferences.advanced.effectiveRoutePreference, starts: starts, traffic: snapshots)))
+                    if !isPreview, self.state.voiceEnabled {
+                        self.voice.announceFasterRoute(savedSeconds: currentETA - selectedETA, routeID: selected.id)
+                    }
+                    self.arrivalDetector.reset()
+                    if !isPreview { self.learningAllowsDeviations = false }
+                    let routesToPublish = preservesManualSelection ? candidates : ranked
+                    let publishedRoutes = routesToPublish.compactMap { route -> NavigationRoute? in
+                        let eta = RoadRouteETA.estimate(route, from: starts[route.id] ?? 0, traffic: snapshots[route.id])
+                        // Keep a manually selected closed route available with its finite base time
+                        // and the explicit warning, never an infinity in a route card.
+                        guard eta.isFinite || (preservesManualSelection && route.id == currentRouteID && currentClosed)
+                            else { return nil }
+                        var displayed = route
+                        displayed.trafficPreviewEstimate = nil
+                        if isPreview && eta.isFinite {
+                            displayed.trafficPreviewEstimate = .init(travelTime: eta, updatedAt: comparisonUpdatedAt)
+                        }
+                        return displayed
+                    }
+                    self.state.route = publishedRoutes.first { $0.id == selected.id } ?? selected
+                    self.state.routeOptions = publishedRoutes
+                    self.state.evChargingStops = selected.chargingStops.map(\.destination)
+                    if selected.id != currentRouteID {
+                        self.loadRoadData(for: selected)
+                        self.invalidateSpeedLimit()
+                        if let currentLocation = self.state.location { self.refreshSpeedLimit(for: currentLocation) }
+                    }
+                    self.trafficProjectionRouteID = nil
+                    self.routeTrafficIncidents = selectedTraffic.incidents
+                    self.routeTrafficDataAvailable = true
+                    self.routeTrafficUpdatedAt = selectedTraffic.updatedAt
+                    self.routeTrafficFlowSegments = selectedTraffic.routeFlowSegments
+                    self.routeTrafficColorSegments = selectedTraffic.routeFlowSegments
+                    self.routeTrafficFlowUpdatedAt = selectedTraffic.updatedAt
+                    self.routeFlowRouteID = selected.id
+                    self.lastRouteFlowFetch = selectedTraffic.updatedAt
+                    self.lastRouteTrafficFetch = selectedTraffic.updatedAt
+                    self.publishTrafficSnapshot()
+                    self.updateProgress()
+                    if isPreview { self.updateCameraIntent() }
+                }
+            } catch {
+                // Retain the user's current route when observations or candidate generation fail.
             }
-            guard generation == self.trafficGeneration,
-                  self.trafficRouteSelectionGeneration == selectionGeneration,
-                  self.state.routingPreferences == requestedPreferences else { return }
-            RoutingDiagnostics.shared.publish(.make(routes: scores.map { $0.route },
-                preference: requestedPreferences.advanced.effectiveRoutePreference,
-                selected: currentRouteID, source: "traffic-comparison-before-switch", calculationSeconds: ProcessInfo.processInfo.systemUptime - comparisonStarted,
-                samplingCount: totalQueries,
-                samplingBudget: self.state.trafficSamplingBudget,
-                gpsMatchQuality: self.state.routeMatch?.match.confidence, starts: starts, traffic: snapshots,
-                personalOrder: DrivingLearningEngine.shared.settings.enabled
-                    ? DrivingLearningEngine.shared.ranked(scores.map { $0.route },
-                        preference: requestedPreferences.advanced.effectiveRoutePreference, from: starts, traffic: snapshots).map(\.id) : nil,
-                personalEvidence: DrivingLearningEngine.shared.diagnosticAssessments(scores.map { $0.route },
-                    preference: requestedPreferences.advanced.effectiveRoutePreference, starts: starts, traffic: snapshots)))
-            guard generation == self.trafficGeneration,
-                  self.trafficRouteSelectionGeneration == selectionGeneration,
-                  self.state.route?.id == currentRouteID, self.state.status == .navigating,
-                  self.state.routingPreferences == requestedPreferences,
-                  self.state.location?.coordinate.distance(to: location) ?? .infinity < 100,
-                  let recommended = DrivingLearningEngine.shared.ranked(scores.map { $0.route },
-                      preference: requestedPreferences.advanced.effectiveRoutePreference,
-                      from: starts, traffic: snapshots).first,
-                  let best = scores.first(where: { $0.route.id == recommended.id }),
-                  best.route.id != currentRouteID, best.eta.isFinite,
-                  let currentScore = scores.first(where: { $0.route.id == currentRouteID })?.eta,
-                  currentScore.isFinite,
-                  let currentCoverage = coverages[currentRouteID], let bestCoverage = coverages[best.route.id],
-                  currentCoverage.corridorFraction >= 0.5, bestCoverage.corridorFraction >= 0.5,
-                  bestCoverage.corridorFraction + 0.1 >= currentCoverage.corridorFraction,
-                  currentScore - best.eta >= max(120, currentScore * 0.15) else { return }
-            if self.state.voiceEnabled {
-                self.voice.announceFasterRoute(savedSeconds: currentScore - best.eta, routeID: best.route.id)
-            }
-            self.arrivalDetector.reset()
-            RoutingDiagnostics.shared.publish(.make(routes: scores.map { $0.route },
-                preference: requestedPreferences.advanced.effectiveRoutePreference,
-                selected: best.route.id, source: "traffic-switch", calculationSeconds: ProcessInfo.processInfo.systemUptime - comparisonStarted,
-                samplingCount: totalQueries,
-                samplingBudget: self.state.trafficSamplingBudget,
-                gpsMatchQuality: self.state.routeMatch?.match.confidence, starts: starts, traffic: snapshots,
-                personalOrder: DrivingLearningEngine.shared.settings.enabled
-                    ? DrivingLearningEngine.shared.ranked(scores.map { $0.route },
-                        preference: requestedPreferences.advanced.effectiveRoutePreference, from: starts, traffic: snapshots).map(\.id) : nil,
-                personalEvidence: DrivingLearningEngine.shared.diagnosticAssessments(scores.map { $0.route },
-                    preference: requestedPreferences.advanced.effectiveRoutePreference, starts: starts, traffic: snapshots)))
-            self.learningAllowsDeviations = false
-            self.state.route = best.route
-            self.state.routeOptions = DrivingLearningEngine.shared.ranked(scores.map { $0.route },
-                preference: requestedPreferences.advanced.effectiveRoutePreference,
-                from: starts, traffic: snapshots)
-            self.state.evChargingStops = best.route.chargingStops.map(\.destination)
-            self.loadRoadData(for: best.route)
-            self.trafficProjectionRouteID = nil
-            self.invalidateSpeedLimit()
-            if let currentLocation = self.state.location { self.refreshSpeedLimit(for: currentLocation) }
-            if let selectedTraffic = snapshots[best.route.id] {
-                self.routeTrafficIncidents = selectedTraffic.incidents
-                self.routeTrafficDataAvailable = true
-                self.routeTrafficUpdatedAt = selectedTraffic.updatedAt
-                self.routeTrafficFlowSegments = selectedTraffic.routeFlowSegments
-                self.routeTrafficColorSegments = selectedTraffic.routeFlowSegments
-                self.routeTrafficFlowUpdatedAt = selectedTraffic.updatedAt
-                self.routeFlowRouteID = best.route.id
-                self.lastRouteFlowFetch = selectedTraffic.updatedAt
-            }
-            self.lastRouteTrafficFetch = .distantPast
-            self.publishTrafficSnapshot()
-            self.updateProgress()
-            self.refreshTraffic(force: true)
         }
     }
+
+    private static let manualPreviewClosureMessage =
+        "Wybrana trasa prowadzi przez potwierdzone zamknięcie drogi. Wybierz inny wariant."
+
+    private func publishManualPreviewClosureWarning(for routeID: UUID) {
+        state.errorMessage = Self.manualPreviewClosureMessage
+        if state.route?.id == routeID { state.route?.trafficPreviewEstimate = nil }
+        if let index = state.routeOptions.firstIndex(where: { $0.id == routeID }) {
+            state.routeOptions[index].trafficPreviewEstimate = nil
+        }
+    }
+
+    /// Requests a single temporary congestion-avoidance plan, with a bounded optional budget.
+    func congestionDetour(from origin: Coordinate, to target: Coordinate, through stops: [Coordinate],
+                          avoiding congestion: CongestionDetourCandidate) async throws -> NavigationRoute? {
+        #if os(iOS)
+        // The native offline engine cannot interrupt an in-progress graph search.
+        guard !OfflineRoutingStore.shared.preferOffline, !OfflineRoutingStore.shared.networkUnavailable else { return nil }
+        #endif
+        let operation = Task { @MainActor in
+            try await RoadRoutingContext.$congestionAvoidancePolygons.withValue(
+                RoadRoutingContext.congestionAvoidancePolygons + congestion.area.polygons) {
+                try await calculateRoutes(from: origin, to: target, through: stops, commitEVStops: false)
+            }
+        }
+        let timeout = Task {
+            do { try await Task.sleep(for: .seconds(6)) } catch { return }
+            operation.cancel()
+        }
+        defer { timeout.cancel() }
+        return try await withTaskCancellationHandler {
+            try await operation.value.first { !congestion.area.intersects($0) }
+        } onCancel: { operation.cancel() }
+    }
+
 }
 
 /// One ETA calculation for navigation and alternative selection.
@@ -440,6 +542,9 @@ nonisolated enum RoadRouteETA {
                          traffic: TrafficSnapshot?, paceMultiplier: Double = 1) -> Double {
         let geometry = prepared.geometry
         let end = geometry.length
+        if let traffic, ConfirmedRoadClosure.evidence(in: traffic, route: route).contains(where: {
+            $0.distanceAhead(on: route, after: start, through: end) != nil
+        }) { return .infinity }
         var time = drivingTime(route, prepared: prepared, from: start, through: end) * paceMultiplier
         var flowIntervals: [(Double, Double)] = []
         if let traffic, Date().timeIntervalSince(traffic.updatedAt) <= 240 {
@@ -450,7 +555,7 @@ nonisolated enum RoadRouteETA {
                 let lower = max(cursor, segment.startDistance)
                 let upper = min(end, segment.endDistance)
                 guard upper > lower else { continue }
-                if segment.isRoadClosure { return .infinity }
+                if segment.isRoadClosure { continue }
                 guard let speed = segment.currentSpeedKph, speed.isFinite, speed >= 0 else { continue }
                 // Replace the engine's time on the measured interval, without counting it twice.
                 let measured = (upper - lower) / (max(1, speed) / 3.6)
@@ -466,7 +571,7 @@ nonisolated enum RoadRouteETA {
                     guard let projection = RouteTrafficMonitor.incidentProjection(incident, geometry: geometry, route: route) else { continue }
                     let position = projection.alongRoute
                     guard position > start + 40 else { continue }
-                    if incident.isRoadClosure { return .infinity }
+                    if incident.isRoadClosure { continue }
                     let isMeasured = flowIntervals.contains { position >= $0.0 && position <= $0.1 }
                     if !isMeasured { time += Double(max(0, incident.routingDelaySeconds ?? 0)) }
                 }

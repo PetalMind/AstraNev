@@ -2,7 +2,7 @@ import SwiftUI
 
 struct DrivingPersonalizationView: View {
     let endpoint: URL?
-    @State private var engine = DrivingLearningEngine.shared
+    private let engine = DrivingLearningEngine.shared
     @State private var confirmClear = false
 
     private func setting(_ key: WritableKeyPath<DrivingLearningSettings, Bool>) -> Binding<Bool> {
@@ -22,8 +22,10 @@ struct DrivingPersonalizationView: View {
                 Toggle("Ucz się preferowanych dróg", isOn: setting(\.roads)).disabled(!engine.settings.enabled)
                 Toggle("Ucz się sposobu dojazdu do miejsc", isOn: setting(\.destinationApproach))
                     .disabled(!engine.settings.enabled)
+            } header: {
+                Text("Uczenie tras")
             } footer: {
-                Text("Uczenie działa automatycznie po ukończonych przejazdach autem bez punktów pośrednich i postojów ładowania. Co najmniej trzy powtórzenia własnego wariantu mogą wpłynąć na kolejne propozycje. Nie trzeba potwierdzać przejazdów. Godzina oraz dzień tygodnia pomagają wybrać właściwy wariant. ETA pozostaje wyliczane z trasy i ruchu.")
+                Text("Uczenie działa automatycznie po ukończonych przejazdach autem bez punktów pośrednich i postojów ładowania. Przerwa w GPS nie przekreśla zapisanych fragmentów drogi. Wariant powtarzany przez co najmniej trzy różne dni może wpłynąć na kolejne propozycje, także bez ręcznego potwierdzania. Pora jazdy pomaga wybrać właściwy wariant. ETA pozostaje wyliczane z trasy i ruchu.")
             }
             Section("Dopasowanie śladu i prywatność") {
                 Toggle("Zezwalaj na dopasowanie na serwerze", isOn: setting(\.allowRemoteMatching))
@@ -49,8 +51,12 @@ struct DrivingPersonalizationView: View {
             }
             Section("Nauczone preferencje") {
                 if engine.patterns.isEmpty {
-                    Text("Preferencje pojawią się po ukończonych przejazdach i dopasowaniu ich do dróg.")
-                        .foregroundStyle(.secondary)
+                    Label {
+                        Text("Preferencje pojawią się po ukończonych przejazdach i dopasowaniu ich do dróg.")
+                    } icon: {
+                        Image(systemName: "point.3.connected.trianglepath.dotted")
+                    }
+                    .font(.subheadline).foregroundStyle(.secondary)
                 }
                 ForEach(engine.patterns) { pattern in
                     NavigationLink {
@@ -73,6 +79,10 @@ struct DrivingPersonalizationView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Personalizacja tras")
+        .environment(\.locale, PolishRegionalFormat.locale)
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
         .onAppear { if let endpoint { engine.processPending(endpoint: endpoint) } }
         .confirmationDialog("Usunąć preferencje i dane uczenia?", isPresented: $confirmClear, titleVisibility: .visible) {
             Button("Usuń dane uczenia", role: .destructive) { engine.clear() }
@@ -95,7 +105,7 @@ struct DrivingPersonalizationView: View {
                         }
                     }
                     .font(.caption).foregroundStyle(.secondary)
-                    Text("Pewność: \(shortcut.confidence.formatted(.percent.precision(.fractionLength(0))))")
+                    Text("Pewność: \(shortcut.confidence.formatted(.percent.precision(.fractionLength(0)).locale(PolishRegionalFormat.locale)))")
                         .font(.caption).foregroundStyle(.secondary)
                     if let duration = shortcut.averageObservedDuration {
                         Text("Średni zarejestrowany czas wariantu: " + TripHistoryFormat.duration(duration)).font(.caption)
@@ -144,21 +154,31 @@ struct DrivingPersonalizationView: View {
         }
     }
 
+    private static func timeWindow(_ bucket: Int) -> String {
+        guard (0..<12).contains(bucket) else { return "Nieznana pora" }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.locale = PolishRegionalFormat.locale
+        guard let start = calendar.date(from: DateComponents(year: 2001, month: 1, day: 15, hour: bucket * 2)),
+              let end = calendar.date(from: DateComponents(year: 2001, month: 1, day: 15, hour: bucket * 2 + 1, minute: 59))
+        else { return "Nieznana pora" }
+        return "\(PolishRegionalFormat.time(start))–\(PolishRegionalFormat.time(end))"
+    }
+
     private func preferenceDetails(_ pattern: DrivingRoutePattern) -> some View {
         Form {
             Section("Preferowana trasa") {
                 Text("Do: \(pattern.representative.destinationName)")
                 LabeledContent("Liczba przejazdów", value: "\(pattern.usageCount)")
                 LabeledContent("Średni zarejestrowany czas", value: TripHistoryFormat.duration(pattern.averageDuration))
-                LabeledContent("Pewność dowodów", value: pattern.confidence.formatted(.percent.precision(.fractionLength(0))))
+                LabeledContent("Pewność dowodów", value: pattern.confidence.formatted(.percent.precision(.fractionLength(0)).locale(PolishRegionalFormat.locale)))
                 LabeledContent("Potwierdzona przez Ciebie", value: pattern.confirmed ? "Tak" : "Nie")
-                LabeledContent("Siła preferencji", value: pattern.strength.formatted(.percent.precision(.fractionLength(0))))
+                LabeledContent("Siła preferencji", value: pattern.strength.formatted(.percent.precision(.fractionLength(0)).locale(PolishRegionalFormat.locale)))
                 Text("Średni czas opisuje wcześniejsze przejazdy. Nie zastępuje przewidywanego czasu nowej trasy.")
                     .font(.footnote).foregroundStyle(.secondary)
                 let buckets = Set(pattern.trips.map { $0.context.hourBucket }).sorted()
-                Text("Pora jazdy: " + buckets.map { "\($0 * 2):00–\($0 * 2 + 1):59" }.joined(separator: ", "))
+                Text("Pora jazdy: " + buckets.map(Self.timeWindow).joined(separator: ", "))
                 let days = Set(pattern.trips.map { $0.context.weekday }).sorted()
-                Text("Dni: " + days.map { Calendar.current.weekdaySymbols[$0 - 1] }.joined(separator: ", "))
+                Text("Dni: " + days.map(PolishRegionalFormat.weekday).joined(separator: ", "))
             }
             Section("Powtarzane odstępstwa i omijane drogi") {
                 let groups = Dictionary(grouping: pattern.trips.flatMap(\.deviations), by: \.id)
@@ -183,6 +203,11 @@ struct DrivingPersonalizationView: View {
             }
         }
         .navigationTitle("Preferencja trasy")
+        .formStyle(.grouped)
+        .environment(\.locale, PolishRegionalFormat.locale)
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
     }
 }
 

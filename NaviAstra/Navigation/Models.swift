@@ -91,6 +91,13 @@ nonisolated struct NavigationLocation {
 }
 
 struct NavigationRoute: Identifiable, Sendable {
+    /// Presentation of a whole-route estimate in the planning preview. The
+    /// provider's base ETA remains unchanged for progress and traffic fusion.
+    struct TrafficPreviewEstimate: Sendable {
+        let travelTime: TimeInterval
+        let updatedAt: Date
+    }
+
     var id = UUID()
     var coordinates: [Coordinate]
     var distance: Double
@@ -102,6 +109,20 @@ struct NavigationRoute: Identifiable, Sendable {
     var travelSegments: [RouteTravelSegment] = []
     var information: RouteInformation?
     var trafficSignalCount: Int? = nil
+    var trafficPreviewEstimate: TrafficPreviewEstimate? = nil
+
+    var previewTravelTime: TimeInterval { previewTravelTime(at: Date()) }
+
+    func freshTrafficPreviewEstimate(at date: Date = Date()) -> TrafficPreviewEstimate? {
+        guard journey == nil, let estimate = trafficPreviewEstimate,
+              estimate.travelTime.isFinite, estimate.travelTime >= 0 else { return nil }
+        let age = date.timeIntervalSince(estimate.updatedAt)
+        return age.isFinite && (0...120).contains(age) ? estimate : nil
+    }
+
+    func previewTravelTime(at date: Date) -> TimeInterval {
+        freshTrafficPreviewEstimate(at: date)?.travelTime ?? expectedTravelTime
+    }
 }
 
 
@@ -174,6 +195,7 @@ enum JourneyTimeMode: String, CaseIterable, Identifiable {
 
 struct RoutingPreferences: Codable, Equatable {
     var advanced = ValhallaRoutingOptions()
+    var transit = TransitRoutePreferences()
     var avoidTolls = false
     var avoidHighways = false
     var avoidFerries = false
@@ -192,7 +214,7 @@ struct RoutingPreferences: Codable, Equatable {
     init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case advanced
+        case advanced, transit
         case avoidTolls, avoidHighways, avoidFerries, avoidUnpaved
         case evPlanningEnabled, evRangeKilometers, evBatteryPercent
         case evConsumptionKWhPer100Km, evMaximumChargingPowerKW, evConnectorTypes
@@ -201,6 +223,7 @@ struct RoutingPreferences: Codable, Equatable {
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         advanced = try values.decodeIfPresent(ValhallaRoutingOptions.self, forKey: .advanced) ?? ValhallaRoutingOptions()
+        transit = try values.decodeIfPresent(TransitRoutePreferences.self, forKey: .transit) ?? TransitRoutePreferences()
         avoidTolls = try values.decodeIfPresent(Bool.self, forKey: .avoidTolls) ?? false
         avoidHighways = try values.decodeIfPresent(Bool.self, forKey: .avoidHighways) ?? false
         avoidFerries = try values.decodeIfPresent(Bool.self, forKey: .avoidFerries) ?? false
@@ -282,8 +305,10 @@ nonisolated enum RoadRoutingContext {
     @TaskLocal static var planningTime: ValhallaPlanningTime?
     @TaskLocal static var preferenceDate: Date?
     @TaskLocal static var allowsPersonalization = true
+    @TaskLocal static var publishesAssessments = true
     @TaskLocal static var personalRoutingHints = false
     @TaskLocal static var closurePolygons: [[[Double]]] = []
+    @TaskLocal static var congestionAvoidancePolygons: [[[Double]]] = []
 
     static func checkCancellation() throws {
         try Task.checkCancellation()

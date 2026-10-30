@@ -11,5 +11,6 @@ export GIT_CONFIG_VALUE_0=HTTP/1.1
 export GIT_CONFIG_KEY_1=protocol.version
 export GIT_CONFIG_VALUE_1=0
 
-exec xcodebuild -resolvePackageDependencies -scmProvider system \
+exec python3 "$project_dir/scripts/with-global-build-lock.py" -- \
+    xcodebuild -resolvePackageDependencies -scmProvider system \
     -project "$project_dir/NaviAstra.xcodeproj" -scheme NaviAstra

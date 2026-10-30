@@ -1,6 +1,31 @@
 import AVFoundation
 import Foundation
 
+#if os(iOS)
+nonisolated enum VoicePendingGuidancePolicy {
+    static func isFresh(updatedUptime: TimeInterval, now: TimeInterval, urgent: Bool) -> Bool {
+        let age = now - updatedUptime
+        return age >= 0 && age <= (urgent ? 2 : 4)
+    }
+
+    static func isObsoleteManeuver(key: String, currentIdentity: String) -> Bool {
+        let prefixes = ["maneuver|", "roundabout-enter|", "roundabout-exit|"]
+        guard let prefix = prefixes.first(where: { key.hasPrefix($0) }) else { return false }
+        let expected = prefix + currentIdentity
+        return key != expected && !key.hasPrefix(expected + "|stage-")
+    }
+
+    static func supersedes(_ oldKey: String, with newKey: String) -> Bool {
+        guard let oldRange = oldKey.range(of: "|stage-", options: .backwards),
+              let newRange = newKey.range(of: "|stage-", options: .backwards),
+              oldKey[..<oldRange.lowerBound] == newKey[..<newRange.lowerBound],
+              let oldStage = Int(oldKey[oldRange.upperBound...]),
+              let newStage = Int(newKey[newRange.upperBound...]) else { return false }
+        return newStage > oldStage
+    }
+}
+#endif
+
 nonisolated enum VoiceVerbosity: String, CaseIterable, Identifiable {
     case concise
     case standard
@@ -113,6 +138,9 @@ private struct VoiceAnnouncement {
     let text: String
     let priority: VoiceAnnouncementPriority
     let enqueuedAt: Date
+#if os(iOS)
+    var updatedUptime = ProcessInfo.processInfo.systemUptime
+#endif
 }
 
 @MainActor
@@ -141,6 +169,9 @@ final class VoiceGuidanceEngine {
 
     func announce(_ maneuver: Maneuver, coordinate: Coordinate?, distance: Double, speed: Double,
                   quality: GuidanceQuality? = nil, lanes: LaneGuidance? = nil) {
+#if os(iOS)
+        scheduler.retainCurrentManeuver(identity: maneuverIdentity(maneuver, coordinate: coordinate))
+#endif
         let quality = quality ?? GuidanceQualityEngine.evaluate(maneuver: maneuver, followingDistance: nil, speed: speed)
         guard let stage = quality.stage(at: distance) else { return }
         if maneuver.kind.isRoundabout {
@@ -312,10 +343,11 @@ private final class VoiceAnnouncementScheduler: NSObject, AVSpeechSynthesizerDel
     private var lastSpeechEndedAt = Date.distantPast
     private var cooldownTask: Task<Void, Never>?
     private var startWatchdogTask: Task<Void, Never>?
-    private var audioSessionConfigured = false
     private var audioSessionActive = false
-    private var audioSessionOperationGeneration = 0
-    private var audioSessionOperation: Task<Void, Never>?
+#if os(iOS)
+    private let audioOwner = UUID()
+    private var isWaitingForAudio = false
+#endif
 
     override init() {
         super.init()
@@ -366,11 +398,23 @@ private final class VoiceAnnouncementScheduler: NSObject, AVSpeechSynthesizerDel
     }
 
     func enqueue(key: String, text: String, priority: VoiceAnnouncementPriority) {
+#if os(iOS)
+        guard enabled, !text.isEmpty, !spokenKeys.contains(key) else { return }
+        discardSupersededAnnouncements(by: key)
+        if pendingKeys.contains(key) {
+            let refreshed = VoiceAnnouncement(key: key, text: text, priority: priority, enqueuedAt: Date())
+            if current?.key == key && isWaitingForAudio { current = refreshed }
+            if let index = queue.firstIndex(where: { $0.key == key }) { queue[index] = refreshed }
+            return
+        }
+#else
         guard enabled, !text.isEmpty,
               !spokenKeys.contains(key), !pendingKeys.contains(key) else { return }
+#endif
         let announcement = VoiceAnnouncement(key: key, text: text, priority: priority, enqueuedAt: Date())
 
-        if let current, canInterrupt(with: priority, current: current.priority) {
+        if let current, canInterrupt(with: priority, current: current.priority) ||
+            (!currentDidStart && priority > current.priority) {
             interruptCurrent(startNext: false)
         } else if current != nil || !queue.isEmpty {
             guard priority != .informational else { return }
@@ -414,6 +458,15 @@ private final class VoiceAnnouncementScheduler: NSObject, AVSpeechSynthesizerDel
 
     private func pump() {
         guard enabled, current == nil, !queue.isEmpty else { return }
+#if os(iOS)
+        let now = ProcessInfo.processInfo.systemUptime
+        let expired = queue.filter {
+            !VoicePendingGuidancePolicy.isFresh(updatedUptime: $0.updatedUptime, now: now,
+                                                urgent: $0.priority.bypassesCooldown)
+        }
+        for announcement in expired { pendingKeys.remove(announcement.key) }
+        queue.removeAll { announcement in expired.contains { $0.key == announcement.key } }
+#endif
         guard let next = queue.first else { return }
         if !next.priority.bypassesCooldown {
             let remaining = 2.5 - Date().timeIntervalSince(lastSpeechEndedAt)
@@ -439,11 +492,7 @@ private final class VoiceAnnouncementScheduler: NSObject, AVSpeechSynthesizerDel
         let identifier = currentUtteranceID!
         let generation = speechGeneration
 #if os(iOS)
-        if audioSessionActive {
-            speak(utterance, identifier: identifier)
-        } else {
-            activateAudioSessionAndSpeak(utterance, identifier: identifier, generation: generation)
-        }
+        activateAudioSessionAndSpeak(utterance, identifier: identifier, generation: generation)
 #else
         synthesizer.speak(utterance)
         scheduleStartWatchdog(for: identifier)
@@ -484,62 +533,91 @@ private final class VoiceAnnouncementScheduler: NSObject, AVSpeechSynthesizerDel
     }
 
 #if os(iOS)
+    private func discardSupersededAnnouncements(by key: String) {
+        let obsolete = queue.filter { VoicePendingGuidancePolicy.supersedes($0.key, with: key) }
+        for announcement in obsolete {
+            pendingKeys.remove(announcement.key)
+            spokenKeys.insert(announcement.key)
+        }
+        queue.removeAll { announcement in obsolete.contains { $0.key == announcement.key } }
+        if isWaitingForAudio, let current,
+           VoicePendingGuidancePolicy.supersedes(current.key, with: key) {
+            spokenKeys.insert(current.key)
+            interruptCurrent(startNext: false)
+        }
+    }
+
+    func retainCurrentManeuver(identity: String) {
+        let obsolete = queue.filter {
+            VoicePendingGuidancePolicy.isObsoleteManeuver(key: $0.key, currentIdentity: identity)
+        }
+        for announcement in obsolete { pendingKeys.remove(announcement.key) }
+        queue.removeAll { announcement in obsolete.contains { $0.key == announcement.key } }
+        if isWaitingForAudio, let current,
+           VoicePendingGuidancePolicy.isObsoleteManeuver(key: current.key, currentIdentity: identity) {
+            interruptCurrent(startNext: false)
+        }
+    }
+
     private func activateAudioSessionAndSpeak(_ utterance: AVSpeechUtterance,
                                               identifier: ObjectIdentifier,
                                               generation: Int) {
-        let audioSession = AVAudioSession.sharedInstance()
-        enqueueAudioSessionOperation { [weak self] in
-            guard let self,
-                  self.currentUtteranceID == identifier,
-                  self.speechGeneration == generation,
-                  self.enabled else { return }
-            do {
-                if !self.audioSessionConfigured {
-                    try audioSession.setCategory(
-                        .playback, mode: .spokenAudio, options: [.duckOthers])
-                    self.audioSessionConfigured = true
-                }
-                let activated = try await audioSession.activate(options: [])
-                guard activated,
-                      self.currentUtteranceID == identifier,
-                      self.speechGeneration == generation,
-                      self.enabled else {
-                    _ = try? await audioSession.deactivate(options: .notifyOthersOnDeactivation)
+        guard currentUtteranceID == identifier, speechGeneration == generation, enabled else { return }
+        guard let current,
+              VoicePendingGuidancePolicy.isFresh(updatedUptime: current.updatedUptime,
+                                                  now: ProcessInfo.processInfo.systemUptime,
+                                                  urgent: current.priority.bypassesCooldown) else {
+            // Expiration releases its key; only fresh navigation progress may recreate it.
+            finishCurrent(identifier: identifier, didSpeak: false)
+            return
+        }
+        do {
+            let granted = try VoiceAudioCoordinator.shared.beginGuidance(
+                owner: audioOwner, urgent: current.priority.bypassesCooldown,
+                onInterrupted: { [weak self] in
+                    guard let self else { return }
+                    self.interruptCurrent(startNext: false)
                     self.audioSessionActive = false
-                    self.finishCurrent(identifier: identifier, didSpeak: false)
-                    return
+                    // Defer until the new microphone owner has installed its lease.
+                    Task { @MainActor [weak self] in
+                        await Task.yield()
+                        self?.pump()
+                    }
+                })
+            if granted {
+                isWaitingForAudio = false
+                audioSessionActive = true
+                // Rebuild from the most recent GPS update after any audio wait.
+                let freshUtterance = makeUtterance(for: current.text)
+                let freshID = ObjectIdentifier(freshUtterance)
+                currentUtterance = freshUtterance
+                currentUtteranceID = freshID
+                speak(freshUtterance, identifier: freshID)
+            } else {
+                isWaitingForAudio = true
+                // Retain the instruction while a short voice dialog owns audio.
+                // Its generation prevents delayed work after stop/rerouting/mute.
+                cooldownTask?.cancel()
+                cooldownTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .milliseconds(400))
+                    guard !Task.isCancelled, let self else { return }
+                    self.cooldownTask = nil
+                    self.activateAudioSessionAndSpeak(utterance, identifier: identifier, generation: generation)
                 }
-                self.audioSessionActive = true
-                self.speak(utterance, identifier: identifier)
-            } catch {
-                _ = try? await audioSession.deactivate(options: .notifyOthersOnDeactivation)
-                self.audioSessionActive = false
-                self.finishCurrent(identifier: identifier, didSpeak: false)
             }
+        } catch {
+            audioSessionActive = false
+            VoiceAudioCoordinator.shared.endGuidance(owner: audioOwner)
+            finishCurrent(identifier: identifier, didSpeak: false)
         }
     }
 
     private func deactivateAudioSession() {
-        guard audioSessionActive else { return }
+        isWaitingForAudio = false
         audioSessionActive = false
-        let audioSession = AVAudioSession.sharedInstance()
-        enqueueAudioSessionOperation {
-            _ = try? await audioSession.deactivate(options: .notifyOthersOnDeactivation)
-        }
+        VoiceAudioCoordinator.shared.endGuidance(owner: audioOwner)
     }
 #endif
-
-    private func enqueueAudioSessionOperation(_ operation: @escaping @MainActor () async -> Void) {
-        audioSessionOperationGeneration &+= 1
-        let operationGeneration = audioSessionOperationGeneration
-        let previousOperation = audioSessionOperation
-        audioSessionOperation = Task { @MainActor [weak self] in
-            await previousOperation?.value
-            await operation()
-            guard let self, self.audioSessionOperationGeneration == operationGeneration else { return }
-            self.audioSessionOperation = nil
-        }
-    }
 
     private func interruptCurrent(startNext: Bool) {
         guard let current else { return }
@@ -552,6 +630,9 @@ private final class VoiceAnnouncementScheduler: NSObject, AVSpeechSynthesizerDel
         currentUtterance = nil
         currentUtteranceID = nil
         currentDidStart = false
+#if os(iOS)
+        deactivateAudioSession()
+#endif
         if startNext { pump() }
     }
 
@@ -584,11 +665,9 @@ private final class VoiceAnnouncementScheduler: NSObject, AVSpeechSynthesizerDel
         currentUtteranceID = nil
         currentDidStart = false
         if didSpeak { lastSpeechEndedAt = Date() }
-        if queue.isEmpty {
 #if os(iOS)
-            deactivateAudioSession()
+        deactivateAudioSession()
 #endif
-        }
         pump()
     }
 

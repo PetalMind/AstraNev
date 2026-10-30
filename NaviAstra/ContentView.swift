@@ -10,23 +10,21 @@ struct ContentView: View {
     @Environment(\.scenePhase) var scenePhase
     @Namespace var transportSelectionNamespace
 #if os(iOS)
-    @State var iosTripPresentation: IOSPlannedTripPresentation?
-    @State var pendingIOSTripPresentation: IOSPlannedTripPresentation?
-    @State var iosReturnToTripLibrary = false
-    @State var iosTripLibraryFocusID: UUID?
+    @State var tripCoordinator = IOSPlannedTripCoordinator()
+    let voiceAssistant: VoiceAssistant
 #endif
     @State var plannedTripDraft: PlannedTrip?
     @State var pendingPlannedTripID: UUID?
     @State var pendingPlannedTripOccurrence: Date?
-    @State var tripPlanning: TripPlanningService
-    @State var navigationStore: NavigationStore
-    @State var appRouter: AppRouter
-    @State var searchStore: SearchStore
-    @State var routePlanningStore: RoutePlanningStore
-    @State var transitStore: TransitStore
-    @State var mapStore: MapStore
-    @State var placeStore: PlaceStore
-    @State var energyStore: EnergyStore
+    let tripPlanning: TripPlanningService
+    let navigationStore: NavigationStore
+    let appRouter: AppRouter
+    let searchStore: SearchStore
+    let routePlanningStore: RoutePlanningStore
+    @Bindable var transitStore: TransitStore
+    @Bindable var mapStore: MapStore
+    @Bindable var placeStore: PlaceStore
+    let energyStore: EnergyStore
     @State var fuelStopStore = FuelStopStore()
     @State var showsFuelStopEntry = false
     @State var openFuelEntryAfterPlaceDismiss = false
@@ -98,6 +96,7 @@ struct ContentView: View {
     @State var currentStepExpandedOverride: Bool? = nil
 #if os(iOS)
     @State var currentStepGuidancePresentation: CurrentStepGuidancePresentation?
+    @State var isNavigationPanelTrackingFinger = false
     @State var drivingRoadAlertsHeight: CGFloat = 0
     @State var drivingMapDockHeight: CGFloat = 0
 #endif
@@ -124,15 +123,19 @@ struct ContentView: View {
     }
 
     init(dependencies: AppDependencies) {
-        _tripPlanning = State(initialValue: dependencies.tripPlanning)
-        _energyStore = State(initialValue: dependencies.energyStore)
-        _navigationStore = State(initialValue: dependencies.navigationStore)
-        _appRouter = State(initialValue: dependencies.router)
-        _searchStore = State(initialValue: dependencies.searchStore)
-        _routePlanningStore = State(initialValue: dependencies.routePlanningStore)
-        _transitStore = State(initialValue: dependencies.transitStore)
-        _mapStore = State(initialValue: dependencies.mapStore)
-        _placeStore = State(initialValue: dependencies.placeStore)
+        self.tripPlanning = dependencies.tripPlanning
+        self.energyStore = dependencies.energyStore
+        self.navigationStore = dependencies.navigationStore
+        self.appRouter = dependencies.router
+        self.searchStore = dependencies.searchStore
+        self.routePlanningStore = dependencies.routePlanningStore
+        self.transitStore = dependencies.transitStore
+        self.mapStore = dependencies.mapStore
+        self.placeStore = dependencies.placeStore
+        #if os(iOS)
+        self.voiceAssistant = dependencies.voiceAssistant ?? VoiceAssistant(
+            navigationStore: dependencies.navigationStore, placeStore: dependencies.placeStore)
+        #endif
         #if DEBUG && os(iOS)
         if IOSDebugDrivingScenario.isEnabled {
             _navigationPanelDetent = State(initialValue: IOSDebugDrivingScenario.panelDetent)

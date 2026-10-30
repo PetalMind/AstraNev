@@ -123,7 +123,18 @@ extension ContentView {
         }
     }
 
-    private var weatherDetails: some View {
+    @ViewBuilder private var weatherDetails: some View {
+#if os(iOS)
+        ScrollView {
+            weatherDetailsContent
+        }
+        .frame(idealWidth: 380, maxWidth: 480, maxHeight: 620)
+#else
+        weatherDetailsContent
+#endif
+    }
+
+    private var weatherDetailsContent: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .center, spacing: 12) {
                 WeatherIcon(state: weatherControlState, size: 48)
@@ -151,6 +162,11 @@ extension ContentView {
             }
 
             if let state = weatherControlState {
+#if os(iOS)
+                IOSWeatherMetrics(precipitation: "\(weatherNumber(state.precipitation)) mm",
+                    wind: "\(weatherNumber(state.windSpeed * 3.6)) km/h",
+                    visibility: weatherVisibilityLabel(state.visibility))
+#else
                 HStack(alignment: .top, spacing: 10) {
                     weatherMetric("Opady", symbol: "drop", value: "\(weatherNumber(state.precipitation)) mm")
                     weatherMetric("Wiatr", symbol: "wind", value: "\(weatherNumber(state.windSpeed * 3.6)) km/h")
@@ -166,6 +182,7 @@ extension ContentView {
                         .foregroundStyle(Color.naviTextPrimary)
                 }
                 .font(.caption)
+#endif
             }
 
             if upcomingWeatherSample != nil, let current = weatherStore.current {
@@ -197,7 +214,11 @@ extension ContentView {
             }
         }
         .padding(20)
+#if os(iOS)
+        .frame(maxWidth: .infinity, alignment: .leading)
+#else
         .frame(width: 300, alignment: .leading)
+#endif
     }
 
     private func weatherMetric(_ title: String, symbol: String, value: String) -> some View {
@@ -250,3 +271,34 @@ extension ContentView {
         }
     }
 }
+
+#if os(iOS)
+private struct IOSWeatherMetrics: View {
+    @ScaledMetric(relativeTo: .body) private var minimumWidth: CGFloat = 140
+    let precipitation: String
+    let wind: String
+    let visibility: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: minimumWidth), spacing: 10)], spacing: 10) {
+                metric("Opady", symbol: "drop", value: precipitation)
+                metric("Wiatr", symbol: "wind", value: wind)
+            }
+            LabeledContent("Widoczność", value: visibility)
+                .font(.subheadline).monospacedDigit()
+        }
+    }
+
+    private func metric(_ title: String, symbol: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: symbol).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.headline).monospacedDigit()
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12).iosCardSurface(radius: 14)
+        .accessibilityElement(children: .combine)
+    }
+}
+#endif

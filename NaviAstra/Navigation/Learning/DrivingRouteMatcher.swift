@@ -5,7 +5,7 @@ enum DrivingLearningFailure: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .needsLocalMap: "Dopasowanie przejazdu wymaga lokalnej paczki dróg. Możesz ją pobrać w ustawieniach offline albo osobno zezwolić na dopasowanie śladu na serwerze."
-        case .incompleteTrace: "Ślad ma przerwy lub niepewne dopasowanie do dróg. Nie użyto go do uczenia."
+        case .incompleteTrace: "Brakuje wystarczających, wiarygodnych fragmentów przejazdu lub pewnego dopasowania do dróg. Nie użyto tych danych do uczenia."
         case .storage: "Nie udało się zapisać preferencji tras na urządzeniu."
         }
     }

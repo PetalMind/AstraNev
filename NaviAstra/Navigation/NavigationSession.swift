@@ -46,6 +46,12 @@ final class NavigationSession {
     var roadRerouteCancellationToken: TransitPlanningCancellationToken?
     var trafficComparisonInFlight = false
     var lastTrafficComparison = Date.distantPast
+    var trafficComparisonTask: Task<Void, Never>?
+    var trafficCandidateCancellationToken: TransitPlanningCancellationToken?
+    var lastTrafficCandidateRefresh = Date.distantPast
+    var roadETAPaceTracker = RoadETAPaceTracker()
+    var knownRoadClosures: [String: ConfirmedRoadClosure] = [:]
+    var evBatteryEstimate: EVBatteryEstimate?
     var requestGeneration = 0 {
         didSet {
             roadPlanningCancellationToken?.cancel()
@@ -122,6 +128,9 @@ final class NavigationSession {
     var lastTransitRideDistance = 0.0
     var tripSession: TripSession?
     var onTripFinished: ((TripRecord) -> Void)?
+    var onTripCheckpoint: ((TripRecord) -> Void)?
+    var onHistoryMaintenance: (() -> Void)?
+    private var lastTripCheckpointAt = Date.distantPast
     var learningOriginalRoute: NavigationRoute?
     var learningContext: DrivingPreferenceContext?
     var learningCosting = "auto"
@@ -211,6 +220,7 @@ final class NavigationSession {
         guard appIsForeground != isForeground else { return }
         appIsForeground = isForeground
         if !isForeground {
+            checkpointTrip(force: true)
             mapCameraController.cancelNavigationCameraTasks()
             mapCameraController.cancelManeuverTransition()
             mapCameraController.cancelRouteReveal()
@@ -222,6 +232,7 @@ final class NavigationSession {
         }
         refreshEnergyPolicy()
         if isForeground {
+            onHistoryMaintenance?()
             if state.status == .navigating || state.status == .rerouting {
                 updateNavigationCameraState(force: true)
             }
@@ -250,6 +261,7 @@ final class NavigationSession {
                     guard let self else { return }
                     guard self.state.status == .navigating || self.state.status == .rerouting else { return }
                     self.checkGPS()
+                    self.checkpointTrip()
                     self.updateLiveActivity()
                     self.refreshTraffic()
                     if self.appIsForeground, self.state.transportMode == .walking {
@@ -304,7 +316,28 @@ final class NavigationSession {
         invalidateSpeedLimit()
     }
     func updateRoutingPreferences(_ preferences: RoutingPreferences) async {
+        let previous = state.routingPreferences
+        let estimatedPercent = tripSession.flatMap { trip in
+            evBatteryEstimate?.batteryPercent(at: trip.distanceMeters)
+        }
         state.routingPreferences = preferences
+        if tripSession != nil {
+            if previous.evBatteryPercent != preferences.evBatteryPercent {
+                evBatteryEstimate = state.transportMode == .car
+                    ? EVBatteryEstimate(fullRangeMeters: preferences.evRangeKilometers * 1_000,
+                        batteryPercent: Double(preferences.evBatteryPercent),
+                        tripDistance: tripSession?.distanceMeters ?? 0) : nil
+            } else if previous.evRangeKilometers != preferences.evRangeKilometers {
+                if let estimatedPercent {
+                    evBatteryEstimate = EVBatteryEstimate(fullRangeMeters: preferences.evRangeKilometers * 1_000,
+                        batteryPercent: estimatedPercent, tripDistance: tripSession?.distanceMeters ?? 0)
+                }
+            }
+            if preferences.evPlanningEnabled, evBatteryEstimate == nil { resetEVBatteryEstimate() }
+            // Disabling planning does not replenish the battery. Distance keeps
+            // accumulating against the last confirmed observation while hidden.
+            publishEVBatteryEstimate()
+        }
         if let data = try? JSONEncoder().encode(preferences) {
             UserDefaults.standard.set(data, forKey: "routingPreferences")
         }
@@ -386,6 +419,8 @@ final class NavigationSession {
         guard state.status == .routePreview,
               let route = state.route,
               (!usesJourneyVoiceGuidance || route.journey != nil) else { return }
+        // A new start must never replace an uncommitted recording.
+        if tripSession != nil { finishTrip(arrived: false, reason: .replaced) }
         if !usesJourneyVoiceGuidance, state.journeyTimeMode != .now, let destination = state.destination {
             state.journeyTimeMode = .now
             Task {
@@ -398,6 +433,9 @@ final class NavigationSession {
         arrivalDetector.reset()
         state.arrivalLocation = nil
         rerouteController.beginNavigation()
+        roadETAPaceTracker = RoadETAPaceTracker()
+        knownRoadClosures.removeAll()
+        lastTrafficCandidateRefresh = .distantPast
         resetOffRouteEvidence()
         mapCameraController.cancelNavigationCameraTasks()
         mapCameraController.cancelRouteReveal()
@@ -453,6 +491,7 @@ final class NavigationSession {
                                       tracksDriving: state.transportMode == .car,
                                       transportMode: state.transportMode,
                                       vehicleID: state.transportMode == .car ? selectedVehicleID?() : nil)
+            resetEVBatteryEstimate()
             let learningEnabled = state.transportMode == .car && DrivingLearningEngine.shared.settings.enabled
                 && state.waypoints.isEmpty && route.chargingStops.isEmpty
             learningOfferedRoutes = learningEnabled ? Array(state.routeOptions.filter { $0.chargingStops.isEmpty }.prefix(5)) : []
@@ -473,6 +512,8 @@ final class NavigationSession {
         }
         updateProgress()
         updateLiveActivity()
+        recordRouteQuality()
+        checkpointTrip(force: true)
     }
     func stop() {
         guard state.status != .idle else { return }
@@ -556,6 +597,8 @@ final class NavigationSession {
         tripSession?.record(navigationLocation,
                             speedLimitKph: state.transportMode == .car
                                 ? drivingSpeedLimit(at: navigationLocation) : nil)
+        publishEVBatteryEstimate()
+        checkpointTrip()
         if learningAllowsDeviations, let original = learningOriginalRoute,
            let traffic = state.traffic, traffic.updatedAt != learningTrafficCheckedAt,
            abs(Date().timeIntervalSince(traffic.updatedAt)) <= 120 {
@@ -569,6 +612,7 @@ final class NavigationSession {
             }
         }
         updateProgress()
+        recordRouteQuality()
         if appIsForeground, state.transportMode == .walking,
            (state.status == .navigating || state.status == .rerouting) {
             mapCameraController.updateWalkingCamera(location: state.cameraLocation,
@@ -587,6 +631,10 @@ final class NavigationSession {
         if state.transportMode == .car { refreshTraffic() }
     }
     func invalidateTraffic() {
+        trafficComparisonTask?.cancel()
+        trafficComparisonTask = nil
+        trafficCandidateCancellationToken?.cancel()
+        trafficCandidateCancellationToken = nil
         trafficGeneration += 1
         trafficComparisonInFlight = false
         lastTrafficComparison = .distantPast
@@ -875,19 +923,25 @@ final class NavigationSession {
         state.roadZoneNoticeExpiresAt = nil
         invalidateSpeedLimit()
     }
-    func finishTrip(arrived: Bool) {
+    func checkpointTrip(force: Bool = false) {
+        guard let session = tripSession else { return }
+        let now = Date()
+        guard force || now.timeIntervalSince(lastTripCheckpointAt) >= 15 else { return }
+        lastTripCheckpointAt = now
+        onTripCheckpoint?(session.record(endedAt: now, arrived: false, terminationReason: nil))
+    }
+
+    func finishTrip(arrived: Bool, reason: TripTerminationReason? = nil) {
         guard let session = tripSession else { return }
         tripSession = nil
-        let record = TripRecord(destination: session.destination, waypoints: session.waypoints,
-                                startedAt: session.startedAt,
-                                endedAt: Date(), distanceMeters: session.distanceMeters,
-                                movingSeconds: session.movingSeconds, rerouteCount: session.rerouteCount, arrived: arrived,
-                                originalExpectedTravelTime: session.originalExpectedTravelTime,
-                                drivingScore: arrived ? session.drivingScore : nil,
-                                transportMode: session.transportMode,
-                                trace: session.traceRecorder.points,
-                                maximumSpeedKph: session.traceRecorder.maximumSpeedKph,
-                                vehicleID: session.vehicleID)
+        evBatteryEstimate = nil
+        publishEVBatteryEstimate()
+        roadETAPaceTracker = RoadETAPaceTracker()
+        knownRoadClosures.removeAll()
+        lastTrafficCandidateRefresh = .distantPast
+        lastTripCheckpointAt = .distantPast
+        let record = session.record(endedAt: Date(), arrived: arrived,
+                                    terminationReason: reason ?? (arrived ? .completed : .userStopped))
         state.lastTrip = record
         onTripFinished?(record)
         DrivingLearningEngine.shared.enqueue(record, proposed: learningOriginalRoute, costing: learningCosting,
@@ -916,6 +970,7 @@ private extension ArraySlice where Element == Coordinate {
 
 
 struct TripSession {
+    let id = UUID()
     var destination: Destination
     var waypoints: [Destination]
     let originalExpectedTravelTime: TimeInterval
@@ -924,10 +979,13 @@ struct TripSession {
     var lastLocation: NavigationLocation?
     var distanceMeters = 0.0
     var movingSeconds: TimeInterval = 0
+    var measuredStoppedSeconds: TimeInterval = 0
+    var distanceSamples: [TripDistanceSample] = []
     var rerouteCount = 0
     var drivingAnalyzer: DrivingBehaviorAnalyzer?
     var transportMode: TransportMode?
     var traceRecorder = TripTraceRecorder()
+    var routeQuality = RouteQualityRecorder()
     var vehicleID: UUID?
 
     init(destination: Destination, waypoints: [Destination],
@@ -939,7 +997,9 @@ struct TripSession {
         self.waypoints = waypoints
         self.originalExpectedTravelTime = originalExpectedTravelTime
         self.startedAt = startedAt
-        self.lastLocation = lastLocation
+        self.lastLocation = lastLocation.flatMap {
+            abs($0.timestamp.timeIntervalSince(startedAt)) <= 15 ? $0 : nil
+        }
         self.tracksDriving = tracksDriving
         self.transportMode = transportMode
         drivingAnalyzer = tracksDriving ? DrivingBehaviorAnalyzer() : nil
@@ -949,16 +1009,29 @@ struct TripSession {
     }
 
     mutating func record(_ location: NavigationLocation, speedLimitKph: Int?) {
+        guard location.timestamp >= startedAt,
+              lastLocation.map({ location.timestamp > $0.timestamp }) ?? true else { return }
         traceRecorder.record(location)
         defer { lastLocation = location }
 
         if let previous = lastLocation {
             let seconds = location.timestamp.timeIntervalSince(previous.timestamp)
-            if seconds > 0, seconds <= 30 {
+            let measuredStart = max(startedAt, previous.timestamp)
+            let measuredSeconds = location.timestamp.timeIntervalSince(measuredStart)
+            if seconds > 0, seconds <= 30, measuredSeconds > 0,
+               isReliableMovementFix(previous), isReliableMovementFix(location) {
                 let distance = previous.coordinate.distance(to: location.coordinate)
-                if distance <= max(30, seconds * 60), location.speed >= 0.5 {
-                    movingSeconds += seconds
-                    distanceMeters += distance
+                let maximumSpeed = min(60, transportMode?.maximumPlausibleSpeed ?? 60)
+                if distance <= max(30, seconds * maximumSpeed) {
+                    if previous.speed >= 0.5 || location.speed >= 0.5 {
+                        let measuredDistance = distance * measuredSeconds / seconds
+                        movingSeconds += measuredSeconds
+                        distanceMeters += measuredDistance
+                        distanceSamples.append(TripDistanceSample(startedAt: measuredStart,
+                            endedAt: location.timestamp, distanceMeters: measuredDistance))
+                    } else {
+                        measuredStoppedSeconds += measuredSeconds
+                    }
                 }
             }
         }
@@ -975,5 +1048,32 @@ struct TripSession {
     var drivingScore: DrivingScore? {
         guard tracksDriving else { return nil }
         return drivingAnalyzer?.score(distanceMeters: distanceMeters, movingSeconds: movingSeconds)
+    }
+
+    func record(endedAt: Date, arrived: Bool, terminationReason: TripTerminationReason?) -> TripRecord {
+        var recorder = traceRecorder
+        recorder.finalize()
+        var record = TripRecord(id: id, destination: destination, waypoints: waypoints,
+                                startedAt: startedAt, endedAt: max(startedAt, endedAt),
+                                distanceMeters: distanceMeters, movingSeconds: movingSeconds,
+                                rerouteCount: rerouteCount, arrived: arrived,
+                                originalExpectedTravelTime: originalExpectedTravelTime,
+                                drivingScore: arrived ? drivingScore : nil, transportMode: transportMode,
+                                trace: recorder.points, maximumSpeedKph: recorder.maximumSpeedKph,
+                                vehicleID: vehicleID)
+        record.measuredStoppedSeconds = measuredStoppedSeconds
+        record.distanceSamples = distanceSamples
+        record.routingQuality = routeQuality.measurement
+        record.terminationReason = terminationReason
+        if recorder.points.isEmpty { record.traceUnavailableReason = .noReliableLocations }
+        return record
+    }
+
+    private func isReliableMovementFix(_ location: NavigationLocation) -> Bool {
+        location.accuracy.isFinite && (0...50).contains(location.accuracy)
+            && location.speed.isFinite && (0...(transportMode?.maximumPlausibleSpeed ?? 75)).contains(location.speed)
+            && location.speedAccuracy.isFinite && (0...5).contains(location.speedAccuracy)
+            && location.coordinate.latitude.isFinite && abs(location.coordinate.latitude) <= 90
+            && location.coordinate.longitude.isFinite && abs(location.coordinate.longitude) <= 180
     }
 }

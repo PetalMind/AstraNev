@@ -2,16 +2,37 @@
 import SwiftUI
 
 extension ContentView {
-    func drivingMapControls(at date: Date, availableWidth: CGFloat) -> some View {
-        let condensed = availableWidth < 350
-        let controlSize: CGFloat = condensed ? 44 : 48
-        let spacing: CGFloat = condensed ? max(2, min(8, (availableWidth - 282) / 3)) : 8
+    func drivingMapControls(at date: Date) -> some View {
+        ViewThatFits(in: .horizontal) {
+            drivingMapControlsRow(at: date, condensed: false)
+            drivingMapControlsRow(at: date, condensed: true)
 
-        return HStack(alignment: .center, spacing: spacing) {
+            VStack(spacing: 8) {
+                HStack {
+                    speedCard(at: date, compact: true, condensed: true)
+                        .fixedSize()
+                    Spacer(minLength: 8)
+                }
+                HStack(spacing: 8) {
+                    Spacer(minLength: 0)
+                    mapTools(compact: true, controlSize: 44, showsParkedCar: false)
+                    mapPositionControl(size: 44)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func drivingMapControlsRow(at date: Date, condensed: Bool) -> some View {
+        let controlSize: CGFloat = condensed ? 44 : 48
+
+        return HStack(alignment: .center, spacing: condensed ? 4 : 8) {
             speedCard(at: date, compact: true, condensed: condensed)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            weatherMapControl
+                .fixedSize()
+                .layoutPriority(1)
+            Spacer(minLength: 0)
             mapTools(compact: true, controlSize: controlSize, showsParkedCar: false)
+                .fixedSize()
             mapPositionControl(size: condensed ? 44 : 56)
         }
     }
@@ -25,7 +46,7 @@ extension ContentView {
             Spacer(minLength: 0)
             ViewThatFits(in: .horizontal) {
                 layout {
-                    weatherMapControl
+                    if !isNavigating { weatherMapControl }
                     mapTools(compact: compact)
                     mapPositionControl
                 }
@@ -33,11 +54,9 @@ extension ContentView {
 
                 if compact {
                     VStack(alignment: .trailing, spacing: 10) {
+                        mapTools(compact: true)
                         HStack(spacing: 10) {
-                            weatherMapControl
-                        }
-                        HStack(spacing: 10) {
-                            mapTools(compact: true)
+                            if !isNavigating { weatherMapControl }
                             mapPositionControl
                         }
                     }
@@ -53,9 +72,10 @@ extension ContentView {
             : AnyLayout(VStackLayout(spacing: 0))
 
         return layout {
-            mapLayersMenu
-                .frame(width: controlSize, height: controlSize)
-                .contentShape(Rectangle())
+            Menu { mapLayerMenuActions } label: {
+                mapToolLabel(symbol: "square.3.layers.3d", size: controlSize)
+            }
+            .accessibilityLabel("Wygląd i warstwy mapy")
 
             if showsParkedCar && placeStore.parkedCar != nil {
                 mapToolDivider(compact: compact, controlSize: controlSize)
@@ -83,6 +103,9 @@ extension ContentView {
                     ? "Wyłącz komunikaty głosowe" : "Włącz komunikaty głosowe")
                 .accessibilityValue(navigationStore.state.voiceEnabled ? "Włączone" : "Wyłączone")
             }
+
+            mapToolDivider(compact: compact, controlSize: controlSize)
+            VoiceAssistantButton(assistant: voiceAssistant, controlSize: controlSize)
         }
         .buttonStyle(.plain)
         .modifier(NavigationGlassSurface(radius: 24))

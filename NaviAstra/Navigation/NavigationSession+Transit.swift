@@ -5,7 +5,7 @@ extension NavigationSession {
         guard state.status == .routePreview,
               state.transportMode == .transit,
               let destination = state.destination,
-              let origin = state.location?.coordinate else { return }
+              let origin = transitPlanningOrigin else { return }
         let expectedRouteID = state.route?.id
         let expectedDestinationID = destination.id
         let generation = requestGeneration
@@ -31,6 +31,7 @@ extension NavigationSession {
                 from: origin,
                 to: routeTarget,
                 departingAt: departure.addingTimeInterval(1),
+                preferences: state.routingPreferences.transit,
                 onProgress: nil, onProvisionalRoutes: nil,
                 cancellationToken: cancellationToken)
             guard generation == requestGeneration,
@@ -89,7 +90,7 @@ extension NavigationSession {
               !transitPlanRefreshInFlight,
               Date().timeIntervalSince(lastTransitPlanRefresh) >= 45,
               let destination = state.destination,
-              let origin = state.location?.coordinate else { return }
+              let origin = transitPlanningOrigin else { return }
 
         // Keep an explicitly selected future departure or arrival deadline stable in preview.
         guard state.status != .routePreview || state.journeyTimeMode == .now else { return }
@@ -126,6 +127,7 @@ extension NavigationSession {
             let routeTarget = destinationRouteCoordinate(for: destination)
             let routes = try await transitProvider.calculateRoutes(from: origin, to: routeTarget,
                                                                     departingAt: Date(),
+                                                                    preferences: state.routingPreferences.transit,
                                                                     onProgress: nil,
                                                                     onProvisionalRoutes: nil,
                                                                     cancellationToken: cancellationToken)
@@ -163,6 +165,10 @@ extension NavigationSession {
         } catch {
             // Keep the current route when the live feed or route service has a temporary failure.
         }
+    }
+
+    var transitPlanningOrigin: Coordinate? {
+        state.status == .navigating ? state.location?.coordinate : routeOriginCoordinate
     }
 
     private func transitRouteSignature(_ route: NavigationRoute) -> String {

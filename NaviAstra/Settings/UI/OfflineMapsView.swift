@@ -7,8 +7,8 @@ struct OfflineMapsView: View {
     let destination: Destination?
     var savedPlaces: [SavedPlace] = []
     var route: [Coordinate] = []
-    @State private var store = OfflineMapStore.shared
-    @State private var routingStore = OfflineRoutingStore.shared
+    private let store = OfflineMapStore.shared
+    private let routingStore = OfflineRoutingStore.shared
     @State private var name = ""
     @State private var useDestination = false
     @State private var radius = 5.0
@@ -52,8 +52,7 @@ struct OfflineMapsView: View {
                     }
                     if let selectedBounds {
                         Text(selectedBounds.dimensions).font(.subheadline)
-                        Text(String(format: "%.4f, %.4f — %.4f, %.4f", selectedBounds.south,
-                                    selectedBounds.west, selectedBounds.north, selectedBounds.east))
+                        Text("\(OfflineStorageFormat.coordinate(selectedBounds.south)); \(OfflineStorageFormat.coordinate(selectedBounds.west)) — \(OfflineStorageFormat.coordinate(selectedBounds.north)); \(OfflineStorageFormat.coordinate(selectedBounds.east))")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 } else {
@@ -64,7 +63,7 @@ struct OfflineMapsView: View {
                         }
                     }
                     if let center {
-                        Text(String(format: "%.4f, %.4f", center.latitude, center.longitude))
+                        Text("\(OfflineStorageFormat.coordinate(center.latitude)); \(OfflineStorageFormat.coordinate(center.longitude))")
                             .font(.caption).foregroundStyle(.secondary)
                     } else {
                         Text("Brak pozycji. Wybierz cel podróży albo poczekaj na ustalenie lokalizacji.")
@@ -97,36 +96,16 @@ struct OfflineMapsView: View {
             }
             Section("Pobrane obszary") {
                 if store.isLoading { ProgressView("Odczytywanie map") }
-                else if store.regions.isEmpty { Text("Nie pobrano jeszcze żadnej mapy.").foregroundStyle(.secondary) }
+                else if store.regions.isEmpty {
+                    ContentUnavailableView("Nie masz jeszcze pobranych map", systemImage: "map",
+                        description: Text("Wybierz obszar powyżej, aby mieć dostęp do mapy bez internetu."))
+                }
                 ForEach(store.regions) { region in
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(region.name).font(.headline)
-                        Text(region.status).foregroundStyle(region.error == nil ? Color.secondary : .red)
-                        Text("\(region.bounds.dimensions) · \(ByteCountFormatter.string(fromByteCount: Int64(clamping: region.bytes), countStyle: .file))")
-                            .font(.caption).foregroundStyle(.secondary)
-                        if region.state == .active {
-                            if let progress = region.progress { ProgressView(value: progress) }
-                            else { ProgressView() }
-                        }
-                        if region.state != .complete {
-                            Text(region.exactResourceCount
-                                 ? "Zasoby: \(region.downloadedResources) / \(region.expectedResources)"
-                                 : "Pobrane zasoby: \(region.downloadedResources)")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        if let error = region.error { Text(error).font(.caption).foregroundStyle(.red) }
-                        HStack {
-                            if region.state == .active || region.state == .inactive {
-                                Button(region.state == .active ? "Wstrzymaj" : "Wznów") { store.toggleDownload(region.id) }
-                                    .buttonStyle(.bordered)
-                            }
-                            Spacer()
-                            Button("Usuń", role: .destructive) { pendingRemoval = region }
-                                .buttonStyle(.bordered)
-                        }.disabled(store.deletingIDs.contains(region.id))
-                    }.padding(.vertical, 5)
+                    OfflineMapRegionRow(region: region, isDeleting: store.deletingIDs.contains(region.id),
+                        onToggle: { store.toggleDownload(region.id) }, onRemove: { pendingRemoval = region })
                 }
             }
+
             Section {
                 Text("Pobrana mapa jest używana automatycznie na zapisanym obszarze i w pobranym zakresie przybliżeń. Poza nimi mogą brakować szczegółów. Trasy drogowe można wyznaczać offline po pobraniu odpowiedniej paczki danych drogowych. Wyszukiwanie miejsc, komunikacja publiczna oraz aktualne dane ruchu i pogody wymagają internetu.")
                     .font(.footnote).foregroundStyle(.secondary)
@@ -135,6 +114,8 @@ struct OfflineMapsView: View {
         .formStyle(.grouped)
         .navigationTitle("Mapy offline")
         .navigationBarTitleDisplayMode(.inline)
+        .scrollDismissesKeyboard(.interactively)
+        .environment(\.locale, PolishRegionalFormat.locale)
         .fullScreenCover(isPresented: $isSelectingArea) {
             OfflineAreaPickerView(initialBounds: selectedBounds ?? center.map {
                 OfflineMapBounds.around($0, radiusKilometers: radius)

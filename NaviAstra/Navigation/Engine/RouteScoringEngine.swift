@@ -1,7 +1,7 @@
 import Foundation
 
 nonisolated enum RoutePreference: String, Codable, CaseIterable, Identifiable, Sendable {
-    case fastest, balanced, shortest, comfortable
+    case fastest, balanced, shortest, comfortable, personalized
     var id: Self { self }
     var title: String {
         switch self {
@@ -9,6 +9,7 @@ nonisolated enum RoutePreference: String, Codable, CaseIterable, Identifiable, S
         case .balanced: "Zrównoważona"
         case .shortest: "Najkrótsza"
         case .comfortable: "Wygodna"
+        case .personalized: "Polecana dla mnie"
         }
     }
 }
@@ -71,16 +72,61 @@ nonisolated enum RouteScoringEngine {
         }
     }
 
+    /// Ranking costs use seconds and metres with fixed conversion factors. One
+    /// ordinary turn cannot acquire a large weight just because it is the only
+    /// difference between two candidates. These costs never change the ETA.
     static func value(_ score: RouteScore, preference: RoutePreference,
-                      includeRoadQuality: Bool = true) -> Double {
-        guard score.travelTime.isFinite, score.distance.isFinite else { return .infinity }
-        let comfort = score.maneuverCost + (includeRoadQuality ? score.roadQualityCost ?? 0 : 0)
+                      includeRoadQuality: Bool = true, includeManeuvers: Bool = true,
+                      includeReliability: Bool = true) -> Double {
+        guard isValid(score) else { return .infinity }
+        let comfort = (includeManeuvers ? score.maneuverCost : 0)
+            + (includeRoadQuality ? score.roadQualityCost ?? 0 : 0)
+        let uncertainty = includeReliability ? min(1, max(0, score.reliabilityCost ?? 0)) : 0
         switch preference {
         case .fastest: return score.travelTime
         case .shortest: return score.distance
-        case .balanced: return score.travelTime + comfort
-        case .comfortable: return score.travelTime + comfort * 2
+        case .balanced, .personalized:
+            return score.travelTime + score.distance * 0.01 + comfort + uncertainty * 60
+        case .comfortable:
+            return score.travelTime + score.distance * 0.01 + comfort * 2 + uncertainty * 90
         }
+    }
+
+    private static func isValid(_ score: RouteScore) -> Bool {
+        score.travelTime.isFinite && score.travelTime >= 0 && score.distance.isFinite && score.distance >= 0
+            && score.maneuverCost.isFinite && score.maneuverCost >= 0
+    }
+
+    struct DetourLimit: Sendable {
+        let timeFraction: Double
+        let maximumExtraTime: TimeInterval
+        let distanceFraction: Double
+        let maximumExtraDistance: Double
+    }
+
+    static func detourLimit(for preference: RoutePreference) -> DetourLimit? {
+        switch preference {
+        case .balanced, .personalized:
+            return DetourLimit(timeFraction: 0.15, maximumExtraTime: 300,
+                               distanceFraction: 0.20, maximumExtraDistance: 5_000)
+        case .comfortable:
+            return DetourLimit(timeFraction: 0.25, maximumExtraTime: 600,
+                               distanceFraction: 0.30, maximumExtraDistance: 10_000)
+        case .fastest, .shortest: return nil
+        }
+    }
+
+    /// Limits affect the recommendation, not the availability of alternatives.
+    /// Compare against one real fastest route, never a mixture of the fastest
+    /// time and the distance of an unrelated shortest route.
+    static func recommendationEligibility(_ scores: [RouteScore], preference: RoutePreference) -> [Bool] {
+        guard let limit = detourLimit(for: preference),
+              let fastest = scores.filter(isValid).min(by: {
+                  $0.travelTime == $1.travelTime ? $0.distance < $1.distance : $0.travelTime < $1.travelTime
+              }) else { return scores.map(isValid) }
+        let latest = fastest.travelTime + min(fastest.travelTime * limit.timeFraction, limit.maximumExtraTime)
+        let longest = fastest.distance + min(fastest.distance * limit.distanceFraction, limit.maximumExtraDistance)
+        return scores.map { isValid($0) && $0.travelTime <= latest + 0.001 && $0.distance <= longest + 0.001 }
     }
 
     struct NormalizedComponents: Codable, Sendable {
@@ -92,47 +138,34 @@ nonisolated enum RouteScoringEngine {
     }
 
     static func normalized(_ scores: [RouteScore]) -> [NormalizedComponents] {
-        func scale(_ values: [Double]) -> Double {
-            let sorted = values.filter { $0.isFinite && $0 > 0 }.sorted()
-            guard !sorted.isEmpty else { return 1 }
-            return sorted[sorted.count / 2]
-        }
-        let timeScale = scale(scores.map(\.travelTime)), distanceScale = scale(scores.map(\.distance))
-        let comfortScale = scale(scores.map(\.maneuverCost))
+        // Fixed scales are only for diagnostics. Ranking uses the calibrated
+        // costs above, not these bounded presentation values.
         let maneuversKnown = scores.allSatisfy(\.hasManeuverData)
         let qualityKnown = scores.allSatisfy { $0.roadQualityCost != nil }
         let reliabilityKnown = scores.allSatisfy { $0.reliabilityCost != nil }
-        let surfaceScale = scale(scores.compactMap(\.roadQualityCost))
         func norm(_ value: Double, _ reference: Double) -> Double {
             guard value.isFinite else { return 1 }
             return max(0, value) / (max(0, value) + reference)
         }
         return scores.map {
-            NormalizedComponents(time: norm($0.travelTime, timeScale), distance: norm($0.distance, distanceScale),
-                comfort: maneuversKnown ? norm($0.maneuverCost, comfortScale) : nil,
-                surface: qualityKnown ? norm($0.roadQualityCost ?? 0, surfaceScale) : nil,
+            NormalizedComponents(time: norm($0.travelTime, 600), distance: norm($0.distance, 10_000),
+                comfort: maneuversKnown ? norm($0.maneuverCost, 120) : nil,
+                surface: qualityKnown ? norm($0.roadQualityCost ?? 0, 60) : nil,
                 reliability: reliabilityKnown ? $0.reliabilityCost : nil)
         }
     }
 
-    static func normalizedValue(_ components: NormalizedComponents, preference: RoutePreference) -> Double {
-        let comfortWeight = preference == .comfortable ? 0.45 : 0.20
-        let timeWeight = preference == .comfortable ? 0.30 : 0.55
-        var sum = components.time * timeWeight + components.distance * 0.10
-        var weight = timeWeight + 0.10
-        if let comfort = components.comfort { sum += comfort * comfortWeight; weight += comfortWeight }
-        if let surface = components.surface { sum += surface * 0.05; weight += 0.05 }
-        if let reliability = components.reliability { sum += reliability * 0.10; weight += 0.10 }
-        return sum / weight
-    }
-
     static func rankingValues(_ scores: [RouteScore], preference: RoutePreference) -> [Double] {
-        if preference == .balanced || preference == .comfortable {
-            return normalized(scores).enumerated().map { index, components in
-                scores[index].travelTime.isFinite && scores[index].distance.isFinite ? normalizedValue(components, preference: preference) : .infinity
-            }
+        let comparable = scores.filter(isValid)
+        let maneuversKnown = comparable.allSatisfy(\.hasManeuverData)
+        let qualityKnown = comparable.allSatisfy { $0.roadQualityCost != nil }
+        let reliabilityKnown = comparable.allSatisfy { $0.reliabilityCost != nil }
+        let eligible = recommendationEligibility(scores, preference: preference)
+        return scores.indices.map { index in
+            guard eligible[index] else { return .infinity }
+            return value(scores[index], preference: preference, includeRoadQuality: qualityKnown,
+                         includeManeuvers: maneuversKnown, includeReliability: reliabilityKnown)
         }
-        return scores.map { value($0, preference: preference) }
     }
 
     static func ranked(_ routes: [NavigationRoute], preference: RoutePreference,
@@ -174,16 +207,61 @@ nonisolated enum RouteSimilarity {
         return min(1, shared / source.length)
     }
 
-    static func diverse(_ ranked: [NavigationRoute], maximumOverlap: Double = 0.8) -> [NavigationRoute] {
+    static func diverse(_ ranked: [NavigationRoute], maximumOverlap: Double = 0.8,
+                        preserving preferredIDs: Set<UUID> = []) -> [NavigationRoute] {
         var result: [NavigationRoute] = []
+        var preservedCount = 0
+        var geometries: [UUID: RouteProgressGeometry] = [:]
+        func geometry(_ route: NavigationRoute) -> RouteProgressGeometry {
+            if let cached = geometries[route.id] { return cached }
+            let value = RouteProgressGeometry(route)
+            geometries[route.id] = value
+            return value
+        }
         for candidate in ranked {
+            let isPreferred = preferredIDs.contains(candidate.id)
+            if isPreferred, preservedCount >= 2 { continue }
             let duplicates = result.contains { selected in
                 // Different EV charging itineraries remain meaningful even on the same road.
                 guard selected.chargingStops.map(\.id) == candidate.chargingStops.map(\.id) else { return false }
+                // A 200 m personal section remains meaningful on a 100 km route.
+                // Do not discard it because its share of the whole trip is small.
+                if isPreferred || preferredIDs.contains(selected.id) {
+                    return strictCopies(geometry(selected), geometry(candidate))
+                }
                 return overlap(selected, candidate) >= maximumOverlap
             }
-            if !duplicates { result.append(candidate) }
+            if !duplicates {
+                result.append(candidate)
+                if isPreferred { preservedCount += 1 }
+            }
         }
         return result
+    }
+
+    private static func strictCopies(_ first: RouteProgressGeometry, _ second: RouteProgressGeometry) -> Bool {
+        if first.coordinates == second.coordinates { return true }
+        guard first.length > 0, second.length > 0, abs(first.length - second.length) <= 20,
+              let aStart = first.coordinates.first, let bStart = second.coordinates.first,
+              let aEnd = first.coordinates.last, let bEnd = second.coordinates.last,
+              aStart.distance(to: bStart) <= 15, aEnd.distance(to: bEnd) <= 15 else { return false }
+        return followsEveryVertex(first, along: second) && followsEveryVertex(second, along: first)
+    }
+
+    /// Vertex checks cannot skip a short different section on a long journey.
+    /// Geometry is cached and this stricter comparison is limited to two personal candidates.
+    private static func followsEveryVertex(_ source: RouteProgressGeometry,
+                                          along target: RouteProgressGeometry) -> Bool {
+        for index in source.coordinates.indices {
+            let distance = source.cumulativeDistances[index]
+            guard let projection = target.project(source.coordinates[index], within: 15),
+                  projection.distanceFromRoute <= 15,
+                  let a = source.coordinate(at: max(0, distance - 5)),
+                  let b = source.coordinate(at: min(source.length, distance + 5)),
+                  let c = target.coordinate(at: max(0, projection.alongRoute - 5)),
+                  let d = target.coordinate(at: min(target.length, projection.alongRoute + 5)),
+                  RoadGeometryAlignment.isAligned(a, b, c, d, directed: true) else { return false }
+        }
+        return true
     }
 }

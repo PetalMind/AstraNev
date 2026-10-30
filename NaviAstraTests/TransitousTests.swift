@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import NaviAstra
 
-struct TransitousTests {
+@MainActor struct TransitousTests {
     @Test func mapsDirectTransitJourney() throws {
         let journeys = try mappedJourneys([itinerary(id: "direct", transfers: 0,
             legs: [leg(mode: "TRAM", from: "Łódź Fabryczna", to: "Piotrkowska Centrum",
@@ -64,13 +64,13 @@ struct TransitousTests {
         let journeys = try mappedJourneys([itinerary(id: "realtime", transfers: 0,
             legs: [leg(mode: "TRAM", from: "Fabryczna", to: "Centrum", line: "10A",
                        realtime: true, delay: 180)])])
-        let leg = try #require(journeys.first?.legs.first)
+        let realtimeLeg = try #require(journeys.first?.legs.first)
 
         #expect(journeys[0].realtimeAvailable)
-        #expect(leg.realtimeAvailable)
-        #expect(leg.estimatedDeparture == testDate.addingTimeInterval(180))
-        #expect(leg.scheduledDeparture == testDate)
-        #expect(leg.delaySeconds == 180)
+        #expect(realtimeLeg.realtimeAvailable)
+        #expect(realtimeLeg.estimatedDeparture == testDate.addingTimeInterval(180))
+        #expect(realtimeLeg.scheduledDeparture == testDate)
+        #expect(realtimeLeg.delaySeconds == 180)
 
         let onTimeJourney = try mappedJourneys([itinerary(id: "realtime-on-time", transfers: 0,
             legs: [leg(mode: "TRAM", from: "Fabryczna", to: "Centrum", line: "10A",
@@ -136,7 +136,7 @@ struct TransitousTests {
                 #expect((retryAfter ?? 0) >= 29)
             }
         }
-        let requestCount = await transport.requestCount
+        let requestCount = transport.requestCount
         #expect(requestCount == 1)
     }
 
@@ -155,16 +155,72 @@ struct TransitousTests {
 
         _ = try await client.plan(from: lodzCenter, to: lodzDestination, time: testDate,
                                   arriveBy: true, preferences: .init(), cancellationToken: nil)
-        let lastRequest = await transport.lastRequest
+        let lastRequest = transport.lastRequest
         let request = try #require(lastRequest)
-        let components = try #require(URLComponents(url: try #require(request.url),
-                                                    resolvingAgainstBaseURL: false))
+        let url = try #require(request.url)
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
         let query = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value) })
         #expect(components.path == "/api/v6/plan")
         #expect(query["arriveBy"] == "true")
         #expect(query["maxDirectTime"] == "0")
         #expect(query["time"] == "2026-09-27T10:00:00Z")
         #expect(request.value(forHTTPHeaderField: "User-Agent") == "NaviAstra/test (https://example.org/naviastra)")
+    }
+
+    @Test func departureAndArrivalRankingIncludeWaitingOutsideTheItinerary() throws {
+        let immediate = try timedJourney(id: "immediate", departure: 0, arrival: 1_800)
+        let laterShort = try timedJourney(id: "later-short", departure: 3_600, arrival: 4_200)
+        #expect(TransitJourneyRanker.ranked([laterShort, immediate], profile: .fastest,
+            requestedTime: testDate).first?.id == immediate.id)
+        #expect(TransitJourneyRanker.ranked([immediate, laterShort], profile: .fastest,
+            requestedTime: testDate.addingTimeInterval(4_200), arriveBy: true).first?.id == laterShort.id)
+    }
+
+    @Test func stayingInTheSameVehicleDoesNotCountAsARiskyTransfer() throws {
+        let first = leg(mode: "BUS", from: "Start", to: "Węzeł", line: "1")
+        var continuation = leg(mode: "BUS", from: "Węzeł", to: "Cel", line: "2")
+        continuation["startTime"] = Self.iso(testDate.addingTimeInterval(900))
+        continuation["endTime"] = Self.iso(testDate.addingTimeInterval(1_800))
+        continuation["interlineWithPreviousLeg"] = true
+        let sameVehicle = try mappedJourneys([itinerary(id: "same", transfers: 0, legs: [first, continuation])])[0]
+        #expect(TransitJourneyRanker.transferRiskPenalty(sameVehicle.legs) == 0)
+        continuation["interlineWithPreviousLeg"] = false
+        let transfer = try mappedJourneys([itinerary(id: "transfer", transfers: 1, legs: [first, continuation])])[0]
+        #expect(TransitJourneyRanker.transferRiskPenalty(transfer.legs) == 360)
+    }
+
+    @Test func navigationWrapperForwardsAccessibilityAndTransferPreferences() async throws {
+        let transport = TransitousTestTransport(.success(data: response([itinerary(id: "trip", transfers: 0,
+            legs: [leg(mode: "TRAM", from: "Start", to: "Cel", line: "1")])])))
+        let provider = TransitousRouteProvider(configuration: testConfiguration(), transport: transport)
+        _ = try await provider.calculateRoutes(from: lodzCenter, to: lodzDestination, departingAt: testDate,
+            preferences: .init(profile: .leastWalking, additionalTransferBufferMinutes: 7, pedestrianProfile: .wheelchair))
+        let request = try #require(transport.lastRequest)
+        let url = try #require(request.url)
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let query = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value) })
+        #expect(query["additionalTransferTime"] == "7")
+        #expect(query["pedestrianProfile"] == "WHEELCHAIR")
+    }
+
+    @Test func laterAndRefreshedConnectionsKeepManualOriginWithoutGPS() async {
+        let provider = TransitOriginRecorder()
+        let session = NavigationSession(dependencies: .live(routeEndpoint: URL(string: "https://routing.invalid")!,
+            trafficAPIKey: nil, transitProvider: provider))
+        session.state.transportMode = .transit
+        session.state.status = .routePreview
+        session.state.destination = Destination(name: "Cel", coordinate: lodzDestination)
+        session.state.routeOrigin = RoutePoint(Destination(name: "Wybrany start", coordinate: lodzCenter), source: .mapSelection)
+        session.state.routingPreferences.transit = .init(profile: .fewestTransfers, additionalTransferBufferMinutes: 5,
+                                                         pedestrianProfile: .wheelchair)
+        session.state.location = nil
+        await session.loadLaterTransitConnections(after: testDate)
+        await session.refreshTransitRouteIfNeeded()
+        let origins = provider.origins
+        let preferences = provider.preferences
+        #expect(origins == [lodzCenter, lodzCenter])
+        #expect(preferences.count == 2)
+        #expect(preferences.allSatisfy { $0 == session.state.routingPreferences.transit })
     }
 
     @Test func lodzExamplesCanBeRunAsOptInLiveIntegration() async throws {
@@ -210,6 +266,15 @@ struct TransitousTests {
     private func mappedJourneys(_ itineraries: [[String: Any]]) throws -> [TransitJourney] {
         try TransitousMapper.journeys(from: JSONDecoder().decode(
             TransitousPlanResponseDTO.self, from: response(itineraries)))
+    }
+
+    private func timedJourney(id: String, departure: TimeInterval, arrival: TimeInterval) throws -> TransitJourney {
+        let mapped = try mappedJourneys([itinerary(id: id, transfers: 0,
+            legs: [leg(mode: "TRAM", from: id, to: "Cel", line: id)])])[0]
+        return TransitJourney(id: id, departure: testDate.addingTimeInterval(departure),
+            arrival: testDate.addingTimeInterval(arrival), duration: arrival - departure,
+            transfers: 0, walkingDuration: 0, walkingDistance: 0, waitingDuration: 0,
+            legs: mapped.legs, realtimeAvailable: false, alerts: [])
     }
 
     private func response(_ itineraries: [[String: Any]]) -> Data {
@@ -275,6 +340,20 @@ struct TransitousTests {
     }
 }
 
+@MainActor private final class TransitOriginRecorder: TransitRouteProvider {
+    let region = TransitRegion.lodz
+    private(set) var origins: [Coordinate] = []
+    private(set) var preferences: [TransitRoutePreferences] = []
+
+    func routes(from: Coordinate, to: Coordinate, time: Date, arriveBy: Bool,
+                preferences: TransitRoutePreferences,
+                cancellationToken: TransitPlanningCancellationToken?) async throws -> [TransitJourney] {
+        origins.append(from)
+        self.preferences.append(preferences)
+        return []
+    }
+}
+
 private enum TransitousTestResponse: Sendable {
     case success(data: Data)
     case http(status: Int, data: Data, headers: [String: String])
@@ -282,7 +361,7 @@ private enum TransitousTestResponse: Sendable {
     case suspended
 }
 
-private actor TransitousTestTransport: TransitousTransport {
+@MainActor private final class TransitousTestTransport: TransitousTransport {
     private let response: TransitousTestResponse
     private(set) var requestCount = 0
     private(set) var lastRequest: URLRequest?

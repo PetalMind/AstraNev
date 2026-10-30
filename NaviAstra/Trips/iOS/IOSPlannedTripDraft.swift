@@ -169,7 +169,8 @@ final class IOSPlannedTripDraft {
             mapState.journeyTimeMode = timing == .arrival ? .arriveBy : .departAt
             mapState.journeyTargetTime = timing == .arrival
                 ? occurrence.addingTimeInterval(-Double(bufferMinutes + plan.stopMinutes) * 60) : occurrence
-            await RoadRoutingContext.$allowsPersonalization.withValue(false) { await session.preview(plan.destination) }
+            await RoadRoutingContext.$allowsPersonalization.withValue(
+                plan.preferences.advanced.effectiveRoutePreference == .personalized) { await session.preview(plan.destination) }
             try Task.checkCancellation()
             guard request == generation, key == previewKey else { return }
             guard mapState.status == .routePreview, !mapState.routeOptions.isEmpty else {

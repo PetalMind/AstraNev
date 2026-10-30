@@ -2,15 +2,25 @@
 
 Natywna aplikacja nawigacyjna dla iOS w SwiftUI. Mapa używa MapLibre Native i kafli OpenFreeMap.
 
+Przegląd architektury i interfejsu iOS wprowadza wspólne karty i nagłówki, wyszukiwanie ustawień oraz wydzielone komponenty planów, miejsc i tras. Układy dostosowują się do dużego tekstu; widżet jawnie pokazuje brak aktualnej pozycji. [Zakres zmian i weryfikacja](docs/IOS_ARCHITECTURE_AND_UI_REVIEW.md).
+
+W iOS 1.1.158 (160) odtwarzanie historii zachowuje znacznik ostatniej znanej pozycji podczas luk GPS. Ma przewijanie o 15 sekund, pomijanie luk, podążanie mapy, powrót do całej trasy oraz interaktywny wykres prędkości. [Działanie odtwarzania](docs/ROUTE_HISTORY.md).
+
+W iOS 1.1.162 (164) woda, trawa, podłoże lasów, piasek, skały i parkingi mają spójne wzory low poly z płaskich wielokątów. Powstają lokalnie, mają warianty dnia i nocy oraz są wyciszane podczas nawigacji. [Źródła, działanie i ograniczenia](docs/TEKSTURY_TERENU.md).
+
+W iOS 1.1.150 (152) historia przejazdów ma zapis roboczy i odzyskiwanie po awarii, wspólną listę ukończonych i przerwanych podróży, wyszukiwanie, filtry pojazdu i dat oraz cofanie usunięcia. Brak pomiaru GPS jest rozdzielony od postoju, a wygaszenie śladu mapy zachowuje dystans potrzebny do rozliczenia paliwa. [Zapis, statystyki i ograniczenia](docs/ROUTE_HISTORY.md).
+
 Tryb „Satelitarna” łączy bezpłatne zdjęcia lotnicze GUGiK w Polsce z globalną mozaiką Sentinel‑2 EOX z 2016 roku (CC BY 4.0), bez klucza API. Zdjęcia wymagają internetu. Wybór znajduje się w ustawieniach mapy; [źródła, licencje i ograniczenia](docs/MAPA_SATELITARNA.md).
 
-W iOS 1.1.146 (148) wyniki miejsc pojawiają się stopniowo, a czasy i odległości pochodzą z tras dla wybranego środka transportu. Brak danych pozostaje jawny. Zabudowa 3D ma zróżnicowane proceduralne elewacje na obrysach i wysokościach źródłowych; [zakres i ograniczenia](docs/OBIEKTY_MAPY_3D.md). Podczas prowadzenia osadzony widżet Live Activity pokazuje schemat trasy, pozycję i kolejny manewr na ekranie blokady oraz w Dynamic Island; [działanie w tle i ograniczenia urządzeń](docs/BACKGROUND_NAVIGATION.md).
+W iOS 1.1.148 (150) wyniki miejsc pojawiają się stopniowo, a czasy i odległości pochodzą z tras dla wybranego środka transportu. Brak danych pozostaje jawny. Zabudowa 3D ma zróżnicowane proceduralne elewacje na obrysach i wysokościach źródłowych; [zakres i ograniczenia](docs/OBIEKTY_MAPY_3D.md). Podczas prowadzenia osadzony widżet Live Activity pokazuje schemat trasy, pozycję i kolejny manewr na ekranie blokady oraz w Dynamic Island; [działanie w tle i ograniczenia urządzeń](docs/BACKGROUND_NAVIGATION.md).
 
 Mapa standardowa 3D wykorzystuje 62 gotowe modele Kenney CC0: domy, bloki,
 wieżowce, obiekty przemysłowe, drzewa i wyposażenie ulic. Modele są dołączone
 do aplikacji i dopasowywane do danych otoczenia. Działają od z15, z uproszczonymi
 siatkami i wcześniejszą widocznością podczas nawigacji.
 [Katalog, źródła i ograniczenia](docs/ENVIRONMENT_MODELS.md).
+
+Kamera samochodowa „Nurt” dostosowuje widok do czasu do manewru, krzywizny trasy i miejsca między panelami. Utrzymuje wspólną pozycję ze znacznikiem, pokazuje drogę za skrętem i łagodnie przywraca szerszy widok. [Analiza, porównanie i zasady kamery](docs/NAVIGATION_CAMERA.md).
 
 ## Dostępne funkcje
 
@@ -23,7 +33,7 @@ siatkami i wcześniejszą widocznością podczas nawigacji.
 - Ustawienia mapy: kamera 2D/3D i widoczność danych o ruchu oraz ścieżek rowerowych na iOS. Tryb Dzień/Noc/Auto zmienia paletę NaviAstra na wspólnym grafie warstw OpenFreeMap Liberty, z przejściami kolorów bez przeładowania mapy. iOS obsługuje ekstrudowane budynki, filtrowane POI i wyróżnienie geometrii kolejowej. Opcjonalna warstwa ścieżek rowerowych pobiera z Overpass API widoczne odcinki OSM oznaczone jako `highway=cycleway` lub `highway=path` z `bicycle=designated`; jest cache'owana w pamięci przez 30 minut, pojawia się po zbliżeniu mapy i jawnie pokazuje brak danych lub częściową listę.
 - Panel mapy czyta `MapProviderCapabilities`, a renderery dostają `MapSettings` z osobnymi polami typu mapy, wyglądu, kamery i warstw. Wybór niedostępnego typu mapy jest sprowadzany do Standard; niedostępne warstwy mają wyłączone kontrolki z podanym powodem. Po podłączeniu nowego źródła mapy trzeba zaktualizować jego deklarację możliwości i obsługę ustawień w rendererze.
 - Lokalne ulubione miejsca: Dom, Praca i pozostałe ulubione. Można je wybrać jako cel lub usunąć.
-- Lokalna historia zakończonych i przerwanych przejazdów z czasem, przebytym dystansem z zaakceptowanych pomiarów GPS, średnią prędkością podczas ruchu i liczbą udanych przeliczeń trasy. Historię można usuwać.
+- Lokalna historia zakończonych i przerwanych przejazdów z czasem, dystansem z zaakceptowanych pomiarów GPS, czasem bez pomiaru i średnią prędkością podczas ruchu. Listę można przeszukiwać i filtrować; usunięcie można cofnąć przez 6 sekund przed zatwierdzeniem. Zapis roboczy chroni niezakończoną podróż przy nieoczekiwanym zamknięciu aplikacji.
 
 Dłuższe dotknięcie mapy wybiera cel. UUG może opisać wskazany w Polsce punkt najbliższym adresem, nie przesuwając celu. Historia i ulubione są zapisywane w katalogu Application Support urządzenia jako pliki JSON. Klucz TomTom jest odczytywany z konfiguracji zbudowanej aplikacji; ustawienia nie pozwalają go wpisywać ani usuwać.
 

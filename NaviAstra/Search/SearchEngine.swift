@@ -16,7 +16,9 @@ struct ClassifiedQuery {
 struct QueryClassifier {
     nonisolated static func normalize(_ text: String) -> String {
         text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "pl_PL"))
-            .replacingOccurrences(of: "’", with: "'").trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "ł", with: "l")
+            .replacingOccurrences(of: "’", with: "'")
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
     func classify(_ raw: String) -> ClassifiedQuery {
@@ -41,11 +43,17 @@ struct QueryClassifier {
         }
         let categories: [(String, String)] = [
             ("stacja paliw", "amenity=fuel"), ("stacje paliw", "amenity=fuel"), ("paliwo", "amenity=fuel"),
-            ("apteka", "amenity=pharmacy"), ("parking", "amenity=parking"), ("parkingi", "amenity=parking"),
-            ("ladowarka", "amenity=charging_station"), ("supermarket", "shop=supermarket"),
-            ("restauracja", "amenity=restaurant"), ("pizza", "cuisine=pizza"),
-            ("kawa", "amenity=cafe"), ("hotel", "tourism=hotel"),
-            ("szpital", "amenity=hospital"), ("bankomat", "amenity=atm")]
+            ("apteka", "amenity=pharmacy"), ("apteki", "amenity=pharmacy"),
+            ("parking", "amenity=parking"), ("parkingi", "amenity=parking"),
+            ("ladowarka", "amenity=charging_station"), ("ladowarki", "amenity=charging_station"),
+            ("stacja ladowania", "amenity=charging_station"), ("stacje ladowania", "amenity=charging_station"),
+            ("supermarket", "shop=supermarket"), ("supermarkety", "shop=supermarket"),
+            ("restauracja", "amenity=restaurant"), ("restauracje", "amenity=restaurant"), ("pizza", "cuisine=pizza"),
+            ("kawa", "amenity=cafe"), ("kawiarnia", "amenity=cafe"), ("kawiarnie", "amenity=cafe"),
+            ("hotel", "tourism=hotel"), ("hotele", "tourism=hotel"),
+            ("szpital", "amenity=hospital"), ("szpitale", "amenity=hospital"),
+            ("bankomat", "amenity=atm"), ("bankomaty", "amenity=atm"),
+            ("toaleta", "amenity=toilets"), ("toalety", "amenity=toilets")]
         for (word, tag) in categories where clean == word || clean.hasPrefix(word + " ") || clean.hasPrefix(word + ",") {
             let location = locationSuffix(String(clean.dropFirst(word.count)))
             let photonTag = tag.replacingOccurrences(of: "=", with: ":")
@@ -143,6 +151,7 @@ struct SearchEngine {
         }
         let searchCenter = center
         let routeOrigin = context.origin ?? searchCenter
+        let identities = SearchResultIdentityRegistry()
         let progressive: ProgressiveSearchEstimates?
         if (intent.intent == .brand || intent.intent == .category), !intent.alongRoute,
            context.mode != .transit, let origin = routeOrigin {
@@ -171,9 +180,9 @@ struct SearchEngine {
         let providerQuery = [intent.text, intent.location].compactMap { $0 }.joined(separator: ", ")
         // Publish provider replies before waiting for other sources or route estimates.
         let publishCandidates: ([SearchResult]) -> Void = { candidates in
-            let ranked = Array(SearchDeduplicator.mergeAndRank(
+            let ranked = identities.stabilize(Array(SearchDeduplicator.mergeAndRank(
                 candidates, intent: intent, context: context,
-                searchCenter: searchCenter, routeOrigin: routeOrigin).prefix(progressive == nil ? 8 : 16))
+                searchCenter: searchCenter, routeOrigin: routeOrigin).prefix(progressive == nil ? 8 : 16)))
             if let progressive { progressive.publish(ranked) }
             else { onUpdate(ranked) }
         }
@@ -236,9 +245,9 @@ struct SearchEngine {
         // Along-route road searches retain extra candidates to compare detours.
         // Transit needs a full journey plan per result, so only plan the visible rows.
         let candidateLimit = intent.alongRoute && context.mode != .transit ? 20 : progressive == nil ? 8 : 16
-        var results = Array(SearchDeduplicator.mergeAndRank(
+        var results = identities.stabilize(Array(SearchDeduplicator.mergeAndRank(
             candidates, intent: intent, context: context,
-            searchCenter: searchCenter, routeOrigin: routeOrigin).prefix(candidateLimit))
+            searchCenter: searchCenter, routeOrigin: routeOrigin).prefix(candidateLimit)))
         if let progressive {
             results = await progressive.complete(results)
         } else if let origin = routeOrigin, !results.isEmpty {

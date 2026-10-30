@@ -166,15 +166,10 @@ extension NavigationSession {
         }
 
         let remainingDistance = route.distance * (1 - fraction)
-        let plannedDrivingTime = max(0, route.expectedTravelTime - route.chargingDuration)
-        var paceMultiplier = 1.0
-        if let session = tripSession, session.movingSeconds >= 45, session.distanceMeters > 25,
-           plannedDrivingTime > 0 {
-            let plannedSpeed = route.distance / plannedDrivingTime
-            let observedSpeed = session.distanceMeters / session.movingSeconds
-            let paceFactor = max(0.65, min(1.8, plannedSpeed / max(1, observedSpeed)))
-            paceMultiplier = 1 + (paceFactor - 1) * 0.55
-        }
+        let paceMultiplier = roadETAPaceTracker.observe(route: route,
+            distance: measurement.etaProgressDistance, location: location,
+            reliable: (routeMatch?.confidence ?? 0) >= 0.5 && measurement.matching?.ambiguous != true,
+            isNavigating: state.status == .navigating)
         let estimate = routeProgressTracker.estimateRoadETA(route: route, from: measurement.etaProgressDistance,
                                             traffic: state.traffic, paceMultiplier: paceMultiplier)
         // A closure triggers rerouting separately; retain a finite display while it is calculated.

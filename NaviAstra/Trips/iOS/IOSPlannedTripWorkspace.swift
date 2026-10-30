@@ -103,8 +103,10 @@ struct IOSPlannedTripWorkspace: View {
                         savedSummary(saved)
                     } else if level == .peek {
                         Text(draft.destination?.name ?? "Wybierz cel podróży").font(.title3.weight(.semibold))
+                            .accessibilityAddTraits(.isHeader)
                         resultSummary
                     } else {
+                        IOSSectionHeading(title: "Trasa", subtitle: "Wybierz transport i miejsca podróży", symbol: "point.topleft.down.to.point.bottomright.curvepath")
                         transportPicker
                         pointsCard
                         timingCard
@@ -112,6 +114,7 @@ struct IOSPlannedTripWorkspace: View {
                         DisclosureGroup("Przypomnienia i pozostałe ustawienia", isExpanded: $expandedOptions) {
                             additionalOptions.padding(.top, 12)
                         }.font(.subheadline.weight(.semibold))
+                            .padding(16).iosCardSurface()
                         if let message = draft.message { Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.red) }
                     }
                 }
@@ -168,7 +171,7 @@ struct IOSPlannedTripWorkspace: View {
                     Button("Usuń punkty pośrednie", role: .destructive) { draft.waypoints = []; draft.stopMinutes = 0 }
                 }.padding(12)
             }
-        }.modifier(NavigationGlassSurface(radius: 20, interactive: true))
+        }.iosCardSurface()
     }
 
     private func pointRow(role: IOSTripPointRole, destination: Destination?, symbol: String, label: String) -> some View {
@@ -187,6 +190,7 @@ struct IOSPlannedTripWorkspace: View {
 
     private var timingCard: some View {
         VStack(alignment: .leading, spacing: 12) {
+            IOSSectionHeading(title: "Termin", symbol: "calendar")
             Picker("Termin podróży", selection: $draft.timing) {
                 Text("Wyjazd").tag(PlannedTrip.Timing.departure)
                 Text("Przyjazd do").tag(PlannedTrip.Timing.arrival)
@@ -200,7 +204,7 @@ struct IOSPlannedTripWorkspace: View {
                 Stepper("Bufor przed przyjazdem: \(draft.bufferMinutes) min", value: $draft.bufferMinutes, in: 0...180, step: 5)
                     .font(.subheadline)
             }
-        }
+        }.padding(16).iosCardSurface()
     }
 
     @ViewBuilder private var resultSummary: some View {
@@ -210,38 +214,20 @@ struct IOSPlannedTripWorkspace: View {
             if let next = draft.plan?.occurrences(after: Date()).first, next != draft.normalizedTargetDate {
                 Text("Najbliższa podróż: \(PolishRegionalFormat.dateTime(next, dateStyle: .complete, timeStyle: .omitted, timeZone: draft.timeZone))").font(.footnote).foregroundStyle(.secondary)
             }
-            HStack(alignment: .top, spacing: 16) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Wyjazd około").font(.caption).foregroundStyle(.secondary)
-                    Text(PolishRegionalFormat.time(estimate.departure, timeZone: draft.timeZone)).font(.title2.weight(.bold))
-                }
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Przyjazd około").font(.caption).foregroundStyle(.secondary)
-                    Text(PolishRegionalFormat.time(estimate.arrival, timeZone: draft.timeZone)).font(.title2.weight(.semibold))
-                }
-            }
+            IOSPlannedTripTimeSummary(departure: estimate.departure, arrival: estimate.arrival, timeZone: draft.timeZone)
             if estimate.departure < Date() { Text("Zalecana godzina wyjazdu już minęła. Zmień termin lub bufor.").font(.footnote).foregroundStyle(.orange) }
         } else if let validation = draft.validationMessage { Text(validation).font(.subheadline).foregroundStyle(.secondary) }
     }
 
     private var previewCard: some View {
         VStack(alignment: .leading, spacing: 12) {
+            IOSSectionHeading(title: "Podgląd podróży", symbol: "map")
             resultSummary
             if draft.hasPreview {
                 Text(draft.mapState.routeOptions.count > 1 ? "Wybierz przebieg trasy" : "Wyznaczona trasa").font(.subheadline.weight(.semibold))
                 ForEach(Array(draft.mapState.routeOptions.enumerated()), id: \.element.id) { index, route in
-                    Button { draft.select(route) } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: draft.mapState.route?.id == route.id ? "checkmark.circle.fill" : "circle")
-                            Text("Wariant \(index + 1)").font(.subheadline.weight(.semibold))
-                            Spacer()
-                            VStack(alignment: .trailing) {
-                                Text(TravelDurationFormatter.string(minutes: Int(ceil(route.expectedTravelTime / 60))))
-                                Text(String(format: "%.1f km", locale: PolishRegionalFormat.locale, route.distance / 1_000)).font(.caption).foregroundStyle(.secondary)
-                            }
-                        }.padding(12).contentShape(Rectangle())
-                    }.buttonStyle(.plain).foregroundStyle(draft.mapState.route?.id == route.id ? Color.accentColor : Color.primary)
-                        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 14))
+                    IOSPlannedTripRouteOption(route: route, index: index,
+                        selected: draft.mapState.route?.id == route.id) { draft.select(route) }
                 }
                 if let date = draft.previewCalculatedAt { Text("Obliczono \(PolishRegionalFormat.dateTime(date, timeZone: draft.timeZone))").font(.footnote).foregroundStyle(.secondary) }
                 Text("Podgląd dla wybranego terminu. Przed rozpoczęciem podróży trasa jest obliczana ponownie.")
@@ -251,7 +237,7 @@ struct IOSPlannedTripWorkspace: View {
                 Text(message).font(.footnote).foregroundStyle(.orange)
                 Button("Przelicz ponownie", systemImage: "arrow.clockwise") { draft.invalidatePreview(); previewRevision += 1 }
             }
-        }
+        }.padding(16).iosCardSurface()
     }
 
     private var additionalOptions: some View {
@@ -260,21 +246,10 @@ struct IOSPlannedTripWorkspace: View {
             Button("Wybierz wydarzenie z kalendarza", systemImage: "calendar") { draft.cancelCalculation(); pane = .calendar }
             Picker("Powtarzaj", selection: $draft.repeatRule) { ForEach(PlannedTrip.RepeatRule.allCases) { Text($0.title).tag($0) } }
             if draft.repeatRule == .custom {
-                HStack(spacing: 4) {
-                    ForEach([2, 3, 4, 5, 6, 7, 1], id: \.self) { day in
-                        Button {
-                            if draft.weekdays.contains(day) { draft.weekdays.remove(day) } else { draft.weekdays.insert(day) }
-                        } label: {
-                            Text(String(PolishRegionalFormat.weekday(day).prefix(2))).font(.caption.weight(.semibold))
-                                .frame(maxWidth: .infinity, minHeight: 44)
-                                .background(draft.weekdays.contains(day) ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.04), in: Capsule())
-                        }.buttonStyle(.plain).accessibilityLabel(PolishRegionalFormat.weekday(day))
-                            .accessibilityAddTraits(draft.weekdays.contains(day) ? .isSelected : [])
-                    }
-                }
+                IOSPlannedTripWeekdayPicker(weekdays: $draft.weekdays)
             }
             if !draft.waypoints.isEmpty { Stepper("Łączny czas postojów: \(draft.stopMinutes) min", value: $draft.stopMinutes, in: 0...360, step: 5) }
-            Text("Przypomnienia").font(.subheadline.weight(.semibold))
+            IOSSectionHeading(title: "Przypomnienia", symbol: "bell")
             ForEach([1_440, 60, 15, 0], id: \.self) { minutes in
                 Toggle(minutes == 1_440 ? "Dzień wcześniej" : minutes == 0 ? "W chwili wyjazdu" : "\(minutes) min przed wyjazdem", isOn: Binding(
                     get: { draft.reminders.contains(minutes) }, set: { if $0 { draft.reminders.insert(minutes) } else { draft.reminders.remove(minutes) } }))
@@ -286,7 +261,10 @@ struct IOSPlannedTripWorkspace: View {
                 Toggle("Unikaj opłat", isOn: $draft.preferences.avoidTolls)
                 Toggle("Unikaj autostrad", isOn: $draft.preferences.avoidHighways)
             }
-            if draft.mode != .transit {
+            if draft.mode == .transit {
+                TransitPreferencesFields(preferences: $draft.preferences.transit)
+                    .onChange(of: draft.preferences.transit) { _, _ in draft.preferredRoute = [] }
+            } else {
                 Toggle("Unikaj promów", isOn: $draft.preferences.avoidFerries)
                 Toggle("Unikaj dróg nieutwardzonych", isOn: $draft.preferences.avoidUnpaved)
             }
@@ -311,7 +289,7 @@ struct IOSPlannedTripWorkspace: View {
                 if !draft.hasPreview && draft.validationMessage == nil {
                     Button("Zapisz bez wyliczenia trasy") {
                         Task { if await draft.save(to: service, withoutRoute: true), let trip = draft.savedTrip { onSaved(trip) } }
-                    }.font(.footnote).disabled(draft.saving)
+                    }.font(.footnote).frame(minHeight: 44).disabled(draft.saving)
                 }
             }
         }.padding(.horizontal, 16).padding(.vertical, 10)
@@ -401,7 +379,7 @@ extension IOSPlannedTripWorkspace {
     private func mapSelection(in geometry: GeometryProxy) -> some View {
         ZStack {
             Image(systemName: "mappin.and.ellipse").font(.system(size: 40, weight: .semibold))
-                .foregroundStyle(Color.accentColor).shadow(color: .black.opacity(0.2), radius: 4)
+                .foregroundStyle(Color.accentColor).shadow(color: .black.opacity(0.2), radius: 4).accessibilityHidden(true)
                 .position(x: geometry.size.width / 2,
                     y: geometry.size.height / 2 + (geometry.safeAreaInsets.bottom - geometry.safeAreaInsets.top) / 2 - 18)
                 .allowsHitTesting(false)

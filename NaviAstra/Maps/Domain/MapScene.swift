@@ -42,6 +42,9 @@ struct MapScene {
     var weatherSamples: [RouteWeatherSample] = []
     var selectedPlace: SearchResult? = nil
     var precisePointSelection = false
+#if os(iOS)
+    var isBottomSheetTrackingFinger = false
+#endif
 
     var placeMarkers: [SearchResult] {
         let showsOnlyRouteEndpoints = navigationState.destination != nil && navigationState.status != .idle

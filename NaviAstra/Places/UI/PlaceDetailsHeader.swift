@@ -11,7 +11,7 @@ struct PlaceDetailsHeroSummary: View {
         HStack(alignment: .top, spacing: 10) {
             if showsPOIIcon {
                 Image(systemName: symbol)
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.headline)
                     .foregroundStyle(Color.accentColor)
                     .frame(width: 38, height: 38)
                     .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
@@ -46,11 +46,10 @@ struct PlaceDetailsActionBar: View {
     let onRouteFromPlace: (() -> Void)?
 
     var body: some View {
-        if dynamicTypeSize.isAccessibilitySize {
-            VStack(alignment: .leading, spacing: 9) { actions }
-        } else {
-            HStack(spacing: 9) { actions }
-        }
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 9))
+            : AnyLayout(HStackLayout(spacing: 9))
+        layout { actions }
     }
 
     @ViewBuilder
@@ -71,7 +70,7 @@ struct PlaceDetailsActionBar: View {
                 Label("Trasa stąd", systemImage: "arrowshape.turn.up.left")
                     .font(.subheadline.weight(.semibold))
                     .fixedSize(horizontal: false, vertical: true)
-                    .frame(minHeight: 44)
+                    .frame(maxWidth: .infinity, minHeight: 44)
             }
             .buttonStyle(.bordered)
             .accessibilityLabel("Wyznacz trasę z tego miejsca")
@@ -80,6 +79,7 @@ struct PlaceDetailsActionBar: View {
 }
 
 struct PlaceDetailsFavoriteButton: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let isSaved: Bool
     let pulseScale: CGFloat
     let canRemove: Bool
@@ -88,12 +88,12 @@ struct PlaceDetailsFavoriteButton: View {
     var body: some View {
         Button(action: onToggle) {
             Image(systemName: isSaved ? "heart.fill" : "heart")
-                .font(.system(size: 17, weight: .semibold))
+                .font(.headline)
                 .foregroundStyle(isSaved ? Color.accentColor : Color.naviTextSecondary)
                 .frame(width: 44, height: 44)
                 .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14))
                 .contentShape(Rectangle())
-                .scaleEffect(pulseScale)
+                .scaleEffect(reduceMotion ? 1 : pulseScale)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(isSaved ? "Usuń z Ulubionych" : "Dodaj do Ulubionych")
@@ -109,14 +109,11 @@ struct PlaceDetailsQuickContact: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Group {
-                if dynamicTypeSize.isAccessibilitySize {
-                    VStack(spacing: 10) { contactLinks }
-                } else {
-                    HStack(spacing: 10) { contactLinks }
-                }
-            }
-            .font(.subheadline.weight(.semibold))
+            let layout = dynamicTypeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(spacing: 10))
+                : AnyLayout(HStackLayout(spacing: 10))
+            layout { contactLinks }
+                .font(.subheadline.weight(.semibold))
 
             if showsPhoneNumber, details.phoneURL != nil, let phone = details.phone {
                 Text("Telefon: \(phone)")

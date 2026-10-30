@@ -18,7 +18,13 @@ final class DrivingLearningEngine {
     @ObservationIgnored private let store: DrivingProfileStore
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var revision = 0
+    @ObservationIgnored private var snapshotRevision = 0
+    @ObservationIgnored private var historyRecoveryWorker: Task<HistoryRecoveryPlan, Error>?
+    @ObservationIgnored private var historyRecoveryOperation: UUID?
+    private var historyPresentationRevision = 0
+    @ObservationIgnored private var canWriteProfile = true
     @ObservationIgnored private var roadEvidence: [String: RoadEvidence] = [:]
+    @ObservationIgnored private var excludedHabitTripIDs: Set<UUID> = []
     var recordingGeneration: Int { revision }
     private(set) var evidence: [PreferenceEvidence] = []
     private(set) var databaseBytes: Int64?
@@ -37,14 +43,34 @@ final class DrivingLearningEngine {
         var observations: [PreferenceEvidence] = []
     }
 
+    private nonisolated struct HistoryRecoveryRecord: Sendable {
+        let id: UUID
+        let destinationName: String
+        let destination: Coordinate
+        let startedAt: Date
+        let duration: TimeInterval
+        let trace: [TripTracePoint]
+    }
+
+    private nonisolated struct HistoryRecoveryPlan: Sendable {
+        let snapshot: DrivingProfileSnapshot
+        let patterns: [DrivingRoutePattern]
+    }
+
     init(store: DrivingProfileStore? = nil) {
         let store = store ?? DrivingProfileStore()
         self.store = store
         do { snapshot = try store.load() }
-        catch { message = "Nie udało się odczytać preferencji tras na urządzeniu." }
+        catch {
+            canWriteProfile = false
+            message = "Nie udało się odczytać preferencji tras na urządzeniu. Zachowaliśmy dotychczasowy zapis."
+            NSLog("DrivingLearningEngine load: %@", String(describing: error))
+        }
         let cutoff = Date().addingTimeInterval(-365 * 86_400)
         snapshot.trips = Array(snapshot.trips.filter { $0.startedAt >= cutoff }.prefix(300))
         snapshot.pending = Array(snapshot.pending.filter { $0.startedAt >= cutoff }.suffix(10))
+        let closedRecovery = !snapshot.settings.enabled && snapshot.historyRecoveryVersion < 1
+        if closedRecovery { snapshot.historyRecoveryVersion = 1 }
         // Enable automatic local learning for the existing installation once.
         // Remote matching remains a separate opt-in; subsequent disable is kept.
         let upgradedAutomaticLearning = snapshot.schemaVersion < 3
@@ -54,7 +80,7 @@ final class DrivingLearningEngine {
         let migrated = snapshot.trips.filter { !existing.contains($0.id) }
         for trip in migrated { snapshot.evidence += DrivingEvidenceMath.observations(for: trip, migrated: true) }
         snapshot.schemaVersion = 3
-        if !migrated.isEmpty || upgradedAutomaticLearning {
+        if canWriteProfile && (!migrated.isEmpty || upgradedAutomaticLearning || closedRecovery) {
             do { try store.save(snapshot) }
             catch { message = "Nie udało się zapisać ustawień uczenia tras na urządzeniu." }
         }
@@ -64,6 +90,7 @@ final class DrivingLearningEngine {
     func updateSettings(_ value: DrivingLearningSettings) {
         var next = snapshot
         next.settings = value
+        next.historyRecoveryVersion = 1
         if !value.enabled { next.pending = [] }
         guard commit(next) else { return }
         revision &+= 1
@@ -84,6 +111,7 @@ final class DrivingLearningEngine {
     func remove(_ pattern: DrivingRoutePattern) {
         let ids = Set(pattern.trips.map(\.id))
         var next = snapshot
+        next.historyRecoveryVersion = 1
         next.trips.removeAll { ids.contains($0.id) }
         next.pending.removeAll { ids.contains($0.id) }
         next.evidence.removeAll { $0.tripID.map { ids.contains($0) } ?? false }
@@ -93,58 +121,101 @@ final class DrivingLearningEngine {
         task?.cancel(); task = nil; isProcessing = false
     }
 
-    func removeTrip(_ id: UUID) {
+    @discardableResult
+    func removeTrip(_ id: UUID) -> Bool {
+        guard canWriteProfile else {
+            message = "Nie udało się usunąć danych uczenia. Najpierw trzeba odzyskać zapis preferencji tras."
+            return false
+        }
+        // Retrying a durable deletion must not append the same action repeatedly.
+        guard snapshot.trips.contains(where: { $0.id == id })
+            || snapshot.pending.contains(where: { $0.id == id })
+            || snapshot.ignoredTripIDs.contains(id)
+            || snapshot.evidence.contains(where: { $0.tripID == id }) else { return true }
         var next = snapshot
+        next.historyRecoveryVersion = 1
         next.trips.removeAll { $0.id == id }
         next.pending.removeAll { $0.id == id }
         next.ignoredTripIDs.remove(id)
         next.evidence.removeAll { $0.tripID == id }
         next.evidence.append(action(.tripRemoved, subject: "trip:\(id)", tripID: nil))
-        guard commit(next) else { return }
+        guard commit(next) else { return false }
         revision &+= 1
         task?.cancel(); task = nil; isProcessing = false
+        return true
     }
 
     func removeRoad(_ id: String) {
         var next = snapshot; next.ignoredRoadIDs.insert(id)
+        next.historyRecoveryVersion = 1
         next.evidence.append(removal(subject: "road:" + id, confidence: roads.first { $0.id == id }?.metrics.confidence))
         _ = commit(next)
     }
 
     func removeShortcut(_ id: String) {
         var next = snapshot; next.ignoredShortcutIDs.insert(id)
+        next.historyRecoveryVersion = 1
         next.evidence.append(removal(subject: "alternative:" + id, confidence: shortcuts.first { $0.id == id }?.confidence))
         _ = commit(next)
     }
 
     func removeApproach(_ id: UUID) {
         var next = snapshot; next.ignoredApproachIDs.insert(id)
+        next.historyRecoveryVersion = 1
         next.evidence.append(removal(subject: "approach:\(id)", confidence: approaches.first { $0.id == id }?.confidence))
         _ = commit(next)
     }
 
     func isRemembered(_ tripID: UUID) -> Bool {
-        snapshot.trips.contains { $0.id == tripID && $0.confirmed }
+        _ = historyPresentationRevision
+        return snapshot.trips.contains { $0.id == tripID && $0.confirmed }
             || snapshot.pending.contains { $0.id == tripID && $0.confirmed }
     }
 
-    func rememberHistoricalTrip(_ trip: TripRecord, endpoint: URL) {
-        guard settings.enabled, trip.transportMode == .car, trip.arrived, trip.waypoints.isEmpty,
-              trip.trace.count >= 3, !trip.trace.dropFirst().contains(where: \.startsSegment),
-              trip.trace.last.map({ $0.coordinate.distance(to: trip.destination.coordinate) <= 200 }) == true else { return }
-        if canRemember(trip.id) { remember(trip.id, endpoint: endpoint); return }
-        guard !isRemembered(trip.id) else { return }
+    func historyRememberUnavailableReason(_ trip: TripRecord) -> String? {
+        guard settings.enabled else { return "Włącz uczenie tras w ustawieniach, aby zapamiętać przejazd." }
+        guard canWriteProfile else { return "Zapis preferencji tras wymaga odzyskania. Nie można teraz zapamiętać przejazdu." }
+        guard trip.transportMode == .car else { return "Zapamiętywanie tras jest dostępne dla przejazdów samochodem." }
+        guard trip.arrived else { return "Można zapamiętać trasę po dotarciu do celu." }
+        guard trip.waypoints.isEmpty else { return "Zapamiętywanie tras z przystankami pośrednimi nie jest jeszcze dostępne." }
+        if isRemembered(trip.id) { return nil }
+        guard (try? DrivingTraceLearning.observationChunks(trace: trip.trace)) != nil else {
+            return "Ślad GPS jest zbyt krótki lub nie zawiera wystarczająco wielu wiarygodnych pomiarów, aby zapamiętać trasę."
+        }
+        guard trip.trace.last.map({ $0.coordinate.distance(to: trip.destination.coordinate) <= 200 }) == true else {
+            return "Ślad GPS kończy się zbyt daleko od celu, aby zapamiętać tę trasę."
+        }
+        return nil
+    }
+
+    @discardableResult
+    func rememberHistoricalTrip(_ trip: TripRecord, endpoint: URL) -> Bool {
+        if let reason = historyRememberUnavailableReason(trip) {
+            message = reason
+            return false
+        }
+        if isRemembered(trip.id) { return true }
+        if canRemember(trip.id) {
+            remember(trip.id, endpoint: endpoint)
+            return isRemembered(trip.id)
+        }
+        let trace = sampleTrace(trip.trace, limit: 2_000)
+        guard !trace.isEmpty else {
+            message = "Ślad ma zbyt wiele oddzielnych fragmentów, aby bezpiecznie zapamiętać tę trasę."
+            return false
+        }
         var next = snapshot
         next.pending.append(PendingDrivingTrip(id: trip.id, destinationName: trip.destination.name,
             destination: trip.destination.coordinate, startedAt: trip.startedAt, duration: trip.duration,
-            context: DrivingPreferenceContext(date: trip.startedAt), trace: sampleTrace(trip.trace, limit: 2_000),
+            context: DrivingPreferenceContext(date: trip.startedAt), trace: trace,
             proposedCoordinates: [], costing: "auto", confirmed: true, allowAutomaticDeviations: false))
         next.pending = Array(next.pending.suffix(10))
         next.evidence.append(action(.manualRouteSave, subject: "trip:\(trip.id)", tripID: trip.id))
-        guard commit(next) else { return }
+        guard commit(next) else { return false }
         revision &+= 1
         task?.cancel(); task = nil; isProcessing = false
         processPending(endpoint: endpoint)
+        return true
     }
 
     func enqueue(_ trip: TripRecord, proposed: NavigationRoute?, costing: String,
@@ -158,11 +229,11 @@ final class DrivingLearningEngine {
               let first = trip.trace.first, let last = trip.trace.last,
               last.coordinate.distance(to: trip.destination.coordinate) <= 200,
               first.coordinate.distance(to: proposed.coordinates.first ?? first.coordinate) <= 200,
-              !trip.trace.dropFirst().contains(where: \.startsSegment),
               !snapshot.trips.contains(where: { $0.id == trip.id }),
               !snapshot.pending.contains(where: { $0.id == trip.id }) else { return }
         var next = snapshot
         let trace = sampleTrace(trip.trace, limit: 2_000)
+        guard !trace.isEmpty else { return }
         next.pending.append(PendingDrivingTrip(id: trip.id, destinationName: trip.destination.name,
             destination: trip.destination.coordinate, startedAt: trip.startedAt, duration: trip.duration,
             context: context, trace: trace,
@@ -178,7 +249,124 @@ final class DrivingLearningEngine {
 
     private func sampleTrace(_ trace: [TripTracePoint], limit: Int) -> [TripTracePoint] {
         guard trace.count > limit else { return trace }
-        return (0..<limit).map { trace[Int(Double($0) * Double(trace.count - 1) / Double(limit - 1))] }
+        // Preserve both sides of every gap. Sampling must not turn separate
+        // observations into a made-up continuous road.
+        var indexes: Set<Int> = [0, trace.count - 1]
+        for index in trace.indices.dropFirst() where trace[index].startsSegment
+            || trace[index].timestamp.timeIntervalSince(trace[index - 1].timestamp) > 30 {
+            indexes.insert(index - 1)
+            indexes.insert(index)
+        }
+        guard indexes.count < limit - 1 else { return [] }
+        let remaining = limit - indexes.count
+        indexes.formUnion((0..<remaining).map { Int(Double($0) * Double(trace.count - 1) / Double(remaining - 1)) })
+        return indexes.sorted().map { trace[$0] }
+    }
+
+    /// Recover facts already present in the local history, not imagined choices
+    /// against a route that was never archived. Runs once for an existing profile.
+    func recoverHistoricalTrips(_ records: [TripRecord]) {
+        guard canWriteProfile, snapshot.historyRecoveryVersion < 1,
+              let plan = try? Self.planHistoryRecovery(snapshot: snapshot,
+                  records: historyRecoveryRecords(records), date: Date()) else { return }
+        _ = commit(plan.snapshot, preparedPatterns: plan.patterns)
+    }
+
+    /// The view starts this after appearing. Only immutable values cross into
+    /// the worker; SQLite and observable state remain owned by the main actor.
+    func recoverHistoricalTripsAfterLaunch(records: @MainActor () -> [TripRecord],
+                                           historyRevision: @MainActor () -> UInt64) async {
+        guard canWriteProfile, snapshot.historyRecoveryVersion < 1,
+              historyRecoveryOperation == nil, !Task.isCancelled else { return }
+        let operation = UUID()
+        historyRecoveryOperation = operation
+        defer {
+            if historyRecoveryOperation == operation {
+                historyRecoveryWorker?.cancel()
+                historyRecoveryWorker = nil
+                historyRecoveryOperation = nil
+            }
+        }
+        while !Task.isCancelled, canWriteProfile, snapshot.historyRecoveryVersion < 1 {
+            let generation = revision
+            let stateRevision = snapshotRevision
+            let sourceRevision = historyRevision()
+            let input = snapshot
+            let history = historyRecoveryRecords(records())
+            let date = Date()
+            let worker = Task.detached(priority: .utility) {
+                try Self.planHistoryRecovery(snapshot: input, records: history, date: date)
+            }
+            historyRecoveryWorker = worker
+            let result = await withTaskCancellationHandler {
+                await worker.result
+            } onCancel: {
+                worker.cancel()
+            }
+            historyRecoveryWorker = nil
+            guard !Task.isCancelled, canWriteProfile, snapshot.historyRecoveryVersion < 1 else { return }
+            // A completed trip, pending match, manual action, or history deletion
+            // must not be overwritten by a result prepared from an older snapshot.
+            guard revision == generation, snapshotRevision == stateRevision,
+                  historyRevision() == sourceRevision else {
+                await Task.yield()
+                continue
+            }
+            guard case let .success(plan) = result else { return }
+            _ = commit(plan.snapshot, preparedPatterns: plan.patterns)
+            return
+        }
+    }
+
+    private func historyRecoveryRecords(_ records: [TripRecord]) -> [HistoryRecoveryRecord] {
+        records.sorted { $0.startedAt > $1.startedAt }.prefix(300).compactMap { trip in
+            guard trip.transportMode == .car, trip.arrived, trip.waypoints.isEmpty,
+                  trip.duration >= 60, trip.distanceMeters >= 500 else { return nil }
+            return HistoryRecoveryRecord(id: trip.id, destinationName: trip.destination.name,
+                destination: trip.destination.coordinate, startedAt: trip.startedAt,
+                duration: trip.duration, trace: trip.trace)
+        }
+    }
+
+    private nonisolated static func planHistoryRecovery(snapshot: DrivingProfileSnapshot,
+                                                        records: [HistoryRecoveryRecord],
+                                                        date: Date) throws -> HistoryRecoveryPlan {
+        try Task.checkCancellation()
+        var next = snapshot
+        next.historyRecoveryVersion = 1
+        // A legacy empty profile could be a deliberate reset. A disabled profile
+        // must not import drives made while learning was switched off.
+        guard snapshot.settings.enabled, !snapshot.trips.isEmpty else {
+            return HistoryRecoveryPlan(snapshot: next, patterns: DrivingLearningMath.patterns(profileTrips(in: next)))
+        }
+        let removalCutoff = snapshot.evidence.filter {
+            $0.source == .manualPreferenceRemoval || $0.source == .tripRemoved
+        }.map(\.timestamp).max() ?? .distantPast
+        let cutoff = max(removalCutoff, date.addingTimeInterval(-365 * 86_400))
+        var existing = Set(snapshot.trips.map(\.id) + snapshot.pending.map(\.id))
+        for trip in records {
+            try Task.checkCancellation()
+            guard !existing.contains(trip.id), trip.startedAt > cutoff,
+                  zip(trip.trace, trip.trace.dropFirst()).contains(where: {
+                      $0.1.startsSegment || $0.1.timestamp.timeIntervalSince($0.0.timestamp) > 30
+                  }),
+                  let first = trip.trace.first, let last = trip.trace.last,
+                  last.coordinate.distance(to: trip.destination) <= 200,
+                  let segments = try? DrivingTraceLearning.segments(trace: trip.trace) else { continue }
+            var learned = LearnedDrivingTrip(id: trip.id, destinationName: trip.destinationName,
+                origin: first.coordinate, destination: trip.destination, startedAt: trip.startedAt,
+                duration: trip.duration, context: DrivingPreferenceContext(date: trip.startedAt),
+                segments: segments, deviations: [], confirmed: false)
+            learned.recoveredFromHistory = true
+            existing.insert(trip.id)
+            next.trips.append(learned)
+            next.evidence += DrivingEvidenceMath.observations(for: learned)
+        }
+        next.trips = Array(next.trips.sorted { $0.startedAt > $1.startedAt }.prefix(300))
+        try Task.checkCancellation()
+        let patterns = DrivingLearningMath.patterns(profileTrips(in: next))
+        try Task.checkCancellation()
+        return HistoryRecoveryPlan(snapshot: next, patterns: patterns)
     }
 
     func processPending(endpoint: URL) {
@@ -196,14 +384,22 @@ final class DrivingLearningEngine {
             for pending in waiting {
                 guard !Task.isCancelled, self.revision == generation, self.settings.enabled else { return }
                 do {
+                    let chunks = try DrivingTraceLearning.observationChunks(trace: pending.trace)
                     var actual: [LearnedRoadSegment] = []
                     var proposed: [LearnedRoadSegment] = []
-                    var localGeometry = false
+                    var localGeometry = chunks.count > 1
                     do {
-                        actual = try await matcher.match(pending.trace.map(\.coordinate), costing: pending.costing, recorded: true)
+                        if localGeometry {
+                            // Matching one concatenated trace would let the router invent
+                            // connections across GPS gaps. Keep local observed sections.
+                            actual = DrivingTraceLearning.segments(chunks: chunks)
+                        } else {
+                            actual = try await matcher.match(chunks[0].map(\.coordinate), costing: pending.costing, recorded: true)
+                        }
                         // Matching the proposed geometry is needed only for deviation evidence.
                         if !pending.proposedCoordinates.isEmpty && (pending.allowAutomaticDeviations || pending.confirmed) {
-                            proposed = try await matcher.match(pending.proposedCoordinates, costing: pending.costing, recorded: false)
+                            proposed = localGeometry ? DrivingTraceLearning.segments(coordinates: pending.proposedCoordinates)
+                                : try await matcher.match(pending.proposedCoordinates, costing: pending.costing, recorded: false)
                         } else { proposed = [] }
                     } catch {
                         try Task.checkCancellation()
@@ -247,6 +443,7 @@ final class DrivingLearningEngine {
                         automaticPreferenceEligible: pending.allowAutomaticDeviations,
                         offeredVariants: offered, selectedVariantID: pending.selectedVariantID,
                         selectedAgainstAlternative: pending.selectedAgainstAlternative && pending.allowAutomaticDeviations
+                            && !DrivingTraceLearning.hasUncertainGaps(trace: pending.trace)
                             && offered.contains { $0.id == pending.selectedVariantID && DrivingLearningMath.similarity(actual, $0.segments) >= 0.85 })
                     var next = self.snapshot
                     next.pending.removeAll { $0.id == pending.id }
@@ -317,7 +514,12 @@ final class DrivingLearningEngine {
         return item
     }
 
-    @discardableResult private func commit(_ input: DrivingProfileSnapshot) -> Bool {
+    @discardableResult private func commit(_ input: DrivingProfileSnapshot,
+                                          preparedPatterns: [DrivingRoutePattern]? = nil) -> Bool {
+        guard canWriteProfile else {
+            message = "Zapis preferencji tras jest wstrzymany, aby zachować dane wymagające odzyskania."
+            return false
+        }
         var next = input
         let retained = Set(next.trips.map(\.id) + next.pending.map(\.id))
         let liveEvidence = next.evidence.filter { $0.tripID.map { retained.contains($0) } ?? true }
@@ -329,6 +531,10 @@ final class DrivingLearningEngine {
         for index in next.evidence.indices where !existing.contains(next.evidence[index].id) {
             if let id = next.evidence[index].tripID,
                let trip = next.trips.first(where: { $0.id == id }) {
+                // A batch recovery is not a sequence of fresh driver choices.
+                // Leave unknown per-event confidence unset instead of doing a
+                // quadratic replay of every historical event on app launch.
+                if trip.recoveredFromHistory { continue }
                 let peers = { (all: [LearnedDrivingTrip]) in all.filter {
                     DrivingLearningMath.sameJourney($0, trip) && DrivingLearningMath.similarity($0.segments, trip.segments) >= 0.85
                         && DrivingLearningMath.compatibleChoices($0, trip)
@@ -340,7 +546,10 @@ final class DrivingLearningEngine {
         do {
             try store.save(next)
             snapshot = next
-            rebuild()
+            snapshotRevision &+= 1
+            historyRecoveryWorker?.cancel()
+            historyPresentationRevision &+= 1
+            rebuild(preparedPatterns: preparedPatterns)
             return true
         } catch {
             message = "Nie udało się zapisać preferencji tras na urządzeniu."
@@ -349,12 +558,16 @@ final class DrivingLearningEngine {
     }
 
     private func profileTrips() -> [LearnedDrivingTrip] {
+        Self.profileTrips(in: snapshot)
+    }
+
+    private nonisolated static func profileTrips(in snapshot: DrivingProfileSnapshot) -> [LearnedDrivingTrip] {
         let grouped = Dictionary(grouping: snapshot.evidence.compactMap { item -> PreferenceEvidence? in
             item.tripID == nil ? nil : item
         }, by: { $0.tripID! })
         return snapshot.trips.compactMap { stored in
             guard let events = grouped[stored.id], events.contains(where: {
-                [.normalTraversal, .selectedAlternative, .repeatedDeviation, .legacyImport].contains($0.source)
+                [.normalTraversal, .selectedAlternative, .repeatedDeviation, .legacyImport, .historyRecovery].contains($0.source)
             }) else { return nil }
             var trip = stored
             trip.confirmed = events.contains { $0.userConfirmed || $0.source == .manualRouteSave }
@@ -362,9 +575,9 @@ final class DrivingLearningEngine {
         }
     }
 
-    private func rebuild() {
+    private func rebuild(preparedPatterns: [DrivingRoutePattern]? = nil) {
         let trips = profileTrips()
-        patterns = DrivingLearningMath.patterns(trips)
+        patterns = preparedPatterns ?? DrivingLearningMath.patterns(trips)
         learnedTripCount = trips.count
         pendingCount = snapshot.pending.count
         evidence = snapshot.evidence.sorted { $0.timestamp > $1.timestamp }
@@ -372,7 +585,7 @@ final class DrivingLearningEngine {
         roadEvidence = [:]
         for trip in trips {
             guard let observation = snapshot.evidence.first(where: {
-                $0.tripID == trip.id && [.normalTraversal, .selectedAlternative, .repeatedDeviation, .legacyImport].contains($0.source)
+                $0.tripID == trip.id && [.normalTraversal, .selectedAlternative, .repeatedDeviation, .legacyImport, .historyRecovery].contains($0.source)
             }) else { continue }
             let selected = Set(observation.chosenSegments)
             let deviated = Set(trip.deviations.flatMap { $0.preferred.map(\.id) })
@@ -429,7 +642,7 @@ final class DrivingLearningEngine {
             var final: [LearnedRoadSegment] = [], length = 0.0
             for segment in trip.segments.reversed() {
                 final.insert(segment, at: 0); length += segment.length
-                if length >= 800 { break }
+                if length >= 800 || segment.startsObservation { break }
             }
             let bearing = DrivingEvidenceMath.approachBearing(origin: trip.origin, destination: trip.destination)
             if let index = arrivals.firstIndex(where: {
@@ -441,6 +654,7 @@ final class DrivingLearningEngine {
             else { arrivals.append(DrivingApproachPreference(id: trip.id, destination: trip.destination,
                 name: trip.destinationName, segments: final, trips: [trip], approachBearing: bearing, entry: final.first?.coordinates.first)) }
         }
+        excludedHabitTripIDs = Set(arrivals.filter { snapshot.ignoredApproachIDs.contains($0.id) }.flatMap { $0.trips.map(\.id) })
         approaches = arrivals.filter { !snapshot.ignoredApproachIDs.contains($0.id) }
     }
 
@@ -470,42 +684,59 @@ final class DrivingLearningEngine {
     func ranked(_ routes: [NavigationRoute], preference: RoutePreference,
                 from starts: [UUID: Double] = [:], traffic: [UUID: TrafficSnapshot] = [:],
                 date: Date = Date()) -> [NavigationRoute] {
-        lastAssessments = [:]
-        let base = RouteScoringEngine.ranked(routes, preference: preference, from: starts, traffic: traffic)
-        guard settings.enabled, !snapshot.trips.isEmpty, preference != .shortest, base.count > 1 else { return base }
-        let safe = base.filter { route in
-            guard let snapshot = traffic[route.id], abs(date.timeIntervalSince(snapshot.updatedAt)) <= 120 else { return true }
-            return !snapshot.incidents.contains { incident in
-                guard incident.isRoadClosure, incident.isActive(at: date),
-                      let closure = try? RoadClosureAvoidance(geometry: incident.geometry) else { return false }
-                return closure.intersects(route)
+        if RoadRoutingContext.publishesAssessments { lastAssessments = [:] }
+        let safe = routes.filter { route in
+            guard let snapshot = traffic[route.id] else { return true }
+            let start = starts[route.id] ?? 0
+            let end = RouteProgressGeometry(route).length
+            return !ConfirmedRoadClosure.evidence(in: snapshot, route: route, now: date).contains { closure in
+                closure.distanceAhead(on: route, after: start, through: end, now: date) != nil
             }
         }
-        if safe.count != base.count { return ranked(safe, preference: preference, from: starts, traffic: traffic, date: date) }
+        let base = RouteScoringEngine.ranked(safe, preference: preference, from: starts, traffic: traffic)
+        // Explicit fastest/shortest/comfort choices keep their stated meaning.
+        // History affects ordering only in the dedicated personal profile.
+        guard settings.enabled, !snapshot.trips.isEmpty, preference == .personalized, base.count > 1 else { return base }
         let scores = base.map { RouteScoringEngine.score($0, from: starts[$0.id] ?? 0, traffic: traffic[$0.id]) }
         let values = RouteScoringEngine.rankingValues(scores, preference: preference)
-        let finite = values.filter { $0.isFinite && $0 > 0 }.sorted()
-        let scale = finite.isEmpty ? 1 : finite[finite.count / 2]
         let fastest = scores.map(\.travelTime).filter(\.isFinite).min() ?? .infinity
-        let assessments = base.map { assessment($0, start: starts[$0.id] ?? 0,
-            context: DrivingPreferenceContext(date: date, trafficLevel: DrivingPreferenceContext.measuredTrafficLevel(traffic[$0.id], at: date)), date: date) }
-        lastAssessments = Dictionary(uniqueKeysWithValues: zip(base.map(\.id), assessments))
-        let weight = DrivingLearningMath.weight(tripCount: learnedTripCount, confirmed: assessments.contains { $0.confirmed })
-        for route in base { lastAssessments[route.id]?.appliedWeight = weight }
-        guard weight > 0 else { return base }
-        let costs = base.indices.map { index -> Double in
-            guard values[index].isFinite else { return .infinity }
-            let assessment = assessments[index]
-            let normalized = preference == .fastest ? values[index] / (values[index] + scale) : values[index]
-            // A familiar route must not win solely by history when materially slower.
-            let acceptableTime = scores[index].travelTime <= fastest + max(180, fastest * 0.20)
-            let personal = acceptableTime
-                ? assessment.score : min(0.5, assessment.score)
-            if !acceptableTime {
-                lastAssessments[base[index].id]?.score = personal
-                lastAssessments[base[index].id]?.contributions.removeAll { !$0.penalty }
+        let habits = base.first.flatMap { baseline in
+            baseline.coordinates.first.flatMap { origin in baseline.coordinates.last.map { destination in
+                DrivingHabitPreference.candidates(trips: habitTrips(), origin: origin,
+                    destination: destination, context: DrivingPreferenceContext(date: date), baseline: baseline, date: date)
+            } }
+        } ?? []
+        let assessments = base.map { route in
+            var value = assessment(route, start: starts[route.id] ?? 0,
+                context: DrivingPreferenceContext(date: date, trafficLevel: DrivingPreferenceContext.measuredTrafficLevel(traffic[route.id], at: date)), date: date)
+            let familiar = DrivingHabitPreference.assessment(route: route, habits: habits, from: starts[route.id] ?? 0)
+            if familiar > 0 {
+                value.score = max(value.score, 0.5 + 0.35 * familiar)
+                value.contributions.append(PreferenceContribution(subject: "Powtarzany odcinek",
+                    reason: .normalTraversal, metrics: PreferenceMetrics(confidence: familiar, strength: 0.7)))
             }
-            return normalized * (1 - weight) + (1 - personal) * weight
+            return value
+        }
+        if RoadRoutingContext.publishesAssessments {
+            lastAssessments = Dictionary(uniqueKeysWithValues: zip(base.map(\.id), assessments))
+        }
+        let weight = DrivingLearningMath.weight(tripCount: learnedTripCount, confirmed: assessments.contains { $0.confirmed })
+        if RoadRoutingContext.publishesAssessments {
+            for route in base { lastAssessments[route.id]?.appliedWeight = weight }
+        }
+        guard weight > 0 else { return base }
+        // A bounded number of seconds gives the same personal influence when an
+        // unrelated candidate is added. The shared detour limits still apply.
+        let maximumInfluence = min(300, fastest * 0.30) * (weight / 0.25)
+        let costs = base.indices.map { index -> Double in
+            guard values[index].isFinite else {
+                if RoadRoutingContext.publishesAssessments {
+                    lastAssessments[base[index].id]?.score = min(0.5, assessments[index].score)
+                    lastAssessments[base[index].id]?.contributions.removeAll { !$0.penalty }
+                }
+                return .infinity
+            }
+            return values[index] + (0.5 - assessments[index].score) * 2 * maximumInfluence
         }
         return base.indices.sorted { costs[$0] == costs[$1] ? $0 < $1 : costs[$0] < costs[$1] }.map { base[$0] }
     }
@@ -601,7 +832,12 @@ final class DrivingLearningEngine {
         guard settings.enabled else { return [] }
         var hints: [[Coordinate]] = []
         let baselineGeometry = baseline.map { RouteProgressGeometry($0) }
+        if settings.roads, let baseline {
+            hints = DrivingHabitPreference.candidates(trips: habitTrips(), origin: origin,
+                destination: destination, context: context, baseline: baseline).map(\.points)
+        }
         for pattern in patterns {
+            if hints.count >= 2 { break }
             let trip = pattern.representative
             let affinity = pattern.trips.map { context.affinity(to: $0.context) }.max() ?? 0
             let value = metrics(for: pattern.trips, at: Date(), context: context)
@@ -616,8 +852,7 @@ final class DrivingLearningEngine {
                     let points = [0.33, 0.67].compactMap { path.coordinate(at: path.length * $0) }
                     if !points.isEmpty { hints.append(points) }
                 } else {
-                    let path = RouteProgressGeometry(coordinates: trip.coordinates)
-                    let points = [0.25, 0.5, 0.75].compactMap { path.coordinate(at: path.length * $0) }
+                    let points = DrivingLearningMath.sampledCoordinates(segments: trip.segments, fractions: [0.25, 0.5, 0.75])
                     if !points.isEmpty { hints.append(points) }
                 }
             }
@@ -651,5 +886,16 @@ final class DrivingLearningEngine {
             }
         }
         return Array(hints.prefix(2))
+    }
+
+    private func habitTrips() -> [LearnedDrivingTrip] {
+        guard settings.roads else { return [] }
+        return patterns.flatMap(\.trips).filter { trip in
+            !excludedHabitTripIDs.contains(trip.id)
+                && !trip.segments.contains { snapshot.ignoredRoadIDs.contains($0.id) }
+                && !trip.deviations.contains {
+                    snapshot.ignoredShortcutIDs.contains($0.id) || snapshot.ignoredShortcutIDs.contains($0.boundaryID)
+                }
+        }
     }
 }

@@ -65,14 +65,24 @@ struct TransitJourney: Identifiable, Sendable {
     let alerts: [String]
 }
 
-enum TransitRouteProfile: String, Codable, Hashable, Sendable {
+enum TransitRouteProfile: String, Codable, CaseIterable, Identifiable, Hashable, Sendable {
     case balanced
     case fastest
     case leastWalking
     case fewestTransfers
+
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .balanced: "Zrównoważona"
+        case .fastest: "Najszybciej do celu"
+        case .leastWalking: "Najmniej chodzenia"
+        case .fewestTransfers: "Najmniej przesiadek"
+        }
+    }
 }
 
-nonisolated struct TransitRoutePreferences: Hashable, Sendable {
+nonisolated struct TransitRoutePreferences: Codable, Hashable, Sendable {
     var profile: TransitRouteProfile = .balanced
     var additionalTransferBufferMinutes: Int = 1
     var pedestrianProfile: PedestrianProfile = .foot
@@ -84,9 +94,20 @@ nonisolated struct TransitRoutePreferences: Hashable, Sendable {
         self.additionalTransferBufferMinutes = max(0, additionalTransferBufferMinutes)
         self.pedestrianProfile = pedestrianProfile
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case profile, additionalTransferBufferMinutes, pedestrianProfile
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(profile: try values.decodeIfPresent(TransitRouteProfile.self, forKey: .profile) ?? .balanced,
+                  additionalTransferBufferMinutes: try values.decodeIfPresent(Int.self, forKey: .additionalTransferBufferMinutes) ?? 1,
+                  pedestrianProfile: try values.decodeIfPresent(PedestrianProfile.self, forKey: .pedestrianProfile) ?? .foot)
+    }
 }
 
-enum PedestrianProfile: String, Hashable, Sendable {
+enum PedestrianProfile: String, Codable, Hashable, Sendable {
     case foot = "FOOT"
     case wheelchair = "WHEELCHAIR"
 }

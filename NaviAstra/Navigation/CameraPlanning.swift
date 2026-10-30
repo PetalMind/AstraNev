@@ -1,5 +1,9 @@
 import Foundation
 
+enum NavigationCameraTiming {
+    static let start: TimeInterval = 0.28
+}
+
 /// The navigation engine owns the state and intent. Map adapters only animate it.
 enum NavigationCameraState: Equatable {
     case browse, destinationPreview, routeOverview, startingNavigation
@@ -39,6 +43,8 @@ struct CameraIntent: Equatable {
     /// The user is anchored separately from the route context ahead of them.
     var followCoordinate: Coordinate? = nil
     var anchorFraction: Double = 0.86
+    /// Local route context to fit around the anchored vehicle, including bends.
+    var framingCoordinates: [Coordinate] = []
 
     func fittingViewport(_ occlusion: CameraPadding, width: Double, height: Double) -> Self {
         var result = self
@@ -57,6 +63,33 @@ struct CameraIntent: Equatable {
         let fraction = min(max(0.5, anchorFraction), max(0.5, 1 - clearance / availableHeight))
         result.padding.top += availableHeight * (2 * fraction - 1)
         result.target = followCoordinate
+        if !framingCoordinates.isEmpty {
+            // MapLibre uses a 512-point world tile. Fit both lateral and forward
+            // context in the unobscured viewport, not just the end of a chord.
+            let metersAtZoomZero = max(1, 78_271.51696 * cos(followCoordinate.latitude * .pi / 180))
+            let horizontalPixels = max(1, (width - result.padding.left - result.padding.right) * 0.42)
+            let forwardPixels = max(1, availableHeight * fraction * 0.78)
+            let rearPixels = max(1, availableHeight * (1 - fraction) * 0.65)
+            let heading = bearing * .pi / 180
+            var requiredScale = 0.0
+            for coordinate in framingCoordinates {
+                let north = (coordinate.latitude - followCoordinate.latitude) * 111_320
+                var longitudeDelta = coordinate.longitude - followCoordinate.longitude
+                if longitudeDelta > 180 { longitudeDelta -= 360 }
+                if longitudeDelta < -180 { longitudeDelta += 360 }
+                let east = longitudeDelta * 111_320 * cos(followCoordinate.latitude * .pi / 180)
+                let lateral = east * cos(heading) - north * sin(heading)
+                let forward = north * cos(heading) + east * sin(heading)
+                requiredScale = max(requiredScale, abs(lateral) / horizontalPixels,
+                    abs(forward) / (forward >= 0 ? forwardPixels : rearPixels))
+            }
+            if requiredScale > 0 {
+                result.zoom = min(zoom, max(10, log2(metersAtZoomZero / requiredScale)))
+            }
+            // A tall perspective provides little useful context in a narrow strip.
+            result.pitch = min(pitch, max(0, (availableHeight - 80) * 0.22))
+            return result
+        }
         // Fit the intended look-ahead into the space above the arrow instead of
         // moving the arrow below the drawer to show it.
         let lookAhead = followCoordinate.distance(to: target)
@@ -75,9 +108,16 @@ struct NavigationCameraSmoothingProfile {
     var zoomResponseTime: TimeInterval
     var pitchResponseTime: TimeInterval
     var bearingResponseTime: TimeInterval
+    var maximumZoomRate: Double = .infinity
+    var maximumPitchRate: Double = .infinity
+    var maximumBearingRate: Double = .infinity
+    var anchorResponseTime: TimeInterval = 1.2
+    var maximumSampleInterval: TimeInterval = .infinity
 
-    static let driving = Self(targetResponseTime: 0.30, zoomResponseTime: 0.50,
-                              pitchResponseTime: 0.55, bearingResponseTime: 0.25)
+    static let driving = Self(targetResponseTime: 0.30, zoomResponseTime: 1.4,
+                              pitchResponseTime: 1.1, bearingResponseTime: 0.5,
+                              maximumZoomRate: 0.45, maximumPitchRate: 14, maximumBearingRate: 55,
+                              maximumSampleInterval: 1)
     static let cycling = Self(targetResponseTime: 0.35, zoomResponseTime: 0.75,
                               pitchResponseTime: 0.75, bearingResponseTime: 0.65)
     static let walking = Self(targetResponseTime: 0.42, zoomResponseTime: 1.10,
@@ -92,6 +132,7 @@ struct NavigationCameraIntentSmoother {
     private var previousTimestamp: TimeInterval?
 
     var bearing: Double? { previousIntent?.bearing }
+    var zoom: Double? { previousIntent?.zoom }
 
     mutating func reset() {
         previousIntent = nil
@@ -116,21 +157,25 @@ struct NavigationCameraIntentSmoother {
             return initial
         }
 
-        let deltaTime = max(0.016, timestamp - previousTimestamp)
+        let deltaTime = min(profile.maximumSampleInterval, max(0, timestamp - previousTimestamp))
         let smoothed = CameraIntent(
             target: interpolate(previousIntent.target, desired.target,
                                 alpha: smoothingAlpha(deltaTime, responseTime: profile.targetResponseTime)),
-            zoom: interpolate(previousIntent.zoom, desired.zoom,
-                              alpha: smoothingAlpha(deltaTime, responseTime: profile.zoomResponseTime)),
-            pitch: interpolate(previousIntent.pitch, desired.pitch,
-                               alpha: smoothingAlpha(deltaTime, responseTime: profile.pitchResponseTime)),
+            zoom: approach(previousIntent.zoom, desired.zoom, deltaTime: deltaTime,
+                           responseTime: profile.zoomResponseTime, maximumRate: profile.maximumZoomRate),
+            pitch: approach(previousIntent.pitch, desired.pitch, deltaTime: deltaTime,
+                            responseTime: profile.pitchResponseTime, maximumRate: profile.maximumPitchRate),
             bearing: smoothAngle(current: previousIntent.bearing, target: desired.bearing,
-                                 alpha: smoothingAlpha(deltaTime, responseTime: profile.bearingResponseTime)),
+                                 alpha: smoothingAlpha(deltaTime, responseTime: profile.bearingResponseTime),
+                                 maximumDelta: deltaTime > 0 ? profile.maximumBearingRate * deltaTime : 0),
             padding: desired.padding,
             bounds: desired.bounds,
             animationDuration: desired.animationDuration ?? animationDuration ??
                 clamp(deltaTime * 1.1, minimum: 0.20, maximum: 0.85),
-            followCoordinate: desired.followCoordinate, anchorFraction: desired.anchorFraction)
+            followCoordinate: desired.followCoordinate,
+            anchorFraction: interpolate(previousIntent.anchorFraction, desired.anchorFraction,
+                alpha: smoothingAlpha(deltaTime, responseTime: profile.anchorResponseTime)),
+            framingCoordinates: desired.framingCoordinates)
         self.previousIntent = smoothed
         self.previousTimestamp = timestamp
         return smoothed
@@ -138,6 +183,13 @@ struct NavigationCameraIntentSmoother {
 
     private func smoothingAlpha(_ deltaTime: TimeInterval, responseTime: TimeInterval) -> Double {
         1 - exp(-deltaTime / responseTime)
+    }
+
+    private func approach(_ start: Double, _ end: Double, deltaTime: TimeInterval,
+                          responseTime: TimeInterval, maximumRate: Double) -> Double {
+        guard deltaTime > 0 else { return start }
+        let change = (end - start) * smoothingAlpha(deltaTime, responseTime: responseTime)
+        return start + clamp(change, minimum: -maximumRate * deltaTime, maximum: maximumRate * deltaTime)
     }
 
     private func interpolate(_ start: Double, _ end: Double, alpha: Double) -> Double {
@@ -149,11 +201,13 @@ struct NavigationCameraIntentSmoother {
                    longitude: start.longitude + (end.longitude - start.longitude) * alpha)
     }
 
-    private func smoothAngle(current: Double, target: Double, alpha: Double) -> Double {
+    private func smoothAngle(current: Double, target: Double, alpha: Double,
+                             maximumDelta: Double) -> Double {
         var delta = (target - current).truncatingRemainder(dividingBy: 360)
         if delta > 180 { delta -= 360 }
         if delta < -180 { delta += 360 }
-        return (current + delta * alpha + 360).truncatingRemainder(dividingBy: 360)
+        return (current + clamp(delta * alpha, minimum: -maximumDelta, maximum: maximumDelta) + 360)
+            .truncatingRemainder(dividingBy: 360)
     }
 
     private func clamp(_ value: Double, minimum: Double, maximum: Double) -> Double {
@@ -810,7 +864,7 @@ enum CameraPlanner {
             return CameraIntent(target: target, zoom: zoom, pitch: pitch, bearing: heading,
                                 padding: .navigation,
                                 animationDuration: camera == .startingNavigation
-                                    ? 0.65 : walkingProfile?.animationDuration ?? navigationAnimationDuration,
+                                    ? NavigationCameraTiming.start : walkingProfile?.animationDuration ?? navigationAnimationDuration,
                                 followCoordinate: routeProjection?.coordinate ?? position,
                                 anchorFraction: usesWalkingCamera ? 0.58 : (cyclingProfile != nil ? 0.64 : 0.86))
         case .arrived:

@@ -78,7 +78,11 @@ extension ContentView {
                     }
                     .padding(12)
                     .frame(maxWidth: .infinity, minHeight: 48)
+                    #if os(iOS)
+                    .iosCardSurface(radius: 16)
+                    #else
                     .modifier(NavigationGlassSurface(radius: 14))
+                    #endif
                 }
                 .buttonStyle(.plain)
 
@@ -86,7 +90,11 @@ extension ContentView {
                     Label("Zaplanowane podróże", systemImage: "calendar.badge.clock")
                         .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
                         .padding(.horizontal, 12)
+                        #if os(iOS)
+                        .iosCardSurface(radius: 16)
+                        #else
                         .modifier(NavigationGlassSurface(radius: 14))
+                        #endif
                 }
                 .buttonStyle(.plain)
 

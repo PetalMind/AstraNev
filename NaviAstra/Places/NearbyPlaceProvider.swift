@@ -98,6 +98,27 @@ struct ChargingStationCapabilities {
     let chargingPointCount: Int?
     let publicAccess: Bool?
     let availability: ChargingStationAvailability
+    var connectorPowerKW: [String: Double] = [:]
+
+    nonisolated static func normalizedConnector(_ value: String) -> String {
+        let value = value.lowercased()
+        return value == "type2_combo" ? "ccs" : value
+    }
+
+    /// A station-wide maximum cannot be assigned to a slower, different socket.
+    func powerKW(for selectedConnectors: Set<String>) -> Double? {
+        let supported = Set(connectorTypes.map(Self.normalizedConnector))
+        let selected = Set(selectedConnectors.map(Self.normalizedConnector))
+        let compatible = selected.isEmpty ? supported : supported.intersection(selected)
+        guard !compatible.isEmpty else { return nil }
+        let measured = connectorPowerKW.compactMap { connector, power -> Double? in
+            compatible.contains(Self.normalizedConnector(connector)) && power.isFinite && power > 0 ? power : nil
+        }.max()
+        if let measured { return measured }
+        // Legacy records and a single connector can safely share the station rating.
+        guard compatible == supported else { return nil }
+        return maximumPowerKW.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+    }
 }
 
 struct RouteStopSuggestion: Identifiable {
@@ -305,7 +326,7 @@ struct OpenStreetMapNearbyPlaceProvider {
         return value.lowercased()
     }
 
-    private static func chargingCapabilities(from tags: [String: String]) -> ChargingStationCapabilities {
+    static func chargingCapabilities(from tags: [String: String]) -> ChargingStationCapabilities {
         let connectors = Set(tags.compactMap { entry -> String? in
             let (key, value) = entry
             guard key.hasPrefix("socket:"), value != "no", value != "0",
@@ -313,8 +334,7 @@ struct OpenStreetMapNearbyPlaceProvider {
             let connector = key.split(separator: ":").dropFirst().first.map(String.init) ?? ""
             return connector.isEmpty ? nil : connector.lowercased()
         })
-        let outputValues = tags.filter { $0.key.contains("output") || $0.key == "charging_station:output" }
-            .values.flatMap { value -> [Double] in
+        func powers(_ value: String) -> [Double] {
                 let pattern = #"[0-9]+(?:[.,][0-9]+)?"#
                 guard let expression = try? NSRegularExpression(pattern: pattern) else { return [] }
                 let source = value.replacingOccurrences(of: ",", with: ".")
@@ -323,7 +343,17 @@ struct OpenStreetMapNearbyPlaceProvider {
                     guard let range = Range(match.range, in: source), let number = Double(source[range]) else { return nil }
                     return source.lowercased().contains("kw") ? number : number / 1_000
                 }
-            }
+        }
+        let outputValues = tags.filter { $0.key.contains("output") || $0.key == "charging_station:output" }
+            .values.flatMap(powers)
+        var connectorPowers: [String: Double] = [:]
+        for (key, value) in tags where key.hasPrefix("socket:") && key.hasSuffix(":output") {
+            let parts = key.split(separator: ":")
+            guard parts.count == 3,
+                  let power = powers(value).filter({ $0 > 0 && $0 <= 1_000 }).max() else { continue }
+            let connector = ChargingStationCapabilities.normalizedConnector(String(parts[1]))
+            connectorPowers[connector] = max(connectorPowers[connector] ?? 0, power)
+        }
         let maximumPower = outputValues.filter { $0 > 0 && $0 <= 1_000 }.max()
         let chargingPointCount = [tags["charging_station:capacity"], tags["capacity"]]
             .compactMap { $0 }
@@ -347,7 +377,8 @@ struct OpenStreetMapNearbyPlaceProvider {
                                            maximumPowerKW: maximumPower,
                                            chargingPointCount: chargingPointCount,
                                            publicAccess: publicAccess,
-                                           availability: availability)
+                                           availability: availability,
+                                           connectorPowerKW: connectorPowers)
     }
 
     private struct Response: Decodable { let elements: [Element]; let remark: String? }

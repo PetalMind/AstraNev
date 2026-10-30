@@ -17,6 +17,13 @@ private struct AppScene: View {
                 dependencies.navigationStore.setAppIsForeground(appPhase == .active)
                 dependencies.navigationStore.startLocation()
                 updateScreenIdleTimer()
+                #if os(iOS)
+                VoiceIntentBridge.shared.resumePendingRequest()
+                // Let SwiftUI present the scene before preparing historical GPS data.
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                await dependencies.recoverDrivingHistoryAfterLaunch()
+                #endif
             }
             .onChange(of: appPhase) { _, phase in
                 #if DEBUG && os(iOS)
@@ -24,6 +31,9 @@ private struct AppScene: View {
                 #endif
                 dependencies.navigationStore.setAppIsForeground(phase == .active)
                 updateScreenIdleTimer()
+                #if os(iOS)
+                if phase == .active { VoiceIntentBridge.shared.resumePendingRequest() }
+                #endif
                 if phase == .background { BackgroundMaintenance.schedule() }
             }
             .onChange(of: dependencies.navigationStore.state.status) { _, _ in
@@ -35,6 +45,11 @@ private struct AppScene: View {
             .onReceive(NotificationCenter.default.publisher(for: ProcessInfo.thermalStateDidChangeNotification)) { _ in
                 dependencies.navigationStore.refreshEnergyPolicy()
             }
+            #if os(iOS)
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataDidBecomeAvailableNotification)) { _ in
+                VoiceIntentBridge.shared.resumePendingRequest()
+            }
+            #endif
     }
 
     private func updateScreenIdleTimer() {

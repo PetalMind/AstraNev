@@ -2,6 +2,7 @@ import SwiftUI
 
 struct NearbyPlacesSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let navigationStore: NavigationStore
     let nearDestination: Bool
     let initialCategory: NearbyPlaceCategory
@@ -289,8 +290,14 @@ struct NearbyPlacesSheet: View {
         return "\(count) \(suffix)"
     }
 
+    private var categoryColumns: [GridItem] {
+        dynamicTypeSize.isAccessibilitySize
+            ? [GridItem(.flexible())]
+            : [GridItem(.adaptive(minimum: 150), spacing: 8)]
+    }
+
     private var categorySelector: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)],
+        LazyVGrid(columns: categoryColumns,
                    alignment: .leading, spacing: 8) {
             ForEach(categories) { value in
                 Button {
@@ -482,20 +489,14 @@ struct NearbyPlacesSheet: View {
     }
 
     private func unavailableSearchContent(message: String) -> some View {
-        VStack(spacing: 10) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 25, weight: .medium))
-                .foregroundStyle(Color.naviTextSecondary)
-            Text("Nie udało się wyszukać miejsc")
-                .font(.headline)
-                .multilineTextAlignment(.center)
+        ContentUnavailableView {
+            Label("Nie udało się wyszukać miejsc", systemImage: "magnifyingglass")
+        } description: {
             Text(message)
-                .font(.subheadline)
-                .foregroundStyle(Color.naviTextSecondary)
-                .multilineTextAlignment(.center)
-            Button("Spróbuj ponownie") { retryID = UUID() }
+        } actions: {
+            Button("Spróbuj ponownie", systemImage: "arrow.clockwise") { retryID = UUID() }
                 .buttonStyle(.borderedProminent)
-                .padding(.top, 4)
+                .controlSize(.large)
         }
         .frame(maxWidth: .infinity, minHeight: 220)
     }
@@ -542,7 +543,11 @@ struct NearbyPlacesSheet: View {
                 nearbyResultRow(suggestion, index: index)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 4)
+                    #if os(iOS)
+                    .iosCardSurface()
+                    #else
                     .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 18))
+                    #endif
             }
         }
         .id(category)
@@ -661,14 +666,19 @@ struct NearbyPlacesSheet: View {
                     nearbyStatusContent
                 }
                 .padding(16)
+                .frame(maxWidth: 680)
+                .frame(maxWidth: .infinity)
             }
+            #if os(iOS)
+            .background(Color(uiColor: .systemGroupedBackground))
+            #endif
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle(navigationTitle)
 #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
 #endif
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Zamknij", systemImage: "xmark") { dismiss() }
                 }
                 ToolbarItem(placement: .secondaryAction) {

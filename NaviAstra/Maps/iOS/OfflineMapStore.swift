@@ -2,6 +2,7 @@
 import Foundation
 import MapLibre
 import Observation
+import OSLog
 import UIKit
 
 /// The renderer and offline regions must use exactly the same style URL.
@@ -84,9 +85,9 @@ final class OfflineMapStore {
                 guard let self, let pack = notification.object as? MLNOfflinePack,
                       let id = self.packsByID.first(where: { $0.value === pack })?.key,
                       !self.deletingIDs.contains(id) else { return }
-                let message = (notification.userInfo?[MLNOfflinePackUserInfoKey.error] as? NSError)?
-                    .localizedDescription ?? "Nie udało się pobrać zasobów mapy."
-                self.packErrors[id] = message
+                let failure = notification.userInfo?[MLNOfflinePackUserInfoKey.error] as? NSError
+                self.packErrors[id] = Self.message(for: failure,
+                    fallback: "Nie udało się pobrać mapy. Sprawdź połączenie i wznów pobieranie.")
                 pack.suspend()
                 self.refresh()
             }
@@ -165,13 +166,19 @@ final class OfflineMapStore {
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.isCreating = false
-                    if let failure { self.error = failure.localizedDescription }
+                    if let failure {
+                        self.error = Self.message(for: failure,
+                            fallback: "Nie udało się przygotować obszaru offline. Spróbuj ponownie.")
+                    }
                     else if let pack { pack.resume() }
                     else { self.error = "Nie udało się utworzyć obszaru offline." }
                     self.refresh()
                 }
             }
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            self.error = Self.message(for: error,
+                fallback: "Nie udało się przygotować danych wybranego obszaru. Wybierz obszar ponownie.")
+        }
     }
 
     func toggleDownload(_ id: String) {
@@ -194,7 +201,8 @@ final class OfflineMapStore {
                 guard let self else { return }
                 self.deletingIDs.remove(id)
                 if let failure {
-                    self.error = failure.localizedDescription
+                    self.error = Self.message(for: failure,
+                        fallback: "Nie udało się usunąć pobranej mapy. Spróbuj ponownie.")
                     // The SDK invalidates the old object even when deletion fails.
                     for validPack in self.packsByID.values { validPack.suspend() }
                     self.packsByID.removeAll()
@@ -207,5 +215,23 @@ final class OfflineMapStore {
             }
         }
     }
+
+    /// SDK and system errors are logged, never passed through to the Polish interface.
+    private static func message(for error: Error?, fallback: String) -> String {
+        guard let error else { return fallback }
+        Logger(subsystem: "NaviAstra", category: "OfflineMaps")
+            .error("\(fallback, privacy: .public) Szczegóły: \(String(describing: error), privacy: .private)")
+        if let failure = error as? CocoaError {
+            switch failure.code {
+            case .fileWriteOutOfSpace:
+                return "Brakuje miejsca na urządzeniu. Zwolnij pamięć i spróbuj ponownie."
+            case .fileReadNoPermission, .fileWriteNoPermission:
+                return "Aplikacja nie ma dostępu do plików pobranej mapy. Spróbuj ponownie po ponownym uruchomieniu aplikacji."
+            default: break
+            }
+        }
+        return fallback
+    }
+
 }
 #endif

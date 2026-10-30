@@ -121,6 +121,7 @@ struct NavigationBottomSheet<Content: View, Footer: View, PinnedHeader: View>: V
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding private var detent: NavigationBottomSheetDetent
     @Binding private var isDragging: Bool
+    @Binding private var isTrackingFinger: Bool
     private let maximumHeight: CGFloat
     private let accessibilityLabel: String
     private let appearance: NavigationBottomSheetAppearance
@@ -154,6 +155,7 @@ struct NavigationBottomSheet<Content: View, Footer: View, PinnedHeader: View>: V
          accessibilityLabel: String,
          appearance: NavigationBottomSheetAppearance = .navigation,
          isDragging: Binding<Bool>,
+         isTrackingFinger: Binding<Bool> = .constant(false),
          mediumHeightFraction: CGFloat = 0.48,
          minimumPeekHeight: CGFloat? = nil,
          minimumMediumHeight: CGFloat? = nil,
@@ -184,6 +186,7 @@ struct NavigationBottomSheet<Content: View, Footer: View, PinnedHeader: View>: V
         self.onClose = onClose
         self.closeAccessibilityLabel = closeAccessibilityLabel
         self._isDragging = isDragging
+        self._isTrackingFinger = isTrackingFinger
         self.pinnedHeader = pinnedHeader
         self.content = content
         self.footer = footer
@@ -465,6 +468,7 @@ struct NavigationBottomSheet<Content: View, Footer: View, PinnedHeader: View>: V
                 withTransaction(transaction) {
                     interactiveHeight = rubberBanded(startHeight - translationSinceCapture)
                     isDragging = true
+                    isTrackingFinger = true
                 }
             }
             .onEnded { value in
@@ -530,6 +534,7 @@ struct NavigationBottomSheet<Content: View, Footer: View, PinnedHeader: View>: V
 
     private func clearDragTracking() {
         ownsCurrentDrag = false
+        isTrackingFinger = false
         dragStartHeight = nil
         dragStartTranslation = nil
     }

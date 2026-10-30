@@ -42,14 +42,23 @@ struct TransitDetailsSheet: View {
                 .frame(maxWidth: 620, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .center)
             }
+#if os(iOS)
+            .background(Color(uiColor: .systemGroupedBackground))
+#endif
             .navigationTitle(title)
 #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
 #endif
             .toolbar {
+#if os(iOS)
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Zamknij") { dismiss() }
+                }
+#else
                 ToolbarItem(placement: .primaryAction) {
                     Button("Zamknij") { dismiss() }
                 }
+#endif
             }
             .task(id: selection.id) {
                 await loadDetails()
@@ -87,7 +96,7 @@ struct TransitDetailsSheet: View {
                     }
                 }
             }
-            Text("Przystanki na trasie").font(.headline)
+            Text("Przystanki na trasie").font(.headline).accessibilityAddTraits(.isHeader)
             ForEach(line.stops.indices, id: \.self) { index in
                 let stop = line.stops[index]
                 HStack(spacing: 12) {
@@ -163,7 +172,7 @@ struct TransitDetailsSheet: View {
         }
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Odjazdy").font(.headline)
+                Text("Odjazdy").font(.headline).accessibilityAddTraits(.isHeader)
                 Spacer()
                 if isLoading { ProgressView().controlSize(.small) }
             }
@@ -183,7 +192,7 @@ struct TransitDetailsSheet: View {
         } else if !isLoading {
             Label(departures.contains(where: \.hasRealtime)
                   ? "Czasy z aktualizacji na żywo"
-                  : "Brak danych live · pokazano rozkład",
+                  : "Brak danych na żywo · pokazano rozkład",
                   systemImage: departures.contains(where: \.hasRealtime) ? "dot.radiowaves.left.and.right" : "clock")
                 .font(.footnote).foregroundStyle(Color.naviTextSecondary)
         }
@@ -203,7 +212,7 @@ struct TransitDetailsSheet: View {
                 Spacer(minLength: 0)
             }
             if let actualVehicle = tripDetails.vehicle ?? vehicle {
-                Label("Pozycja z pojazdu · \(actualVehicle.updatedAt.formatted(date: .omitted, time: .shortened))",
+                Label("Pozycja z pojazdu · \(PolishRegionalFormat.time(actualVehicle.updatedAt))",
                       systemImage: "location.fill")
                     .font(.footnote).foregroundStyle(Color.naviTextSecondary)
             } else {
@@ -221,7 +230,7 @@ struct TransitDetailsSheet: View {
                         Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.naviTextSecondary)
                         Text(stop.name).font(.subheadline).foregroundStyle(Color.naviTextSecondary)
                         Spacer()
-                        Text(stop.arrival.formatted(date: .omitted, time: .shortened))
+                        Text(PolishRegionalFormat.time(stop.arrival))
                             .font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
                     }
                 }
@@ -246,7 +255,7 @@ struct TransitDetailsSheet: View {
                         }
                         VStack(alignment: .leading, spacing: 3) {
                             Text(stop.name).font(.subheadline.weight(.medium))
-                            Text(stop.arrival.formatted(date: .omitted, time: .shortened))
+                            Text(PolishRegionalFormat.time(stop.arrival))
                                 .font(.caption.monospacedDigit()).foregroundStyle(Color.naviTextSecondary)
                         }
                         Spacer()
@@ -256,7 +265,7 @@ struct TransitDetailsSheet: View {
                         } else if stop.isSkipped {
                             Text("pomijany").font(.caption.weight(.medium)).foregroundStyle(Color.naviTextSecondary)
                         } else if stop.hasRealtime {
-                            Text("live").font(.caption.weight(.medium)).foregroundStyle(Color.naviTextSecondary)
+                            Text("Na żywo").font(.caption.weight(.medium)).foregroundStyle(Color.naviTextSecondary)
                         }
                     }
                     .padding(.vertical, 4)
@@ -317,6 +326,9 @@ private struct TransitDepartureRow: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 20)) { context in
+#if os(iOS)
+            IOSTransitDepartureContent(departure: departure, now: context.date)
+#else
             HStack(spacing: 11) {
                 TransitLineBadge(title: departure.line, color: departure.colorHex)
                 VStack(alignment: .leading, spacing: 3) {
@@ -342,9 +354,54 @@ private struct TransitDepartureRow: View {
             }
             .padding(.vertical, 8)
             .contentShape(Rectangle())
+#endif
         }
     }
 }
+
+#if os(iOS)
+private struct IOSTransitDepartureContent: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let departure: TransitDeparture
+    let now: Date
+
+    var body: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
+        layout {
+            HStack(alignment: .top, spacing: 10) {
+                TransitLineBadge(title: departure.line, color: departure.colorHex)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(departure.destination).font(.headline).foregroundStyle(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Rozkład: \(PolishRegionalFormat.time(departure.scheduledDeparture))")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if departure.hasRealtime {
+                        Label("Na żywo", systemImage: "dot.radiowaves.left.and.right")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            VStack(alignment: dynamicTypeSize.isAccessibilitySize ? .leading : .trailing, spacing: 4) {
+                Text(eta(at: departure.estimatedDeparture, now: now))
+                    .font(.headline).monospacedDigit().foregroundStyle(.primary)
+                if let delay = departure.delaySeconds, abs(delay) >= 30 {
+                    Text(delayLabel(delay)).font(.caption.weight(.semibold)).foregroundStyle(delayColor(delay))
+                } else {
+                    Text(PolishRegionalFormat.time(departure.estimatedDeparture))
+                        .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14).frame(minHeight: 60).iosCardSurface(radius: 16)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Otwórz kolejne przystanki tego kursu")
+    }
+}
+#endif
 
 private struct TransitLineBadge: View {
     let title: String

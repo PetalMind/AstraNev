@@ -35,9 +35,9 @@ struct ValhallaPreferencesView: View {
                 Picker("Profil pieszy", selection: $draft.advanced.walkingProfile) {
                     ForEach(ValhallaWalkingProfile.allCases) { Text($0.title).tag($0) }
                 }
-                Stepper("Tempo marszu: \(draft.advanced.walkingSpeed.formatted(.number.precision(.fractionLength(1)))) km/h",
+                Stepper("Tempo marszu: \(draft.advanced.walkingSpeed.formatted(.number.precision(.fractionLength(1)).locale(PolishRegionalFormat.locale))) km/h",
                         value: $draft.advanced.walkingSpeed, in: 0.5...15, step: 0.1)
-                Stepper("Tempo na wózku: \(draft.advanced.wheelchairSpeed.formatted(.number.precision(.fractionLength(1)))) km/h",
+                Stepper("Tempo na wózku: \(draft.advanced.wheelchairSpeed.formatted(.number.precision(.fractionLength(1)).locale(PolishRegionalFormat.locale))) km/h",
                         value: $draft.advanced.wheelchairSpeed, in: 0.5...15, step: 0.1)
                 Toggle("Preferuj oświetlone ulice", isOn: $draft.advanced.preferLit)
                 Stepper("Maksymalna trudność szlaku: \(draft.advanced.hikingDifficulty)",
@@ -54,18 +54,29 @@ struct ValhallaPreferencesView: View {
                 VStack(alignment: .leading) {
                     Text("Jezdnie: \(Int(draft.advanced.useRoads * 100))%")
                     Slider(value: $draft.advanced.useRoads, in: 0...1)
+                        .accessibilityLabel("Akceptacja jazdy po jezdniach")
+                        .accessibilityValue(draft.advanced.useRoads.formatted(.percent.precision(.fractionLength(0)).locale(PolishRegionalFormat.locale)))
                     Text("Niższa wartość preferuje drogi rowerowe i spokojniejsze ulice.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
+            #if os(iOS)
+            Section("Komunikacja publiczna") {
+                TransitPreferencesFields(preferences: $draft.transit)
+            }
+            #endif
             Section("Trasy piesze i rowerowe") {
                 VStack(alignment: .leading) {
                     Text("Akceptacja podejść pieszo: \(Int(draft.advanced.walkingUseHills * 100))%")
                     Slider(value: $draft.advanced.walkingUseHills, in: 0...1)
+                        .accessibilityLabel("Akceptacja podejść pieszo")
+                        .accessibilityValue(draft.advanced.walkingUseHills.formatted(.percent.precision(.fractionLength(0)).locale(PolishRegionalFormat.locale)))
                 }
                 VStack(alignment: .leading) {
                     Text("Akceptacja podjazdów rowerem: \(Int(draft.advanced.useHills * 100))%")
                     Slider(value: $draft.advanced.useHills, in: 0...1)
+                        .accessibilityLabel("Akceptacja podjazdów rowerem")
+                        .accessibilityValue(draft.advanced.useHills.formatted(.percent.precision(.fractionLength(0)).locale(PolishRegionalFormat.locale)))
                     Text("Niższa wartość preferuje łagodniejsze trasy, jeśli istnieje alternatywa.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -76,7 +87,9 @@ struct ValhallaPreferencesView: View {
                     set: { draft.advanced.routePreference = $0; draft.advanced.shortest = $0 == .shortest })) {
                     ForEach(RoutePreference.allCases) { Text($0.title).tag($0) }
                 }
-                Text("Zrównoważona i wygodna trasa uwzględniają złożoność manewrów oraz znane dane nawierzchni. Ocena nie zwiększa wyświetlanego czasu jazdy.")
+                Text("Najszybsza wybiera najkrótszy szacowany czas. Polecana dla mnie uwzględnia zapamiętane wybory, jeśli uczenie tras jest włączone. Historia nie zmienia wyboru w pozostałych profilach ani wyświetlanego czasu jazdy.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("Zrównoważona i polecana: do 15% i najwyżej 5 min dłużej, do 20% i najwyżej 5 km dalej od najszybszej trasy. Wygodna: do 25% i najwyżej 10 min dłużej, do 30% i najwyżej 10 km dalej. Mniej manewrów i lepsza znana nawierzchnia pomagają wybrać wariant w tych granicach.")
                     .font(.caption).foregroundStyle(.secondary)
                 Text("Najkrótsza odległość wpływa także na profil tras pieszych i rowerowych.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -95,6 +108,12 @@ struct ValhallaPreferencesView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
+        .formStyle(.grouped)
+        .environment(\.locale, PolishRegionalFormat.locale)
+        #if os(iOS)
+        .scrollDismissesKeyboard(.interactively)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
         .navigationTitle("Profile i preferencje")
         .onAppear { draft = navigation.state.routingPreferences; loaded = true }
         .onChange(of: draft) { _, value in
@@ -116,6 +135,9 @@ struct ValhallaPreferencesView: View {
     }
 
     private func number(_ title: String, value: Binding<Double>) -> some View {
-        TextField(title, value: value, format: .number.precision(.fractionLength(1...2)))
+        TextField(title, value: value, format: .number.precision(.fractionLength(1...2)).locale(PolishRegionalFormat.locale))
+            #if os(iOS)
+            .keyboardType(.decimalPad)
+            #endif
     }
 }

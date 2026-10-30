@@ -189,6 +189,23 @@ enum EnergyCalculator {
               trip.endedAt > trip.startedAt, trip.endedAt > start, trip.startedAt < end,
               trip.distanceMeters.isFinite, trip.distanceMeters > 0 else { return nil }
         if trip.startedAt >= start, trip.endedAt <= end { return trip.distanceMeters / 1000 }
+        if !trip.distanceSamples.isEmpty {
+            // Measurement intervals have no coordinates and outlive map trace retention.
+            // A GPS gap contributes no interval, so a fill never allocates invented distance.
+            var meters = 0.0
+            for sample in trip.distanceSamples {
+                let seconds = sample.endedAt.timeIntervalSince(sample.startedAt)
+                guard seconds.isFinite, seconds > 0, seconds <= 30,
+                      sample.startedAt >= trip.startedAt, sample.endedAt <= trip.endedAt,
+                      sample.distanceMeters.isFinite, sample.distanceMeters >= 0,
+                      sample.distanceMeters <= max(30, seconds * 60) else { continue }
+                let clippedStart = max(start, sample.startedAt)
+                let clippedEnd = min(end, sample.endedAt)
+                guard clippedEnd > clippedStart else { continue }
+                meters += sample.distanceMeters * clippedEnd.timeIntervalSince(clippedStart) / seconds
+            }
+            return meters > 0 ? meters / 1000 : nil
+        }
         var meters = 0.0
         for (left, right) in zip(trip.trace, trip.trace.dropFirst()) {
             let seconds = right.timestamp.timeIntervalSince(left.timestamp)

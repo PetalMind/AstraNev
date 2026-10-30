@@ -43,6 +43,10 @@ final class NavigationStore {
         await session.updateRoutingPreferences(preferences)
     }
 
+    func confirmEVBatteryPercent(_ percent: Int) async {
+        await session.confirmEVBatteryPercent(percent)
+    }
+
     func selectTransportMode(_ mode: TransportMode) async {
         await session.selectTransportMode(mode)
     }
@@ -110,7 +114,9 @@ final class NavigationStore {
         await session.selectNearbyPlace(destination, asFinalParking: asFinalParking)
     }
 
-    func previewNewTrip(_ destination: Destination) async { await session.previewNewTrip(destination) }
+    func previewNewTrip(_ destination: Destination, transportMode: TransportMode? = nil) async {
+        await session.previewNewTrip(destination, transportMode: transportMode)
+    }
     func select(_ route: NavigationRoute) { session.select(route) }
     func setVoiceEnabled(_ enabled: Bool) { session.setVoiceEnabled(enabled) }
     func setVoicePreferences(_ preferences: VoiceGuidancePreferences) {
@@ -119,6 +125,18 @@ final class NavigationStore {
 
     func begin() { session.begin() }
     func stop() { session.stop() }
+    #if os(iOS)
+    func voiceRouteEstimate(preferences: RoutingPreferences, removingWaypointID: UUID? = nil) async -> TimeInterval? {
+        await session.voiceRouteEstimate(preferences: preferences, removingWaypointID: removingWaypointID)
+    }
+    func applyVoicePreferences(_ preferences: RoutingPreferences) async {
+        await session.applyVoicePreferences(preferences)
+    }
+    func removeVoiceWaypoint(_ id: UUID) async { await session.removeVoiceWaypoint(id) }
+    func replaceVoiceDestination(_ destination: Destination) async { await session.replaceVoiceDestination(destination) }
+    var nextVoiceWaypoint: Destination? { session.nextVoiceWaypoint }
+    func addVoiceWaypoint(_ destination: Destination) async { await session.addVoiceWaypoint(destination) }
+    #endif
     func refreshTraffic(force: Bool = false, forceRouteRefresh: Bool = true) {
         session.refreshTraffic(force: force, forceRouteRefresh: forceRouteRefresh)
     }

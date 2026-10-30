@@ -2,17 +2,37 @@ import SwiftUI
 import MapKit
 import Charts
 
+private enum HistoryTab: String, CaseIterable, Identifiable {
+    case trips = "Trasy", activity = "Mapa aktywności", searches = "Wyszukiwania"
+    var id: Self { self }
+}
+
 private enum HistoryPeriod: String, CaseIterable, Identifiable {
-    case all = "Cała historia", week = "7 dni", month = "30 dni", year = "365 dni"
+    case all = "Cała historia", week = "7 dni", month = "30 dni", year = "365 dni", custom = "Własny zakres"
     var id: Self { self }
     var days: Int? {
         switch self {
-        case .all: nil
+        case .all, .custom: nil
         case .week: 7
         case .month: 30
         case .year: 365
         }
     }
+}
+
+private enum HistoryStatus: String, CaseIterable, Identifiable {
+    case all = "Wszystkie", completed = "Ukończone", interrupted = "Przerwane"
+    var id: Self { self }
+}
+
+private enum HistoryVehicleFilter: Hashable {
+    case all, unassigned, vehicle(UUID)
+}
+
+private struct HistoryDay: Identifiable {
+    let date: Date
+    let trips: [TripRecord]
+    var id: Date { date }
 }
 
 struct RouteHistoryView: View {
@@ -22,61 +42,113 @@ struct RouteHistoryView: View {
     let onFavorite: (Destination) -> Void
     let onClose: () -> Void
     var energyStore: EnergyStore? = nil
-    var completedOnly = false
     var embeddedInNavigation = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.scenePhase) private var scenePhase
     @State private var period: HistoryPeriod = .all
     @State private var mode: TransportMode?
-    @State private var tab = 0
+    @State private var status: HistoryStatus = .all
+    @State private var vehicleFilter: HistoryVehicleFilter = .all
+    @State private var searchText = ""
+    @State private var customStart = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
+    @State private var customEnd = Date()
+    @State private var pendingRemoval: TripRecord?
+    @State private var tab: HistoryTab = .trips
+    @State private var showsFilters = false
 
     private var trips: [TripRecord] {
-        let cutoff = period.days.flatMap { Calendar.current.date(byAdding: .day, value: -$0, to: Date()) }
+        let calendar = Calendar.current
+        let cutoff = period.days.flatMap { calendar.date(byAdding: .day, value: -$0, to: Date()) }
+        let start = calendar.startOfDay(for: customStart)
+        let end = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: customEnd)) ?? customEnd
         return store.trips.filter { trip in
-            (cutoff.map { trip.startedAt >= $0 } ?? true) && (mode == nil || trip.transportMode == mode)
-                && (!completedOnly || trip.arrived)
+            trip.id != pendingRemoval?.id
+                && (cutoff.map { trip.startedAt >= $0 } ?? true)
+                && (period != .custom || (trip.startedAt >= start && trip.startedAt < end))
+                && (mode == nil || trip.transportMode == mode)
+                && (status == .all || (status == .completed ? trip.arrived : !trip.arrived))
+                && matchesVehicle(trip) && matchesSearch(trip.destination)
+        }.sorted { $0.startedAt > $1.startedAt }
+    }
+
+    private func days(for trips: [TripRecord]) -> [HistoryDay] {
+        Dictionary(grouping: trips) { Calendar.current.startOfDay(for: $0.startedAt) }
+            .map { HistoryDay(date: $0.key, trips: $0.value) }
+            .sorted { $0.date > $1.date }
+    }
+
+    private func matchesVehicle(_ trip: TripRecord) -> Bool {
+        switch vehicleFilter {
+        case .all: true
+        case .unassigned: trip.transportMode == .car && trip.vehicleID == nil
+        case .vehicle(let id): trip.vehicleID == id
+        }
+    }
+
+    private func matchesSearch(_ destination: Destination) -> Bool {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return true }
+        return [destination.name, destination.address ?? ""].contains {
+            $0.range(of: query, options: [.caseInsensitive, .diacriticInsensitive], locale: TripHistoryFormat.locale) != nil
         }
     }
 
     private func isSaved(_ destination: Destination) -> Bool {
-        store.places.contains { $0.destination.coordinate == destination.coordinate }
+        store.places.contains { $0.kind == .favorite && $0.destination.coordinate == destination.coordinate }
     }
 
     var body: some View {
-        if embeddedInNavigation {
-            historyContent
-        } else {
-            NavigationStack { historyContent }
+        Group {
+            if embeddedInNavigation {
+                historyContent
+            } else {
+                NavigationStack { historyContent }
+            }
         }
+        .environment(\.locale, TripHistoryFormat.locale)
     }
 
     private var historyContent: some View {
         VStack(spacing: 0) {
             VStack(spacing: 6) {
-                Picker("Widok historii", selection: $tab) {
-                    Text("Trasy").tag(0)
-                    Text("Mapa aktywności").tag(1)
-                    if !completedOnly { Text("Wyszukiwania").tag(2) }
+                if dynamicTypeSize.isAccessibilitySize {
+                    historyPicker.pickerStyle(.menu)
+                } else {
+                    historyPicker.pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
-                if tab != 2 { filters }
+                if tab != .searches {
+                    DisclosureGroup(isExpanded: $showsFilters) {
+                        filters.padding(.top, 8)
+                    } label: {
+                        Label(activeFilterCount == 0 ? "Filtry przejazdów" : "Filtry przejazdów: \(activeFilterCount)",
+                              systemImage: "line.3.horizontal.decrease")
+                            .font(.subheadline.weight(.medium))
+                    }
+                    .padding(.horizontal, 4)
+                    .padding(.top, 8)
+                }
             }
             .padding(14)
+            #if os(iOS)
+            .iosCardSurface(radius: 24)
+            #else
             .modifier(NavigationGlassSurface(radius: 24))
+            #endif
             .padding(.horizontal, 16)
             .padding(.top, 12)
             .padding(.bottom, 8)
 
-            if tab == 0 {
+            if tab == .trips {
                 tripsList
-            } else if tab == 1 {
+            } else if tab == .activity {
                 TripHeatmapView(trips: trips)
             } else {
                 searchesList
             }
         }
-        .environment(\.locale, TripHistoryFormat.locale)
         .background { TripHistoryBackground() }
-        .navigationTitle(completedOnly ? "Historia przejazdów" : "Historia podróży")
+        .navigationTitle("Historia przejazdów")
+        .searchable(text: $searchText, prompt: "Szukaj celu lub adresu")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
@@ -88,26 +160,109 @@ struct RouteHistoryView: View {
             }
         }
         .safeAreaInset(edge: .bottom) {
-            if let error = store.errorMessage {
-                Label(error, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .padding()
-                    .frame(maxWidth: .infinity)
+            VStack(spacing: 0) {
+                if let pendingRemoval {
+                    HStack(spacing: 12) {
+                        Text("Ukryto przejazd do: \(pendingRemoval.destination.name)")
+                            .font(.subheadline).lineLimit(2)
+                        Spacer(minLength: 0)
+                        Button("Cofnij") { self.pendingRemoval = nil }
+                            .font(.subheadline.weight(.semibold))
+                            .frame(minHeight: 44)
+                    }
+                    .padding(.horizontal).padding(.vertical, 8)
                     .background(.regularMaterial)
+                    .accessibilityElement(children: .contain)
+                }
+                if let error = store.errorMessage {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(.regularMaterial)
+                }
             }
+        }
+        .task(id: pendingRemoval?.id) {
+            guard let id = pendingRemoval?.id else { return }
+            do { try await Task.sleep(for: .seconds(6)) } catch { return }
+            guard !Task.isCancelled, pendingRemoval?.id == id else { return }
+            commitRemoval()
+        }
+        .onDisappear { commitRemoval() }
+        .onChange(of: scenePhase) { _, phase in if phase == .background { commitRemoval() } }
+    }
+
+    private var historyPicker: some View {
+        Picker("Widok historii", selection: $tab) {
+            ForEach(HistoryTab.allCases) { Text($0.rawValue).tag($0) }
         }
     }
 
-    @ViewBuilder
+    private var activeFilterCount: Int {
+        [period != .all, mode != nil, status != .all, vehicleFilter != .all].filter { $0 }.count
+    }
+
     private var filters: some View {
-        if dynamicTypeSize.isAccessibilitySize {
-            VStack(alignment: .leading, spacing: 10) { periodFilter; transportFilter }
-        } else {
+        VStack(alignment: .leading, spacing: 4) {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 12) { periodFilter; transportFilter }
                 VStack(alignment: .leading, spacing: 10) { periodFilter; transportFilter }
             }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) { statusFilter; vehiclePicker }
+                VStack(alignment: .leading, spacing: 10) { statusFilter; vehiclePicker }
+            }
+            if period == .custom {
+                DatePicker("Od", selection: $customStart, in: ...customEnd, displayedComponents: .date)
+                DatePicker("Do", selection: $customEnd, in: customStart..., displayedComponents: .date)
+            }
         }
+    }
+
+    private var statusFilter: some View {
+        Menu {
+            Picker("Status przejazdu", selection: $status) {
+                ForEach(HistoryStatus.allCases) { Text($0.rawValue).tag($0) }
+            }
+        } label: { filterLabel(status.rawValue, symbol: "flag.checkered") }
+            .accessibilityLabel("Status przejazdu")
+            .accessibilityValue(status.rawValue)
+    }
+
+    private var vehicleFilterTitle: String {
+        switch vehicleFilter {
+        case .all: "Każdy pojazd"
+        case .unassigned: "Nieprzypisane"
+        case .vehicle(let id): energyStore?.vehicles.first { $0.id == id }?.name ?? "Usunięty pojazd"
+        }
+    }
+
+    @ViewBuilder private var vehiclePicker: some View {
+        if let energyStore {
+            Menu {
+                Picker("Pojazd", selection: $vehicleFilter) {
+                    Text("Każdy pojazd").tag(HistoryVehicleFilter.all)
+                    Text("Samochód bez przypisanego pojazdu").tag(HistoryVehicleFilter.unassigned)
+                    ForEach(energyStore.vehicles) { vehicle in
+                        Text(vehicle.name).tag(HistoryVehicleFilter.vehicle(vehicle.id))
+                    }
+                }
+            } label: { filterLabel(vehicleFilterTitle, symbol: "car.side") }
+                .accessibilityLabel("Pojazd")
+                .accessibilityValue(vehicleFilterTitle)
+        }
+    }
+
+    private func scheduleRemoval(_ trip: TripRecord) {
+        commitRemoval()
+        pendingRemoval = trip
+    }
+
+    private func commitRemoval() {
+        guard let trip = pendingRemoval else { return }
+        pendingRemoval = nil
+        if store.removeTrip(trip.id) { HistoryHeatmapCache.clear() }
     }
 
     private var periodFilter: some View {
@@ -151,22 +306,25 @@ struct RouteHistoryView: View {
     }
 
     private var tripsList: some View {
-        List {
-            if trips.isEmpty {
-                ContentUnavailableView(completedOnly ? "Brak ukończonych przejazdów" : "Brak podróży", systemImage: "point.topleft.down.to.point.bottomright.curvepath",
-                    description: Text(completedOnly
-                        ? "Po dotarciu do celu przejazd pojawi się tutaj wraz z dostępną oceną prowadzenia. Możesz też zmienić filtry."
-                        : "Zakończone i przerwane nawigacje pojawią się tutaj. Możesz też zmienić filtry."))
+        let visibleTrips = trips
+        let groupedDays = days(for: visibleTrips)
+        return List {
+            if visibleTrips.isEmpty {
+                ContentUnavailableView(store.trips.isEmpty ? "Brak przejazdów" : "Brak pasujących przejazdów",
+                    systemImage: "point.topleft.down.to.point.bottomright.curvepath",
+                    description: Text(store.trips.isEmpty
+                        ? "Ukończone i przerwane nawigacje pojawią się tutaj."
+                        : "Zmień filtry lub wpisaną nazwę celu, aby zobaczyć pozostałe przejazdy."))
             } else {
                 Section {
                     VStack(alignment: .leading, spacing: 16) {
                         Label("Podsumowanie", systemImage: "chart.bar.xaxis")
                             .font(.headline).foregroundStyle(Color.naviTextPrimary)
                             .accessibilityAddTraits(.isHeader)
-                        HistoryStatistics(trips: trips, compact: true)
+                        HistoryStatistics(trips: visibleTrips, compact: true)
                         if let energyStore {
                             let vehicles = energyStore.vehicles.filter { vehicle in
-                                trips.contains { $0.transportMode == .car && $0.vehicleID == vehicle.id }
+                                visibleTrips.contains { $0.transportMode == .car && $0.vehicleID == vehicle.id }
                             }
                             ForEach(vehicles) { vehicle in
                                 Divider()
@@ -179,46 +337,29 @@ struct RouteHistoryView: View {
                         }
                     }
                     .padding(18)
+                    #if os(iOS)
+                    .iosCardSurface(radius: 24)
+                    #else
                     .modifier(NavigationGlassSurface(radius: 24))
+                    #endif
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 12, trailing: 16))
                 }
-                Section {
-                    ForEach(trips) { trip in
-                        NavigationLink {
-                            TripHistoryDetail(trip: trip, onPlan: { onPlanTrip(trip) }, energyStore: energyStore, places: store)
-                        } label: {
-                            TripHistoryRow(trip: trip, showsUnavailableScore: completedOnly,
-                                           energyStore: energyStore, allTrips: store.trips)
-                        }
-                        .padding(16)
-                        .modifier(NavigationGlassSurface(radius: 22, interactive: true))
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
-                        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-                        .contextMenu {
-                            Button("Wyznacz trasę ponownie", systemImage: "arrow.triangle.turn.up.right.diamond") { onPlanTrip(trip) }
-                            Button(isSaved(trip.destination) ? "Zapisano w Ulubionych" : "Zapisz cel do ulubionych", systemImage: "heart") {
-                                onFavorite(trip.destination)
-                            }
-                            .disabled(isSaved(trip.destination))
-                            Button("Usuń podróż", systemImage: "trash", role: .destructive) { store.removeTrip(trip.id) }
-                        }
-                        .swipeActions {
-                            Button("Usuń", role: .destructive) { store.removeTrip(trip.id) }
-                        }
+                ForEach(groupedDays) { day in
+                    Section {
+                        ForEach(day.trips) { trip in tripLink(trip) }
+                    } header: {
+                        Text(day.date.formatted(Date.FormatStyle(date: .complete, time: .omitted).locale(TripHistoryFormat.locale)))
+                            .font(.headline).foregroundStyle(Color.naviTextPrimary)
+                            .textCase(nil)
+                            .padding(.top, 8)
+                            .padding(.bottom, 6)
                     }
-                } header: {
-                    Label("Przebyte trasy", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
-                        .font(.headline).foregroundStyle(Color.naviTextPrimary)
-                        .textCase(nil)
-                        .padding(.top, 8)
-                        .padding(.bottom, 6)
                 }
                 Section {
                     Label {
-                        Text("Dane i ślady GPS są zapisywane lokalnie na urządzeniu podczas aktywnej nawigacji. Starsze wpisy mogą nie mieć śladu GPS ani rodzaju transportu.")
+                        Text("Dane i ślady GPS są zapisywane lokalnie podczas nawigacji. Ślady są przechowywane dla 300 najnowszych przejazdów z ostatnich 365 dni. Statystyki starszych przejazdów pozostają w historii.")
                     } icon: {
                         Image(systemName: "lock.shield")
                     }
@@ -231,15 +372,47 @@ struct RouteHistoryView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        #if os(iOS)
+        .scrollDismissesKeyboard(.interactively)
+        #endif
+    }
+
+    private func tripLink(_ trip: TripRecord) -> some View {
+        NavigationLink {
+            TripHistoryDetail(trip: trip, onPlan: { onPlanTrip(trip) }, energyStore: energyStore, places: store)
+        } label: {
+            TripHistoryRow(trip: trip, energyStore: energyStore, allTrips: store.trips)
+        }
+        .padding(16)
+        #if os(iOS)
+        .iosCardSurface(radius: 22)
+        #else
+        .modifier(NavigationGlassSurface(radius: 22, interactive: true))
+        #endif
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+        .contextMenu {
+            Button("Wyznacz trasę ponownie", systemImage: "arrow.triangle.turn.up.right.diamond") { onPlanTrip(trip) }
+            Button(isSaved(trip.destination) ? "Zapisano w Ulubionych" : "Zapisz cel do ulubionych", systemImage: "heart") {
+                onFavorite(trip.destination)
+            }
+            .disabled(isSaved(trip.destination))
+            Button("Usuń podróż", systemImage: "trash", role: .destructive) { scheduleRemoval(trip) }
+        }
+        .swipeActions {
+            Button("Usuń", role: .destructive) { scheduleRemoval(trip) }
+        }
     }
 
     private var searchesList: some View {
-        List {
-            if store.searches.isEmpty {
-                ContentUnavailableView("Brak wyszukiwań", systemImage: "magnifyingglass",
-                                       description: Text("Ostatnio wybrane miejsca pojawią się tutaj."))
+        let searches = store.searches.filter { matchesSearch($0.destination) }
+        return List {
+            if searches.isEmpty {
+                ContentUnavailableView(store.searches.isEmpty ? "Brak wyszukiwań" : "Brak pasujących miejsc", systemImage: "magnifyingglass",
+                                       description: Text(store.searches.isEmpty ? "Ostatnio wybrane miejsca pojawią się tutaj." : "Wpisz inną nazwę lub adres."))
             }
-            ForEach(store.searches) { item in
+            ForEach(searches) { item in
                 HStack {
                     Button { onSearch(item.destination) } label: {
                         VStack(alignment: .leading, spacing: 4) {
@@ -250,26 +423,36 @@ struct RouteHistoryView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .buttonStyle(.plain)
-                    Button("Zapisz do ulubionych", systemImage: isSaved(item.destination) ? "checkmark" : "heart") {
+                    Button {
                         onFavorite(item.destination)
+                    } label: {
+                        Label("Zapisz do ulubionych", systemImage: isSaved(item.destination) ? "checkmark" : "heart")
+                            .labelStyle(.iconOnly)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
                     }
-                    .labelStyle(.iconOnly)
                     .buttonStyle(.borderless)
                     .disabled(isSaved(item.destination))
-                    Button("Usuń wyszukiwanie", systemImage: "trash", role: .destructive) { store.removeSearch(item.id) }
-                        .labelStyle(.iconOnly)
+                    Button(role: .destructive) { store.removeSearch(item.id) } label: {
+                        Label("Usuń wyszukiwanie", systemImage: "trash")
+                            .labelStyle(.iconOnly)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
                         .buttonStyle(.borderless)
                 }
             }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        #if os(iOS)
+        .scrollDismissesKeyboard(.interactively)
+        #endif
     }
 }
 
 private struct TripHistoryRow: View {
     let trip: TripRecord
-    let showsUnavailableScore: Bool
     let energyStore: EnergyStore?
     let allTrips: [TripRecord]
 
@@ -311,7 +494,7 @@ private struct TripHistoryRow: View {
             .foregroundStyle(Color.naviTextPrimary)
             if trip.transportMode == .car, let energyStore {
                 if let estimate = energyStore.estimate(for: trip, trips: allTrips) {
-                    EnergyUsageLabel(estimate: estimate)
+                    EnergyUsageLabel(estimate: estimate, compact: true)
                 } else {
                     Label(trip.vehicleID == nil ? "Przypisz pojazd, aby obliczyć zużycie paliwa"
                           : "Zużycie paliwa niedostępne · brak zamkniętego pomiaru lub dystansu", systemImage: "fuelpump")
@@ -321,15 +504,15 @@ private struct TripHistoryRow: View {
             }
             HStack(spacing: 6) {
                 Image(systemName: trip.arrived ? "flag.checkered" : "stop.circle")
-                Text(trip.arrived ? "Dojechano" : "Przerwano")
+                Text(trip.terminationDescription)
                 Text("·")
                 Text(trip.trace.isEmpty ? "Brak śladu GPS" : "Zapis GPS")
             }
             .font(.caption).foregroundStyle(Color.naviTextSecondary)
             if let score = trip.drivingScore {
                 DrivingScoreHistoryLabel(score: score)
-            } else if showsUnavailableScore && trip.transportMode == .car {
-                Label("Ocena niedostępna · za mało danych", systemImage: "steeringwheel")
+            } else if let reason = trip.scoreUnavailableReason, trip.transportMode == .car {
+                Label("Ocena niedostępna · \(reason)", systemImage: "steeringwheel")
                     .font(.caption).foregroundStyle(Color.naviTextSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -371,7 +554,9 @@ private struct HistoryStatistics: View {
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 240 : 125), alignment: .leading)]
+        dynamicTypeSize.isAccessibilitySize
+            ? [GridItem(.flexible(), alignment: .leading)]
+            : [GridItem(.adaptive(minimum: 125), alignment: .leading)]
     }
 
     private var additionalMetrics: some View {
@@ -397,20 +582,26 @@ private struct HistoryMetric: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.accentColor.opacity(0.055), in: RoundedRectangle(cornerRadius: 16))
+        .accessibilityElement(children: .combine)
     }
 }
 
 private struct TripHeatmapView: View {
     let trips: [TripRecord]
     @State private var cells: [TripHeatCell] = []
+    @State private var loading = true
     private var recordedCount: Int { trips.filter { !$0.trace.isEmpty }.count }
     private var maximumVisits: Int { cells.map(\.visits).max() ?? 1 }
+    private var cacheKey: String { trips.map { "\($0.id.uuidString):\($0.trace.count)" }.joined(separator: "|") }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if recordedCount == 0 {
                 ContentUnavailableView("Brak danych do mapy aktywności", systemImage: "map",
-                    description: Text("Mapa aktywności powstaje ze śladów GPS nowych podróży. Starsze statystyki nie zawierają przebiegu trasy."))
+                    description: Text("Dla wybranych przejazdów nie ma dostępnego śladu GPS. Powód znajdziesz w szczegółach przejazdu. Możesz też zmienić filtry."))
+            } else if loading {
+                ProgressView("Przygotowuję mapę aktywności…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 Map {
                     ForEach(cells) { cell in
@@ -436,7 +627,26 @@ private struct TripHeatmapView: View {
             }
         }
         .padding()
-        .task(id: trips.map(\.id)) { cells = TripHeatmap.cells(for: trips) }
+        .task(id: cacheKey) {
+            let key = cacheKey
+            if let cached = HistoryHeatmapCache.cells[key] {
+                cells = cached
+                loading = false
+                return
+            }
+            loading = true
+            let traces = trips.map(\.trace)
+            let computation = Task.detached(priority: .userInitiated) { TripHeatmap.cells(for: traces) }
+            let result = await withTaskCancellationHandler {
+                await computation.value
+            } onCancel: {
+                computation.cancel()
+            }
+            guard !Task.isCancelled else { return }
+            HistoryHeatmapCache.insert(result, for: key)
+            cells = result
+            loading = false
+        }
     }
 
     private func heatColor(_ visits: Int) -> Color {
@@ -445,39 +655,43 @@ private struct TripHeatmapView: View {
     }
 }
 
+@MainActor private enum HistoryHeatmapCache {
+    static var cells: [String: [TripHeatCell]] = [:]
+    private static var order: [String] = []
+
+    static func insert(_ value: [TripHeatCell], for key: String) {
+        if cells[key] == nil { order.append(key) }
+        cells[key] = value
+        while order.count > 8 { cells.removeValue(forKey: order.removeFirst()) }
+    }
+
+    static func clear() {
+        cells.removeAll()
+        order.removeAll()
+    }
+}
+
 struct TripHistoryDetail: View {
     let energyStore: EnergyStore?
     let places: PlaceStore?
     let trip: TripRecord
     let onPlan: () -> Void
-    private let segments: [TripTraceSegment]
-    private let speedSamples: [HistorySpeedSample]
-    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @State private var elapsed: Double = 0
-    @State private var playing = false
-    @State private var playbackRate = 5.0
+    @State private var rememberError: String?
 
     init(trip: TripRecord, onPlan: @escaping () -> Void, energyStore: EnergyStore? = nil, places: PlaceStore? = nil) {
         self.energyStore = energyStore
         self.places = places
         self.trip = trip
         self.onPlan = onPlan
-        segments = trip.traceSegments
-        var segment = 0
-        speedSamples = trip.trace.enumerated().compactMap { index, point in
-            if point.startsSegment { segment += 1 }
-            guard let speed = point.speedKph else {
-                segment += 1
-                return nil
-            }
-            return HistorySpeedSample(id: index, timestamp: point.timestamp, speed: speed, segment: segment)
-        }
     }
 
-    private var currentPoint: TripTracePoint? { trip.tracePoint(at: elapsed) }
-    private var duration: Double { max(1, trip.duration) }
     private var currentTrip: TripRecord { places?.trips.first { $0.id == trip.id } ?? trip }
+    private var metricColumns: [GridItem] {
+        dynamicTypeSize.isAccessibilitySize
+            ? [GridItem(.flexible(), alignment: .leading)]
+            : [GridItem(.adaptive(minimum: 125), alignment: .leading)]
+    }
     private var learningEndpoint: URL? {
         URL(string: UserDefaults.standard.string(forKey: "routingServer") ?? "https://valhalla1.openstreetmap.de")
     }
@@ -492,19 +706,27 @@ struct TripHistoryDetail: View {
                         .foregroundStyle(Color.naviTextSecondary)
                     Label(trip.transportMode?.title ?? "Rodzaj transportu niedostępny",
                           systemImage: trip.transportMode?.symbol ?? "map")
-                    Label(trip.arrived ? "Dotarto do celu" : "Przerwano podróż",
+                    Label(trip.terminationDescription,
                           systemImage: trip.arrived ? "flag.checkered" : "stop.circle")
                         .foregroundStyle(Color.naviTextSecondary)
-                    if trip.transportMode == .car, trip.arrived, trip.trace.count >= 3,
-                       trip.waypoints.isEmpty, DrivingLearningEngine.shared.settings.enabled,
+                    if trip.transportMode == .car, trip.arrived, DrivingLearningEngine.shared.settings.enabled,
                        let endpoint = learningEndpoint {
                         if DrivingLearningEngine.shared.isRemembered(trip.id) {
                             Label("Trasa zapamiętana", systemImage: "heart.fill")
                                 .foregroundStyle(Color.accentColor)
+                        } else if let reason = DrivingLearningEngine.shared.historyRememberUnavailableReason(trip) {
+                            Label(reason, systemImage: "info.circle")
+                                .font(.caption).foregroundStyle(Color.naviTextSecondary)
                         } else {
                             Button("Zapamiętaj tę trasę", systemImage: "heart") {
-                                DrivingLearningEngine.shared.rememberHistoricalTrip(trip, endpoint: endpoint)
+                                let engine = DrivingLearningEngine.shared
+                                rememberError = engine.rememberHistoricalTrip(trip, endpoint: endpoint)
+                                    ? nil : (engine.message ?? "Nie udało się zapamiętać trasy. Spróbuj ponownie.")
                             }
+                        }
+                        if let rememberError {
+                            Label(rememberError, systemImage: "exclamationmark.triangle")
+                                .font(.caption).foregroundStyle(Color.naviTextSecondary)
                         }
                     }
                 }
@@ -538,53 +760,42 @@ struct TripHistoryDetail: View {
                 }
 
                 HistoryDetailSection(title: "Podsumowanie przejazdu", symbol: "chart.bar") {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 240 : 125), alignment: .leading)],
+                    LazyVGrid(columns: metricColumns,
                               alignment: .leading, spacing: 18) {
                         HistoryMetric(title: "Dystans", value: TripHistoryFormat.distance(trip.distanceMeters), symbol: "point.topleft.down.to.point.bottomright.curvepath")
                         HistoryMetric(title: "Czas podróży", value: TripHistoryFormat.duration(trip.duration), symbol: "clock")
                         HistoryMetric(title: "Czas w ruchu", value: TripHistoryFormat.duration(trip.movingSeconds), symbol: "figure.walk")
-                        HistoryMetric(title: "Postoje", value: TripHistoryFormat.duration(trip.stoppedSeconds), symbol: "pause.circle")
+                        HistoryMetric(title: "Postoje", value: trip.measuredStoppedSeconds.map(TripHistoryFormat.duration) ?? "Brak danych", symbol: "pause.circle")
+                        HistoryMetric(title: "Bez pomiaru", value: TripHistoryFormat.duration(trip.unknownSeconds), symbol: "antenna.radiowaves.left.and.right.slash")
+                        HistoryMetric(title: "Pokrycie pomiarem", value: trip.measuredStoppedSeconds == nil ? "Niepełne dane"
+                            : trip.recordingCoverage.formatted(.percent.precision(.fractionLength(0)).locale(TripHistoryFormat.locale)),
+                            symbol: "checkmark.circle")
                         HistoryMetric(title: "Średnia w ruchu", value: trip.movingSeconds > 0 ? "\(Int(trip.averageSpeedKph.rounded())) km/h" : "Brak danych", symbol: "speedometer")
                         HistoryMetric(title: "Maks. prędkość", value: trip.maximumSpeedKph.map { "\(Int($0.rounded())) km/h" } ?? "Brak danych", symbol: "speedometer")
                         HistoryMetric(title: "Przeliczenia", value: "\(trip.rerouteCount)", symbol: "arrow.triangle.branch")
                     }
+                    if trip.unknownSeconds > 0 {
+                        Text(trip.measuredStoppedSeconds == nil
+                            ? "W starszym zapisie nie rozdzielono postojów od braku pomiaru. Nie można określić pełnego pokrycia podróży danymi GPS."
+                            : "Dystans obejmuje tylko wiarygodne pomiary. Czas bez danych GPS nie jest zaliczany do postojów.")
+                            .font(.caption).foregroundStyle(Color.naviTextSecondary)
+                    }
                     if let delay = trip.delaySeconds {
                         Divider()
-                        Label("Względem planu: \(delay >= 0 ? "później" : "wcześniej") o \(TripHistoryFormat.duration(abs(delay)))",
+                        Label("Względem pierwotnego planu: \(delay >= 0 ? "później" : "wcześniej") o \(TripHistoryFormat.duration(abs(delay)))",
                               systemImage: "clock.arrow.circlepath")
                             .font(.subheadline).foregroundStyle(Color.naviTextSecondary)
                     }
                 }
 
-                HistoryDetailSection(title: "Przebieg trasy", symbol: "map") {
-                    if trip.trace.isEmpty {
-                        ContentUnavailableView("Brak śladu GPS", systemImage: "map",
-                            description: Text("Ten przejazd ma zapisane statystyki, ale nie ma przebiegu do odtworzenia."))
-                    } else {
-                        traceMap
-                        playbackControls
-                        if let mode = trip.transportMode, mode != .transit {
-                            NavigationLink("Analizuj ślad i dopasuj do dróg") {
-                                ValhallaTraceView(endpoint: URL(string: UserDefaults.standard.string(forKey: "routingServer")
-                                    ?? "https://valhalla1.openstreetmap.de") ?? URL(string: "https://valhalla1.openstreetmap.de")!,
-                                    preferences: (UserDefaults.standard.data(forKey: "routingPreferences")
-                                        .flatMap { try? JSONDecoder().decode(RoutingPreferences.self, from: $0) }) ?? RoutingPreferences(),
-                                    initialTrace: trip.valhallaTraceSegments,
-                                    initialMode: mode)
-                            }
-                        }
-                    }
-                }
-                if !speedSamples.isEmpty {
-                    HistoryDetailSection(title: "Prędkość w czasie", symbol: "waveform.path") { speedChart }
-                }
+                TripHistoryPlaybackView(trip: trip)
                 Button(action: onPlan) {
                     Label("Wyznacz trasę ponownie", systemImage: "arrow.triangle.turn.up.right.diamond")
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
                 }
                 .buttonStyle(.borderedProminent)
-                Text("Ponowne wyznaczenie korzysta z zapisanych punktów pośrednich i aktualnych ustawień planowania. Odtwarzanie pokazuje zapis GPS; pozycje między pomiarami są interpolowane, a przerwy w sygnale pozostają lukami. Czas poza ruchem i dystans zależą od dostępności pomiarów GPS.")
+                Text("Ponowne wyznaczenie korzysta z zapisanego środka transportu i punktów pośrednich oraz aktualnych ustawień planowania. Przy starszych wpisach bez rodzaju transportu użyje ustawienia domyślnego. Odtwarzanie pokazuje zapis GPS. Między wiarygodnymi pomiarami pozycja jest przybliżona. Podczas luki znacznik pozostaje na ostatniej znanej pozycji, bez odtwarzania brakującego odcinka. Czas bez pomiaru nie jest postojem.")
                     .font(.caption).foregroundStyle(Color.naviTextSecondary)
             }
             .padding(20)
@@ -594,120 +805,10 @@ struct TripHistoryDetail: View {
         .environment(\.locale, TripHistoryFormat.locale)
         .background { TripHistoryBackground() }
         .navigationTitle("Szczegóły podróży")
-        .task(id: playing) {
-            guard playing else { return }
-            var previousTick = Date()
-            while !Task.isCancelled && playing {
-                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-                let now = Date()
-                elapsed = min(duration, elapsed + now.timeIntervalSince(previousTick) * playbackRate)
-                previousTick = now
-                if elapsed >= duration { playing = false }
-            }
-        }
-        .onChange(of: scenePhase) { _, phase in if phase != .active { playing = false } }
-        .onDisappear { playing = false }
-    }
-
-    private var traceMap: some View {
-        Map {
-            ForEach(segments) { segment in
-                MapPolyline(coordinates: segment.coordinates)
-                    .stroke(Color.accentColor, lineWidth: 4)
-            }
-            if let first = trip.trace.first {
-                Marker("Start GPS", systemImage: "flag", coordinate: first.coordinate.cl).tint(.green)
-            }
-            if let last = trip.trace.last {
-                Marker("Koniec GPS", systemImage: "flag.checkered", coordinate: last.coordinate.cl).tint(.orange)
-            }
-            if let point = currentPoint {
-                Annotation("Pozycja w odtworzeniu", coordinate: point.coordinate.cl) {
-                    Circle().fill(Color.accentColor).frame(width: 18, height: 18)
-                        .overlay(Circle().stroke(.white, lineWidth: 3))
-                        .shadow(radius: 3)
-                }
-            }
-        }
-        .mapControls { MapCompass(); MapScaleView() }
-        .frame(height: 320)
-        .clipShape(RoundedRectangle(cornerRadius: 18))
-    }
-
-    private var playbackControls: some View {
-        VStack(spacing: 12) {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) {
-                    playbackActions
-                    Spacer(minLength: 8)
-                    playbackTime
-                }
-                VStack(alignment: .leading, spacing: 10) {
-                    playbackActions
-                    playbackTime
-                }
-            }
-            Slider(value: $elapsed, in: 0...duration, onEditingChanged: { editing in
-                if editing { playing = false }
-            })
-            .accessibilityLabel("Pozycja na osi czasu podróży")
-            HStack {
-                Text(TripHistoryFormat.duration(elapsed))
-                Spacer()
-                Text(TripHistoryFormat.duration(trip.duration))
-            }
-            .font(.caption.monospacedDigit()).foregroundStyle(Color.naviTextSecondary)
-            Text(currentPoint?.speedKph.map { "\(Int($0.rounded())) km/h" }
-                 ?? (currentPoint == nil ? "Luka w zapisie GPS" : "Prędkość niedostępna"))
-                .font(.caption.monospacedDigit()).foregroundStyle(Color.naviTextSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private var playbackActions: some View {
-        HStack(spacing: 12) {
-            Button(playing ? "Pauza" : "Odtwórz", systemImage: playing ? "pause.fill" : "play.fill") {
-                if elapsed >= duration { elapsed = 0 }
-                playing.toggle()
-            }
-            .buttonStyle(.bordered)
-            Picker("Tempo", selection: $playbackRate) {
-                Text("1×").tag(1.0)
-                Text("5×").tag(5.0)
-                Text("20×").tag(20.0)
-                Text("100×").tag(100.0)
-            }
-            .pickerStyle(.menu)
-        }
-    }
-
-    private var playbackTime: some View {
-        Text(TripHistoryFormat.time(trip.startedAt.addingTimeInterval(elapsed)))
-            .font(.subheadline.monospacedDigit())
-            .foregroundStyle(Color.naviTextSecondary)
-    }
-
-    private var speedChart: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Prędkość GPS · km/h").font(.caption).foregroundStyle(Color.naviTextSecondary)
-            Chart {
-                ForEach(speedSamples) { sample in
-                    LineMark(x: .value("Czas", sample.timestamp), y: .value("km/h", sample.speed),
-                             series: .value("Odcinek GPS", sample.segment))
-                        .foregroundStyle(Color.accentColor)
-                }
-                RuleMark(x: .value("Odtwarzanie", trip.startedAt.addingTimeInterval(elapsed)))
-                    .foregroundStyle(Color.secondary.opacity(0.3))
-            }
-            .chartXScale(domain: trip.startedAt...max(trip.endedAt, trip.startedAt.addingTimeInterval(1)))
-            .frame(height: 160)
-            Text("Wykres obejmuje pomiary z dostępną, wiarygodną prędkością GPS.")
-                .font(.caption).foregroundStyle(Color.naviTextSecondary)
-        }
     }
 }
 
-private struct HistoryDetailSection<Content: View>: View {
+struct HistoryDetailSection<Content: View>: View {
     let title: String
     let symbol: String
     @ViewBuilder let content: () -> Content
@@ -721,15 +822,24 @@ private struct HistoryDetailSection<Content: View>: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
+        #if os(iOS)
+        .iosCardSurface(radius: 24)
+        #else
         .modifier(NavigationGlassSurface(radius: 24))
+        #endif
     }
 }
 
-/// Use the navigation palette and shared glass surfaces throughout the archive.
+/// Keep reading surfaces calm while native controls provide navigation chrome.
 private struct TripHistoryBackground: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        #if os(iOS)
+        Color(uiColor: .systemGroupedBackground)
+            .ignoresSafeArea()
+            .accessibilityHidden(true)
+        #else
         let base = Color(naviHex: colorScheme == .dark
             ? NaviAstraColorPalette.navigationSurface : NaviAstraColorPalette.surfaceDay)
         base
@@ -739,12 +849,6 @@ private struct TripHistoryBackground: View {
             }
             .ignoresSafeArea()
             .accessibilityHidden(true)
+        #endif
     }
-}
-
-private struct HistorySpeedSample: Identifiable {
-    let id: Int
-    let timestamp: Date
-    let speed: Double
-    let segment: Int
 }

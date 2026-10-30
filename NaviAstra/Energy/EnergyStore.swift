@@ -12,6 +12,16 @@ final class EnergyStore {
     private(set) var errorMessage: String?
     @ObservationIgnored private let url: URL
     @ObservationIgnored private var canWrite = true
+    /// The archive owner supplies its revision; standalone callers remain uncached.
+    @ObservationIgnored var historyRevisionProvider: (() -> UInt64)?
+    @ObservationIgnored private var periodCache: [PeriodCacheKey: [EnergyPeriod]] = [:]
+    @ObservationIgnored private var cachedHistoryRevision: UInt64?
+    private struct PeriodCacheKey: Hashable {
+        let vehicleID: UUID
+        let kind: EnergyKind
+        let tripIDs: [UUID]
+        let entryIDs: [UUID]
+    }
     var vehicles: [EnergyVehicle] { archive.vehicles }
     var entries: [EnergyEntry] { archive.entries }
     var selectedVehicle: EnergyVehicle? { vehicles.first { $0.id == archive.selectedVehicleID } }
@@ -27,7 +37,8 @@ final class EnergyStore {
             }
         } catch {
             canWrite = false
-            errorMessage = "Nie udało się wczytać danych paliwa: \(error.localizedDescription). Zapis został zablokowany, aby zachować plik."
+            errorMessage = "Nie udało się wczytać danych paliwa. Zapis został wstrzymany, aby zachować dotychczasowy plik."
+            NSLog("EnergyStore load: %@", String(describing: error))
         }
     }
 
@@ -36,10 +47,12 @@ final class EnergyStore {
         do {
             try JSONEncoder().encode(updated).write(to: url, options: .atomic)
             archive = updated
+            periodCache.removeAll()
             errorMessage = nil
             return true
         } catch {
-            errorMessage = "Nie udało się zapisać danych paliwa: \(error.localizedDescription)"
+            errorMessage = "Nie udało się zapisać danych paliwa na urządzeniu. Spróbuj ponownie."
+            NSLog("EnergyStore save: %@", String(describing: error))
             return false
         }
     }
@@ -116,11 +129,43 @@ final class EnergyStore {
     }
 
     func periods(for vehicle: EnergyVehicle, kind: EnergyKind, trips: [TripRecord]) -> [EnergyPeriod] {
-        EnergyCalculator.periods(vehicleID: vehicle.id, kind: kind, entries: entries, trips: trips)
+        cachedPeriods(vehicleID: vehicle.id, kind: kind, entries: entries, trips: trips)
     }
+
+    private func cachedPeriods(vehicleID: UUID, kind: EnergyKind,
+                               entries: [EnergyEntry], trips: [TripRecord]) -> [EnergyPeriod] {
+        guard let revision = historyRevisionProvider?() else {
+            return EnergyCalculator.periods(vehicleID: vehicleID, kind: kind, entries: entries, trips: trips)
+        }
+        if cachedHistoryRevision != revision {
+            periodCache.removeAll()
+            cachedHistoryRevision = revision
+        }
+        let key = PeriodCacheKey(vehicleID: vehicleID, kind: kind,
+                                 tripIDs: trips.map(\.id), entryIDs: entries.map(\.id))
+        if let periods = periodCache[key] { return periods }
+        let periods = EnergyCalculator.periods(vehicleID: vehicleID, kind: kind, entries: entries, trips: trips)
+        if periodCache.count >= 32 { periodCache.removeAll() }
+        periodCache[key] = periods
+        return periods
+    }
+
     func estimate(vehicleID: UUID?, kilometers: Double, at date: Date = Date(), trips: [TripRecord]) -> EnergyEstimate? {
-        guard let vehicle = vehicles.first(where: { $0.id == vehicleID }) else { return nil }
-        return EnergyCalculator.estimate(vehicle: vehicle, kilometers: kilometers, date: date, entries: entries, trips: trips)
+        guard kilometers.isFinite, kilometers >= 0,
+              let vehicle = vehicles.first(where: { $0.id == vehicleID }) else { return nil }
+        let historical = entries.filter { $0.date <= date }
+        var components: [EnergyEstimate.Component] = []
+        for kind in vehicle.kinds {
+            let periods = cachedPeriods(vehicleID: vehicle.id, kind: kind, entries: historical, trips: trips)
+            guard let consumption = EnergyCalculator.average(periods),
+                  let price = historical.filter({ $0.vehicleID == vehicle.id && $0.kind == kind })
+                    .max(by: { $0.date < $1.date })?.unitPrice else { return nil }
+            let quantity = consumption * kilometers / 100
+            components.append(.init(kind: kind, consumptionPer100Km: consumption,
+                                    quantity: quantity, cost: quantity * price,
+                                    measurementDescription: EnergyCalculator.measurementDescription(periods)))
+        }
+        return EnergyEstimate(components: components)
     }
 
     /// Retrospective usage uses all available measurements, including the fill closing the trip's cycle.

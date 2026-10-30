@@ -285,6 +285,7 @@ enum MapTilerEnvironmentStyle {
         for layer in style.layers where [sourceID, buildingsSourceID, fallbackSourceID, MapCrosswalkRenderer.sourceID]
             .contains((layer as? MLNVectorStyleLayer)?.sourceIdentifier ?? "") {
             let id = layer.identifier
+            if id.hasPrefix(MapTerrainTextureStyle.prefix) { continue }
             if MapStreetFurnitureRenderer.isSourceProbe(id) || id == prefix + "building-load" || id.hasPrefix("naviastra-poi-load-") || id == prefix + "crossing-geometry"
                 || id == prefix + "crossing-road-geometry" { continue }
             if let fill = layer as? MLNFillStyleLayer {
@@ -299,8 +300,7 @@ enum MapTilerEnvironmentStyle {
                     fill.fillPattern = NSExpression(mglJSONObject: ["match", ["get", "class"],
                         "wet_meadow", "naviastra-low-vegetation-sprite-wetland-" + suffix,
                         "naviastra-low-vegetation-sprite-grass-" + suffix])
-                    fill.fillOpacity = NSExpression(mglJSONObject: ["interpolate", ["linear"], ["zoom"],
-                        15, 0, 17, navigating ? 0.16 : 0.30, 19, navigating ? 0.22 : 0.42])
+                    fill.fillOpacity = MapTerrainTextureStyle.grassOpacity(navigating: navigating)
                 } else if id == prefix + "grass" {
                     fill.fillColor = NSExpression(mglJSONObject: ["match", ["get", "class"],
                         ["park", "garden"], rgb(dark ? 0x293E32 : 0xD3E3C6),

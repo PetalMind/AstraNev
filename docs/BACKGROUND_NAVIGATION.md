@@ -2,16 +2,33 @@
 
 `NaviAstraApp` utrzymuje `AppDependencies` przez czas życia aplikacji.
 `NavigationSession` otrzymuje Core Location bez pośrednictwa ContentView ani MLNMapView.
-Zapis TripRecord jest podłączony w AppDependencies, niezależnie od widoku.
+Końcowy zapis TripRecord i checkpointy aktywnego przejazdu są podłączone w
+AppDependencies, niezależnie od widoku.
 
 ## Cykl życia
 
 - Eksploracja: pojedynczy odczyt lokalizacji. Przycisk powrotu do pozycji wymusza kolejny odczyt; wyznaczanie trasy czeka na świeży odczyt, jeżeli zapisany punkt ma ponad 15 sekund.
 - Podgląd: odczyt GPS na żądanie, bez aktualizacji w tle.
 - Prowadzenie/rerouting: ciągły GPS, map matching, postęp, głos, wykrywanie zjazdu i utrudnień. Samochód używa automotiveNavigation, pieszy/rower/komunikacja otherNavigation.
-- Ekran nieaktywny: mapa jest usuwana z drzewa widoków. Dismantle anuluje zadania POI/ścieżek rowerowych i display link. Sesja anuluje zadania kamery, ale zachowuje prowadzenie.
+- Ekran nieaktywny: mapa jest usuwana z drzewa widoków. Dismantle anuluje zadania POI/ścieżek rowerowych i display link. Sesja zapisuje checkpoint, anuluje zadania kamery i zachowuje prowadzenie.
 - Dojazd: co najmniej trzy różne świeże próbki przez minimum 5 sekund, prędkość poniżej 5 km/h i dokładność do 30 m. Samochód rozpoznaje cel w promieniu 100 m od wskazanego miejsca lub wybranego punktu dojazdu, również z drugiej strony i poza końcowym przebiegiem trasy. Jeśli pozostały przystanki pośrednie lub ładowania, nadal wymaga mniej niż 75 m pozostałej trasy. Pozostałe tryby wymagają celu w promieniu 50 m i mniej niż 75 m pozostałej trasy. Pojedynczy punkt, punkt stary lub przejazd obok celu z prędkością co najmniej 5 km/h nie kończą podróży.
-- Koniec: zatrzymanie GPS nawigacyjnego, anulowanie reroutingu, zakończenie Live Activity i jeden zapis TripRecord. Przy dojeździe samochodem punkt zatrzymania jest zachowany dla istniejącego, opcjonalnego zapisu parkingu.
+- Koniec: zatrzymanie GPS nawigacyjnego, anulowanie reroutingu, zakończenie Live Activity i jeden końcowy zapis TripRecord o tym samym UUID co checkpointy. Przy dojeździe samochodem punkt zatrzymania jest zachowany dla istniejącego, opcjonalnego zapisu parkingu. Nowy podgląd lub start najpierw zapisuje poprzedni przejazd jako zastąpiony inną podróżą.
+
+`NavigationSession.onTripCheckpoint` zapisuje aktywny przejazd przy starcie,
+co 15 sekund oraz przy przejściu w tło. `PlaceStore.saveActiveTrip(_:)` zapisuje
+go atomowo w osobnym `active-trip.json`; nie przepisuje wtedy całej historii.
+Zapis końcowy przechodzi przez `pending-trip-<UUID>.json` przed zatwierdzeniem
+archiwum. Nieudany zapis jest ponawiany także przy kolejnym checkpoincie i po
+powrocie na pierwszy plan przez `onHistoryMaintenance`.
+
+Po zamknięciu procesu następny start aplikacji odzyskuje ostatni udany checkpoint
+jako przerwany przejazd z przyczyną `interruptedRecovered`, bez oceny prowadzenia.
+Koniec odpowiada czasowi checkpointu; aplikacja nie dolicza czasu, gdy proces nie
+działał, i nie wznawia automatycznie prowadzenia. Stały UUID zapobiega duplikatom,
+jeśli zapis końcowy zakończył się przed przerwanym sprzątaniem plików roboczych.
+Odcinki bez wiarygodnych pomiarów GPS są oznaczane jako czas bez pomiaru, a nie
+postój. Pełny opis odzyskiwania, usuwania i retencji znajduje się w
+[Historii przejazdów w iOS](ROUTE_HISTORY.md).
 
 UIBackgroundModes zawiera location i audio. LocationManager utrzymuje
 CLBackgroundActivitySession tylko podczas aktywnego prowadzenia i przy udzielonej

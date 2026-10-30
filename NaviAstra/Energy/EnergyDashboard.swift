@@ -95,6 +95,11 @@ struct EnergyDashboard: View {
     @State private var removingEntry: EnergyEntry?
     @State private var removingVehicle: EnergyVehicle?
     @State private var interval = 30
+#if os(iOS)
+    @ScaledMetric(relativeTo: .body) private var metricMinimumWidth: CGFloat = 140
+#else
+    private let metricMinimumWidth: CGFloat = 140
+#endif
 
     private var vehicle: EnergyVehicle? { store.selectedVehicle }
     private var vehicleEntries: [EnergyEntry] {
@@ -241,7 +246,7 @@ struct EnergyDashboard: View {
                 Text("Ostatnie 30 dni").tag(30)
                 Text("Bieżący rok").tag(365)
             }.pickerStyle(.segmented)
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), alignment: .leading)], alignment: .leading, spacing: 18) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: metricMinimumWidth), alignment: .leading)], alignment: .leading, spacing: 18) {
                 EnergyMetric(title: "Zarejestrowano", value: "\(EnergyNumber.text(trips.reduce(0) { $0 + (EnergyCalculator.recordedKilometers($1, from: start, to: now) ?? 0) })) km", symbol: "road.lanes")
                 EnergyMetric(title: "Wydatki", value: EnergyNumber.money(entries.reduce(0) { $0 + $1.totalPrice }), symbol: "creditcard")
                 EnergyMetric(title: "Tankowania i ładowania", value: "\(entries.count)", symbol: "fuelpump")
@@ -405,7 +410,11 @@ struct EnergyVehicleEditor: View {
                 }
             }
         }
+#if os(iOS)
+        .presentationSizing(.form)
+#else
         .frame(minWidth: 320, minHeight: 400)
+#endif
     }
     private func save() {
         guard tank.isEmpty || EnergyNumber.parse(tank).map({ $0 > 0 }) == true,
@@ -546,7 +555,11 @@ struct EnergyEntryEditor: View {
             }
 
         }
+#if os(iOS)
+        .presentationSizing(.form)
+#else
         .frame(minWidth: 320, minHeight: 480)
+#endif
     }
 
     @ViewBuilder private var measurementFeedback: some View {
@@ -595,7 +608,7 @@ struct EnergyEntryEditor: View {
                 Text("Źródło oznacza tę stację jako zamkniętą. Potwierdź stację i wpisz rzeczywistą cenę.")
                     .foregroundStyle(Color.naviTextSecondary)
             } else if let fuel = kind.stationFuel, let suggestion = quote?.prices.first(where: { $0.fuel == fuel }) {
-                LabeledContent(suggestion.fuel.title, value: "\(suggestion.amount.formatted(.number.precision(.fractionLength(2)))) zł/L")
+                LabeledContent(suggestion.fuel.title, value: "\(suggestion.amount.formatted(.number.precision(.fractionLength(2)).locale(PolishRegionalFormat.locale))) zł/L")
                 Text(suggestion.reportedAt.map { "Zgłoszono: \(TripHistoryFormat.date($0))" } ?? "Cena bez daty zgłoszenia")
                     .font(.caption).foregroundStyle(Color.naviTextSecondary)
                 if suggestion.isReportedToday(), appliedSuggestedPrice != nil {
@@ -689,6 +702,9 @@ private struct EnergyCanvas<Content: View>: View {
             .frame(maxWidth: .infinity)
         }
         .background {
+#if os(iOS)
+            Color(uiColor: .systemGroupedBackground).ignoresSafeArea()
+#else
             Color(naviHex: colorScheme == .dark
                 ? NaviAstraColorPalette.navigationSurface : NaviAstraColorPalette.surfaceDay)
                 .overlay {
@@ -697,6 +713,7 @@ private struct EnergyCanvas<Content: View>: View {
                 }
                 .ignoresSafeArea()
                 .accessibilityHidden(true)
+#endif
         }
         .foregroundStyle(Color.naviTextPrimary)
         .font(.subheadline)
@@ -721,6 +738,9 @@ private struct EnergySection<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             if let title {
+#if os(iOS)
+                IOSSectionHeading(title: title, symbol: symbol)
+#else
                 Label {
                     Text(title).foregroundStyle(Color.naviTextPrimary)
                 } icon: {
@@ -728,12 +748,17 @@ private struct EnergySection<Content: View>: View {
                 }
                 .font(.headline)
                 .accessibilityAddTraits(.isHeader)
+#endif
             }
             content()
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
+#if os(iOS)
+        .iosCardSurface(radius: 24)
+#else
         .modifier(NavigationGlassSurface(radius: 24))
+#endif
     }
 
     private static func symbol(for title: String?) -> String {

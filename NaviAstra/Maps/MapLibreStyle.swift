@@ -178,11 +178,7 @@ final class NaviAstraMapStyle {
                 }
                 if id == "naviastra-water-wave-pattern" {
                     layer.fillPattern = NSExpression(forConstantValue: waterPatternName(dark: dark))
-                    let strength = navigating ? 0.55 : 1.0
-                    layer.fillOpacity = NSExpression(mglJSONObject: [
-                        "interpolate", ["linear"], ["zoom"],
-                        12, 0, 14, 0.10 * strength, 17, 0.16 * strength
-                    ])
+                    layer.fillOpacity = MapTerrainTextureStyle.waterOpacity(navigating: navigating)
                     continue
                 }
                 if id.hasPrefix("naviastra-low-vegetation-") {
@@ -324,6 +320,7 @@ final class NaviAstraMapStyle {
             }
         }
         MapEnvironmentStyle.apply(to: style, settings: settings, dark: dark)
+        MapTerrainTextureStyle.apply(to: style, settings: settings, dark: dark)
         streetFurnitureRenderer.apply(to: style, settings: settings, dark: dark)
         poiVisualRenderer.apply(to: style, settings: settings, zoom: zoom, dark: dark, routeFilter: poiRouteFilter)
         satelliteStyle.apply(to: style, enabled: settings.baseMap == .satellite)
@@ -435,6 +432,7 @@ final class NaviAstraMapStyle {
         installWaterShorelineLayer(in: style)
         installWaterWavePatternLayers(in: style)
         MapEnvironmentStyle.configure(in: style)
+        MapTerrainTextureStyle.configure(in: style)
         sportSurfaceRenderer.configure(in: style)
         surfaceNetworkRenderer.configure(in: style)
         installBuildingFacadeLayer(in: style)
@@ -527,16 +525,16 @@ final class NaviAstraMapStyle {
     }
 
     private func vegetationPatternOpacity(navigating: Bool) -> NSExpression {
-        NSExpression(mglJSONObject: ["interpolate", ["linear"], ["zoom"],
-            15, 0, 17, navigating ? 0.16 : 0.30, 19, navigating ? 0.22 : 0.42])
+        MapTerrainTextureStyle.grassOpacity(navigating: navigating)
     }
 
     /// Decorative cartographic marks inside provider polygons, not individual plants.
     private func vegetationPattern(dark: Bool, wetland: Bool) -> UIImage {
+        if !wetland, let texture = MapTerrainTextureStyle.image(.grass, dark: dark) { return texture }
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         format.opaque = false
-        return UIGraphicsImageRenderer(size: CGSize(width: 96, height: 96), format: format).image { output in
+        return UIGraphicsImageRenderer(size: CGSize(width: 128, height: 128), format: format).image { output in
             let context = output.cgContext
             context.setLineCap(.round)
             context.setLineJoin(.round)
@@ -752,6 +750,7 @@ final class NaviAstraMapStyle {
     }
 
     private func waterWavePattern(dark: Bool) -> UIImage {
+        if let texture = MapTerrainTextureStyle.image(.water, dark: dark) { return texture }
         let tileSize: CGFloat = 128
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
@@ -898,7 +897,7 @@ final class NaviAstraMapStyle {
         scheduleDetails()
     }
 
-    func suspendDetails() {
+    func suspendDetails(preservingModels: Bool = false) {
         detailGeneration &+= 1
         detailEnabled = false
         detailWork?.cancel()
@@ -906,7 +905,8 @@ final class NaviAstraMapStyle {
         crosswalkRenderer.suspend()
         surfaceNetworkRenderer.suspend()
         sportSurfaceRenderer.suspend()
-        streetFurnitureRenderer.suspend()
+        if preservingModels { streetFurnitureRenderer.pauseRefresh() }
+        else { streetFurnitureRenderer.suspend() }
         poiVisualRenderer.suspend()
     }
 

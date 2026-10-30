@@ -20,7 +20,8 @@ struct TransitousRouteProvider: TransitRouteProvider {
         try Task.checkCancellation()
         try cancellationToken?.checkCancellation()
         let ranked = TransitJourneyRanker.ranked(try TransitousMapper.journeys(from: response),
-                                                 profile: preferences.profile)
+                                                 profile: preferences.profile,
+                                                 requestedTime: time, arriveBy: arriveBy)
         guard !ranked.isEmpty else { throw TransitRouteError.noRoute }
         return ranked
     }
@@ -28,13 +29,14 @@ struct TransitousRouteProvider: TransitRouteProvider {
 
 extension TransitRouteProvider {
     func calculateRoutes(from: Coordinate, to: Coordinate, departingAt: Date = Date(),
+                         preferences: TransitRoutePreferences = .init(),
                          onProgress: TransitPlanningProgressHandler? = nil,
                          onProvisionalRoutes: TransitProvisionalRoutesHandler? = nil,
                          cancellationToken: TransitPlanningCancellationToken? = nil) async throws
         -> [NavigationRoute] {
         await onProgress?(.searchingConnections)
         let journeys = try await routes(from: from, to: to, time: departingAt,
-                                        arriveBy: false, preferences: .init(),
+                                        arriveBy: false, preferences: preferences,
                                         cancellationToken: cancellationToken)
         try Task.checkCancellation()
         try cancellationToken?.checkCancellation()
@@ -45,6 +47,7 @@ extension TransitRouteProvider {
     }
 
     func calculateRoutesArrivingBy(from: Coordinate, to: Coordinate, deadline: Date,
+                                   preferences: TransitRoutePreferences = .init(),
                                    onProgress: TransitPlanningProgressHandler? = nil,
                                    shouldContinue: @escaping TransitPlanningContinuation,
                                    cancellationToken: TransitPlanningCancellationToken? = nil) async throws
@@ -52,7 +55,7 @@ extension TransitRouteProvider {
         await onProgress?(.searchingConnections)
         guard await shouldContinue() else { throw CancellationError() }
         let journeys = try await routes(from: from, to: to, time: deadline,
-                                        arriveBy: true, preferences: .init(),
+                                        arriveBy: true, preferences: preferences,
                                         cancellationToken: cancellationToken)
         try Task.checkCancellation()
         try cancellationToken?.checkCancellation()

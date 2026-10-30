@@ -30,7 +30,8 @@ struct SavedPlaceEditorSheet: View {
 
                 Section("Szczegóły miejsca") {
                     LabeledContent("Adres", value: place.destination.address ?? "Zapisane współrzędne")
-                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
                     if place.sourceContactIdentifier != nil {
                         Label("Adres powiązany z Kontaktami", systemImage: "person.crop.circle")
                             .font(.caption)
@@ -40,15 +41,15 @@ struct SavedPlaceEditorSheet: View {
 
                 if place.kind == .favorite {
                     Section("Ikona") {
-                        HStack(spacing: 0) {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 52), spacing: 8)], spacing: 8) {
                             ForEach(SavedPlaceIcon.allCases) { option in
                                 Button {
                                     icon = option
                                 } label: {
                                     Image(systemName: option.symbol)
-                                        .font(.system(size: 17, weight: .semibold))
+                                        .font(.headline)
                                         .foregroundStyle(icon == option ? Color.accentColor : Color.naviTextSecondary)
-                                        .frame(maxWidth: .infinity, minHeight: 42)
+                                        .frame(maxWidth: .infinity, minHeight: 48)
                                         .background(icon == option ? Color.accentColor.opacity(0.1) : .clear,
                                                     in: RoundedRectangle(cornerRadius: 10))
                                 }
@@ -77,6 +78,7 @@ struct SavedPlaceEditorSheet: View {
                     Button("Usuń miejsce", role: .destructive) { confirmingRemoval = true }
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Edytuj miejsce")
 #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)

@@ -5,6 +5,59 @@ import Testing
 /// Critical energy accounting and durable data; no view or field-level tests.
 @MainActor
 struct EnergyCriticalTests {
+    @Test func cachedConsumptionTracksTripAssignmentDeletionAndFuelEdits() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = LocalDataStore(directory: directory, removeLearningTrip: { _ in true })
+        let energy = EnergyStore(directory: directory)
+        energy.historyRevisionProvider = { repository.historyRevision }
+        let vehicle = EnergyVehicle(name: "Samochód")
+        #expect(energy.saveVehicle(vehicle))
+        let first = entry(vehicle, 1, 40, nil, full: true)
+        var last = entry(vehicle, 3, 20, nil, full: true)
+        #expect(energy.saveEntry(first))
+        #expect(energy.saveEntry(last))
+        let trip = TripRecord(destination: Destination(name: "Cel", coordinate: Coordinate(latitude: 52, longitude: 21)),
+                              startedAt: Date(timeIntervalSince1970: 2 * 86400),
+                              endedAt: Date(timeIntervalSince1970: 2 * 86400 + 3600),
+                              distanceMeters: 200_000, movingSeconds: 3600, rerouteCount: 0,
+                              arrived: true, transportMode: .car, vehicleID: vehicle.id)
+        #expect(repository.addTrip(trip))
+        #expect(energy.estimate(for: trip, trips: repository.trips)?.cost == 120)
+        #expect(energy.estimate(for: trip, trips: repository.trips)?.cost == 120)
+        #expect(repository.assignVehicle(nil, to: trip.id))
+        #expect(energy.estimate(for: trip, trips: repository.trips) == nil)
+        #expect(repository.assignVehicle(vehicle.id, to: trip.id))
+        #expect(energy.estimate(for: trip, trips: repository.trips)?.cost == 120)
+        last.quantity = 10
+        last.totalPrice = 60
+        #expect(energy.saveEntry(last))
+        #expect(energy.estimate(for: trip, trips: repository.trips)?.cost == 60)
+        #expect(repository.removeTrip(trip.id))
+        #expect(energy.estimate(for: trip, trips: repository.trips) == nil)
+    }
+
+    @Test func durableDistanceIntervalsSplitFuelPeriodsWithoutBridgingGPSGaps() throws {
+        let start = Date(timeIntervalSince1970: 1000)
+        let trip = TripRecord(destination: Destination(name: "Cel", coordinate: Coordinate(latitude: 52, longitude: 21)),
+                              startedAt: start, endedAt: start.addingTimeInterval(100), distanceMeters: 300,
+                              movingSeconds: 30, rerouteCount: 0, arrived: true, transportMode: .car,
+                              traceUnavailableReason: .retention, distanceSamples: [
+                                TripDistanceSample(startedAt: start, endedAt: start.addingTimeInterval(20), distanceMeters: 200),
+                                TripDistanceSample(startedAt: start.addingTimeInterval(90),
+                                                   endedAt: start.addingTimeInterval(100), distanceMeters: 100)
+                              ])
+        let left = try #require(EnergyCalculator.recordedKilometers(trip, from: start, to: start.addingTimeInterval(10)))
+        let right = try #require(EnergyCalculator.recordedKilometers(trip, from: start.addingTimeInterval(10),
+                                                                     to: start.addingTimeInterval(100)))
+        #expect(abs(left - 0.1) < 0.00001)
+        #expect(abs(left + right - 0.3) < 0.00001)
+        #expect(EnergyCalculator.recordedKilometers(trip, from: start.addingTimeInterval(20),
+                                                   to: start.addingTimeInterval(90)) == nil)
+        let reloaded = try JSONDecoder().decode(TripRecord.self, from: JSONEncoder().encode(trip))
+        #expect(EnergyCalculator.recordedKilometers(reloaded, from: start, to: start.addingTimeInterval(10)) == left)
+    }
+
     private func entry(_ vehicle: EnergyVehicle, _ days: Double, _ quantity: Double,
                        _ odometer: Double?, full: Bool, kind: EnergyKind = .pb95, reserve: Bool = false) -> EnergyEntry {
         EnergyEntry(vehicleID: vehicle.id, date: Date(timeIntervalSince1970: days * 86400), kind: kind,

@@ -14,6 +14,7 @@ struct TripTraceRecorder {
     private(set) var maximumSpeedKph: Double?
     private var previous: NavigationLocation?
     private var needsSegment = true
+    private var latestPoint: TripTracePoint?
 
     mutating func record(_ location: NavigationLocation) {
         guard location.accuracy.isFinite, (0...50).contains(location.accuracy),
@@ -35,13 +36,25 @@ struct TripTraceRecorder {
             && location.speedAccuracy >= 0 && location.speedAccuracy <= 5
             ? location.speed * 3.6 : nil
         if let speed { maximumSpeedKph = max(maximumSpeedKph ?? 0, speed) }
+        latestPoint = TripTracePoint(coordinate: location.coordinate, timestamp: location.timestamp,
+                                     speedKph: speed, startsSegment: needsSegment)
         if let last = points.last, !needsSegment,
            location.timestamp.timeIntervalSince(last.timestamp) < 10,
            (location.timestamp.timeIntervalSince(last.timestamp) < 3 ||
             last.coordinate.distance(to: location.coordinate) < 8) { return }
-        points.append(TripTracePoint(coordinate: location.coordinate, timestamp: location.timestamp,
-                                    speedKph: speed, startsSegment: needsSegment))
+        if let latestPoint { append(latestPoint) }
         needsSegment = false
+    }
+
+    /// Keep the last reliable fix even when the normal sampling interval has not elapsed.
+    mutating func finalize() {
+        guard let latestPoint,
+              points.last.map({ $0.timestamp < latestPoint.timestamp }) ?? true else { return }
+        append(latestPoint)
+    }
+
+    private mutating func append(_ point: TripTracePoint) {
+        points.append(point)
         if points.count > 12_000 {
             points = points.enumerated().compactMap { index, point in
                 index == 0 || index == points.count - 1 || index.isMultiple(of: 2)
@@ -75,57 +88,44 @@ extension TripRecord {
     }
 
     func tracePoint(at elapsed: TimeInterval) -> TripTracePoint? {
-        let date = startedAt.addingTimeInterval(elapsed)
-        // Binary search keeps scrubbing and playback inexpensive on long trips.
-        var low = 0
-        var high = trace.count
-        while low < high {
-            let mid = (low + high) / 2
-            if trace[mid].timestamp <= date { low = mid + 1 } else { high = mid }
-        }
-        guard low > 0 else { return nil }
-        let left = trace[low - 1]
-        guard low < trace.count else {
-            return date.timeIntervalSince(left.timestamp) <= 15 ? left : nil
-        }
-        let right = trace[low]
-        let interval = right.timestamp.timeIntervalSince(left.timestamp)
-        guard !right.startsSegment, interval > 0, interval <= 30 else {
-            return date.timeIntervalSince(left.timestamp) <= 1 ? left : nil
-        }
-        let fraction = max(0, min(1, date.timeIntervalSince(left.timestamp) / interval))
-        let longitudeDelta = (right.coordinate.longitude - left.coordinate.longitude + 540)
-            .truncatingRemainder(dividingBy: 360) - 180
-        let longitude = (left.coordinate.longitude + longitudeDelta * fraction + 540)
-            .truncatingRemainder(dividingBy: 360) - 180
-        return TripTracePoint(
-            coordinate: Coordinate(latitude: left.coordinate.latitude +
-                                    (right.coordinate.latitude - left.coordinate.latitude) * fraction,
-                                   longitude: longitude),
-            timestamp: date, speedKph: left.speedKph, startsSegment: false)
+        // Compatibility for one-off consumers. Playback views keep a prepared
+        // TripPlaybackTimeline so validation and sorting happen only once.
+        guard let position = TripPlaybackTimeline(trip: self).position(at: elapsed) else { return nil }
+        return TripTracePoint(coordinate: position.coordinate,
+            timestamp: position.kind == .interpolated ? position.timelineDate : position.measurementDate,
+            speedKph: position.speedKph,
+            startsSegment: position.kind == .gap || position.kind == .beforeFirstFix || position.kind == .afterLastFix)
     }
 }
 
-struct TripHeatCell: Identifiable {
+nonisolated struct TripHeatCell: Identifiable, Sendable {
     let id: String
     let coordinate: CLLocationCoordinate2D
     let radius: CLLocationDistance
     let visits: Int
 }
 
-enum TripHeatmap {
+nonisolated enum TripHeatmap {
     /// One visit per trip per cell prevents waiting or GPS frequency from inflating intensity.
-    static func cells(for trips: [TripRecord]) -> [TripHeatCell] {
+    static func cells(for traces: [[TripTracePoint]]) -> [TripHeatCell] {
         let earthRadius = 6_378_137.0
         var cellSize = 250.0 // Web Mercator meters; physical radius is corrected for latitude.
         var visits: [String: (x: Int, y: Int, count: Int)] = [:]
         // Coarsen the grid for large archives instead of creating tens of thousands of overlays.
         // Recount distinct trips at each resolution, so merging cells never duplicates visits.
         repeat {
+            guard !Task.isCancelled else { return [] }
             visits.removeAll(keepingCapacity: true)
-            for trip in trips {
+            for trace in traces {
+                guard !Task.isCancelled else { return [] }
                 var visited = Set<String>()
-                for point in trip.trace {
+                for (index, point) in trace.enumerated() {
+                    if index.isMultiple(of: 256), Task.isCancelled { return [] }
+                    guard point.coordinate.latitude.isFinite, point.coordinate.longitude.isFinite,
+                          abs(point.coordinate.latitude) <= 90, abs(point.coordinate.longitude) <= 180 else { continue }
+                    guard point.coordinate.latitude.isFinite, point.coordinate.longitude.isFinite,
+                          abs(point.coordinate.latitude) <= 90,
+                          abs(point.coordinate.longitude) <= 180 else { continue }
                     let latitude = max(-85, min(85, point.coordinate.latitude)) * .pi / 180
                     let x = Int(floor(earthRadius * point.coordinate.longitude * .pi / 180 / cellSize))
                     let y = Int(floor(earthRadius * log(tan(.pi / 4 + latitude / 2)) / cellSize))

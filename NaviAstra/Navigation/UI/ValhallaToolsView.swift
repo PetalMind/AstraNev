@@ -1,5 +1,6 @@
 import SwiftUI
 import MapKit
+import OSLog
 
 struct ValhallaToolsView: View {
     let endpoint: URL?
@@ -22,7 +23,7 @@ struct ValhallaToolsView: View {
                 ValhallaPointMap(origin: point) { selectedPoint = $0; height = nil; heightLoaded = false }
                     .frame(height: 240)
                 if let point {
-                    Text("\(point.latitude.formatted(.number.precision(.fractionLength(5)))), \(point.longitude.formatted(.number.precision(.fractionLength(5))))")
+                    Text("\(point.latitude.formatted(.number.precision(.fractionLength(5)).locale(PolishRegionalFormat.locale))), \(point.longitude.formatted(.number.precision(.fractionLength(5)).locale(PolishRegionalFormat.locale)))")
                         .font(.caption.monospacedDigit())
                     Button("Pobierz wysokość punktu", systemImage: "mountain.2") { loadHeight(point) }
                         .disabled(busy)
@@ -32,7 +33,9 @@ struct ValhallaToolsView: View {
                 }
             }
             Section("Diagnostyka decyzji") {
-                NavigationLink("Ranking, jakość danych i benchmarki") { RoutingDiagnosticsView(navigation: navigation) }
+                NavigationLink("Ranking, jakość danych i benchmarki") {
+                    RoutingDiagnosticsView(navigation: navigation, trips: trips)
+                }
             }
             if let endpoint {
                 Section("Analiza i planowanie") {
@@ -57,7 +60,10 @@ struct ValhallaToolsView: View {
                     LabeledContent("Strefy czasowe", value: availability(status.timeZones))
                     LabeledContent("Dane dróg", value: availability(status.hasTiles))
                     if let changeset = status.changeset { LabeledContent("Zbiór danych OSM", value: changeset) }
-                    if let actions = status.actions { Text("Dostępne usługi: " + actions.joined(separator: ", ")).font(.caption) }
+                    if let actions = status.actions {
+                        Text("Dostępne usługi: " + actions.map(Self.actionTitle).joined(separator: ", "))
+                            .font(.caption)
+                    }
                     Text("Brak potwierdzenia ruchu w statusie oznacza stan nieznany. Aktualizacja plików routingu nie jest datą wszystkich danych OSM. Informacje o ruchu dla odcinków pojawią się w szczegółach trasy, jeśli serwer je udostępni. Komunikacja publiczna w aplikacji nadal korzysta z Transitous.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -66,7 +72,29 @@ struct ValhallaToolsView: View {
             if let error { Section { Text(error).foregroundStyle(.orange) } }
         }
         .navigationTitle("Narzędzia tras")
+        .formStyle(.grouped)
+        .environment(\.locale, PolishRegionalFormat.locale)
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
         .onDisappear { task?.cancel(); busy = false }
+    }
+
+    private static func actionTitle(_ action: String) -> String {
+        switch action {
+        case "route": "wyznaczanie tras"
+        case "optimized_route": "kolejność przystanków"
+        case "sources_to_targets", "matrix": "czasy i odległości"
+        case "isochrone": "zasięg podróży"
+        case "trace_route", "trace_attributes": "dopasowanie śladu GPS"
+        case "locate": "wyszukiwanie odcinka drogi"
+        case "height": "wysokość terenu"
+        case "status": "stan serwera"
+        case "transit_available": "dostępność komunikacji"
+        case "expansion": "analiza sieci dróg"
+        case "centroid": "punkt wspólny tras"
+        default: "inna usługa"
+        }
     }
 
     private func availability(_ flag: Bool?) -> String { flag.map { $0 ? "Dostępne" : "Niedostępne" } ?? "Serwer nie potwierdził" }
@@ -78,7 +106,12 @@ struct ValhallaToolsView: View {
             do {
                 let samples = try await ValhallaServices(endpoint: endpoint).heights([point], resample: false)
                 try Task.checkCancellation(); height = samples.first?.heightMeters; heightLoaded = true
-            } catch is CancellationError { } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+            } catch is CancellationError { } catch {
+                if !Task.isCancelled {
+                    Logger(subsystem: "NaviAstra", category: "RoutingTools").error("Wysokość terenu: \(error.localizedDescription, privacy: .private)")
+                    self.error = "Nie udało się pobrać wysokości terenu. Sprawdź połączenie i spróbuj ponownie."
+                }
+            }
         }
     }
     private func loadStatus() {
@@ -87,7 +120,12 @@ struct ValhallaToolsView: View {
         task = Task {
             defer { busy = false }
             do { let result = try await ValhallaServices(endpoint: endpoint).status(); try Task.checkCancellation(); status = result }
-            catch is CancellationError { } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+            catch is CancellationError { } catch {
+                if !Task.isCancelled {
+                    Logger(subsystem: "NaviAstra", category: "RoutingTools").error("Status serwera: \(error.localizedDescription, privacy: .private)")
+                    self.error = "Nie udało się sprawdzić serwera. Sprawdź adres w ustawieniach i połączenie z internetem."
+                }
+            }
         }
     }
 }
@@ -167,6 +205,11 @@ struct ValhallaReachabilityView: View {
             }
         }
         .navigationTitle("Zasięg podróży")
+        .formStyle(.grouped)
+        .environment(\.locale, PolishRegionalFormat.locale)
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
         .onChange(of: mode) { _, _ in contours = []; error = nil }
         .onChange(of: distance) { _, _ in contours = []; error = nil }
         .onChange(of: limit) { _, _ in contours = []; error = nil }
@@ -182,7 +225,12 @@ struct ValhallaReachabilityView: View {
                 let result = try await ValhallaServices(endpoint: endpoint).contours(at: origin, mode: mode,
                     preferences: preferences, value: limit, distance: distance)
                 try Task.checkCancellation(); contours = result
-            } catch is CancellationError { } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+            } catch is CancellationError { } catch {
+                if !Task.isCancelled {
+                    Logger(subsystem: "NaviAstra", category: "RoutingTools").error("Zasięg podróży: \(error.localizedDescription, privacy: .private)")
+                    self.error = "Nie udało się obliczyć zasięgu. Sprawdź połączenie lub wybierz inny punkt i spróbuj ponownie."
+                }
+            }
         }
     }
 }
@@ -247,6 +295,11 @@ struct ValhallaAvoidAreasView: View {
             }.disabled(saving)
         }
         .navigationTitle("Obszary omijane")
+        .formStyle(.grouped)
+        .environment(\.locale, PolishRegionalFormat.locale)
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
         .onAppear {
             if let origin { position = .region(MKCoordinateRegion(center: origin.cl,
                 span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08))) }

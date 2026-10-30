@@ -1,9 +1,10 @@
 #if os(iOS)
 import SwiftUI
 import UniformTypeIdentifiers
+import OSLog
 
 struct OfflineRoutingView: View {
-    @State private var store = OfflineRoutingStore.shared
+    @Bindable private var store = OfflineRoutingStore.shared
     @State private var showImporter = false
     @State private var customURL = ""
     @State private var customName = ""
@@ -37,7 +38,7 @@ struct OfflineRoutingView: View {
                     if let progress = store.progress { ProgressView(value: progress) }
                     else { ProgressView() }
                     if store.downloadedBytes > 0 {
-                        Text(ByteCountFormatter.string(fromByteCount: store.downloadedBytes, countStyle: .file))
+                        Text(OfflineStorageFormat.bytes(store.downloadedBytes))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Button("Anuluj", role: .cancel) { store.cancelTransfer() }
@@ -62,34 +63,36 @@ struct OfflineRoutingView: View {
                 }.disabled(downloadURL == nil || store.isInstalling)
             }
             Section("Zapisane paczki") {
-                if store.packs.isEmpty { Text("Nie pobrano danych drogowych.").foregroundStyle(.secondary) }
+                if store.packs.isEmpty {
+                    ContentUnavailableView("Brak danych drogowych", systemImage: "shippingbox",
+                        description: Text("Pobierz region lub zaimportuj paczkę, aby wyznaczać trasy bez internetu."))
+                }
                 ForEach(store.packs) { pack in
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(pack.name).font(.headline)
-                        Text(ByteCountFormatter.string(fromByteCount: pack.bytes, countStyle: .file))
-                            .font(.caption).foregroundStyle(.secondary)
-                        HStack {
-                            Button(store.activeID == pack.id ? "Aktywna" : "Używaj tej paczki") { store.activeID = pack.id }
-                                .buttonStyle(.bordered).disabled(store.activeID == pack.id)
-                            Spacer()
-                            Button("Usuń", role: .destructive) { pendingRemoval = pack }.buttonStyle(.bordered)
-                        }
-                    }.disabled(store.removingIDs.contains(pack.id))
+                    OfflineRoutingPackRow(pack: pack, isActive: store.activeID == pack.id,
+                        isRemoving: store.removingIDs.contains(pack.id),
+                        onActivate: { store.activeID = pack.id }, onRemove: { pendingRemoval = pack })
                 }
             }
+
             Section("Źródła danych i licencje") {
                 Link("Valhalla Mobile · silnik i licencja", destination: URL(string: "https://github.com/Rallista/valhalla-mobile")!)
                 Link("Librescoot · katalog paczek i zasady danych", destination: URL(string: "https://github.com/librescoot/valhalla-tiles")!)
-                Link("© OpenStreetMap contributors · ODbL", destination: URL(string: "https://www.openstreetmap.org/copyright")!)
+                Link("© Autorzy OpenStreetMap · ODbL", destination: URL(string: "https://www.openstreetmap.org/copyright")!)
             }
         }
+        .formStyle(.grouped)
+        .scrollDismissesKeyboard(.interactively)
+        .environment(\.locale, PolishRegionalFormat.locale)
         .navigationTitle("Dane drogowe offline")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { store.refresh() }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.archive, .data]) { result in
             switch result {
             case .success(let url): store.importArchive(url, motorVehiclesOnly: motorVehiclesOnly)
-            case .failure(let error): store.error = error.localizedDescription
+            case .failure(let error):
+                Logger(subsystem: "NaviAstra", category: "OfflineImport")
+                    .error("Nie udało się wybrać pliku: \(error.localizedDescription, privacy: .private)")
+                store.error = "Nie udało się otworzyć wybranej paczki. Sprawdź dostęp do pliku i spróbuj ponownie."
             }
         }
         .alert("Usunąć dane drogowe?", isPresented: Binding(
@@ -117,7 +120,7 @@ struct OfflineRoutingView: View {
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(download.title)
-                            Text(ByteCountFormatter.string(fromByteCount: download.size, countStyle: .file))
+                            Text(OfflineStorageFormat.bytes(download.size))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }.disabled(store.isInstalling)

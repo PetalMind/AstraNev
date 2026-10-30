@@ -65,17 +65,11 @@ nonisolated struct RouteReliability: Codable, Sendable {
                          traffic: TrafficSnapshot?, now: Date = .now, geometry cachedGeometry: RouteProgressGeometry? = nil) -> Self {
         let geometry = cachedGeometry ?? RouteProgressGeometry(route)
         let coverage = TrafficCoverage.measure(route: route, from: start, through: end, traffic: traffic, now: now, geometry: geometry)
-        let closedFlow = (traffic?.routeFlowSegments ?? []).contains {
-            $0.routeID == route.id && $0.isRoadClosure && $0.endDistance > start &&
-                (-5...240).contains(now.timeIntervalSince($0.measuredAt ?? traffic?.updatedAt ?? .distantPast))
-        }
-        let closedIncident = (traffic?.incidents ?? []).contains {
-            guard $0.isRoadClosure, traffic?.incidentDataAvailable == true,
-                  (-5...120).contains(now.timeIntervalSince($0.observedAt ?? traffic?.updatedAt ?? .distantPast)),
-                  let projection = RouteTrafficMonitor.incidentProjection($0, geometry: geometry, route: route, at: now) else { return false }
-            return projection.alongRoute > start + 40
-        }
-        let closed = closedFlow || closedIncident
+        let closed = traffic.map { snapshot in
+            ConfirmedRoadClosure.evidence(in: snapshot, route: route, now: now).contains {
+                $0.distanceAhead(on: route, after: start, through: end ?? geometry.length, now: now) != nil
+            }
+        } ?? false
         let fraction = coverage.corridorFraction
         let level: EvidenceLevel = closed ? .blocked : coverage.freshDistance <= 0 ? .unavailable
             : fraction >= 0.8 ? .strong : fraction >= 0.5 ? .supported : .limited

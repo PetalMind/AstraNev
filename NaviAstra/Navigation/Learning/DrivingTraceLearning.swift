@@ -4,24 +4,70 @@ import Foundation
 /// recalculate every suggested variant with the current access restrictions.
 nonisolated enum DrivingTraceLearning {
     static func segments(trace: [TripTracePoint]) throws -> [LearnedRoadSegment] {
+        segments(chunks: try observationChunks(trace: trace))
+    }
+
+    /// Keep usable observations on both sides of a gap without inventing the
+    /// route or the distance travelled while location updates were unavailable.
+    static func observationChunks(trace: [TripTracePoint]) throws -> [[TripTracePoint]] {
         guard trace.count >= 10, let first = trace.first, let last = trace.last,
               last.timestamp.timeIntervalSince(first.timestamp) >= 60,
-              trace.allSatisfy({ $0.coordinate.isValidValhallaCoordinate }),
-              !trace.dropFirst().contains(where: \.startsSegment) else {
+              trace.allSatisfy({ $0.coordinate.isValidValhallaCoordinate
+                  && $0.timestamp.timeIntervalSinceReferenceDate.isFinite }) else {
             throw DrivingLearningFailure.incompleteTrace
         }
+        var chunks: [[TripTracePoint]] = []
+        var current = [first]
         for (left, right) in zip(trace, trace.dropFirst()) {
             let elapsed = right.timestamp.timeIntervalSince(left.timestamp)
-            guard elapsed > 0, elapsed <= 30,
-                  left.coordinate.distance(to: right.coordinate) <= max(30, elapsed * 60) else {
+            guard elapsed.isFinite, elapsed > 0 else {
                 throw DrivingLearningFailure.incompleteTrace
             }
+            if isObservationGap(from: left, to: right) {
+                if current.count >= 2 { chunks.append(current) }
+                current = [right]
+            } else {
+                guard left.coordinate.distance(to: right.coordinate) <= max(30, elapsed * 60) else {
+                    throw DrivingLearningFailure.incompleteTrace
+                }
+                current.append(right)
+            }
         }
-        let result = segments(coordinates: trace.map(\.coordinate))
-        guard result.reduce(0, { $0 + $1.length }) >= 500 else {
+        if current.count >= 2 { chunks.append(current) }
+        let observedDistance = chunks.reduce(0.0) { total, chunk in
+            total + zip(chunk, chunk.dropFirst()).reduce(0) {
+                $0 + $1.0.coordinate.distance(to: $1.1.coordinate)
+            }
+        }
+        guard chunks.reduce(0, { $0 + $1.count }) >= 10, observedDistance >= 500 else {
             throw DrivingLearningFailure.incompleteTrace
         }
-        return result
+        return chunks
+    }
+
+    static func isStationaryGap(from left: TripTracePoint, to right: TripTracePoint) -> Bool {
+        let elapsed = right.timestamp.timeIntervalSince(left.timestamp)
+        return isObservationGap(from: left, to: right) && elapsed.isFinite && elapsed > 0 && elapsed <= 180
+            && left.coordinate.isValidValhallaCoordinate && right.coordinate.isValidValhallaCoordinate
+            && left.coordinate.distance(to: right.coordinate) <= 20
+    }
+
+    static func hasUncertainGaps(trace: [TripTracePoint]) -> Bool {
+        zip(trace, trace.dropFirst()).contains {
+            isObservationGap(from: $0.0, to: $0.1) && !isStationaryGap(from: $0.0, to: $0.1)
+        }
+    }
+
+    private static func isObservationGap(from left: TripTracePoint, to right: TripTracePoint) -> Bool {
+        right.startsSegment || right.timestamp.timeIntervalSince(left.timestamp) > 30
+    }
+
+    static func segments(chunks: [[TripTracePoint]]) -> [LearnedRoadSegment] {
+        chunks.flatMap { chunk in
+            var observed = segments(coordinates: chunk.map(\.coordinate))
+            if !observed.isEmpty { observed[0].startsObservation = true }
+            return observed
+        }
     }
 
     static func segments(coordinates: [Coordinate]) -> [LearnedRoadSegment] {
@@ -47,8 +93,16 @@ nonisolated enum DrivingTraceLearning {
     /// A parallel street within GPS uncertainty, a stop or a loop is weak evidence.
     static func deviations(actual: [LearnedRoadSegment], proposed: [LearnedRoadSegment],
                            trace: [TripTracePoint]) -> [DrivingDeviation] {
-        guard !actual.isEmpty, !proposed.isEmpty, trace.count >= 10 else { return [] }
-        let baseline = RouteProgressGeometry(coordinates: proposed.flatMap(\.coordinates))
+        guard !actual.isEmpty, !proposed.isEmpty,
+              let chunks = try? observationChunks(trace: trace) else { return [] }
+        let baselines = DrivingLearningMath.continuousGeometries(proposed)
+        return chunks.flatMap { chunk in
+            baselines.flatMap { deviations(baseline: $0, trace: chunk) }
+        }
+    }
+
+    private static func deviations(baseline: RouteProgressGeometry,
+                                   trace: [TripTracePoint]) -> [DrivingDeviation] {
         let observed = RouteProgressGeometry(coordinates: trace.map(\.coordinate))
         var anchor: (index: Int, along: Double)?
         var separatedLength = 0.0

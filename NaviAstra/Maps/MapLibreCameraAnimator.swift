@@ -5,7 +5,8 @@ import UIKit
 enum MapLibreCameraAnimator {
     @discardableResult
     static func apply(_ intent: CameraIntent, state: NavigationCameraState, to map: MLNMapView,
-                      completionHandler: @escaping () -> Void) -> Bool {
+                      continuousFollow: Bool = false,
+                      completionHandler: (() -> Void)? = nil) -> Bool {
         guard isValid(intent.target), intent.zoom.isFinite, intent.pitch.isFinite,
               intent.bearing.isFinite else { return false }
         let validBounds = intent.bounds.filter { isValid($0) }
@@ -36,7 +37,7 @@ enum MapLibreCameraAnimator {
         camera.heading = intent.bearing.truncatingRemainder(dividingBy: 360)
         camera.altitude = max(120, targetAltitude)
         let defaultDuration: TimeInterval = switch state {
-        case .startingNavigation: 0.35
+        case .startingNavigation: NavigationCameraTiming.start
         case .maneuverNow: 0.45
         case .leavingManeuver: 0.7
         case .approachingManeuver: 0.4
@@ -44,7 +45,10 @@ enum MapLibreCameraAnimator {
         default: 0.45
         }
         let duration = intent.animationDuration ?? defaultDuration
-        map.setCamera(camera, withDuration: duration, animationTimingFunction: nil,
+        // The policy already smooths the navigation intent. Easing every GPS
+        // update would repeatedly brake and accelerate an otherwise steady drive.
+        let timing = continuousFollow ? CAMediaTimingFunction(name: .linear) : nil
+        map.setCamera(camera, withDuration: duration, animationTimingFunction: timing,
                       edgePadding: UIEdgeInsets(top: intent.padding.top, left: intent.padding.left,
                                                 bottom: intent.padding.bottom, right: intent.padding.right),
                       completionHandler: completionHandler)

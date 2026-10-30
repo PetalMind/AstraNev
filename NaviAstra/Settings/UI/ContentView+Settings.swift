@@ -28,12 +28,16 @@ extension ContentView {
         NavigationStack {
             settingsForm
                 .navigationTitle("Ustawienia")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Zamknij") { appRouter.dismiss(.settings) }
+                    }
+                }
         }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button("Zamknij") { appRouter.dismiss(.settings) }
-            }
-        }
+        #if os(iOS)
+        .presentationSizing(.form)
+        .presentationDragIndicator(.visible)
+        #endif
         // Load once for the sheet, so returning from a category preserves route edits.
         .onAppear { routePlanningStore.loadPreferences(from: navigationStore) }
         #if os(macOS)
@@ -42,6 +46,9 @@ extension ContentView {
     }
 
     private var settingsForm: some View {
+        #if os(iOS)
+        IOSSettingsIndex(summary: settingsSummary, destination: settingsDestination)
+        #else
         Form {
             Section("Nawigacja") {
                 settingsCategory("Personalizacja tras", subtitle: "Twoje trasy, skróty i preferowane drogi",
@@ -57,7 +64,7 @@ extension ContentView {
                                  icon: "fuelpump.fill") {
                     EnergyDashboard(store: energyStore, places: placeStore, coordinate: navigationStore.state.location?.coordinate)
                 }
-                settingsCategory("Historia przejazdów", subtitle: "Ukończone trasy i oceny prowadzenia",
+                settingsCategory("Historia przejazdów", subtitle: "Wszystkie przejazdy, ślady GPS i oceny prowadzenia",
                                  icon: "clock.arrow.circlepath") {
                     settingsTripHistoryPage
                 }
@@ -138,7 +145,82 @@ extension ContentView {
             }
         }
         .formStyle(.grouped)
+        #endif
     }
+
+    #if os(iOS)
+    private func settingsSummary(_ category: IOSSettingsCategory) -> String {
+        switch category {
+        case .routes: defaultTransportTitle
+        case .guidance: navigationStore.state.voiceEnabled
+            ? "Głos włączony · \(navigationStore.state.voicePreferences.verbosity.title)"
+            : "Komunikaty głosowe wyłączone"
+        case .personalization: "Twoje trasy, skróty i preferowane drogi"
+        case .marker: mapStore.transportPositionIconsEnabled ? "Modele i kolory" : "Klasyczna strzałka"
+        case .energy: energyStore.selectedVehicle?.name ?? "Pojazdy, tankowania i ładowania"
+        case .history: "Przejazdy, ślady GPS i oceny prowadzenia"
+        case .map: "\((MapAppearance(rawValue: mapStore.mapAppearance) ?? .auto).title) · \((MapDimension(rawValue: mapStore.mapDimension) ?? .flat).title)"
+        case .offline: "Pobrane mapy i dane drogowe"
+        case .traffic: TrafficCredential.read() != nil ? "TomTom, GDDKiA i zgłoszenia" : "GDDKiA i zgłoszenia"
+        case .transit: "Transitous i MPK Łódź"
+        case .advanced: "Zasięg, ślady GPS i serwer tras"
+        case .privacy: "Lokalna historia, źródła danych i licencje"
+        }
+    }
+
+    @ViewBuilder
+    private func settingsDestination(_ category: IOSSettingsCategory) -> some View {
+        switch category {
+        case .routes: settingsRoutePage
+        case .guidance: settingsGuidancePage
+        case .personalization: DrivingPersonalizationView(endpoint: URL(string: serverAddress))
+        case .marker: NavigationMarkerSettingsView(store: mapStore)
+        case .energy:
+            EnergyDashboard(store: energyStore, places: placeStore,
+                            coordinate: navigationStore.state.location?.coordinate)
+        case .history: settingsTripHistoryPage
+        case .map: settingsMapPage
+        case .offline:
+            OfflineMapsView(location: navigationStore.state.location?.coordinate,
+                            destination: navigationStore.state.destination,
+                            savedPlaces: placeStore.places,
+                            route: navigationStore.state.route?.coordinates ?? [])
+        case .traffic: settingsPage("Ruch drogowy") { settingsTrafficSection }
+        case .transit: settingsPage("Komunikacja publiczna") { settingsTransitSection }
+        case .advanced:
+            settingsPage("Narzędzia i zaawansowane") {
+                Section("Analiza trasy") {
+                    NavigationLink("Zasięg, ślady GPS i obszary omijane") {
+                        ValhallaToolsView(endpoint: URL(string: serverAddress),
+                            origin: navigationStore.state.location?.coordinate,
+                            navigation: navigationStore, trips: placeStore.trips)
+                    }
+                }
+                settingsValhallaSection
+            }
+        case .privacy:
+            settingsPage("Dane i prywatność") {
+                Section("Dostępność i dane") { settingsDisclaimer }
+                Section("Źródła mapy i licencje") {
+                    SatelliteMapCredits()
+                    Link("OpenFreeMap · mapa bazowa", destination: URL(string: "https://openfreemap.org")!)
+                    Link("OpenStreetMap · autorzy i licencja ODbL", destination: URL(string: "https://www.openstreetmap.org/copyright")!)
+                    Link("InPost · wyszukiwanie punktów po numerze", destination: URL(string: "https://inpost.pl/znajdz-paczkomat")!)
+                    Link("MapLibre · silnik mapy", destination: URL(string: "https://maplibre.org")!)
+                    if MapTilerEnvironmentStyle.configuredURL != nil {
+                        Link("MapTiler · szczegóły otoczenia", destination: URL(string: "https://www.maptiler.com/copyright/")!)
+                        Text("Otoczenie pochodzi z MapTiler Planet v4. Szczegóły pojawiają się wraz ze zbliżeniem i zależą od danych w danym miejscu. Symbole przejść nie określają rodzaju oznakowania ani pierwszeństwa.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                settingsShopLogoCredits
+                Section("Ikonografia nawigacji") {
+                    Link("Mapbox Directions Icons · CC0 1.0", destination: URL(string: "https://github.com/mapbox/directions-icons")!)
+                }
+            }
+        }
+    }
+    #endif
 
     private var settingsTripHistoryPage: some View {
         RouteHistoryView(store: placeStore, onPlanTrip: { trip in
@@ -151,7 +233,7 @@ extension ContentView {
             addFavoriteWithFeedback(destination)
         }, onClose: {
             appRouter.dismiss(.settings)
-        }, energyStore: energyStore, completedOnly: true, embeddedInNavigation: true)
+        }, energyStore: energyStore, embeddedInNavigation: true)
         .overlay(alignment: .top) {
             FavoriteFeedbackOverlay(feedback: $favoriteFeedback)
                 .padding(.top, 48)
@@ -225,6 +307,9 @@ extension ContentView {
     private var settingsGuidancePage: some View {
         settingsPage("Głos i ostrzeżenia") {
             settingsVoiceSection
+            #if os(iOS)
+            VoiceAssistantSettings(assistant: voiceAssistant)
+            #endif
             settingsGuidanceSection
         }
     }
@@ -511,6 +596,8 @@ extension ContentView {
                           format: .number.precision(.fractionLength(0)))
                 LabeledContent("Dostępny zasięg",
                                value: "\(Int(routePlanningStore.draftPreferences.availableEVRangeKilometers.rounded())) km")
+                EVBatteryStatusView(navigation: navigationStore,
+                    enteredPercent: routePlanningStore.draftPreferences.evBatteryPercent)
             }
         } header: {
             Text("Pojazd elektryczny")
@@ -640,6 +727,8 @@ extension ContentView {
                             evConnectorToggle("ccs", title: "CCS")
                             evConnectorToggle("type2", title: "Type 2")
                             evConnectorToggle("chademo", title: "CHAdeMO")
+                            EVBatteryStatusView(navigation: navigationStore,
+                                enteredPercent: routePlanningStore.draftPreferences.evBatteryPercent)
                             Text("Złącza, moc i status stacji pochodzą z OpenStreetMap. Brak wpisu o dostępności oznacza stan nieznany; aplikacja nie pobiera zajętości ładowarek.")
                                 .font(.footnote).foregroundStyle(Color.naviTextSecondary)
                         }

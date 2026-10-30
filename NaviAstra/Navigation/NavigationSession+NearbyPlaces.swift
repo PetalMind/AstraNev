@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 extension NavigationSession {
     func searchNearbyPlaces(_ category: NearbyPlaceCategory, nearDestination: Bool = false,
@@ -152,7 +153,11 @@ extension NavigationSession {
             }
         } catch {
             guard nearbySearchID == searchID, !Task.isCancelled else { return }
-            state.nearbyStatus = .unavailable(error.localizedDescription)
+            Logger(subsystem: "NaviAstra", category: "NearbyPlaces")
+                .error("Wyszukiwanie miejsc nie powiodło się: \(String(describing: error), privacy: .private)")
+            let message = (error as? NearbyPlaceError)?.errorDescription
+                ?? "Wyszukiwanie miejsc jest chwilowo niedostępne. Spróbuj ponownie."
+            state.nearbyStatus = .unavailable(message)
         }
     }
 
@@ -264,6 +269,7 @@ extension NavigationSession {
                 state.navigationTarget = targets
                 state.evChargingStops = []
                 state.waypointNavigationTargets = [:]
+                tripSession?.routeQuality.invalidateForPlanChange()
                 tripSession?.destination = destination
                 await reroute(from: location)
             } else {

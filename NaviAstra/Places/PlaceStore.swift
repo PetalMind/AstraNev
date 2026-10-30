@@ -14,6 +14,7 @@ final class PlaceStore {
 
     var places: [SavedPlace] { repository.places }
     var trips: [TripRecord] { repository.trips }
+    var historyRevision: UInt64 { repository.historyRevision }
     var searches: [SearchHistoryEntry] { repository.searches }
     var parkedCar: ParkedCar? { repository.parkedCar }
 
@@ -84,8 +85,18 @@ final class PlaceStore {
         repository.assignVehicle(vehicleID, to: tripID)
     }
 
-    func addTrip(_ trip: TripRecord) {
+    @discardableResult
+    func addTrip(_ trip: TripRecord) -> Bool {
         repository.addTrip(trip)
+    }
+
+    @discardableResult
+    func saveActiveTrip(_ trip: TripRecord) -> Bool {
+        repository.saveActiveTrip(trip)
+    }
+
+    func retryPendingHistoryWrites() {
+        repository.retryPendingHistoryWrites()
     }
 
     func recordSearch(_ destination: Destination) {
@@ -96,7 +107,8 @@ final class PlaceStore {
         repository.removeSearch(id)
     }
 
-    func removeTrip(_ id: UUID) {
+    @discardableResult
+    func removeTrip(_ id: UUID) -> Bool {
         repository.removeTrip(id)
     }
 }

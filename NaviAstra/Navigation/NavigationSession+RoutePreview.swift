@@ -2,12 +2,18 @@ import CoreLocation
 import Foundation
 
 extension NavigationSession {
-    func previewNewTrip(_ destination: Destination) async {
-        applyConfiguredDefaultTransportMode()
+    func previewNewTrip(_ destination: Destination, transportMode: TransportMode? = nil) async {
+        finishActiveTripBeforePreview()
+        if let transportMode {
+            state.transportMode = transportMode
+        } else {
+            applyConfiguredDefaultTransportMode()
+        }
         await preview(destination)
     }
 
     func preview(_ destination: Destination) async {
+        finishActiveTripBeforePreview()
         requestGeneration += 1
         let token = TransitPlanningCancellationToken()
         roadPlanningCancellationToken = token
@@ -15,6 +21,24 @@ extension NavigationSession {
             await performPreview(destination)
         }
         if roadPlanningCancellationToken === token { roadPlanningCancellationToken = nil }
+    }
+
+    private func finishActiveTripBeforePreview() {
+        guard tripSession != nil else { return }
+        arrivalDetector.reset()
+        liveActivity.end()
+        state.arrivalLocation = nil
+        finishTrip(arrived: false, reason: .replaced)
+        rerouteController.stop()
+        voice.reset()
+        locationManager.stopBackgroundNavigationUpdates()
+        locationManager.setHeadingUpdatesEnabled(false)
+        mapCameraController.resetWalkingCamera()
+        state.deviceHeading = nil
+        navigationTransitionTask?.cancel()
+        mapCameraController.cancelNavigationCameraTasks()
+        // Keep route points here: replay and route editors have already supplied
+        // the next destination's waypoints before requesting its preview.
     }
 
     private func performPreview(_ destination: Destination) async {
@@ -74,6 +98,7 @@ extension NavigationSession {
                 if requestedJourneyTimeMode == .arriveBy {
                     routes = try await transitProvider.calculateRoutesArrivingBy(
                         from: origin, to: routeDestination, deadline: requestedJourneyTime,
+                        preferences: state.routingPreferences.transit,
                         onProgress: onProgress,
                         shouldContinue: { [weak self] in
                             self?.requestGeneration == generation
@@ -84,6 +109,7 @@ extension NavigationSession {
                     let departure = requestedJourneyTimeMode == .departAt ? requestedJourneyTime : Date()
                     routes = try await transitProvider.calculateRoutes(
                         from: origin, to: routeDestination, departingAt: departure,
+                        preferences: state.routingPreferences.transit,
                         onProgress: onProgress,
                         onProvisionalRoutes: { [weak self] routes in
                             self?.onProvisionalTransitRoutes(routes, generation: generation)

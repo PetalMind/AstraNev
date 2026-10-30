@@ -10,123 +10,220 @@ struct NaviAstraWidgets: WidgetBundle {
 struct NavigationLiveActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: NavigationActivityAttributes.self) { context in
-            HStack(spacing: 14) {
-                routeDiagram(context)
-                    .frame(width: 110, height: 114)
-                    .privacySensitive()
-                VStack(alignment: .leading, spacing: 7) {
-                    HStack(alignment: .top, spacing: 9) {
-                        ManeuverIcon(type: context.state.maneuver, fallbackSymbol: context.state.symbolName,
-                            size: 30, roundabout: context.state.isRerouting ? nil : context.state.roundabout)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(maneuverLabel(context)).font(.title3.bold())
-                            Text(context.state.roadName.isEmpty ? context.state.instruction : context.state.roadName)
-                                .font(.subheadline).lineLimit(2).privacySensitive()
-                        }
-                    }
-                    summary(context)
-                    ProgressView(value: context.state.routeProgress).tint(.cyan)
-                }
-            }
-            .padding(14)
-            .environment(\.locale, Locale(identifier: "pl_PL"))
-            .activityBackgroundTint(.black.opacity(0.9))
-            .activitySystemActionForegroundColor(.white)
-            .foregroundStyle(.white)
-            .accessibilityElement(children: .combine)
+            NavigationLockScreenView(presentation: .init(context: context))
+                .environment(\.locale, Locale(identifier: "pl_PL"))
+                .activityBackgroundTint(.black.opacity(0.9))
+                .activitySystemActionForegroundColor(.white)
+                .foregroundStyle(.white)
         } dynamicIsland: { context in
-            DynamicIsland {
+            let presentation = NavigationActivityPresentation(context: context)
+            return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    ManeuverIcon(type: context.state.maneuver, fallbackSymbol: context.state.symbolName,
-                        size: 30, roundabout: context.state.isRerouting ? nil : context.state.roundabout)
+                    NavigationActivityManeuver(presentation: presentation, size: 30)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    Text(maneuverLabel(context)).font(.headline.monospacedDigit())
+                    Text(presentation.maneuverLabel)
+                        .font(.headline.monospacedDigit())
+                        .lineLimit(2)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    HStack(spacing: 12) {
-                        routeDiagram(context).frame(width: 86, height: 86).privacySensitive()
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(context.state.roadName.isEmpty ? context.state.instruction : context.state.roadName)
-                                .font(.headline).lineLimit(2).privacySensitive()
-                            summary(context)
-                            ProgressView(value: context.state.routeProgress).tint(.cyan)
-                        }
-                    }
-                    .environment(\.locale, Locale(identifier: "pl_PL"))
+                    NavigationIslandGuidanceView(presentation: presentation)
+                        .environment(\.locale, Locale(identifier: "pl_PL"))
                 }
             } compactLeading: {
-                ManeuverIcon(type: context.state.maneuver, fallbackSymbol: context.state.symbolName,
-                    size: 20, roundabout: context.state.isRerouting ? nil : context.state.roundabout)
+                NavigationActivityManeuver(presentation: presentation, size: 20)
             } compactTrailing: {
-                Text(context.state.isRerouting ? "…" : isPositionStale(context) ? "GPS" : distance(context.state.maneuverDistance))
+                Text(presentation.compactLabel)
                     .monospacedDigit()
+                    .accessibilityLabel(presentation.maneuverLabel)
             } minimal: {
-                ManeuverIcon(type: context.state.isRerouting ? nil : context.state.maneuver,
-                    fallbackSymbol: context.state.isRerouting ? "arrow.triangle.2.circlepath" : context.state.symbolName,
-                    size: 20, roundabout: context.state.isRerouting ? nil : context.state.roundabout)
+                NavigationActivityManeuver(presentation: presentation, size: 20)
+                    .accessibilityLabel(presentation.maneuverLabel)
             }
         }
     }
+}
 
-    private func isPositionStale(_ context: ActivityViewContext<NavigationActivityAttributes>) -> Bool {
-        context.isStale || context.state.gpsSignalLost
+/// One display policy for the Lock Screen and every Dynamic Island presentation.
+private struct NavigationActivityPresentation {
+    static let locale = Locale(identifier: "pl_PL")
+    let state: NavigationActivityAttributes.ContentState
+    let isPositionStale: Bool
+
+    init(context: ActivityViewContext<NavigationActivityAttributes>) {
+        state = context.state
+        isPositionStale = context.isStale || context.state.gpsSignalLost
     }
 
-    @ViewBuilder private func routeDiagram(_ context: ActivityViewContext<NavigationActivityAttributes>) -> some View {
-        if !isPositionStale(context), !context.state.isRerouting, let sketch = context.state.routeSketch {
-            NavigationActivityRouteDiagram(sketch: sketch)
-        } else {
-            VStack(spacing: 7) {
-                Image(systemName: context.state.isRerouting ? "arrow.triangle.2.circlepath" : isPositionStale(context) ? "location.slash" : "map")
-                    .font(.title2)
-                Text(context.state.isRerouting ? "Nowa trasa" : isPositionStale(context) ? "Czekam na GPS" : "Schemat niedostępny")
-                    .font(.caption2).multilineTextAlignment(.center)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
-        }
+    var hasCurrentGuidance: Bool { !isPositionStale && !state.isRerouting }
+    var guidanceLine: String? {
+        guard hasCurrentGuidance else { return nil }
+        return state.roadName.isEmpty ? state.instruction : state.roadName
     }
-
-    @ViewBuilder private func summary(_ context: ActivityViewContext<NavigationActivityAttributes>) -> some View {
-        if isPositionStale(context) {
-            Text("Oczekiwanie na aktualną pozycję GPS").font(.caption)
-        } else if context.state.isRerouting {
-            Text("Obliczanie odległości i czasu trasy…").font(.caption)
-        } else if let remaining = context.state.remainingDistance,
-                  let time = context.state.remainingTime {
-            HStack(spacing: 5) {
-                Text("\(duration(time)) · \(distance(remaining))")
-                Spacer(minLength: 0)
-                if let arrival = context.state.arrivalTime {
-                    Text(arrival.formatted(Date.FormatStyle(date: .omitted, time: .shortened)
-                        .locale(Locale(identifier: "pl_PL"))))
-                }
-            }.font(.caption.monospacedDigit())
-        } else {
-            Text("Odległość i czas trasy niedostępne").font(.caption)
-        }
+    var maneuverLabel: String {
+        if isPositionStale { return "Czekam na GPS" }
+        if state.isRerouting { return "Przeliczanie trasy" }
+        return state.maneuverDistance.map { Self.distance($0) } ?? "Do celu"
     }
-
-    private func maneuverLabel(_ context: ActivityViewContext<NavigationActivityAttributes>) -> String {
-        if context.state.isRerouting { return "Przeliczanie trasy" }
-        if isPositionStale(context) { return "Czekam na GPS" }
-        return context.state.maneuverDistance.map { distance($0) } ?? "Do celu"
+    var compactLabel: String {
+        isPositionStale ? "GPS" : state.isRerouting ? "…" : Self.distance(state.maneuverDistance)
     }
+    var statusSymbol: String {
+        isPositionStale ? "location.slash" : state.isRerouting ? "arrow.triangle.2.circlepath" : "map"
+    }
+    var statusDescription: String {
+        if isPositionStale { return "Oczekiwanie na aktualną pozycję GPS" }
+        if state.isRerouting { return "Obliczanie nowej trasy…" }
+        return "Odległość i czas trasy niedostępne"
+    }
+    var arrivalLabel: String? {
+        state.arrivalTime?.formatted(Date.FormatStyle(date: .omitted, time: .shortened).locale(Self.locale))
+    }
+    var progress: Double { state.routeProgress.isFinite ? min(1, max(0, state.routeProgress)) : 0 }
 
-    private func distance(_ meters: Double?) -> String {
+    static func distance(_ meters: Double?) -> String {
         guard let meters, meters.isFinite, (0...400_000_000).contains(meters) else { return "—" }
-        let locale = Locale(identifier: "pl_PL")
         if meters >= 1_000 {
             return (meters / 1_000).formatted(.number.precision(.fractionLength(1)).locale(locale)) + " km"
         }
         return (Double(Int((meters / 10).rounded()) * 10)).formatted(.number.precision(.fractionLength(0)).locale(locale)) + " m"
     }
 
-    private func duration(_ seconds: TimeInterval) -> String {
+    static func duration(_ seconds: TimeInterval) -> String {
         guard seconds.isFinite, (0...31_536_000).contains(seconds) else { return "—" }
         let minutes = max(0, Int(ceil(seconds / 60)))
         return minutes >= 60 ? "\(minutes / 60) godz. \(minutes % 60) min" : "\(minutes) min"
+    }
+}
+
+private struct NavigationLockScreenView: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let presentation: NavigationActivityPresentation
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 14) {
+            if !dynamicTypeSize.isAccessibilitySize,
+               presentation.hasCurrentGuidance, let sketch = presentation.state.routeSketch {
+                NavigationActivityRouteDiagram(sketch: sketch)
+                    .frame(width: 90, height: 104)
+                    .privacySensitive()
+                    .accessibilityHidden(true)
+            }
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(alignment: .top, spacing: 10) {
+                    NavigationActivityManeuver(presentation: presentation, size: 30)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(presentation.maneuverLabel)
+                            .font(.title3.bold().monospacedDigit())
+                        if let guidance = presentation.guidanceLine {
+                            Text(guidance)
+                                .font(.subheadline)
+                                .lineLimit(2)
+                                .privacySensitive()
+                        }
+                    }
+                }
+                NavigationActivitySummary(presentation: presentation)
+                NavigationActivityProgress(presentation: presentation)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(16)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct NavigationIslandGuidanceView: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let presentation: NavigationActivityPresentation
+
+    var body: some View {
+        HStack(spacing: 12) {
+            if !dynamicTypeSize.isAccessibilitySize,
+               presentation.hasCurrentGuidance, let sketch = presentation.state.routeSketch {
+                NavigationActivityRouteDiagram(sketch: sketch)
+                    .frame(width: 76, height: 76)
+                    .privacySensitive()
+                    .accessibilityHidden(true)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                if let guidance = presentation.guidanceLine {
+                    Text(guidance)
+                        .font(.headline)
+                        .lineLimit(2)
+                        .privacySensitive()
+                }
+                NavigationActivitySummary(presentation: presentation)
+                NavigationActivityProgress(presentation: presentation)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct NavigationActivityManeuver: View {
+    let presentation: NavigationActivityPresentation
+    let size: CGFloat
+
+    var body: some View {
+        ManeuverIcon(type: presentation.hasCurrentGuidance ? presentation.state.maneuver : nil,
+                     fallbackSymbol: presentation.hasCurrentGuidance ? presentation.state.symbolName : presentation.statusSymbol,
+                     size: size,
+                     roundabout: presentation.hasCurrentGuidance ? presentation.state.roundabout : nil)
+    }
+}
+
+private struct NavigationActivitySummary: View {
+    let presentation: NavigationActivityPresentation
+
+    var body: some View {
+        if presentation.hasCurrentGuidance,
+           let remaining = presentation.state.remainingDistance,
+           let time = presentation.state.remainingTime {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    remainingSummary(time: time, distance: remaining)
+                    Spacer(minLength: 0)
+                    arrival
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    remainingSummary(time: time, distance: remaining)
+                    arrival
+                }
+            }
+            .font(.caption.monospacedDigit())
+        } else {
+            Label(presentation.statusDescription, systemImage: presentation.statusSymbol)
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.8))
+        }
+    }
+
+    private func remainingSummary(time: TimeInterval, distance: Double) -> some View {
+        Text("\(NavigationActivityPresentation.duration(time)) · \(NavigationActivityPresentation.distance(distance))")
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder private var arrival: some View {
+        if let arrival = presentation.arrivalLabel {
+            Text("Przyjazd \(arrival)")
+                .foregroundStyle(.white.opacity(0.8))
+                .fixedSize()
+        }
+    }
+}
+
+private struct NavigationActivityProgress: View {
+    let presentation: NavigationActivityPresentation
+
+    var body: some View {
+        if presentation.hasCurrentGuidance {
+            ProgressView(value: presentation.progress)
+                .tint(.cyan)
+                .accessibilityLabel("Postęp podróży")
+                .accessibilityValue(presentation.progress.formatted(.percent.precision(.fractionLength(0))
+                    .locale(NavigationActivityPresentation.locale)))
+        }
     }
 }
 

@@ -231,6 +231,7 @@ struct MapLibreView: UIViewRepresentable {
     var onMapPan: () -> Void { scene.commands.onMapPan }
     var onLongPress: (Coordinate) -> Void { scene.commands.onLongPress }
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     // One layer graph keeps the camera and annotations intact during day/night transitions.
     private var styleURL: URL { MapResourceConfiguration.url }
@@ -365,6 +366,7 @@ struct MapLibreView: UIViewRepresentable {
         private var lastCameraState: NavigationCameraState?
         private var lastCameraMode: MapDimension?
         private var lastCameraCommandID: Int?
+        private var lastCameraRouteID: UUID?
         private var lastOverviewRouteID: UUID?
         private var lastRoutePreviewExpanded: Bool?
         private let navigationStyle = NaviAstraMapStyle()
@@ -376,8 +378,30 @@ struct MapLibreView: UIViewRepresentable {
         private let streetLabels = NavigationStreetLabels()
         private weak var vehicleMarker: NavigationMarkerNativeView?
         private var cameraAnimationInFlight = false
+        private var cameraAnimationIsTransition = false
         private var cameraUpdatePending = false
         private var cameraAnimationGeneration = 0
+        private var navigationStartDeadline: CFTimeInterval?
+        private var isApplyingCameraIntent = false
+        private var defersStartupDetails = false
+        private var startupDetailDeferralGeneration = 0
+        private struct FollowCameraTransition {
+            let start: CameraIntent
+            let target: CameraIntent
+            let rawTarget: CameraIntent
+            let startedAt: CFTimeInterval
+            let duration: TimeInterval
+            let routeID: UUID?
+            let smoothPadding: Bool
+        }
+        private var followCameraTransition: FollowCameraTransition?
+        private var followCameraSmoother = NavigationCameraRenderSmoother()
+        private var followViewportTransition = NavigationCameraViewportTransition()
+        private var followCameraHandoff = NavigationCameraFollowHandoff()
+        private var lastRenderedFollowIntent: CameraIntent?
+        private var lastFollowIdleRefresh: CFTimeInterval = 0
+        private var lastFollowDetailRefresh: CFTimeInterval = 0
+        private var lastFollowRegionRefresh: CFTimeInterval = 0
         private var trafficAnnotationUpdateWorkItem: DispatchWorkItem?
         private var transitAnnotationUpdateWorkItem: DispatchWorkItem?
         private var searchMapCenterWorkItem: DispatchWorkItem?
@@ -419,7 +443,7 @@ struct MapLibreView: UIViewRepresentable {
 
         private func scheduleBuildingFacadesRefresh(on map: MLNMapView) {
             buildingFacadesNeedsUpdate = true
-            guard parent.scene.energyPolicy.mapRenderingEnabled else { return }
+            guard !defersStartupDetails, parent.scene.energyPolicy.mapRenderingEnabled else { return }
             buildingFacadesRefreshWorkItem?.cancel()
             let delay = max(0, 1 - Date().timeIntervalSince(lastBuildingFacadesUpdate))
             let work = DispatchWorkItem { [weak self, weak map] in
@@ -431,7 +455,7 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         private func refreshBuildingFacadesIfNeeded(on map: MLNMapView) {
-            guard buildingFacadesNeedsUpdate, map.style != nil,
+            guard !defersStartupDetails, buildingFacadesNeedsUpdate, map.style != nil,
                   parent.scene.energyPolicy.mapRenderingEnabled else { return }
             buildingFacadesRefreshWorkItem?.cancel()
             buildingFacadesRefreshWorkItem = nil
@@ -453,10 +477,20 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         func stopPuckDisplayLink() {
+            defersStartupDetails = false
+            navigationStartDeadline = nil
             puckDisplayLink?.invalidate()
             puckDisplayLink = nil
             puckDisplayLinkTarget?.coordinator = nil
             puckDisplayLinkTarget = nil
+            followCameraTransition = nil
+            followViewportTransition.reset()
+            followCameraHandoff.cancel()
+            lastRenderedFollowIntent = nil
+            cameraAnimationGeneration &+= 1
+            cameraAnimationInFlight = false
+            cameraAnimationIsTransition = false
+            cameraUpdatePending = false
         }
 
         func renderPuckFrame(_ link: CADisplayLink) {
@@ -472,8 +506,101 @@ struct MapLibreView: UIViewRepresentable {
                 map.addAnnotation(pin)
             }
             vehiclePin?.coordinate = frame.coordinate.cl
+            renderFollowCamera(with: frame, on: map)
             updatePositionMarker(bearing: frame.bearing)
         }
+
+        /// Position shares the puck's display clock. Perspective only changes
+        /// when a new policy intent arrives, without a second native animation.
+        private func renderFollowCamera(with frame: NavigationPuckFrame, on map: MLNMapView) {
+            guard parent.scene.energyPolicy.mapRenderingEnabled, !parent.isSearchPresented,
+                  parent.state.status == .navigating || parent.state.status == .rerouting,
+                  parent.state.cameraState.usesNavigationPerspective,
+                  parent.state.cameraCommandID == lastCameraCommandID,
+                  parent.state.cameraIntent?.followCoordinate != nil,
+                  parent.state.cameraIntent?.bounds.isEmpty == true,
+                  let transition = followCameraTransition,
+                  transition.routeID == parent.state.route?.id,
+                  !cameraAnimationInFlight, map.style != nil else { return }
+            let timestamp = CACurrentMediaTime()
+            let elapsed = max(0, timestamp - transition.startedAt)
+            let fraction = transition.duration > 0 ? min(1, elapsed / transition.duration) : 1
+            func interpolate(_ start: Double, _ end: Double) -> Double {
+                start + (end - start) * fraction
+            }
+            var rendered = transition.target
+            var renderedViewport = parent.viewportPadding
+            if usesDrivingCameraSpring {
+                renderedViewport = followViewportTransition.step(parent.viewportPadding, timestamp: timestamp,
+                    isTrackingFinger: parent.scene.isBottomSheetTrackingFinger, reduceMotion: parent.reduceMotion)
+                var context = transition.rawTarget
+                context.followCoordinate = frame.coordinate
+                rendered = context.fittingViewport(renderedViewport,
+                    width: Double(map.bounds.width), height: Double(map.bounds.height))
+                // Podczas obrotu geometria musi mieścić się także przy aktualnym
+                // kierunku kamery, zanim sprężyna osiągnie kierunek docelowy.
+                context.bearing = map.camera.heading
+                let currentHeadingFit = context.fittingViewport(renderedViewport,
+                    width: Double(map.bounds.width), height: Double(map.bounds.height))
+                rendered.zoom = min(rendered.zoom, currentHeadingFit.zoom)
+                // Keep velocity between GPS fixes, including after the old
+                // 0.85 s tween would have stopped. Limits apply after framing.
+                rendered = followCameraSmoother.step(rendered, timestamp: timestamp,
+                    smoothPadding: transition.smoothPadding && !followViewportTransition.isAnimating &&
+                        !parent.scene.isBottomSheetTrackingFinger)
+            } else {
+                followCameraSmoother.reset()
+                followViewportTransition.reset()
+                rendered.zoom = interpolate(transition.start.zoom, transition.target.zoom)
+                rendered.pitch = interpolate(transition.start.pitch, transition.target.pitch)
+                var bearingDelta = (transition.target.bearing - transition.start.bearing)
+                    .truncatingRemainder(dividingBy: 360)
+                if bearingDelta > 180 { bearingDelta -= 360 }
+                if bearingDelta < -180 { bearingDelta += 360 }
+                rendered.bearing = (transition.start.bearing + bearingDelta * fraction + 360)
+                    .truncatingRemainder(dividingBy: 360)
+                rendered.padding = CameraPadding(
+                    top: interpolate(transition.start.padding.top, transition.target.padding.top),
+                    left: interpolate(transition.start.padding.left, transition.target.padding.left),
+                    bottom: interpolate(transition.start.padding.bottom, transition.target.padding.bottom),
+                    right: interpolate(transition.start.padding.right, transition.target.padding.right))
+            }
+            if usesDrivingCameraSpring {
+                rendered.target = followCameraHandoff.coordinate(following: frame.coordinate,
+                                                                 timestamp: timestamp)
+            } else {
+                followCameraHandoff.cancel()
+                rendered.target = frame.coordinate
+            }
+            rendered.followCoordinate = frame.coordinate
+            rendered.animationDuration = 0
+            guard rendered != lastRenderedFollowIntent else { return }
+            // Store before calling MapLibre, whose delegate callbacks can be synchronous.
+            lastRenderedFollowIntent = rendered
+            MapLibreCameraAnimator.apply(rendered, state: parent.state.cameraState, to: map,
+                                         continuousFollow: true)
+#if DEBUG
+            NavigationCameraVisualAudit.shared.sample(
+                map: map, frame: frame, rendered: rendered, requested: parent.state.cameraIntent,
+                viewport: renderedViewport, location: parent.state.location,
+                transitionProgress: fraction)
+#endif
+        }
+
+        private var usesDrivingCameraSpring: Bool {
+#if DEBUG
+            if Self.usesLegacyCameraReplayTween { return false }
+#endif
+            return parent.state.transportMode == .car && parent.state.route?.journey == nil
+        }
+
+#if DEBUG
+        private static let usesLegacyCameraReplayTween: Bool = {
+            let environment = ProcessInfo.processInfo.environment
+            return ["turns", "roundabout"].contains(environment["NAVIASTRA_CAMERA_REPLAY"] ?? "") &&
+                environment["NAVIASTRA_CAMERA_REPLAY_LEGACY_TWEEN"] == "1"
+        }()
+#endif
 
         private func updatePositionMarker(bearing: Double?) {
             guard let map, let marker = vehicleMarker else { return }
@@ -599,12 +726,26 @@ struct MapLibreView: UIViewRepresentable {
 
         @objc func userGesture(_ gesture: UIGestureRecognizer) {
             if gesture.state == .began {
+                let resumesDetails = defersStartupDetails
+                defersStartupDetails = false
+                navigationStartDeadline = nil
                 cameraAnimationGeneration &+= 1
                 cameraAnimationInFlight = false
+                cameraAnimationIsTransition = false
                 cameraUpdatePending = false
+                followCameraTransition = nil
+                followViewportTransition.reset()
+                followCameraHandoff.cancel()
+                lastRenderedFollowIntent = nil
                 if gesture is UIPanGestureRecognizer { parent.onMapPan() }
                 parent.state.cameraState = .freeLook
                 parent.state.cameraIntent = nil
+                if resumesDetails {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, let map = self.map else { return }
+                        self.update(map)
+                    }
+                }
             }
         }
 
@@ -617,6 +758,17 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         func mapViewDidBecomeIdle(_ mapView: MLNMapView) {
+            if defersStartupDetails {
+                applyCameraIntent(to: mapView)
+                return
+            }
+            // A zero-duration display frame may also emit "idle". Tile/POI
+            // discovery is not frame work and must not be retriggered at 60 Hz.
+            if followCameraTransition != nil, parent.state.cameraState.usesNavigationPerspective {
+                let now = CACurrentMediaTime()
+                guard now - lastFollowIdleRefresh >= 1 else { return }
+                lastFollowIdleRefresh = now
+            }
             updatePOIDensity(on: mapView)
             if buildingFacadesNeedsUpdate { scheduleBuildingFacadesRefresh(on: mapView) }
             updateCyclingPaths(on: mapView)
@@ -633,6 +785,7 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         func mapViewDidFinishRenderingFrame(_ mapView: MLNMapView, fullyRendered: Bool) {
+            guard !defersStartupDetails else { return }
             updateStreetLabels(on: mapView)
             // An unrelated pending tile/image must not block already available buildings.
             guard buildingFacadesNeedsUpdate,
@@ -642,6 +795,15 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         func mapViewRegionIsChanging(_ mapView: MLNMapView) {
+            if defersStartupDetails {
+                updatePositionMarker(bearing: puckEngine.frame()?.bearing)
+                return
+            }
+            if followCameraTransition != nil, parent.state.cameraState.usesNavigationPerspective {
+                let now = CACurrentMediaTime()
+                guard now - lastFollowDetailRefresh >= 0.1 else { return }
+                lastFollowDetailRefresh = now
+            }
             navigationStyle.updateBuildingFacadeVisibility(on: mapView, settings: parent.settings,
                 dark: usesDarkMapAppearance, renderingEnabled: parent.scene.energyPolicy.mapRenderingEnabled)
             updatePOIZoomDensity(on: mapView)
@@ -713,6 +875,14 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         func update(_ map: MLNMapView) {
+            if parent.state.cameraState == .startingNavigation,
+               let intent = parent.state.cameraIntent,
+               intent.bounds.isEmpty, intent.followCoordinate != nil,
+               map.style != nil, map.bounds.width > 0, map.bounds.height > 0,
+               lastCameraState?.usesNavigationPerspective != true ||
+                lastCameraCommandID != parent.state.cameraCommandID || lastCameraRouteID != parent.state.route?.id {
+                deferDetailsForNavigationStart()
+            }
             let energyPolicy = parent.scene.energyPolicy
             let preferredFramesPerSecond = energyPolicy.mapFramesPerSecond > 0
                 ? energyPolicy.mapFramesPerSecond : 1
@@ -739,6 +909,11 @@ struct MapLibreView: UIViewRepresentable {
             puckDisplayLink?.preferredFrameRateRange = CAFrameRateRange(
                 minimum: displayLinkRate, maximum: displayLinkRate, preferred: displayLinkRate)
             puckDisplayLink?.isPaused = !energyPolicy.mapRenderingEnabled
+            if defersStartupDetails, energyPolicy.mapRenderingEnabled {
+                updatePuck(on: map)
+                applyCameraIntent(to: map)
+                if defersStartupDetails { return }
+            }
             updateStreetLabels(on: map)
             navigationStyle.updateBuildingFacadeVisibility(on: map, settings: parent.settings,
                 dark: usesDarkMapAppearance, renderingEnabled: energyPolicy.mapRenderingEnabled)
@@ -1003,6 +1178,7 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         private func updatePOIDensity(on map: MLNMapView) {
+            guard !defersStartupDetails else { return }
             guard let style = map.style else { return }
             updateObjectModelInputs()
             detailedRoadRenderer.update(on: map, dark: usesDarkMapAppearance,
@@ -1029,6 +1205,7 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         func mapViewDidFinishRenderingMap(_ mapView: MLNMapView, fullyRendered: Bool) {
+            guard !defersStartupDetails else { return }
             navigationStyle.refreshCrosswalks(on: mapView, settings: parent.settings,
                 renderingEnabled: parent.scene.energyPolicy.mapRenderingEnabled)
             // Also refresh partial maps when some sources are slow or unavailable.
@@ -1140,16 +1317,44 @@ struct MapLibreView: UIViewRepresentable {
             }
         }
 
-        private func applyCameraIntent(to map: MLNMapView) {
+        private func deferDetailsForNavigationStart() {
+            guard !defersStartupDetails else { return }
+            defersStartupDetails = true
+            startupDetailDeferralGeneration &+= 1
+            // Keep the displayed geometry; defer only rebuilding it until the
+            // camera has reached its first navigation frame.
+            navigationStyle.suspendDetails(preservingModels: true)
+            buildingFacadesRefreshWorkItem?.cancel()
+            buildingFacadesRefreshWorkItem = nil
+            buildingFacadesNeedsUpdate = true
+            shopTileRefreshTask?.cancel()
+        }
+
+        private func applyCameraIntent(to map: MLNMapView, forceFollowRefresh: Bool = false) {
+            // MapLibre can synchronously emit idle while applying a camera.
+            // Finish accepting this intent before a delegate attempts another.
+            guard !isApplyingCameraIntent else { return }
+            isApplyingCameraIntent = true
+            defer { isApplyingCameraIntent = false }
 #if DEBUG
             if applyRoadAuditCamera(to: map) { return }
 #endif
-            guard map.style != nil, map.bounds.width > 0, map.bounds.height > 0,
-                  let intent = parent.state.cameraIntent,
-                  parent.state.cameraState != .freeLook else { return }
+            guard map.style != nil, map.bounds.width > 0, map.bounds.height > 0 else { return }
+            guard let intent = parent.state.cameraIntent,
+                  parent.state.cameraState != .freeLook else {
+                defersStartupDetails = false
+                navigationStartDeadline = nil
+                followCameraTransition = nil
+                followViewportTransition.reset()
+                followCameraHandoff.cancel()
+                lastRenderedFollowIntent = nil
+                lastCameraState = parent.state.cameraState
+                return
+            }
             let cameraState = parent.state.cameraState
             let cameraMode = parent.settings.cameraMode
             let routeID = parent.state.route?.id
+            let cameraRouteChanged = lastCameraRouteID != routeID
             let cameraCommandChanged = lastCameraCommandID != parent.state.cameraCommandID
             let cameraModeChanged = lastCameraMode != cameraMode
             let cameraStateChanged = lastCameraState != cameraState
@@ -1157,16 +1362,39 @@ struct MapLibreView: UIViewRepresentable {
             let newOverview = cameraState == .routeOverview && lastOverviewRouteID != routeID &&
                 lastStatus != .routePreview
             let routePreviewPaddingChanged = lastViewportPadding != parent.viewportPadding || lastMapSize != map.bounds.size
-            let followsSheetGesture = parent.isBottomSheetDragging && routePreviewPaddingChanged
-            var effectiveIntent = intent
-            if intent.followCoordinate != nil, let frame = puckEngine.frame() {
-                effectiveIntent.followCoordinate = frame.coordinate
+            if cameraRouteChanged || cameraModeChanged || lastMapSize != map.bounds.size {
+                followViewportTransition.reset()
             }
-            effectiveIntent = effectiveIntent.fittingViewport(
-                parent.viewportPadding, width: Double(map.bounds.width), height: Double(map.bounds.height))
-            if followsSheetGesture {
-                effectiveIntent.animationDuration = 0
+            if cameraRouteChanged || cameraCommandChanged || cameraModeChanged || routePreviewPaddingChanged {
+                // A correction belongs only to the completed transition's route
+                // and viewport. Panel gestures must always follow the puck live.
+                followCameraHandoff.cancel()
             }
+            let tracksSheetFinger = usesDrivingCameraSpring
+                ? parent.scene.isBottomSheetTrackingFinger : parent.isBottomSheetDragging
+            let followsSheetGesture = tracksSheetFinger && routePreviewPaddingChanged
+            let enteringNavigationPerspective = cameraState.usesNavigationPerspective &&
+                lastCameraState?.usesNavigationPerspective != true
+            if cameraRouteChanged || cameraCommandChanged || cameraModeChanged ||
+                !cameraState.usesNavigationPerspective {
+                defersStartupDetails = false
+                navigationStartDeadline = nil
+            }
+            if cameraState == .startingNavigation, intent.bounds.isEmpty,
+               intent.followCoordinate != nil,
+               enteringNavigationPerspective || cameraRouteChanged || cameraCommandChanged {
+                deferDetailsForNavigationStart()
+                navigationStartDeadline = CACurrentMediaTime() + NavigationCameraTiming.start
+            }
+            // A sheet layout update must not hand an unfinished overview-to-car
+            // zoom to the much slower cruise limiter. Retarget the native start
+            // within its original budget, without restarting the full duration.
+            let completesNavigationStart = navigationStartDeadline != nil &&
+                cameraState.usesNavigationPerspective && intent.bounds.isEmpty &&
+                intent.followCoordinate != nil
+            let continuousFollow = cameraState.usesNavigationPerspective && intent.bounds.isEmpty &&
+                intent.followCoordinate != nil && !enteringNavigationPerspective &&
+                !cameraCommandChanged && !cameraModeChanged && !completesNavigationStart
             if cameraState == .routeOverview, !enteringOverview, !newOverview, !cameraCommandChanged,
                !routePreviewPaddingChanged, !cameraModeChanged,
                let route = parent.state.route {
@@ -1176,17 +1404,27 @@ struct MapLibreView: UIViewRepresentable {
                 if isMostlyVisible(overviewCoordinates, on: map) { return }
             }
             if intent == lastIntent && !enteringOverview && !newOverview && !cameraCommandChanged &&
-               !routePreviewPaddingChanged && !cameraModeChanged && !cameraStateChanged { return }
+               !routePreviewPaddingChanged && !cameraModeChanged && !cameraStateChanged &&
+               !cameraRouteChanged && !forceFollowRefresh { return }
             if cameraAnimationInFlight {
-                if routePreviewPaddingChanged || cameraCommandChanged {
+                // The start also accepts the first route projection within its
+                // original deadline. Recenter/overview consume the latest fix
+                // after their deliberate transition finishes.
+                if completesNavigationStart || routePreviewPaddingChanged || cameraCommandChanged || cameraModeChanged ||
+                    (continuousFollow && !cameraAnimationIsTransition) {
                     cameraAnimationGeneration &+= 1
                     cameraAnimationInFlight = false
+                    cameraAnimationIsTransition = false
                     cameraUpdatePending = false
                 } else {
                     cameraUpdatePending = true
                     return
                 }
             }
+            var effectiveIntent = intent
+            let puckFrame = intent.followCoordinate != nil ? puckEngine.frame() : nil
+            if let puckFrame { effectiveIntent.followCoordinate = puckFrame.coordinate }
+            // Framing must use the perspective that will actually be rendered.
             if cameraMode == .flat {
                 effectiveIntent.pitch = 0
             } else if cameraState == .destinationPreview || cameraState == .routeOverview {
@@ -1194,27 +1432,129 @@ struct MapLibreView: UIViewRepresentable {
             } else if cameraState == .browse {
                 effectiveIntent.pitch = 40
             }
+            let rawFollowIntent = effectiveIntent
+            effectiveIntent = effectiveIntent.fittingViewport(
+                parent.viewportPadding, width: Double(map.bounds.width), height: Double(map.bounds.height))
+            if completesNavigationStart, let deadline = navigationStartDeadline {
+                effectiveIntent.animationDuration = max(0, deadline - CACurrentMediaTime())
+            }
+            if followsSheetGesture { effectiveIntent.animationDuration = 0 }
             if cameraState == .routeOverview, lastOverviewRouteID != nil,
                let route = parent.state.route, lastStatus == .routePreview {
                 effectiveIntent.bounds = (parent.state.alternatives + [route]).flatMap(\.coordinates)
             }
-            cameraAnimationGeneration &+= 1
-            let generation = cameraAnimationGeneration
-            cameraAnimationInFlight = !followsSheetGesture
-            let started = MapLibreCameraAnimator.apply(
-                effectiveIntent, state: cameraState, to: map,
-                completionHandler: { [weak self, weak map] in
-                    DispatchQueue.main.async {
-                        guard let self, self.cameraAnimationGeneration == generation else { return }
-                        self.cameraAnimationInFlight = false
-                        guard self.cameraUpdatePending, let map else { return }
-                        self.cameraUpdatePending = false
-                        self.applyCameraIntent(to: map)
-                    }
-                })
-            guard started else {
-                cameraAnimationInFlight = false
-                return
+            let usesDisplayFollow = continuousFollow && puckFrame != nil && puckDisplayLink != nil
+            if usesDisplayFollow {
+                if cameraRouteChanged { lastRenderedFollowIntent = nil }
+                var start = lastRenderedFollowIntent ?? effectiveIntent
+                if lastRenderedFollowIntent == nil {
+                    let camera = map.camera
+                    start.zoom = map.zoomLevel
+                    start.pitch = Double(camera.pitch)
+                    start.bearing = camera.heading
+                    let insets = map.cameraEdgeInsets
+                    let content = map.contentInset
+                    start.padding = CameraPadding(
+                        top: Double(max(0, insets.top - content.top)),
+                        left: Double(max(0, insets.left - content.left)),
+                        bottom: Double(max(0, insets.bottom - content.bottom)),
+                        right: Double(max(0, insets.right - content.right)))
+                }
+                // Tryb samochodowy dopasowuje granicę do prezentacji panelu
+                // w renderFollowCamera, zamiast skakać do końcowej geometrii.
+                if routePreviewPaddingChanged && !usesDrivingCameraSpring {
+                    start.padding = effectiveIntent.padding
+                }
+                if usesDrivingCameraSpring,
+                   lastRenderedFollowIntent == nil || followCameraSmoother.current == nil {
+                    followCameraSmoother.reset(to: start, timestamp: CACurrentMediaTime())
+                }
+                followCameraTransition = FollowCameraTransition(
+                    start: start, target: effectiveIntent, rawTarget: rawFollowIntent,
+                    startedAt: CACurrentMediaTime(),
+                    duration: followsSheetGesture ? 0 : min(0.85, max(0.12, effectiveIntent.animationDuration ?? 0.28)),
+                    routeID: routeID, smoothPadding: !routePreviewPaddingChanged)
+                cameraUpdatePending = false
+            } else {
+                followCameraTransition = nil
+                followViewportTransition.reset()
+                followCameraHandoff.cancel()
+                lastRenderedFollowIntent = nil
+                cameraAnimationGeneration &+= 1
+                let generation = cameraAnimationGeneration
+                cameraAnimationInFlight = !followsSheetGesture
+                cameraAnimationIsTransition = !continuousFollow && !followsSheetGesture
+                let completesNativeFollow = cameraAnimationIsTransition && usesDrivingCameraSpring &&
+                    cameraState.usesNavigationPerspective && effectiveIntent.bounds.isEmpty &&
+                    effectiveIntent.followCoordinate != nil
+                let transitionPadding = parent.viewportPadding
+                let transitionSize = map.bounds.size
+                let transitionCommandID = parent.state.cameraCommandID
+                let startDeadline = navigationStartDeadline
+                let detailDeferralGeneration = startupDetailDeferralGeneration
+#if DEBUG
+                if let startDeadline {
+                    NavigationCameraVisualAudit.shared.recordStartup(
+                        event: "retarget", deadline: startDeadline,
+                        duration: effectiveIntent.animationDuration ?? 0, zoom: effectiveIntent.zoom)
+                }
+#endif
+                let started = MapLibreCameraAnimator.apply(
+                    effectiveIntent, state: cameraState, to: map,
+                    continuousFollow: continuousFollow,
+                    completionHandler: { [weak self, weak map] in
+                        DispatchQueue.main.async {
+                            guard let self, self.cameraAnimationGeneration == generation else { return }
+                            self.cameraAnimationInFlight = false
+                            self.cameraAnimationIsTransition = false
+                            self.navigationStartDeadline = nil
+                            if startDeadline != nil {
+                                // Allow a final camera frame before rebuilding
+                                // decorative layers and deferred annotations.
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self, weak map] in
+                                    guard let self, let map,
+                                          self.defersStartupDetails,
+                                          self.startupDetailDeferralGeneration == detailDeferralGeneration,
+                                          self.navigationStartDeadline == nil,
+                                          self.parent.state.route?.id == routeID,
+                                          self.parent.state.cameraCommandID == transitionCommandID else { return }
+                                    self.defersStartupDetails = false
+                                    if self.parent.scene.energyPolicy.mapRenderingEnabled { self.update(map) }
+                                }
+                            }
+#if DEBUG
+                            if let startDeadline, let map {
+                                NavigationCameraVisualAudit.shared.recordStartup(
+                                    event: "completed", deadline: startDeadline, duration: 0, zoom: map.zoomLevel)
+                            }
+#endif
+                            let resumeFollow = self.parent.state.cameraState.usesNavigationPerspective &&
+                                self.parent.state.cameraIntent?.followCoordinate != nil &&
+                                self.parent.state.cameraIntent?.bounds.isEmpty == true &&
+                                self.puckDisplayLink != nil && self.puckEngine.frame() != nil
+                            guard self.cameraUpdatePending || resumeFollow, let map else { return }
+                            self.cameraUpdatePending = false
+                            if resumeFollow, completesNativeFollow,
+                               self.parent.state.route?.id == routeID,
+                               self.parent.state.cameraCommandID == transitionCommandID,
+                               self.parent.viewportPadding == transitionPadding,
+                               map.bounds.size == transitionSize,
+                               let currentPuck = self.puckEngine.frame() {
+                                let center = map.camera.centerCoordinate
+                                self.followCameraHandoff.begin(
+                                    from: Coordinate(latitude: center.latitude, longitude: center.longitude),
+                                    following: currentPuck.coordinate, timestamp: CACurrentMediaTime())
+                            }
+                            self.applyCameraIntent(to: map, forceFollowRefresh: resumeFollow)
+                        }
+                    })
+                guard started else {
+                    defersStartupDetails = false
+                    navigationStartDeadline = nil
+                    cameraAnimationInFlight = false
+                    cameraAnimationIsTransition = false
+                    return
+                }
             }
             lastViewportPadding = parent.viewportPadding
             lastMapSize = map.bounds.size
@@ -1222,8 +1562,10 @@ struct MapLibreView: UIViewRepresentable {
             lastCameraState = cameraState
             lastCameraMode = cameraMode
             lastCameraCommandID = parent.state.cameraCommandID
+            lastCameraRouteID = routeID
             lastRoutePreviewExpanded = parent.routePreviewExpanded
             if cameraState == .routeOverview { lastOverviewRouteID = routeID }
+            if usesDisplayFollow, let puckFrame { renderFollowCamera(with: puckFrame, on: map) }
         }
 
         private func isMostlyVisible(_ points: [Coordinate], on map: MLNMapView) -> Bool {
@@ -1611,6 +1953,15 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MLNMapView, regionDidChangeAnimated animated: Bool) {
+            if defersStartupDetails {
+                updatePositionMarker(bearing: puckEngine.frame()?.bearing)
+                return
+            }
+            if followCameraTransition != nil, parent.state.cameraState.usesNavigationPerspective {
+                let now = CACurrentMediaTime()
+                guard now - lastFollowRegionRefresh >= 1 else { return }
+                lastFollowRegionRefresh = now
+            }
             scheduleBuildingFacadesRefresh(on: mapView)
             updateShopLogos(on: mapView, force: true)
             shopTileRefreshTask?.cancel()

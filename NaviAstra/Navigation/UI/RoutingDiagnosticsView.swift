@@ -11,6 +11,7 @@ struct RoutingDiagnosticDocument: FileDocument {
 
 struct RoutingDiagnosticsView: View {
     let navigation: NavigationStore
+    var trips: [TripRecord] = []
     @State private var diagnostics = RoutingDiagnostics.shared
     @State private var report: RoutingBenchmarkReport?
     @State private var busy = false
@@ -18,6 +19,7 @@ struct RoutingDiagnosticsView: View {
     @State private var document: RoutingDiagnosticDocument?
     @State private var exporting = false
     @State private var importing = false
+    @State private var qualityReplay: RouteQualityReplay?
 
     var body: some View {
         Form {
@@ -81,12 +83,36 @@ struct RoutingDiagnosticsView: View {
                                 .font(.caption)
                         }
                     }
-                    Text("Niższa wartość rankingu jest lepsza. Normalizacja obejmuje porównywany zestaw; brak danych nie jest zerowym kosztem.")
+                    Text("Niższa wartość rankingu jest lepsza. Składowe mają stałą skalę, a ranking uwzględnia limity objazdu. Brak porównywalnych danych wyłącza dane kryterium.")
                         .font(.caption).foregroundStyle(.secondary)
                     Button("Eksportuj decyzję JSON") { export(record) }
                 }
             } else {
                 Section { Text("Diagnostyka decyzji pojawi się po wyznaczeniu trasy samochodowej.") }
+            }
+            Section("Jakość rzeczywistych przejazdów") {
+                Button("Odtwórz pomiary ETA z historii") {
+                    qualityReplay = RouteQualityReplay.replay(trips)
+                }
+                if let qualityReplay {
+                    LabeledContent("Ukończone przejazdy z pomiarem", value: String(qualityReplay.journeys.count))
+                    if let difference = qualityReplay.meanInitialAbsoluteError {
+                        LabeledContent("Średni błąd czasu przy starcie", value: qualityDuration(difference))
+                        ForEach(qualityReplay.journeys, id: \.id) { journey in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Przejazd: \(qualityDuration(journey.actualDuration))")
+                                Text("Średni błąd ETA: \(qualityDuration(journey.meanAbsoluteErrorSeconds)) · przeliczenia: \(journey.reroutes)")
+                                    .font(.caption)
+                            }
+                        }
+                        Button("Eksportuj pomiary jakości JSON") { export(qualityReplay) }
+                    } else {
+                        Text("Brak ukończonych przejazdów z nowymi pomiarami i pokryciem zapisu co najmniej 80%.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Text("Pomiary zapisują się lokalnie co minutę i po przeliczeniu trasy. Porównujemy przewidywania z rzeczywistym przyjazdem; zmiana celu lub przystanków wyłącza przejazd z porównania. Różnice obejmują nieplanowane postoje. Sama liczba przeliczeń nie oznacza błędów.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Benchmarki krytyczne") {
                 Button("Uruchom 120 scenariuszy syntetycznych") {
@@ -140,6 +166,9 @@ struct RoutingDiagnosticsView: View {
     private func percent(_ value: Double) -> String { "\(Int((min(1, max(0, value)) * 100).rounded()))%" }
     private func meters(_ value: Double) -> String { (value / 1_000).formatted(.number.precision(.fractionLength(1))) + " km" }
     private func number(_ value: Double) -> String { value.formatted(.number.precision(.fractionLength(3))) }
+    private func qualityDuration(_ seconds: Double) -> String {
+        (seconds / 60).formatted(.number.precision(.fractionLength(1)).locale(Locale(identifier: "pl_PL"))) + " min"
+    }
     private func run(_ work: @escaping @Sendable () -> RoutingBenchmarkReport) {
         busy = true; error = nil
         Task { report = await Task.detached(priority: .utility) { work() }.value; busy = false }

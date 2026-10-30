@@ -116,14 +116,23 @@ struct PlannedTrip: Identifiable, Codable, Equatable {
         return (1..<25).compactMap { geometry.coordinate(at: geometry.length * Double($0) / 25) }
     }
 
-    func preferredOption(in routes: [NavigationRoute]) -> (route: NavigationRoute?, matched: Bool) {
+    func preferredOption(in routes: [NavigationRoute],
+                         measuredTravelTimes: [UUID: TimeInterval] = [:]) -> (route: NavigationRoute?, matched: Bool) {
         guard !preferredRoute.isEmpty else { return (routes.first, true) }
         let scores = routes.map { route in
             let geometry = RouteProgressGeometry(route)
             let hits = preferredRoute.filter { (geometry.project($0)?.distanceFromRoute ?? .infinity) < 150 }.count
             return (route, Double(hits) / Double(preferredRoute.count))
         }
-        if let best = scores.max(by: { $0.1 < $1.1 }), best.1 >= 0.8 { return (best.0, true) }
+        if let best = scores.max(by: { $0.1 < $1.1 }), best.1 >= 0.8 {
+            if let recommended = routes.first, recommended.id != best.0.id,
+               let preferredTime = measuredTravelTimes[best.0.id], preferredTime.isFinite, preferredTime > 0,
+               let recommendedTime = measuredTravelTimes[recommended.id], recommendedTime.isFinite,
+               recommendedTime >= 0, preferredTime - recommendedTime >= max(120, preferredTime * 0.1) {
+                return (recommended, scores.first(where: { $0.0.id == recommended.id }).map { $0.1 >= 0.8 } ?? false)
+            }
+            return (best.0, true)
+        }
         return (routes.first, false)
     }
 }

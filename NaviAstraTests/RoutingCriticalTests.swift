@@ -306,6 +306,178 @@ struct RoutingCriticalTests {
         }
     }
 
+    @Test func flowAndIncidentClosuresShareDetourEvidenceAndExpire() throws {
+        let road = [Coordinate(latitude: 52, longitude: 21), Coordinate(latitude: 52.01, longitude: 21)]
+        let route = NavigationRoute(coordinates: road, distance: 1_112, expectedTravelTime: 100, maneuvers: [])
+        let flowRoad = [Coordinate(latitude: 52.001, longitude: 21), Coordinate(latitude: 52.004, longitude: 21)]
+        let incidentRoad = [Coordinate(latitude: 52.006, longitude: 21), Coordinate(latitude: 52.008, longitude: 21)]
+        let flow = RouteTrafficSegment(id: "closed-flow", routeID: route.id, startDistance: 110,
+            endDistance: 445, coordinates: flowRoad, colorHex: 0, isRoadClosure: true, measuredAt: .now)
+        let incident = TrafficIncident(id: "closed-incident", description: "Zamknięcie", coordinate: incidentRoad[0],
+            delaySeconds: nil, category: .roadClosed, severity: .major, geometry: incidentRoad, observedAt: .now)
+        let snapshot = TrafficSnapshot(flow: nil, incidents: [incident], routeFlowSegments: [flow],
+            updatedAt: .now, partialError: nil, incidentDataAvailable: true)
+        let closures = ConfirmedRoadClosure.evidence(in: snapshot, route: route)
+        #expect(closures.count == 2)
+        #expect(try closures.allSatisfy { try $0.avoidance().intersects(route) })
+        #expect(closures.allSatisfy { !$0.isFresh(at: Date().addingTimeInterval(241)) })
+        let session = NavigationSession(dependencies: .live(
+            routeEndpoint: URL(string: "https://routing.invalid")!, trafficAPIKey: nil))
+        let flowOnly = TrafficSnapshot(flow: nil, incidents: [], routeFlowSegments: [flow],
+            updatedAt: .now, partialError: nil, incidentDataAvailable: false)
+        #expect(session.confirmedClosureAhead(in: flowOnly, on: route, progress: nil) != nil)
+        #expect(!RoadRouteETA.estimate(route, from: 220, traffic: flowOnly).isFinite)
+        #expect(RouteReliability.evaluate(route: route, from: 220, traffic: flowOnly).hasConfirmedClosure)
+        // The second closure remains part of the avoidance set, not just the closest one.
+        _ = session.confirmedClosureAhead(in: snapshot, on: route, progress: nil)
+        #expect(session.knownRoadClosures.count == 2)
+    }
+
+    @Test func wrongWayTravelRequiresSustainedPreciseReverseProgress() {
+        let road = [Coordinate(latitude: 52, longitude: 21), Coordinate(latitude: 52.01, longitude: 21)]
+        let route = NavigationRoute(coordinates: road, distance: 1_112, expectedTravelTime: 100, maneuvers: [])
+        let now = Date()
+        var detector = OffRouteDetector()
+        for index in 0...5 {
+            let location = NavigationLocation(coordinate: road[0], speed: 8, course: 180, accuracy: 5,
+                timestamp: now.addingTimeInterval(Double(index)), courseAccuracy: 10)
+            let projection = RouteProjection(coordinate: road[0], distanceFromRoute: 2,
+                alongRoute: 200 - Double(index * 8), segment: 0)
+            #expect(detector.shouldRequestReroute(location: location, route: route,
+                projection: projection, matchConfidence: 0.05) == (index == 5))
+        }
+        detector.reset()
+        for index in 0...8 {
+            let location = NavigationLocation(coordinate: road[0], speed: 8, course: 180, accuracy: 5,
+                timestamp: now.addingTimeInterval(Double(index)), courseAccuracy: 60)
+            let projection = RouteProjection(coordinate: road[0], distanceFromRoute: 2,
+                alongRoute: 200 - Double(index * 8), segment: 0)
+            let requested = detector.shouldRequestReroute(location: location, route: route,
+                projection: projection, matchConfidence: 0.05)
+            #expect(!requested)
+        }
+    }
+
+    @Test func paceComparesTheTraversedCitySegmentAndResetsAfterRouteReplacement() {
+        let road = [Coordinate(latitude: 52, longitude: 21), Coordinate(latitude: 52.1, longitude: 21)]
+        var route = NavigationRoute(coordinates: road, distance: 11_120, expectedTravelTime: 600, maneuvers: [])
+        route.travelSegments = [RouteTravelSegment(startDistance: 0, endDistance: 1_000, duration: 200),
+                               RouteTravelSegment(startDistance: 1_000, endDistance: 11_120, duration: 400)]
+        let now = Date()
+        var tracker = RoadETAPaceTracker()
+        var multiplier = 1.0
+        for index in 0...12 {
+            let location = NavigationLocation(coordinate: road[0], speed: 5, course: 0, accuracy: 5,
+                timestamp: now.addingTimeInterval(Double(index * 5)))
+            multiplier = tracker.observe(route: route, distance: Double(index * 25), location: location,
+                                         reliable: true, isNavigating: true)
+        }
+        #expect(abs(multiplier - 1) < 0.001)
+        route.id = UUID()
+        let location = NavigationLocation(coordinate: road[0], speed: 5, course: 0, accuracy: 5,
+                                          timestamp: now.addingTimeInterval(65))
+        #expect(tracker.observe(route: route, distance: 0, location: location,
+                               reliable: true, isNavigating: true) == 1)
+    }
+
+    @Test func trafficRankingRejectsUnequalCoverage() {
+        let road = [Coordinate(latitude: 52, longitude: 21), Coordinate(latitude: 52.01, longitude: 21)]
+        let first = NavigationRoute(coordinates: road, distance: 1_112, expectedTravelTime: 100, maneuvers: [])
+        let second = NavigationRoute(coordinates: road, distance: 1_112, expectedTravelTime: 120, maneuvers: [])
+        func snapshot(_ route: NavigationRoute, fraction: Double) -> TrafficSnapshot {
+            let segment = RouteTrafficSegment(id: "flow", routeID: route.id, startDistance: 0,
+                endDistance: RouteProgressGeometry(route).length * fraction, coordinates: road,
+                colorHex: 0, isRoadClosure: false, currentSpeedKph: 30, measuredAt: .now)
+            return TrafficSnapshot(flow: nil, incidents: [], routeFlowSegments: [segment],
+                updatedAt: .now, partialError: nil, incidentDataAvailable: true)
+        }
+        #expect(!TrafficRouteEvaluator.hasComparableCoverage(routes: [first, second],
+            traffic: [first.id: snapshot(first, fraction: 0.9), second.id: snapshot(second, fraction: 0.5)]))
+        #expect(TrafficRouteEvaluator.hasComparableCoverage(routes: [first, second],
+            traffic: [first.id: snapshot(first, fraction: 0.9), second.id: snapshot(second, fraction: 0.85)]))
+
+    }
+
+    @Test func ordinaryRecalculationPreservesClosuresAndRejectsAnIntersectingResponse() async throws {
+        let road = [Coordinate(latitude: 52, longitude: 21), Coordinate(latitude: 52.02, longitude: 21)]
+        let blocked = NavigationRoute(coordinates: road, distance: 2_224, expectedTravelTime: 200, maneuvers: [])
+        let safeRoad = [road[0], Coordinate(latitude: 52.001, longitude: 21.003),
+                        Coordinate(latitude: 52.019, longitude: 21.003), road[1]]
+        let safe = NavigationRoute(coordinates: safeRoad, distance: 2_600, expectedTravelTime: 240, maneuvers: [])
+        let closedRoad = [Coordinate(latitude: 52.006, longitude: 21), Coordinate(latitude: 52.012, longitude: 21)]
+        let incident = TrafficIncident(id: "known", description: "Zamknięcie", coordinate: closedRoad[0],
+            delaySeconds: nil, category: .roadClosed, severity: .major, geometry: closedRoad, observedAt: .now)
+        let session = NavigationSession(dependencies: .live(
+            routeEndpoint: URL(string: "https://routing.invalid")!, trafficAPIKey: nil))
+        session.state.transportMode = .car
+        session.state.routingPreferences = RoutingPreferences()
+        let provider = CapturingTrafficRouteProvider(routes: [blocked, safe])
+        session.routeProvider = provider
+        session.knownRoadClosures[incident.id] = ConfirmedRoadClosure(incident: incident, observedAt: .now, maximumAge: 120)
+        let inherited = try RoadClosureAvoidance(geometry: [Coordinate(latitude: 53, longitude: 22),
+                                                           Coordinate(latitude: 53.01, longitude: 22)])
+        let routes = try await RoadRoutingContext.$closurePolygons.withValue(inherited.polygons) {
+            try await session.calculateRoutes(from: road[0], to: road[1], commitEVStops: false)
+        }
+        #expect(routes.map(\.id) == [safe.id])
+        #expect(provider.closurePolygons.count == inherited.polygons.count + 1)
+        #expect(provider.closurePolygons.contains(inherited.polygons[0]))
+        #expect(RoadRoutingContext.closurePolygons.isEmpty)
+    }
+
+    @Test func congestionCandidateIsFreshMeasuredAndKeepsMandatoryStopsAccessible() throws {
+        let road = [Coordinate(latitude: 52, longitude: 21), Coordinate(latitude: 52.02, longitude: 21)]
+        let route = NavigationRoute(coordinates: road, distance: 2_224, expectedTravelTime: 200, maneuvers: [])
+        let slowRoad = [Coordinate(latitude: 52.006, longitude: 21), Coordinate(latitude: 52.012, longitude: 21)]
+        let segment = RouteTrafficSegment(id: "slow", routeID: route.id, startDistance: 667,
+            endDistance: 1_334, coordinates: slowRoad, colorHex: 0, isRoadClosure: false,
+            currentSpeedKph: 3, freeFlowSpeedKph: 50, measuredAt: .now)
+        let traffic = TrafficSnapshot(flow: nil, incidents: [], routeFlowSegments: [segment],
+            updatedAt: .now, partialError: nil, incidentDataAvailable: true)
+        let candidate = try #require(CongestionDetourCandidate.largest(on: route, after: 0,
+            traffic: traffic, mandatoryCoordinates: road))
+        #expect(candidate.measuredDelay > 600)
+        #expect(candidate.area.intersects(route))
+        #expect(ConfirmedRoadClosure.evidence(in: traffic, route: route).isEmpty)
+        #expect(CongestionDetourCandidate.largest(on: route, after: 0, traffic: traffic,
+            mandatoryCoordinates: [Coordinate(latitude: 52.009, longitude: 21)]) == nil)
+        #expect(CongestionDetourCandidate.largest(on: route, after: 600, traffic: traffic,
+            mandatoryCoordinates: []) == nil)
+        #expect(CongestionDetourCandidate.largest(on: route, after: 0, traffic: traffic,
+            mandatoryCoordinates: [], now: Date().addingTimeInterval(241)) == nil)
+    }
+
+    @Test func optionalCongestionPlanUsesSeparateExclusionsWithoutMutatingTheActiveRoute() async throws {
+        let road = [Coordinate(latitude: 52, longitude: 21), Coordinate(latitude: 52.02, longitude: 21)]
+        let current = NavigationRoute(coordinates: road, distance: 2_224, expectedTravelTime: 200, maneuvers: [])
+        let detour = NavigationRoute(coordinates: [road[0], Coordinate(latitude: 52.001, longitude: 21.003),
+            Coordinate(latitude: 52.019, longitude: 21.003), road[1]], distance: 2_600,
+            expectedTravelTime: 240, maneuvers: [])
+        let congestion = CongestionDetourCandidate(area: try RoadClosureAvoidance(geometry: [
+            Coordinate(latitude: 52.006, longitude: 21), Coordinate(latitude: 52.012, longitude: 21)]), measuredDelay: 300)
+        let session = NavigationSession(dependencies: .live(
+            routeEndpoint: URL(string: "https://routing.invalid")!, trafficAPIKey: nil))
+        session.state.transportMode = .car
+        session.state.routingPreferences = RoutingPreferences()
+        session.state.route = current
+        let provider = CapturingTrafficRouteProvider(routes: [current, detour])
+        session.routeProvider = provider
+        let result = try await session.congestionDetour(from: road[0], to: road[1], through: [], avoiding: congestion)
+        #expect(result?.id == detour.id)
+        #expect(provider.requestCount == 1)
+        #expect(provider.closurePolygons.isEmpty)
+        #expect(provider.congestionPolygons == congestion.area.polygons)
+        #expect(session.state.route?.id == current.id)
+        #expect(session.knownRoadClosures.isEmpty)
+        provider.fail = true
+        do {
+            _ = try await session.congestionDetour(from: road[0], to: road[1], through: [], avoiding: congestion)
+            Issue.record("Failed optional route was accepted")
+        } catch { }
+        #expect(session.state.route?.id == current.id)
+        #expect(RoadRoutingContext.congestionAvoidancePolygons.isEmpty)
+    }
+
     @Test func lateOptimizationCannotRewriteANewTrip() async throws {
         let session = NavigationSession(dependencies: .live(
             routeEndpoint: URL(string: "https://routing.invalid")!, trafficAPIKey: nil))
@@ -334,6 +506,34 @@ struct RoutingCriticalTests {
         #expect(session.state.errorMessage == nil)
     }
 
+}
+
+@MainActor
+private final class CapturingTrafficRouteProvider: AdvancedRouteProvider {
+    let routes: [NavigationRoute]
+    var fail = false
+    var requestCount = 0
+    var closurePolygons: [[[Double]]] = []
+    var congestionPolygons: [[[Double]]] = []
+    init(routes: [NavigationRoute]) { self.routes = routes }
+
+    func calculateRoutes(from: Coordinate, to: Coordinate, mode: TransportMode) async throws -> [NavigationRoute] {
+        requestCount += 1
+        closurePolygons = RoadRoutingContext.closurePolygons
+        congestionPolygons = RoadRoutingContext.congestionAvoidancePolygons
+        if fail { throw RoutingError.network }
+        return routes
+    }
+
+    func calculateRoutes(from: Coordinate, to: Coordinate, through: [Coordinate], mode: TransportMode,
+                         preferences: RoutingPreferences, avoiding: [Coordinate]) async throws -> [NavigationRoute] {
+        try await calculateRoutes(from: from, to: to, mode: mode)
+    }
+
+    func optimizedWaypointOrder(from: Coordinate, to: Coordinate, waypoints: [Destination],
+                                mode: TransportMode, preferences: RoutingPreferences) async throws -> [Int] {
+        Array(waypoints.indices)
+    }
 }
 
 

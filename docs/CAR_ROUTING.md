@@ -1,5 +1,7 @@
 # Wyznaczanie tras samochodowych w NaviAstra
 
+Aktualizacja iOS 1.1.157 (159): bieżące zasady rankingu, personalizacji, ruchu, EV i komunikacji opisuje [ROUTING_IMPROVEMENTS.md](ROUTING_IMPROVEMENTS.md). W tych obszarach zastępuje wcześniejsze zasady opisane poniżej.
+
 Stan dokumentacji: 12 października 2026 r., wersja aplikacji 1.1.72 (build 74). Opis uwzględnia bieżący kod lokalnego checkoutu, także jego niezacommitowane zmiany.
 
 Dokument opisuje działanie wynikające z kodu aplikacji. Nie potwierdza aktualności danych ani konfiguracji działającego serwera tras. Dotyczy trybu samochodowego; ogólny opis wszystkich trybów znajduje się w [ROUTING.md](ROUTING.md).

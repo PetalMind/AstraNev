@@ -11,12 +11,14 @@ final class TripPlanningService {
     var reminderMessage: String?
     var requestedTripID: UUID?
     private let fileURL: URL
+    private let routingDependencies: NavigationSessionDependencies?
     private var canWrite = true
     private let scheduler = TripReminderScheduler()
     private var scheduling = false
     private var scheduleAgain = false
 
-    init(directory: URL? = nil) {
+    init(directory: URL? = nil, routingDependencies: NavigationSessionDependencies? = nil) {
+        self.routingDependencies = routingDependencies
         let directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("NaviAstra", isDirectory: true)
         fileURL = directory.appendingPathComponent("planned-trips.json")
@@ -111,23 +113,13 @@ final class TripPlanningService {
         defer { refreshingIDs.remove(id) }
         var updated = original
         do {
-            let (route, matched) = try await calculate(original, occurrence: occurrence)
+            let result = try await calculateResult(original, occurrence: occurrence)
+            let route = result.route
             try Task.checkCancellation()
             guard RoutedTravelMetrics(time: route.expectedTravelTime, distance: route.distance) != nil,
                   route.expectedTravelTime > 0 else { throw RoutingError.invalidResponse }
-            let proposedDeparture = original.timing == .departure ? occurrence
-                : occurrence.addingTimeInterval(-route.expectedTravelTime - Double(original.bufferMinutes + original.stopMinutes) * 60)
-            var duration = route.expectedTravelTime
-            var currentTraffic = false
-            var trafficNote: String?
-            if original.transportMode == .car, proposedDeparture.timeIntervalSinceNow < 3_600 {
-                let result = try await measuredTravelTime(route)
-                duration = result.duration
-                currentTraffic = result.measured
-                trafficNote = result.note
-            }
-            updated.estimate = original.makeEstimate(for: occurrence, route: route, travelSeconds: duration,
-                currentTraffic: currentTraffic, matched: matched, trafficNote: trafficNote)
+            updated.estimate = original.makeEstimate(for: occurrence, route: route, travelSeconds: result.duration,
+                currentTraffic: result.measured, matched: result.matched, trafficNote: result.note)
             updated.refreshError = nil
         } catch is CancellationError { return }
         catch { updated.refreshError = "Nie udało się odświeżyć trasy: \(error.localizedDescription)" }
@@ -137,9 +129,22 @@ final class TripPlanningService {
     }
 
     func calculate(_ trip: PlannedTrip, occurrence: Date, now: Bool = false) async throws -> (NavigationRoute, Bool) {
+        let result = try await calculateResult(trip, occurrence: occurrence, now: now)
+        return (result.route, result.matched)
+    }
+
+    private struct Calculation {
+        let route: NavigationRoute
+        let matched: Bool
+        let duration: TimeInterval
+        var measured = false
+        var note: String?
+    }
+
+    private func calculateResult(_ trip: PlannedTrip, occurrence: Date, now: Bool = false) async throws -> Calculation {
         let endpoint = URL(string: UserDefaults.standard.string(forKey: "routingServer") ?? "")
             ?? URL(string: "https://valhalla1.openstreetmap.de")!
-        let session = NavigationSession(dependencies: .live(routeEndpoint: endpoint, trafficAPIKey: nil,
+        let session = NavigationSession(dependencies: routingDependencies ?? .live(routeEndpoint: endpoint, trafficAPIKey: TrafficCredential.read(),
             transitProvider: TransitousRouteProvider(), transitDataProvider: TransitousTransitDataProvider()))
         session.plannedTripCalculation = true
         session.state.transportMode = trip.transportMode
@@ -152,49 +157,90 @@ final class TripPlanningService {
         if trip.transportMode == .transit, !trip.waypoints.isEmpty {
             throw TripPlanningError.message("Postoje pośrednie są obsługiwane dla auta, roweru i podróży pieszych.")
         }
-        await RoadRoutingContext.$allowsPersonalization.withValue(false) { await session.preview(trip.destination) }
+        let personalized = trip.preferences.advanced.effectiveRoutePreference == .personalized
+        await RoadRoutingContext.$allowsPersonalization.withValue(personalized) { await session.preview(trip.destination) }
         try Task.checkCancellation()
         guard session.state.status == .routePreview else {
             throw TripPlanningError.message(session.state.errorMessage ?? "Trasa jest niedostępna.")
         }
         let selected = trip.preferredOption(in: session.state.routeOptions)
         guard let route = selected.route else { throw RoutingError.invalidResponse }
-        return (route, selected.matched)
-    }
+        let baseline = Calculation(route: route, matched: selected.matched, duration: route.expectedTravelTime)
+        let proposedDeparture = trip.timing == .departure ? occurrence
+            : occurrence.addingTimeInterval(-route.expectedTravelTime - Double(trip.bufferMinutes + trip.stopMinutes) * 60)
+        guard trip.transportMode == .car, now || proposedDeparture.timeIntervalSinceNow < 3_600,
+              let provider = session.trafficProvider else { return baseline }
 
-    private func measuredTravelTime(_ route: NavigationRoute) async throws -> (duration: Double, measured: Bool, note: String?) {
-        guard let provider = TrafficProviderFactory.tomTom.make(apiKey: TrafficCredential.read()) else {
-            return (route.expectedTravelTime, false, "Brak skonfigurowanej usługi ruchu. Użyto czasu silnika tras.")
+        var candidates = session.state.routeOptions
+        var knownClosures: [String: ConfirmedRoadClosure] = [:]
+        for attempt in 0...1 {
+            try Task.checkCancellation()
+            let previousAvoidances = try knownClosures.values.filter { $0.isFresh() }.map { try $0.avoidance() }
+            candidates = candidates.filter { route in !previousAvoidances.contains { $0.intersects(route) } }
+            guard !candidates.isEmpty else {
+                throw TripPlanningError.message("Nie znaleziono przejezdnego objazdu zamkniętej drogi. Plan pozostaje zapisany.")
+            }
+            let snapshots: [UUID: TrafficSnapshot]
+            do {
+                snapshots = try await TrafficRouteEvaluator.snapshots(for: candidates, provider: provider,
+                    isNavigating: false, isForeground: false, wholeRoute: true, requireComparableCoverage: false)
+            } catch is CancellationError { throw CancellationError() }
+            catch {
+                let fallback = trip.preferredOption(in: candidates)
+                guard let route = fallback.route else { throw RoutingError.invalidResponse }
+                return Calculation(route: route, matched: fallback.matched, duration: route.expectedTravelTime,
+                    note: "Dane o ruchu są niedostępne. Użyto czasu silnika tras.")
+            }
+            for candidate in candidates {
+                guard let traffic = snapshots[candidate.id] else { continue }
+                for closure in ConfirmedRoadClosure.evidence(in: traffic, route: candidate) {
+                    knownClosures[closure.id] = closure
+                }
+            }
+            let avoidances = try knownClosures.values.filter { $0.isFresh() }.map { try $0.avoidance() }
+            let openRoutes = candidates.filter { route in !avoidances.contains { $0.intersects(route) } }
+            if openRoutes.isEmpty {
+                guard attempt == 0 else {
+                    throw TripPlanningError.message("Nie znaleziono przejezdnego objazdu zamkniętej drogi. Plan pozostaje zapisany.")
+                }
+                await RoadRoutingContext.$closurePolygons.withValue(avoidances.flatMap(\.polygons)) {
+                    await RoadRoutingContext.$allowsPersonalization.withValue(personalized) {
+                        await session.preview(trip.destination)
+                    }
+                }
+                try Task.checkCancellation()
+                guard session.state.status == .routePreview else {
+                    throw TripPlanningError.message("Nie udało się wyznaczyć objazdu zamkniętej drogi. Plan pozostaje zapisany.")
+                }
+                candidates = session.state.routeOptions
+                continue
+            }
+            guard TrafficRouteEvaluator.hasComparableCoverage(routes: openRoutes, traffic: snapshots, wholeRoute: true) else {
+                let fallback = trip.preferredOption(in: openRoutes)
+                guard let route = fallback.route else { throw RoutingError.invalidResponse }
+                let note = knownClosures.isEmpty
+                    ? "Pomiary ruchu nie pozwalają porównać wariantów. Użyto czasu silnika tras."
+                    : "Wybrano trasę omijającą zamknięcie. Czas oparto na danych silnika tras."
+                return Calculation(route: route, matched: fallback.matched, duration: route.expectedTravelTime, note: note)
+            }
+            let preference = trip.preferences.advanced.effectiveRoutePreference
+            let ranked = personalized
+                ? DrivingLearningEngine.shared.ranked(openRoutes, preference: preference, traffic: snapshots,
+                                                       date: now ? Date() : occurrence)
+                : RouteScoringEngine.ranked(openRoutes, preference: preference, traffic: snapshots)
+            let durations = Dictionary(uniqueKeysWithValues: ranked.map { route in
+                (route.id, RoadRouteETA.estimate(route, from: 0, traffic: snapshots[route.id]))
+            })
+            let chosen = trip.preferredOption(in: ranked, measuredTravelTimes: durations)
+            guard let route = chosen.route, let duration = durations[route.id], duration.isFinite else {
+                throw RoutingError.invalidResponse
+            }
+            let note = !chosen.matched && !trip.preferredRoute.isEmpty
+                ? "Zmieniono zapisany wariant z powodu zamknięcia lub wyraźnie krótszego czasu jazdy."
+                : "Czas uwzględnia porównywalne pomiary ruchu dla dostępnych wariantów."
+            return Calculation(route: route, matched: chosen.matched, duration: duration, measured: true, note: note)
         }
-        let geometry = RouteProgressGeometry(route)
-        let queries = RouteTrafficMonitor.flowQueries(for: route, from: 0, through: geometry.length,
-            budget: .init(maximumRequests: 24))
-        async let flowRequest = provider.routeFlowSamples(at: queries)
-        var incidents: [TrafficIncident] = []
-        var incidentAvailable = false
-        var note: String?
-        do {
-            incidents = try await provider.incidents(in: RouteTrafficMonitor.queryBoxes(
-                for: route.coordinates, from: 0, through: geometry.length))
-            incidentAvailable = true
-        } catch {
-            note = "Dane o zdarzeniach niedostępne; czas oparto na dostępnych pomiarach i silniku tras."
-        }
-        let samples = await flowRequest
-        try Task.checkCancellation()
-        let segments = RouteTrafficMonitor.coloredSegments(on: route, from: 0, through: geometry.length,
-            queries: queries, samples: samples, geometry: geometry)
-        let traffic = TrafficSnapshot(flow: nil, incidents: incidents, routeFlowSegments: segments,
-            updatedAt: Date(), partialError: note, incidentDataAvailable: incidentAvailable)
-        let duration = RoadRouteETA.estimate(route, from: 0, traffic: traffic)
-        guard duration.isFinite else {
-            throw TripPlanningError.message("Dostępne pomiary wskazują zamknięcie na trasie. Otwórz plan i wybierz inną trasę.")
-        }
-        let measured = !segments.isEmpty || incidents.contains {
-            RouteTrafficMonitor.incidentProjection($0, geometry: geometry, route: route) != nil
-        }
-        if !measured { note = "Brak bieżących pomiarów na trasie. Użyto czasu silnika tras." }
-        return (duration, measured, note)
+        throw RoutingError.invalidResponse
     }
 
     func reschedule() async {

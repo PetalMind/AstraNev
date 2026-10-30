@@ -4,6 +4,8 @@ struct NavigationMarkerSettingsView: View {
     @Bindable var store: MapStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .body) private var modelColumnWidth = 96.0
     @State private var selectedTransport: NavigationPositionIcon = .car
     @State private var nightPreview = false
     @State private var tiltedPreview = true
@@ -18,7 +20,7 @@ struct NavigationMarkerSettingsView: View {
                         Text("Model").tag(true)
                         Text("Strzałka").tag(false)
                     }
-                    .pickerStyle(.segmented)
+                    .modifier(MarkerAdaptivePickerStyle())
                 }
                 if store.transportPositionIconsEnabled {
                     VStack(alignment: .leading, spacing: 12) {
@@ -28,7 +30,7 @@ struct NavigationMarkerSettingsView: View {
                             Text("Rower").tag(NavigationPositionIcon.bicycle)
                             Text("Pieszo").tag(NavigationPositionIcon.pedestrian)
                         }
-                        .pickerStyle(.segmented)
+                        .modifier(MarkerAdaptivePickerStyle())
                         Text("Zmiana tutaj dotyczy wyglądu znacznika.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
@@ -40,7 +42,7 @@ struct NavigationMarkerSettingsView: View {
                     Picker("Wielkość znacznika", selection: $store.markerAppearance.size) {
                         ForEach(NavigationMarkerSize.allCases) { Text($0.title).tag($0) }
                     }
-                    .pickerStyle(.segmented)
+                    .modifier(MarkerAdaptivePickerStyle())
                 }
                 Label {
                     Text("W komunikacji publicznej znacznik dopasowuje się do aktualnego etapu. Podczas dojścia i oczekiwania pokazuje pieszego.")
@@ -52,7 +54,13 @@ struct NavigationMarkerSettingsView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .padding(20)
+            .frame(maxWidth: 680, alignment: .leading)
+            .frame(maxWidth: .infinity)
         }
+        #if os(iOS)
+        .background(Color(uiColor: .systemGroupedBackground))
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
         .navigationTitle("Twój znacznik")
         .onAppear { nightPreview = colorScheme == .dark }
     }
@@ -69,7 +77,9 @@ struct NavigationMarkerSettingsView: View {
             .clipShape(RoundedRectangle(cornerRadius: 22))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Podgląd wyglądu: \(store.transportPositionIconsEnabled ? selectedModel.title : "Strzałka"), \(selectedPaint.title)")
-            HStack(spacing: 16) {
+            let layout = dynamicTypeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(spacing: 12)) : AnyLayout(HStackLayout(spacing: 16))
+            layout {
                 Picker("Oświetlenie podglądu", selection: $nightPreview) {
                     Text("Dzień").tag(false)
                     Text("Noc").tag(true)
@@ -79,18 +89,22 @@ struct NavigationMarkerSettingsView: View {
                     Text("3D").tag(true)
                 }
             }
-            .pickerStyle(.segmented)
+            .modifier(MarkerAdaptivePickerStyle())
             Text("Podgląd wyglądu na przykładowej mapie")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(12)
+        #if os(iOS)
+        .iosCardSurface(radius: 24)
+        #else
         .modifier(NavigationGlassSurface(radius: 26))
+        #endif
     }
 
     private var modelPicker: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Model").font(.headline)
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 96))], spacing: 10) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: modelColumnWidth))], spacing: 10) {
                 ForEach(models) { model in
                     Button {
                         if selectedTransport == .car { store.markerAppearance.car = model }
@@ -193,6 +207,23 @@ struct NavigationMarkerSettingsView: View {
         value.increasedContrast = contrast == .increased
         value.scale = model == nil ? store.markerAppearance.size.scale : 1
         return value
+    }
+}
+
+private struct MarkerAdaptivePickerStyle: ViewModifier {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        if dynamicTypeSize.isAccessibilitySize {
+            content.pickerStyle(.menu)
+        } else {
+            content.pickerStyle(.segmented)
+        }
+        #else
+        content.pickerStyle(.segmented)
+        #endif
     }
 }
 

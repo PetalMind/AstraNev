@@ -53,6 +53,23 @@ nonisolated struct LearnedRoadSegment: Codable, Sendable {
     let coordinates: [Coordinate]
     let length: Double
     let names: [String]
+    // A GPS gap separates observations; it is never an inferred road between them.
+    var startsObservation = false
+}
+
+extension LearnedRoadSegment {
+    nonisolated enum CodingKeys: String, CodingKey {
+        case id, coordinates, length, names, startsObservation
+    }
+
+    nonisolated init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        coordinates = try values.decode([Coordinate].self, forKey: .coordinates)
+        length = try values.decode(Double.self, forKey: .length)
+        names = try values.decode([String].self, forKey: .names)
+        startsObservation = try values.decodeIfPresent(Bool.self, forKey: .startsObservation) ?? false
+    }
 }
 
 nonisolated struct DrivingDeviation: Codable, Sendable, Identifiable {
@@ -90,6 +107,7 @@ nonisolated struct LearnedDrivingTrip: Codable, Sendable, Identifiable {
     var offeredVariants: [DrivingObservedVariant] = []
     var selectedVariantID: String? = nil
     var selectedAgainstAlternative = false
+    var recoveredFromHistory = false
 
     var coordinates: [Coordinate] { segments.flatMap(\.coordinates) }
 }
@@ -176,7 +194,7 @@ nonisolated enum DrivingLearningMath {
 
     static func similarity(_ a: [LearnedRoadSegment], _ b: [LearnedRoadSegment]) -> Double {
         if a.contains(where: { $0.id.hasPrefix("trace:") }) || b.contains(where: { $0.id.hasPrefix("trace:") }) {
-            return overlap(a, geometry: RouteProgressGeometry(coordinates: b.flatMap(\.coordinates)))
+            return overlap(a, geometries: continuousGeometries(b))
         }
         let ids = Set(b.map(\.id))
         let length = a.reduce(0) { $0 + $1.length }
@@ -184,12 +202,53 @@ nonisolated enum DrivingLearningMath {
         return a.filter { ids.contains($0.id) }.reduce(0) { $0 + $1.length } / length
     }
 
+    static func continuousGeometries(_ segments: [LearnedRoadSegment]) -> [RouteProgressGeometry] {
+        var paths: [[Coordinate]] = []
+        for segment in segments {
+            if segment.startsObservation || paths.isEmpty { paths.append([]) }
+            paths[paths.count - 1].append(contentsOf: segment.coordinates)
+        }
+        return paths.compactMap { coordinates in
+            guard coordinates.count > 1 else { return nil }
+            let geometry = RouteProgressGeometry(coordinates: coordinates)
+            return geometry.length.isFinite && geometry.length > 0 ? geometry : nil
+        }
+    }
+
+    /// Samples only the distance actually observed. Gaps have no length or shape.
+    static func sampledCoordinates(segments: [LearnedRoadSegment], fractions: [Double]) -> [Coordinate] {
+        let geometries = continuousGeometries(segments)
+        let length = geometries.reduce(0) { $0 + $1.length }
+        guard length > 0 else { return [] }
+        return fractions.compactMap { fraction in
+            guard fraction.isFinite, (0...1).contains(fraction) else { return nil }
+            var remaining = length * fraction
+            for geometry in geometries {
+                if remaining <= geometry.length { return geometry.coordinate(at: remaining) }
+                remaining -= geometry.length
+            }
+            return geometries.last.flatMap { $0.coordinate(at: $0.length) }
+        }
+    }
+
     static func patterns(_ trips: [LearnedDrivingTrip]) -> [DrivingRoutePattern] {
+        let geometricTripIDs = Set(trips.filter { $0.segments.contains { $0.id.hasPrefix("trace:") } }.map(\.id))
+        // Grouping compares the same journeys repeatedly. Build each spatial
+        // index once for this reduction, preserving the observation boundaries.
+        let geometries: [UUID: [RouteProgressGeometry]] = geometricTripIDs.isEmpty ? [:]
+            : Dictionary(trips.map { ($0.id, continuousGeometries($0.segments)) },
+                         uniquingKeysWith: { first, _ in first })
+        func similarity(_ a: LearnedDrivingTrip, _ b: LearnedDrivingTrip) -> Double {
+            if geometricTripIDs.contains(a.id) || geometricTripIDs.contains(b.id) {
+                return overlap(a.segments, geometries: geometries[b.id] ?? [])
+            }
+            return DrivingLearningMath.similarity(a.segments, b.segments)
+        }
         var result: [DrivingRoutePattern] = []
         for trip in trips.sorted(by: { $0.startedAt < $1.startedAt }) {
             if let index = result.firstIndex(where: {
-                sameJourney($0.representative, trip) && similarity(trip.segments, $0.representative.segments) >= 0.85
-                    && similarity($0.representative.segments, trip.segments) >= 0.85
+                sameJourney($0.representative, trip) && similarity(trip, $0.representative) >= 0.85
+                    && similarity($0.representative, trip) >= 0.85
                     && compatibleChoices(trip, $0.representative)
             }) {
                 result[index].trips.append(trip)
@@ -223,6 +282,15 @@ nonisolated enum DrivingLearningMath {
     /// a recorded journey to the route server or assuming candidate OSM IDs.
     static func overlap(_ segments: [LearnedRoadSegment], geometry: RouteProgressGeometry,
                         from start: Double = 0) -> Double {
+        overlap(segments, geometries: [geometry], from: start)
+    }
+
+    static func overlap(_ segments: [LearnedRoadSegment], geometries: [RouteProgressGeometry]) -> Double {
+        overlap(segments, geometries: geometries, from: 0)
+    }
+
+    private static func overlap(_ segments: [LearnedRoadSegment], geometries: [RouteProgressGeometry],
+                                from start: Double) -> Double {
         var total = 0.0, shared = 0.0
         for segment in segments {
             let points = segment.coordinates
@@ -235,11 +303,14 @@ nonisolated enum DrivingLearningMath {
                 let point = points[(begin + end) / 2]
                 let portion = segment.length / Double(count)
                 total += portion
-                guard let projection = geometry.project(point, within: 25),
-                      projection.distanceFromRoute <= 25, projection.alongRoute >= start,
-                      let c = geometry.coordinate(at: max(0, projection.alongRoute - 8)),
-                      let d = geometry.coordinate(at: min(geometry.length, projection.alongRoute + 8)),
-                      RoadGeometryAlignment.isAligned(a, b, c, d, directed: true) else { continue }
+                let matches = geometries.contains { geometry in
+                    guard let projection = geometry.project(point, within: 25),
+                          projection.distanceFromRoute <= 25, projection.alongRoute >= start,
+                          let c = geometry.coordinate(at: max(0, projection.alongRoute - 8)),
+                          let d = geometry.coordinate(at: min(geometry.length, projection.alongRoute + 8)) else { return false }
+                    return RoadGeometryAlignment.isAligned(a, b, c, d, directed: true)
+                }
+                guard matches else { continue }
                 shared += portion
             }
         }
@@ -256,6 +327,7 @@ nonisolated enum DrivingDeviationDetector {
         var result: [DrivingDeviation] = []
         var anchor: (actual: Int, proposed: Int)?
         for (index, segment) in actual.enumerated() {
+            if segment.startsObservation { anchor = nil }
             guard let proposedIndex = proposedIndexes[segment.id] else { continue }
             defer { anchor = (index, proposedIndex) }
             guard let anchor, index > anchor.actual + 1, proposedIndex > anchor.proposed,

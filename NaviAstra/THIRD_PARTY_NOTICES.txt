@@ -35,3 +35,9 @@ Selected OBJ models converted to normalized local meshes with sampled material c
 Coarse derivatives use vertex clustering with original face-plane error minimization.
 Tree colors and roof colors are adapted to the map; traffic signal lenses are unlit.
 Generic architecture is fitted only to eligible observed building footprints.
+
+Terrain surface patterns (iOS)
+The water, grass, forest floor, sand, rock and parking patterns are generated
+locally by NaviAstra using MapTerrainPattern. They contain no downloaded
+TextureCan, Poly Haven, QuickMesh or OpenGameArt texture data.
+Kenney models and their original licenses remain listed above.

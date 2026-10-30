@@ -123,11 +123,8 @@ extension ContentView {
     func handleAppSheetDismissal() {
         let dismissed = appRouter.consumeDismissedSheet()
 #if os(iOS)
-        if let presentation = pendingIOSTripPresentation {
-            pendingIOSTripPresentation = nil
-            iosTripPresentation = presentation
-            return
-        }
+        if dismissed == .search { addingWaypoint = false }
+        if tripCoordinator.presentPendingWorkspace() { return }
 #endif
         switch dismissed {
         case .search:

@@ -104,16 +104,15 @@ struct RoutingP1CriticalTests {
                                         previous: nil, previousTimestamp: nil, now: now) == nil)
     }
 
-    @Test func normalizedRankingPreservesUnitsAndDoesNotRewardMissingQuality() {
+    @Test func calibratedRankingIsIndependentOfUnrelatedCandidatesAndMissingQuality() {
         let a = RouteScore(travelTime: 1_860, distance: 19_000, trafficDelay: nil, maneuverCost: 328,
                            roadQualityCost: nil, reliabilityCost: nil, tollCost: nil)
         let b = RouteScore(travelTime: 1_980, distance: 22_000, trafficDelay: nil, maneuverCost: 64,
                            roadQualityCost: 0, reliabilityCost: 0.8, tollCost: nil)
-        let scaled = [a, b].map { RouteScore(travelTime: $0.travelTime * 60, distance: $0.distance / 1_000,
-            trafficDelay: nil, maneuverCost: $0.maneuverCost * 10, roadQualityCost: $0.roadQualityCost,
-            reliabilityCost: $0.reliabilityCost, tollCost: nil) }
+        let unrelated = RouteScore(travelTime: 2_100, distance: 21_000, trafficDelay: nil, maneuverCost: 1_800,
+                                   roadQualityCost: nil, reliabilityCost: nil, tollCost: nil)
         let first = RouteScoringEngine.rankingValues([a, b], preference: .balanced)
-        let second = RouteScoringEngine.rankingValues(scaled, preference: .balanced)
+        let second = RouteScoringEngine.rankingValues([a, b, unrelated], preference: .balanced)
         #expect(first[1] < first[0])
         #expect(zip(first, second).allSatisfy { abs($0 - $1) < 1e-9 })
         #expect(RouteScoringEngine.normalized([a, b]).allSatisfy { $0.surface == nil && $0.reliability == nil })

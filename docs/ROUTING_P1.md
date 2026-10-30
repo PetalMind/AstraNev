@@ -1,5 +1,7 @@
 # Routing samochodowy — P1
 
+Aktualizacja iOS 1.1.157 (159): bieżące zasady rankingu, personalizacji, ruchu, EV i komunikacji opisuje [ROUTING_IMPROVEMENTS.md](ROUTING_IMPROVEMENTS.md). W tych obszarach zastępuje wcześniejsze zasady opisane poniżej.
+
 Stan: 12 października 2026 r., NaviAstra 1.1.72 (build 74). Opis dotyczy kodu lokalnego checkoutu. Nie jest potwierdzeniem przejazdu ani kompletności danych dostawców.
 
 ## Diagnostyka decyzji i lokalna telemetria

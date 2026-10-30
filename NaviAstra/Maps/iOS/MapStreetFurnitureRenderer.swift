@@ -33,8 +33,16 @@ final class MapStreetFurnitureRenderer {
         var used: TimeInterval
     }
     private var geometry: [String: CachedGeometry] = [:]
+    private struct PlacementKey: Equatable {
+        let style: ObjectIdentifier
+        let roads: ObjectIdentifier?
+        let buildings: ObjectIdentifier?
+        let latitude: Int
+        let longitude: Int
+        let zoom: Int
+    }
     private var placementScene: MapObjectPlacement?
-    private var placementKey = ""
+    private var placementKey: PlacementKey?
     private var placementTime = Date.distantPast
     private var detailRequests: [String: (MapStreetFurnitureGeometry.Detail, Date)] = [:]
     private var modeled: [String: MapStreetFurnitureGeometry.Detail] = [:]
@@ -76,8 +84,12 @@ final class MapStreetFurnitureRenderer {
             && (style.source(withIdentifier: iconsSourceID) as? MLNShapeSource)?.shape != nil
     }
 
-    func suspend() {
+    func pauseRefresh() {
         refreshTask?.cancel(); refreshTask = nil
+    }
+
+    func suspend() {
+        pauseRefresh()
         modelLayer?.isVisible = false
         buildingModels.reset()
     }
@@ -96,7 +108,8 @@ final class MapStreetFurnitureRenderer {
         loggedLoadedPoints = false
         observations.reset()
         placementScene = nil
-        placementKey = ""
+        placementKey = nil
+        placementTime = .distantPast
         geometry.removeAll()
         modeled.removeAll()
         detailRequests.removeAll()
@@ -318,6 +331,9 @@ final class MapStreetFurnitureRenderer {
             observations.reset()
             geometry.removeAll()
             modeled.removeAll()
+            placementScene = nil
+            placementKey = nil
+            placementTime = .distantPast
         }
         let policy = MapEnvironmentModelPolicy(navigating: settings.context.isNavigating, constrained: MapDetailPolicy.constrained)
         guard Date().timeIntervalSince(refreshedAt) >= policy.refreshInterval else { return }
@@ -414,7 +430,18 @@ final class MapStreetFurnitureRenderer {
             accepted.append(item)
         }
         accepted.sort { (incomingRank[$0.0] ?? 0) < (incomingRank[$1.0] ?? 0) }
-        let nextPlacementKey = MapDetailPolicy.viewportKey(on: map)
+        // Placement indexes geographic walls and roads, so rotating or tilting
+        // the camera does not invalidate it. The existing two-second refresh
+        // still picks up new tile contents within the same source objects.
+        let placementCenter = map.centerCoordinate
+        let nextPlacementKey = PlacementKey(
+            style: ObjectIdentifier(style),
+            roads: planet.map { ObjectIdentifier($0) },
+            buildings: (style.source(withIdentifier: MapTilerEnvironmentStyle.buildingsSourceID)
+                as? MLNVectorTileSource).map { ObjectIdentifier($0) },
+            latitude: Int(placementCenter.latitude * 10_000),
+            longitude: Int(placementCenter.longitude * 10_000),
+            zoom: Int(map.zoomLevel * 4))
         if placementScene == nil || nextPlacementKey != placementKey || Date().timeIntervalSince(placementTime) > 2 {
             placementScene = MapObjectPlacement(on: map); placementKey = nextPlacementKey; placementTime = .now
         }

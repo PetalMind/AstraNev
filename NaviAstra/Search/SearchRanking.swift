@@ -56,7 +56,7 @@ enum SearchRanking {
         let order = leftText.compare(rightText, options: [.caseInsensitive, .diacriticInsensitive, .numeric],
                                      locale: Locale(identifier: "pl_PL"))
         if order != .orderedSame { return order == .orderedAscending }
-        return (lhs.osmID ?? lhs.providerID ?? lhs.id.uuidString) < (rhs.osmID ?? rhs.providerID ?? rhs.id.uuidString)
+        return lhs.placeIdentity.cacheKey < rhs.placeIdentity.cacheKey
     }
 
     private static func validTravelTime(_ value: Double?) -> Double? {
@@ -82,9 +82,14 @@ enum SearchRanking {
             else if operatorName.contains(query), !query.isEmpty { score += 440 }
             if address.contains(query) { score += 180 }
 
-            let tokens = Set(query.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+            // Tokenize before stripping punctuation and spaces. Otherwise a
+            // multiword query becomes one token and ignores reordered addresses.
+            let tokens = Set(QueryClassifier.normalize(intent.text)
+                .split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
             if !tokens.isEmpty {
-                let searchable = [name, brand, operatorName, address].joined(separator: " ")
+                let searchable = [name, brand, operatorName, address,
+                    normalizedIdentity(result.street ?? ""), normalizedIdentity(result.city ?? "")]
+                    .joined(separator: " ")
                 let matched = tokens.filter { searchable.contains($0) }.count
                 score += Double(matched) / Double(tokens.count) * 220
             }
@@ -124,8 +129,8 @@ enum SearchDeduplicator {
                 guard parcelQuery.matches(result) else { continue }
             } else if intent.intent == .brand {
                 let names = [result.destination.name, result.brand, result.operatorName]
-                    .compactMap { $0 }.map(QueryClassifier.normalize)
-                let query = QueryClassifier.normalize(intent.text)
+                    .compactMap { $0 }.map(SearchRanking.normalizedIdentity)
+                let query = SearchRanking.normalizedIdentity(intent.text)
                 guard names.contains(where: { $0.contains(query) }) else { continue }
             }
             if intent.alongRoute {
@@ -148,7 +153,7 @@ enum SearchDeduplicator {
         }
     }
 
-    private static func samePlace(_ lhs: SearchResult, _ rhs: SearchResult) -> Bool {
+    static func samePlace(_ lhs: SearchResult, _ rhs: SearchResult) -> Bool {
         guard lhs.isContact == rhs.isContact else { return false }
         let leftIdentity = lhs.placeIdentity
         let rightIdentity = rhs.placeIdentity
@@ -198,5 +203,30 @@ enum SearchDeduplicator {
         let leftNumbers = numbers(lhs)
         let rightNumbers = numbers(rhs)
         return !leftNumbers.isEmpty && !rightNumbers.isEmpty && leftNumbers.isDisjoint(with: rightNumbers)
+    }
+}
+
+/// Keeps the displayed row alive when another source enriches the same place.
+/// Provider precedence still chooses the freshest metadata and ranking still
+/// follows relevance and actual route estimates; only presentation identity is kept.
+@MainActor
+final class SearchResultIdentityRegistry {
+    private var known: [SearchResult] = []
+
+    func stabilize(_ results: [SearchResult]) -> [SearchResult] {
+        var used = Set<UUID>()
+        let stabilized = results.map { result in
+            var value = result
+            if let previous = known.first(where: {
+                !used.contains($0.id) && SearchDeduplicator.samePlace($0, result)
+            }) {
+                value.destination.id = previous.id
+            }
+            used.insert(value.id)
+            return value
+        }
+        // Keep a small history for rows temporarily displaced by a faster source.
+        known = Array((stabilized + known.filter { !used.contains($0.id) }).prefix(64))
+        return stabilized
     }
 }

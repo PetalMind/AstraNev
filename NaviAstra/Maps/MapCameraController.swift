@@ -133,7 +133,8 @@ final class MapCameraController {
                 switch state.transportMode {
                 case .walking: intent.anchorFraction = 0.58
                 case .bicycle: intent.anchorFraction = 0.64
-                case .car: intent.anchorFraction = 0.68
+                case .car:
+                    if intent.framingCoordinates.isEmpty { intent.anchorFraction = 0.68 }
                 case .transit:
                     let activeLeg = state.transitProgress.flatMap { progress in
                         state.route?.journey?.legs.indices.contains(progress.legIndex) == true
@@ -170,7 +171,7 @@ final class MapCameraController {
                 transitPlan.intent,
                 timestamp: Date().timeIntervalSinceReferenceDate,
                 profile: transitPlan.followsWalkingRoute ? .walking : .transit,
-                initialAnimationDuration: state.cameraState == .startingNavigation ? 0.65 : nil,
+                initialAnimationDuration: state.cameraState == .startingNavigation ? NavigationCameraTiming.start : nil,
                 animationDuration: navigationAnimationDuration(for: location, routeID: routeID))
             return
         }
@@ -206,7 +207,7 @@ final class MapCameraController {
                 intent,
                 timestamp: Date().timeIntervalSinceReferenceDate,
                 profile: state.transportMode == .bicycle ? .cycling : .walking,
-                initialAnimationDuration: state.cameraState == .startingNavigation ? 0.65 : nil,
+                initialAnimationDuration: state.cameraState == .startingNavigation ? NavigationCameraTiming.start : nil,
                 animationDuration: navigationAnimationDuration(for: location, routeID: routeID))
         } else {
             state.cameraIntent = intent
@@ -313,9 +314,20 @@ final class MapCameraController {
         let speed = CameraPlanner.usableSpeed(from: location)
         let fixTimestamp = state.location?.timestamp ?? location.timestamp
         let age = max(0, Date().timeIntervalSince(fixTimestamp))
-        let routeDistance = baseDistance + min(2, age) * speed
+        let prediction = state.weakGPS ? 0 : min(2, age) * speed
+        let routeDistance = min(geometry.length, max(0, baseDistance + prediction))
         let maneuver = progressIsForRoute ? state.progress?.nextManeuver : nil
-        let maneuverDistance = maneuver.map { _ in state.progress?.distanceToNextManeuver ?? 0 }
+        let maneuverDistance = maneuver.flatMap { maneuver -> Double? in
+            guard geometry.cumulativeDistances.indices.contains(maneuver.shapeIndex) else { return nil }
+            return max(0, geometry.cumulativeDistances[maneuver.shapeIndex] - routeDistance)
+        }
+        let followingManeuver = maneuver.flatMap { current in
+            route.maneuvers.first { $0.shapeIndex > current.shapeIndex }
+        }
+        let followingManeuverDistance = followingManeuver.flatMap { following -> Double? in
+            guard geometry.cumulativeDistances.indices.contains(following.shapeIndex) else { return nil }
+            return max(0, geometry.cumulativeDistances[following.shapeIndex] - routeDistance)
+        }
         let input = NavigationCameraInput(
             matchedCoordinate: geometry.coordinate(at: routeDistance) ?? projection?.coordinate ?? location.coordinate,
             routeDistance: routeDistance,
@@ -326,8 +338,12 @@ final class MapCameraController {
             isRoundabout: maneuver?.kind.isRoundabout == true,
             isMotorwayExit: maneuver?.kind.isExit == true,
             viewportPadding: .navigation,
-            timestamp: Date().timeIntervalSinceReferenceDate,
-            cameraState: cameraState)
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            cameraState: cameraState,
+            maneuverIndex: maneuver?.shapeIndex,
+            followingManeuverDistance: followingManeuverDistance,
+            connectsRoundaboutEntryAndExit: maneuver?.kind == .roundaboutEnter &&
+                followingManeuver?.kind == .roundaboutExit)
         return navigationCameraEngine.update(input)
     }
 

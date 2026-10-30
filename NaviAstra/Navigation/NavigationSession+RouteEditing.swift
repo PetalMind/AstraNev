@@ -64,7 +64,7 @@ extension NavigationSession {
         state.arrivalLocation = nil
         let isEndingActiveTrip = state.status == .navigating || state.status == .rerouting
         if isEndingActiveTrip {
-            finishTrip(arrived: false)
+            finishTrip(arrived: false, reason: .replaced)
             voice.reset()
             locationManager.stopBackgroundNavigationUpdates()
             locationManager.setHeadingUpdatesEnabled(false)
@@ -156,6 +156,7 @@ extension NavigationSession {
             return
         }
         if isActiveTrip {
+            tripSession?.routeQuality.invalidateForPlanChange()
             state.waypoints.insert(destination, at: 0)
             state.pendingWaypointIDs.removeAll { $0 == destination.id }
             state.pendingWaypointIDs.insert(destination.id, at: 0)
@@ -169,6 +170,9 @@ extension NavigationSession {
     }
 
     func removeWaypoint(_ id: UUID) async {
+        if state.waypoints.contains(where: { $0.id == id }) {
+            tripSession?.routeQuality.invalidateForPlanChange()
+        }
         state.waypoints.removeAll { $0.id == id }
         state.pendingWaypointIDs.removeAll { $0 == id }
         state.evChargingStops = []
@@ -186,6 +190,7 @@ extension NavigationSession {
         guard let sourceIndex = state.waypoints.firstIndex(where: { $0.id == id }) else { return }
         let boundedTarget = min(max(0, targetIndex), state.waypoints.count - 1)
         guard sourceIndex != boundedTarget else { return }
+        tripSession?.routeQuality.invalidateForPlanChange()
         let waypoint = state.waypoints.remove(at: sourceIndex)
         state.waypoints.insert(waypoint, at: boundedTarget)
         let pendingWaypointIDs = Set(state.pendingWaypointIDs)

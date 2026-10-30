@@ -1174,7 +1174,7 @@ extension ContentView {
             }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Trasa \(index), \(time(route.expectedTravelTime)), \(routeTransitSummary(route) ?? distance(route.distance))")
+        .accessibilityLabel("Trasa \(index), \(time(route.previewTravelTime)), \(routeTransitSummary(route) ?? distance(route.distance))")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
@@ -1195,11 +1195,12 @@ extension ContentView {
     }
 
     func routeOptionTime(_ route: NavigationRoute) -> String {
-        compactRouteTime(route.expectedTravelTime)
+        compactRouteTime(route.previewTravelTime)
     }
 
     func routeOptionDifference(_ route: NavigationRoute, from selectedRoute: NavigationRoute) -> String {
-        let difference = route.expectedTravelTime - selectedRoute.expectedTravelTime
+        let now = Date()
+        let difference = route.previewTravelTime(at: now) - selectedRoute.previewTravelTime(at: now)
         let minutes = Int(ceil(abs(difference) / 60))
         guard minutes > 0 else { return "Podobny czas" }
         return difference > 0 ? "+\(minutes) min względem wybranej" : "\(minutes) min szybciej"

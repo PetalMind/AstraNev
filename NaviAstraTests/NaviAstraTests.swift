@@ -401,14 +401,18 @@ struct NaviAstraTests {
                                timestamp: start.addingTimeInterval(offset), courseAccuracy: 5)
         }
 
-        #expect(!detector.shouldRequestReroute(location: location(at: 0), route: route,
-                                               projection: projection, matchConfidence: 0.2))
-        #expect(!detector.shouldRequestReroute(location: location(at: 0), route: route,
-                                               projection: projection, matchConfidence: 0.2))
-        #expect(!detector.shouldRequestReroute(location: location(at: 1), route: route,
-                                               projection: projection, matchConfidence: 0.2))
-        #expect(detector.shouldRequestReroute(location: location(at: 2), route: route,
-                                              projection: projection, matchConfidence: 0.2))
+        let firstFix = detector.shouldRequestReroute(location: location(at: 0), route: route,
+                                                     projection: projection, matchConfidence: 0.2)
+        #expect(!firstFix)
+        let repeatedFix = detector.shouldRequestReroute(location: location(at: 0), route: route,
+                                                        projection: projection, matchConfidence: 0.2)
+        #expect(!repeatedFix)
+        let secondFix = detector.shouldRequestReroute(location: location(at: 1), route: route,
+                                                      projection: projection, matchConfidence: 0.2)
+        #expect(!secondFix)
+        let thirdFix = detector.shouldRequestReroute(location: location(at: 2), route: route,
+                                                     projection: projection, matchConfidence: 0.2)
+        #expect(thirdFix)
     }
 
     @Test @MainActor func offRouteDetectorResetsWhenPositionOrHeadingEvidenceIsNoLongerValid() {
@@ -426,18 +430,23 @@ struct NaviAstraTests {
                                timestamp: start.addingTimeInterval(offset), courseAccuracy: 5)
         }
 
-        #expect(!detector.shouldRequestReroute(location: location(at: 0), route: route,
-                                               projection: projection, matchConfidence: 0.2))
+        let initialDeparture = detector.shouldRequestReroute(location: location(at: 0), route: route,
+                                                             projection: projection, matchConfidence: 0.2)
+        #expect(!initialDeparture)
         let nearbyProjection = RouteProjection(coordinate: Coordinate(latitude: 0, longitude: 0.005),
                                                distanceFromRoute: 0, alongRoute: 500, segment: 0)
-        #expect(!detector.shouldRequestReroute(location: location(at: 1, latitude: 0), route: route,
-                                               projection: nearbyProjection, matchConfidence: 0.8))
-        #expect(!detector.shouldRequestReroute(location: location(at: 3), route: route,
-                                               projection: projection, matchConfidence: 0.2))
-        #expect(!detector.shouldRequestReroute(location: location(at: 4, course: 90), route: route,
-                                               projection: projection, matchConfidence: 0.2))
-        #expect(!detector.shouldRequestReroute(location: location(at: 5), route: route,
-                                               projection: projection, matchConfidence: 0.2))
+        let returnedToRoute = detector.shouldRequestReroute(location: location(at: 1, latitude: 0), route: route,
+                                                            projection: nearbyProjection, matchConfidence: 0.8)
+        #expect(!returnedToRoute)
+        let nextDeparture = detector.shouldRequestReroute(location: location(at: 3), route: route,
+                                                          projection: projection, matchConfidence: 0.2)
+        #expect(!nextDeparture)
+        let matchingHeading = detector.shouldRequestReroute(location: location(at: 4, course: 90), route: route,
+                                                            projection: projection, matchConfidence: 0.2)
+        #expect(!matchingHeading)
+        let departureAfterReset = detector.shouldRequestReroute(location: location(at: 5), route: route,
+                                                                projection: projection, matchConfidence: 0.2)
+        #expect(!departureAfterReset)
     }
 
     @Test @MainActor func routeTrafficLookAheadUsesTravelTimeAndRoadSpeed() {
@@ -460,10 +469,19 @@ struct NaviAstraTests {
         let route = route(from: Coordinate(latitude: 0, longitude: 0),
                           to: Coordinate(latitude: 0, longitude: 0.5),
                           expectedTravelTime: 2_000)
-        let boxes = RouteTrafficMonitor.queryBoxes(for: route, from: 2_000, through: 42_000)
+        let boxes = RouteTrafficMonitor.queryBoxes(for: route.coordinates, from: 2_000, through: 42_000)
         let matchedIncident = TrafficIncident(
             id: "road-closure",
             description: "Droga zamknięta",
+            coordinate: Coordinate(latitude: 0, longitude: 0.2),
+            delaySeconds: nil,
+            category: .roadClosed,
+            severity: .indefinite,
+            geometry: [Coordinate(latitude: 0, longitude: 0.2),
+                       Coordinate(latitude: 0, longitude: 0.201)])
+        let crossingRoad = TrafficIncident(
+            id: "crossing-road",
+            description: "Zamknięcie na drodze poprzecznej",
             coordinate: Coordinate(latitude: 0.01, longitude: 0.2),
             delaySeconds: nil,
             category: .roadClosed,
@@ -478,8 +496,9 @@ struct NaviAstraTests {
             category: .jam,
             severity: .moderate)
 
-        let matched = RouteTrafficMonitor.matching([matchedIncident, outsideCorridor], to: route,
-                                                   from: 2_000, through: 42_000)
+        let matched = RouteTrafficMonitor.matching([matchedIncident, outsideCorridor, crossingRoad], to: route,
+                                                   from: 2_000, through: 42_000,
+                                                   routeGeometry: RouteProgressGeometry(route))
 
         #expect(boxes.count >= 5)
         #expect(matched.map(\.id) == ["road-closure"])

@@ -32,11 +32,12 @@ extension ContentView {
             routes = [route]
         }
         let selectedID = navigationStore.state.route?.id
+        let now = Date()
         return routes.sorted { lhs, rhs in
             let lhsIsSelected = lhs.id == selectedID
             let rhsIsSelected = rhs.id == selectedID
             if lhsIsSelected != rhsIsSelected { return lhsIsSelected }
-            return lhs.expectedTravelTime < rhs.expectedTravelTime
+            return lhs.previewTravelTime(at: now) < rhs.previewTravelTime(at: now)
         }
     }
 
@@ -57,7 +58,7 @@ extension ContentView {
 
     private func routeVariantCaption(_ description: RouteVariantDescriptions.Description, compact: Bool) -> some View {
         Text(compact ? description.compactTitle : description.title)
-            .font(.system(size: compact ? 12 : 13, weight: .semibold, design: .rounded))
+            .font(compact ? .caption.weight(.semibold) : .subheadline.weight(.semibold))
             .foregroundStyle(Color.accentColor)
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -199,6 +200,22 @@ extension ContentView {
     }
 
     func routePlanningSheet(maxHeight: CGFloat, bottomInset: CGFloat) -> some View {
+        // Re-evaluate the cards when their measurements expire, even when the
+        // user leaves the preview open without GPS or network state changes.
+        TimelineView(.explicit(routePlanningPreviewRefreshDates)) { _ in
+            routePlanningSheetContent(maxHeight: maxHeight, bottomInset: bottomInset)
+        }
+    }
+
+    private var routePlanningPreviewRefreshDates: [Date] {
+        let now = Date()
+        let routes = navigationStore.state.routeOptions + (navigationStore.state.route.map { [$0] } ?? [])
+        let expirations = routes.compactMap { $0.trafficPreviewEstimate?.updatedAt.addingTimeInterval(120.001) }
+            .filter { $0 > now && $0.timeIntervalSince(now).isFinite }
+        return [now] + Array(Set(expirations)).sorted()
+    }
+
+    private func routePlanningSheetContent(maxHeight: CGFloat, bottomInset: CGFloat) -> some View {
         NavigationBottomSheet(detent: $routePreviewDetent,
                               maximumHeight: maxHeight,
                               accessibilityLabel: "Podgląd trasy",
@@ -502,7 +519,7 @@ extension ContentView {
             }
             return "Trasa do \(destination) jest przygotowywana"
         }
-        return "Trasa do \(destination), \(time(route.expectedTravelTime)), przyjazd \(routePlanningArrivalTime(route)), \(distance(route.distance))"
+        return "Trasa do \(destination), \(time(route.previewTravelTime)), przyjazd \(routePlanningArrivalTime(route)), \(distance(route.distance))"
     }
 
     private var routePlanningEndpoints: some View {
@@ -593,6 +610,11 @@ extension ContentView {
     }
 
     private var routePlanningTransportSelector: some View {
+#if os(iOS)
+        IOSRouteTransportSelector(selection: navigationStore.state.transportMode) { mode in
+            Task { await navigationStore.selectTransportMode(mode) }
+        }
+#else
         HStack(spacing: 3) {
             ForEach(routePlanningTransportModes) { mode in
                 let selected = navigationStore.state.transportMode == mode
@@ -620,6 +642,7 @@ extension ContentView {
         .padding(.horizontal, 4)
         .modifier(NavigationGlassSurface(radius: 22, interactive: true))
         .animation(.spring(response: 0.34, dampingFraction: 0.88), value: navigationStore.state.transportMode)
+#endif
     }
 
     private var routePlanningTransportModes: [TransportMode] {
@@ -627,13 +650,14 @@ extension ContentView {
     }
 
     private func routePlanningArrivalTime(_ route: NavigationRoute) -> String {
-        if let local = route.information?.arrivalLocalTime, local.count >= 16 {
+        if navigationStore.state.journeyTimeMode != .now, route.freshTrafficPreviewEstimate() == nil,
+           let local = route.information?.arrivalLocalTime, local.count >= 16 {
             return String(local.suffix(5))
         }
         let departure = navigationStore.state.journeyTimeMode == .departAt
             ? navigationStore.state.journeyTargetTime : Date()
         let arrival = route.journey?.arrival ?? (navigationStore.state.journeyTimeMode == .arriveBy
-            ? navigationStore.state.journeyTargetTime : departure.addingTimeInterval(max(0, route.expectedTravelTime)))
+            ? navigationStore.state.journeyTargetTime : departure.addingTimeInterval(max(0, route.previewTravelTime)))
         return PolishRegionalFormat.time(arrival)
     }
 
@@ -663,8 +687,9 @@ extension ContentView {
 
     @ViewBuilder
     private func routePlanningExpandedRouteOptions(for selectedRoute: NavigationRoute) -> some View {
-        let routes = routePlanningOptions.sorted { $0.expectedTravelTime < $1.expectedTravelTime }
-        let fastestRouteID = routes.min { $0.expectedTravelTime < $1.expectedTravelTime }?.id
+        let now = Date()
+        let routes = routePlanningOptions.sorted { $0.previewTravelTime(at: now) < $1.previewTravelTime(at: now) }
+        let fastestRouteID = routes.first?.id
         if !routes.isEmpty {
             VStack(spacing: 8) {
                 ForEach(Array(routes.enumerated()), id: \.element.id) { item in
@@ -683,7 +708,24 @@ extension ContentView {
                                                 isFastest: Bool) -> some View {
 #if os(iOS)
         let description = routeVariantDescription(route)
-#endif
+        return IOSRouteVariantCard(
+            title: description.title, duration: time(route.previewTravelTime),
+            arrival: routePlanningArrivalTime(route), distance: distance(route.distance),
+            explanation: description.explanation,
+            accessibilitySummary: "Trasa \(index + 1), \(time(route.previewTravelTime)), \(distance(route.distance))\(routePlanningAccessibilitySummary(route))",
+            isSelected: isSelected,
+            onSelect: { withAnimation(.easeInOut(duration: 0.25)) { navigationStore.select(route) } }
+        ) {
+            routeEnergyCostCaption(route)
+            if let journey = route.journey {
+                routePlanningJourneyOverview(journey, darkStyle: false, compact: true)
+            }
+        } startAction: {
+            routePlanningStartAction(compact: true, expandedCard: true) {
+                startRoutePlanningOption(route)
+            }
+        }
+#else
         return HStack(spacing: 12) {
             Button {
                 withAnimation(.easeInOut(duration: 0.25)) { navigationStore.select(route) }
@@ -692,7 +734,7 @@ extension ContentView {
 #if os(iOS)
                     routeVariantCaption(description, compact: false)
 #endif
-                    Text(time(route.expectedTravelTime))
+                    Text(time(route.previewTravelTime))
                         .font(.system(size: 21, weight: .bold, design: .rounded).monospacedDigit())
                         .foregroundStyle(Color.naviTextPrimary)
                         .lineLimit(1)
@@ -722,7 +764,7 @@ extension ContentView {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Trasa \(index + 1), \(time(route.expectedTravelTime)), \(distance(route.distance))\(routePlanningAccessibilitySummary(route))")
+            .accessibilityLabel("Trasa \(index + 1), \(time(route.previewTravelTime)), \(distance(route.distance))\(routePlanningAccessibilitySummary(route))")
 #if os(iOS)
             .accessibilityHint("\(description.title). \(description.explanation) Wybierz ten wariant trasy.")
 #endif
@@ -741,6 +783,7 @@ extension ContentView {
                               lineWidth: isSelected ? 2 : 1)
         }
         .animation(.easeInOut(duration: 0.2), value: isSelected)
+#endif
     }
 
     private func startRoutePlanningOption(_ route: NavigationRoute) {
@@ -1173,7 +1216,7 @@ extension ContentView {
                 routeVariantCaption(description, compact: compact || medium)
 #endif
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(time(route.expectedTravelTime))
+                    Text(time(route.previewTravelTime))
                         .font(.system(size: medium ? 26 : (compact ? 23 : 34), weight: .bold, design: .rounded).monospacedDigit())
                         .foregroundStyle(Color.naviTextPrimary)
                         .lineLimit(1)
@@ -1233,7 +1276,7 @@ extension ContentView {
             selectAdjacentRoute(by: value.translation.width < 0 ? 1 : -1)
         })
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Wybrana trasa, \(time(route.expectedTravelTime)), przyjazd \(routePlanningArrivalTime(route)), \(distance(route.distance))")
+        .accessibilityLabel("Wybrana trasa, \(time(route.previewTravelTime)), przyjazd \(routePlanningArrivalTime(route)), \(distance(route.distance))")
 #if os(iOS)
         .accessibilityValue("\(description.title). Trasa \(selectedIndex + 1) z \(routes.count)")
 #else

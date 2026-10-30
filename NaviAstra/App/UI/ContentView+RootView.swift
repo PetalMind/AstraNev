@@ -69,7 +69,7 @@ extension ContentView {
             }
         )
 
-        return MapScene(
+        var scene = MapScene(
             navigationState: navigationState,
             energyPolicy: navigationStore.energyPolicy,
             transit: MapSceneTransitData(
@@ -96,6 +96,10 @@ extension ContentView {
             weatherSamples: visibleWeatherSamples,
             selectedPlace: placeStore.selectedMapPlaces.count == 1 ? placeStore.selectedMapPlaces.first : nil
         )
+#if os(iOS)
+        scene.isBottomSheetTrackingFinger = isNavigationPanelTrackingFinger
+#endif
+        return scene
     }
 
     @ViewBuilder
@@ -172,6 +176,9 @@ extension ContentView {
             journeyGuidanceExpanded = false
             currentStepExpandedOverride = nil
         }
+#if DEBUG && os(iOS)
+        .task { await replayNavigationCameraPanels() }
+#endif
 #if !os(iOS)
         .onChange(of: isCurrentStepGuidanceExpanded) { _, expanded in
             if !expanded { journeyGuidanceExpanded = false }
@@ -207,8 +214,7 @@ extension ContentView {
             quickRoadReportFeedbackView
                 .padding(.horizontal, usesFullBleedNavigationPanel ? 16 : 0)
             if isNavigating && isOnRoadDrivingLeg {
-                drivingMapDock(maximumAlertsHeight: geometry.size.height < 500 ? 64 : 128,
-                               availableWidth: min(560, geometry.size.width) - 32)
+                drivingMapDock(maximumAlertsHeight: geometry.size.height < 500 ? 64 : 128)
             } else if !isMapBottomSheetExpanded {
                 mapControl(compact: geometry.size.height < 500)
                     .padding(.horizontal, usesFullBleedNavigationPanel ? 16 : 0)
@@ -219,7 +225,7 @@ extension ContentView {
                     .padding(.horizontal, usesFullBleedNavigationPanel ? 16 : 0)
             }
 #endif
-            navigationMapPanel(in: geometry)
+            mapConversationOrNavigationPanel(in: geometry)
                 .onGeometryChange(for: CGFloat.self) {
                     max(0, geometry.frame(in: .global).maxY - $0.frame(in: .global).minY) +
                         (isNavigating ? 8 : geometry.safeAreaInsets.bottom + 12)
@@ -238,6 +244,29 @@ extension ContentView {
         }
     }
 
+    @ViewBuilder
+    private func mapConversationOrNavigationPanel(in geometry: GeometryProxy) -> some View {
+#if os(iOS)
+        ZStack(alignment: .bottom) {
+            // Keep the drawer and its scroll position alive during a conversation.
+            navigationMapPanel(in: geometry)
+                .frame(height: voiceAssistant.isPresented ? 0 : nil)
+                .clipped()
+                .opacity(voiceAssistant.isPresented ? 0 : 1)
+                .allowsHitTesting(!voiceAssistant.isPresented)
+                .accessibilityHidden(voiceAssistant.isPresented)
+
+            if voiceAssistant.isPresented {
+                VoiceAssistantPanel(assistant: voiceAssistant)
+                    .padding(.horizontal, usesFullBleedNavigationPanel ? 16 : 0)
+                    .padding(.bottom, usesFullBleedNavigationPanel ? geometry.safeAreaInsets.bottom + 12 : 0)
+            }
+        }
+#else
+        navigationMapPanel(in: geometry)
+#endif
+    }
+
     private var mapBottomControlsSpacing: CGFloat {
 #if os(iOS)
         if isNavigating && isOnRoadDrivingLeg && isMapBottomSheetExpanded
@@ -249,7 +278,7 @@ extension ContentView {
     }
 
 #if os(iOS)
-    private func drivingMapDock(maximumAlertsHeight: CGFloat, availableWidth: CGFloat) -> some View {
+    private func drivingMapDock(maximumAlertsHeight: CGFloat) -> some View {
         VStack(spacing: drivingRoadAlertsHeight > 0 ? 10 : 0) {
             ScrollView(.vertical) {
                 navigationRoadAlertsPanel
@@ -266,7 +295,7 @@ extension ContentView {
             .accessibilityHidden(drivingRoadAlertsHeight <= 0)
             if !isMapBottomSheetExpanded {
                 TimelineView(.periodic(from: .now, by: 5)) { context in
-                    drivingMapControls(at: context.date, availableWidth: availableWidth)
+                    drivingMapControls(at: context.date)
                 }
             }
         }
@@ -581,7 +610,7 @@ extension ContentView {
             }
             .preferredColorScheme(rootPreferredColorScheme)
 #if os(iOS)
-            .fullScreenCover(item: $iosTripPresentation, onDismiss: finishIOSPlanning) { presentation in
+            .fullScreenCover(item: $tripCoordinator.workspace, onDismiss: finishIOSPlanning) { presentation in
                 iosTripWorkspace(presentation)
             }
             .fullScreenCover(isPresented: $isARNavigationPresented) {
@@ -687,6 +716,14 @@ extension ContentView {
                     .padding(.top, 104)
             }
             .modifier(rootConfirmationDialogs)
+            #if os(iOS)
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .background { voiceAssistant.suspend() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataWillBecomeUnavailableNotification)) { _ in
+                voiceAssistant.suspend()
+            }
+            #endif
     }
 
     private var rootConfirmationDialogs: ContentViewRootDialogs {

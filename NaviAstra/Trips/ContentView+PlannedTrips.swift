@@ -43,13 +43,13 @@ extension ContentView {
 
     @ViewBuilder var plannedTripsSheet: some View {
 #if os(iOS)
-        IOSPlannedTripsView(service: tripPlanning, focusTripID: iosTripLibraryFocusID,
+        IOSPlannedTripsView(service: tripPlanning, focusTripID: tripCoordinator.libraryFocusID,
             navigationIsActive: isNavigating,
             onCreate: { beginIOSPlanning(seed: nil, returnToLibrary: true) },
             onEdit: { beginIOSPlanning(seed: $0, returnToLibrary: true) },
             onStart: openPlannedTrip,
             onHistory: { appRouter.present(.history) },
-            onClose: { iosTripLibraryFocusID = nil; appRouter.dismiss(.plannedTrips) })
+            onClose: { tripCoordinator.libraryFocusID = nil; appRouter.dismiss(.plannedTrips) })
 #else
         PlannedTripsView(service: tripPlanning, places: tripPlaces, currentOrigin: tripCurrentOrigin,
             onOpen: openPlannedTrip,
@@ -64,12 +64,7 @@ extension ContentView {
         presentation.draft = IOSPlannedTripDraft(seed: seed, currentOrigin: iosPlanningOrigin,
             initialCenter: navigationStore.state.searchMapCenter ?? navigationStore.state.location?.coordinate,
             preferences: navigationStore.state.routingPreferences)
-        iosReturnToTripLibrary = returnToLibrary
-        iosTripLibraryFocusID = seed?.id
-        if appRouter.sheet != nil {
-            pendingIOSTripPresentation = presentation
-            appRouter.dismiss()
-        } else { iosTripPresentation = presentation }
+        tripCoordinator.begin(presentation, returnToLibrary: returnToLibrary, router: appRouter)
     }
 
     func iosTripWorkspace(_ presentation: IOSPlannedTripPresentation) -> some View {
@@ -79,7 +74,7 @@ extension ContentView {
             initialCenter: navigationStore.state.searchMapCenter ?? navigationStore.state.location?.coordinate,
             preferences: navigationStore.state.routingPreferences, mapSettings: navigationMapSettings,
             onRecordPlace: { placeStore.recordSearch($0) },
-            onSaved: { trip in iosReturnToTripLibrary = true; iosTripLibraryFocusID = trip.id })
+            onSaved: { trip in tripCoordinator.didSave(trip) })
     }
 
     private var iosPlanningOrigin: Destination? {
@@ -89,7 +84,7 @@ extension ContentView {
     }
 
     func finishIOSPlanning() {
-        if iosReturnToTripLibrary { iosReturnToTripLibrary = false; appRouter.present(.plannedTrips) }
+        tripCoordinator.finish(router: appRouter)
     }
 #endif
 
@@ -122,7 +117,10 @@ extension ContentView {
             }
             guard state.status == .destinationPreview, state.destination?.id == trip.destination.id else { return }
             state.routeOrigin = RoutePoint(Destination(name: "Twoja lokalizacja", coordinate: location.coordinate), source: .mapSelection)
-            await RoadRoutingContext.$allowsPersonalization.withValue(false) { await navigationStore.planRoute() }
+            await RoadRoutingContext.$allowsPersonalization.withValue(
+                trip.preferences.advanced.effectiveRoutePreference == .personalized) {
+                await navigationStore.planRoute()
+            }
             guard state.status == .routePreview, state.destination?.id == trip.destination.id else {
                 pendingPlannedTripID = nil
                 pendingPlannedTripOccurrence = nil
