@@ -100,10 +100,9 @@ extension ContentView {
         VStack(alignment: .leading, spacing: 6) {
             navigationRoadSafetyBanner
             navigationTrafficIncidentBanner
-#if os(iOS)
-            navigationCongestionBanner
-#endif
+#if !os(iOS)
             navigationRoadDataFooter
+#endif
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -113,18 +112,19 @@ extension ContentView {
         if isNavigating, navigationStore.state.transportMode == .car,
            let progress = navigationStore.state.progress,
            let incident = nextRouteTrafficIncident,
+           let alert = incident.visualAlert,
            let incidentDistance = incident.distanceAlongRoute {
             let remainingDistance = max(0, incidentDistance - progress.traveledDistance)
             let incidentDetails = trafficIncidentDetails(incident)
             NavigationAlertDisclosure(
-                title: incident.alertTitle,
+                title: alert.title,
                 distanceText: distance(remainingDistance),
                 distance: remainingDistance,
                 details: incidentDetails,
                 tint: Color(naviHex: incident.isRoadClosure
                     ? NaviAstraColorPalette.danger : NaviAstraColorPalette.warning),
                 cornerRadius: 17,
-                symbol: Image(systemName: incident.alertSymbolName)
+                symbol: Image(systemName: alert.symbolName)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Color(naviHex: incident.isRoadClosure
                         ? NaviAstraColorPalette.danger : NaviAstraColorPalette.warning)))
@@ -184,7 +184,7 @@ extension ContentView {
         let traveledDistance = progress.traveledDistance
         return SafetyAlertEngine.alerts(in: navigationStore.state.traffic?.incidents ?? [])
             .filter { incident in
-                guard let distance = incident.distanceAlongRoute else { return false }
+                guard incident.visualAlert != nil, let distance = incident.distanceAlongRoute else { return false }
                 return distance > traveledDistance && distance <= traveledDistance + 12_000
             }
             .min { ($0.distanceAlongRoute ?? .infinity) < ($1.distanceAlongRoute ?? .infinity) }
@@ -722,9 +722,9 @@ extension ContentView {
                                             Text(stop.destination.name).font(.caption.weight(.medium))
                                             Text("\(stop.connectorTypes.joined(separator: ", ")) · do \(Int(stop.maximumPowerKW.rounded())) kW · postój \(Int((stop.estimatedChargingTime / 60).rounded())) min")
                                                 .font(.caption2).foregroundStyle(Color.naviTextSecondary)
-                                            Text(stop.availabilityKnown ? "Status: działająca według OpenStreetMap" : "Dostępność ładowarki nieznana")
+                                            Text(stop.availabilityKnown ? "Stacja oznaczona jako czynna" : "Dostępność ładowarki nieznana")
                                                 .font(.caption2).foregroundStyle(Color.naviTextSecondary)
-                                            Text(stop.publicAccess == true ? "Dostęp publiczny według OpenStreetMap" : "Dostęp publiczny niepotwierdzony")
+                                            Text(stop.publicAccess == true ? "Dostęp publiczny" : "Dostęp publiczny niepotwierdzony")
                                                 .font(.caption2).foregroundStyle(Color.naviTextSecondary)
                                         }
                                     }

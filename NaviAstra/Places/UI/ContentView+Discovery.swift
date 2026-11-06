@@ -17,6 +17,9 @@ extension ContentView {
         VStack(alignment: .leading, spacing: 12) {
             searchButton
             if !compact {
+#if os(iOS)
+                recentParkingSuggestion
+#endif
                 HStack(alignment: .firstTextBaseline) {
                     Text("Ulubione")
                         .font(.headline.weight(.semibold))

@@ -25,7 +25,7 @@ struct VoiceConversationDetails: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(20)
             }
-            .navigationTitle("Rozmowa z nawigacją")
+            .navigationTitle("Rozmowa z Astrą")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

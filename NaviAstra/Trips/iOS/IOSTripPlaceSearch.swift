@@ -14,7 +14,9 @@ struct IOSTripPlaceSearch: View {
     @State private var submittedRevision = 0
     private var query: String { draft.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var request: IOSTripPlaceSearchModel.Request {
-        .init(query: query, scope: scope, revision: submittedRevision)
+        .init(query: query, scope: scope, revision: submittedRevision,
+              origin: draft.origin?.coordinate ?? draft.currentOrigin?.coordinate,
+              area: draft.mapState.searchMapCenter, mode: draft.mode)
     }
     private var resultsAreCurrent: Bool { model.resultsRequest == request }
     private var recentSuggestions: [Destination] {
@@ -129,12 +131,13 @@ struct IOSTripPlaceSearch: View {
         .onAppear { focused = true }
         .onDisappear { model.cancel() }
         .task(id: request) {
-            let context = SearchContext(origin: draft.origin?.coordinate ?? draft.currentOrigin?.coordinate,
-                area: draft.mapState.searchMapCenter, route: draft.mapState.route?.coordinates ?? [],
-                mode: draft.mode, preferences: draft.preferences,
+            let request = self.request
+            let context = SearchContext(origin: request.origin,
+                area: request.area, route: draft.mapState.route?.coordinates ?? [],
+                mode: request.mode, preferences: draft.preferences,
                 localDestinations: places.map(\.navigationDestination) + recentPlaces)
             await model.search(request, context: context,
-                transitSearchCenter: draft.origin?.coordinate ?? draft.mapState.searchMapCenter,
+                transitSearchCenter: request.origin ?? request.area,
                 transitProvider: draft.session.transitDataProvider)
         }
     }

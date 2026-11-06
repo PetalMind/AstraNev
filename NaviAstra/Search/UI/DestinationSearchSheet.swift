@@ -4,6 +4,7 @@ struct DestinationSearchSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ScaledMetric(relativeTo: .body) private var categoryMinimumWidth = 98.0
 
     let navigationStore: NavigationStore
     @Bindable var searchStore: SearchStore
@@ -32,6 +33,7 @@ struct DestinationSearchSheet: View {
     @State private var isRequestingContactsAccess = false
     @State private var speechInput = SearchSpeechInput()
     @FocusState private var isSearchFocused: Bool
+    @State private var activeSearchContext: SearchContext?
     @State private var previousQuery = ""
     @State private var previousScope: DestinationSearchScope = .places
     @State private var showAllSavedPlaces = false
@@ -94,17 +96,21 @@ struct DestinationSearchSheet: View {
     private var localMatches: [LocalSearchSuggestion] {
         let needle = normalized(trimmedQuery)
         guard !needle.isEmpty else { return [] }
+        let intent = QueryClassifier().classify(trimmedQuery)
+        // Category and brand queries share the engine's geographic and POI
+        // validation; history must not insert a distant match above that pool.
+        guard intent.intent != .category, intent.intent != .brand else { return [] }
 
         var matches: [LocalSearchSuggestion] = []
         for place in places where matchesLocalQuery(needle, name: place.displayName, address: place.destination.address) {
-            append(place.navigationDestination, subtitle: place.kind.title, symbol: place.icon.symbol, to: &matches)
+            append(place.navigationDestination, subtitle: place.destination.address ?? place.kind.title, symbol: place.icon.symbol, to: &matches)
         }
         for destination in recentDestinations where matchesLocalQuery(needle, name: destination.name, address: destination.address) {
-            append(destination, subtitle: selectingRouteOrigin ? "Ostatnie miejsce" : "Ostatni cel",
+            append(destination, subtitle: destination.address ?? (selectingRouteOrigin ? "Ostatnie miejsce" : "Ostatni cel"),
                    symbol: "clock.arrow.circlepath", to: &matches)
         }
         for item in recentSearches where matchesLocalQuery(needle, name: item.destination.name, address: item.destination.address) {
-            append(item.destination, subtitle: "Ostatnie wyszukiwanie", symbol: "magnifyingglass", to: &matches)
+            append(item.destination, subtitle: item.destination.address ?? "Ostatnie wyszukiwanie", symbol: "magnifyingglass", to: &matches)
         }
         return Array(matches.prefix(5))
     }
@@ -160,7 +166,6 @@ struct DestinationSearchSheet: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .onChange(of: searchScope) { _, _ in startSearch(query) }
     }
 
     private var hasActiveRoute: Bool {
@@ -181,19 +186,18 @@ struct DestinationSearchSheet: View {
     private var searchAreaTitle: String {
         if alongRoute && hasActiveRoute && searchScope == .places { return "Po trasie" }
         if searchArea != nil { return "Obszar mapy" }
-        if navigationStore.state.location != nil { return "Blisko mnie" }
-        return navigationStore.state.searchMapCenter != nil ? "W pobliżu mapy" : "Dowolne miejsce"
+        if SearchLocationContext.coordinate(in: navigationStore.state) != nil { return "Blisko mnie" }
+        return "Wybierz obszar"
     }
 
     private var searchAreaControls: some View {
         HStack(spacing: 8) {
             Menu {
-                if navigationStore.state.location != nil {
-                    Button("Blisko mnie", systemImage: "location.fill") {
-                        searchArea = nil
-                        alongRoute = false
-                        startSearch(query, immediately: true)
-                    }
+                Button("Blisko mnie", systemImage: "location.fill") {
+                    searchArea = nil
+                    alongRoute = false
+                    navigationStore.refreshSearchLocation()
+                    startSearch(query, immediately: true)
                 }
                 if let center = navigationStore.state.searchMapCenter {
                     Button("W widocznym obszarze mapy", systemImage: "map") {
@@ -368,11 +372,15 @@ struct DestinationSearchSheet: View {
         if addingWaypoint { searchScope = .places }
         previousQuery = ""
         previousScope = searchScope
+        navigationStore.refreshSearchLocation()
     }
 
-    private func handleLocationChange(previous: Coordinate?, current: Coordinate?) {
-        // A query entered before the first GPS fix must be retried with that fix.
-        if previous == nil, current != nil, searchArea == nil, !trimmedQuery.isEmpty {
+    private func handleLocationChange() {
+        // A fresh fix can replace a stale fix at exactly the same coordinate.
+        // Retry only the search that had no usable origin, not every GPS update.
+        if activeSearchContext?.origin == nil,
+           SearchLocationContext.coordinate(in: navigationStore.state) != nil,
+           !trimmedQuery.isEmpty {
             startSearch(query)
         }
     }
@@ -385,6 +393,7 @@ struct DestinationSearchSheet: View {
             return
         }
         guard phase == .active, !isRequestingContactsAccess else { return }
+        navigationStore.refreshSearchLocation()
         let previousStatus = contactsAccessStatus
         contactsAccessStatus = ContactsAccessStatus.current()
         if previousStatus != contactsAccessStatus, !trimmedQuery.isEmpty {
@@ -429,8 +438,15 @@ struct DestinationSearchSheet: View {
                         isSearchFocused = true
                     } catch { }
                 }
-                .onChange(of: navigationStore.state.location?.coordinate) { previous, current in
-                    handleLocationChange(previous: previous, current: current)
+                .onChange(of: navigationStore.state.location?.timestamp) { _, _ in
+                    handleLocationChange()
+                }
+                .onChange(of: navigationStore.state.isLocationAuthorized) { _, _ in
+                    if !trimmedQuery.isEmpty { startSearch(query, immediately: true) }
+                }
+                .onChange(of: searchScope) { _, scope in
+                    if scope == .transit { alongRoute = false }
+                    startSearch(query)
                 }
                 .onChange(of: scenePhase) { _, phase in
                     handleScenePhaseChange(phase)
@@ -448,10 +464,14 @@ struct DestinationSearchSheet: View {
         let preservesResults = canSearch && previousScope == searchScope && !previous.isEmpty
             && (normalizedQuery.hasPrefix(previous) || previous.hasPrefix(normalizedQuery))
         let requestID = searchStore.beginRequest(preservingResults: preservesResults)
+        activeSearchContext = nil
         previousQuery = trimmed
         previousScope = searchScope
         navigationStore.state.searchResults = []
         guard canSearch else { return }
+        if SearchLocationContext.coordinate(in: navigationStore.state) == nil {
+            navigationStore.refreshSearchLocation()
+        }
 
         if searchScope == .transit {
             isTransitSearching = true
@@ -462,7 +482,7 @@ struct DestinationSearchSheet: View {
                     return
                 }
                 guard !Task.isCancelled, searchStore.isCurrentRequest(requestID) else { return }
-                let center = searchArea ?? navigationStore.state.location?.coordinate ?? navigationStore.state.searchMapCenter
+                let center = searchArea ?? SearchLocationContext.coordinate(in: navigationStore.state)
                 let matches = await searchStore.searchTransit(trimmed, near: center)
                 guard !Task.isCancelled, searchStore.isCurrentRequest(requestID) else { return }
                 searchStore.publishTransitResults(matches)
@@ -483,6 +503,8 @@ struct DestinationSearchSheet: View {
                     navigation: state, places: places, recentSearches: recentSearches)
                 try Task.checkCancellation()
                 guard searchStore.isCurrentRequest(requestID) else { return }
+                activeSearchContext = context
+                searchStore.configureEstimateRanking(query: trimmed, context: context)
                 let isParcelReferenceSearch = QueryClassifier().classify(trimmed).parcelQuery?.reference != nil
                 let found = try await searchStore.searchPlaces(
                     trimmed, context: context, includeUUGFallback: includeUUGFallback,
@@ -541,6 +563,7 @@ struct DestinationSearchSheet: View {
                 .onChange(of: query) { _, value in startSearch(value) }
                 .onSubmit {
                     isSearchFocused = false
+                    speechInput.stop(keepAudioSessionActive: hasActiveRoute)
                     startSearch(query, includeUUGFallback: true, immediately: true)
                 }
                 .accessibilityLabel(searchScope == .places ? "Szukaj miejsca lub adresu" : "Szukaj linii lub przystanku")
@@ -641,7 +664,7 @@ struct DestinationSearchSheet: View {
     private var categoryShortcuts: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionHeading(alongRoute ? "Znajdź po trasie" : "Co jest w pobliżu?")
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 98), spacing: 8)], spacing: 8) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: categoryMinimumWidth), spacing: 8)], spacing: 8) {
                 categoryShortcut("Paliwo", query: "stacja paliw", symbol: "fuelpump.fill")
                 categoryShortcut("Ładowanie", query: "stacja ładowania", symbol: "bolt.car.fill")
                 categoryShortcut("Parking", query: "parking", symbol: "parkingsign.circle.fill")
@@ -793,7 +816,10 @@ struct DestinationSearchSheet: View {
         if !visibleContactResults.isEmpty {
             VStack(alignment: .leading, spacing: 7) {
                 sectionHeading("Kontakty")
-                ForEach(visibleContactResults, id: \.placeIdentity.cacheKey) { result in
+                ForEach(visibleContactResults, id: \.id) { result in
+                    #if os(iOS)
+                    iosSearchResultRow(result)
+                    #else
                     Button {
                         selectResult(result)
                     } label: {
@@ -828,6 +854,7 @@ struct DestinationSearchSheet: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityHint(contactResultActionHint)
+                    #endif
                 }
             }
         } else if !trimmedQuery.isEmpty && contactsAccessStatus == .notDetermined && !isSearching {
@@ -952,12 +979,12 @@ struct DestinationSearchSheet: View {
         } else if let searchError, results.isEmpty,
                   transitResults.stops.isEmpty, transitResults.lines.isEmpty, !isTransitSearching {
             SearchFeedbackView(state: .failure(message: searchError.localizedDescription,
-                                               canRetry: searchError.canRetry)) {
-                startSearch(query)
-            }
+                                               canRetry: searchError.canRetry), onRetry: {
+                startSearch(query, immediately: true)
+            })
         } else if didCompleteSearchWithNoResults, !hasResultsForCurrentScope,
                   !isSearching, !isTransitSearching {
-            SearchFeedbackView(state: .noResults(query: trimmedQuery))
+            SearchFeedbackView(state: .noResults(query: trimmedQuery), onEditQuery: { isSearchFocused = true })
         }
     }
 
@@ -974,14 +1001,7 @@ struct DestinationSearchSheet: View {
                 }
                 ForEach(Array(visibleRemoteResults.enumerated()), id: \.element.id) { index, result in
                     #if os(iOS)
-                    IOSDestinationResultRow(
-                        result: result, query: trimmedQuery,
-                        isSaved: places.contains { $0.kind == .favorite && $0.destination.coordinate == result.destination.coordinate },
-                        actionTitle: resultActionTitle, isStop: selectsRouteStop,
-                        onSelect: { selectResult(result) }, onExpand: { isSearchFocused = false },
-                        onSave: { onSavePlaceAs(result.navigationDestination, .favorite, contactIdentifier(for: result)) },
-                        onRemove: { onRemoveFavorite(result.destination) },
-                        onRename: { onRenameFavorite(result.destination, $0) })
+                    iosSearchResultRow(result)
                     #else
                     PlaceSearchResultRow(
                         result: result,
@@ -1042,7 +1062,7 @@ struct DestinationSearchSheet: View {
                                 Spacer()
                                 Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
                             }
-                            .padding(.vertical, 5).contentShape(Rectangle())
+                            .padding(.vertical, 5).frame(minHeight: 52).contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
@@ -1070,7 +1090,7 @@ struct DestinationSearchSheet: View {
                                 Spacer()
                                 Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
                             }
-                            .padding(.vertical, 4).contentShape(Rectangle())
+                            .padding(.vertical, 4).frame(minHeight: 52).contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
@@ -1078,6 +1098,34 @@ struct DestinationSearchSheet: View {
             }
         }
     }
+
+    private var travelEstimateOrigin: Coordinate? { activeSearchContext?.origin }
+
+    private func retryTravelEstimate(_ result: SearchResult) {
+        guard let context = activeSearchContext, let origin = context.origin else { return }
+        isSearchFocused = false
+        let mode = context.mode
+        searchStore.retryTravelEstimate(for: result, estimator: { destination in
+            try await navigationStore.estimatedSearchRoute(from: origin, to: destination, mode: mode)
+        }, onUpdate: { updated in
+            navigationStore.state.searchResults = updated
+        })
+    }
+
+    #if os(iOS)
+    private func iosSearchResultRow(_ result: SearchResult) -> some View {
+        IOSDestinationResultRow(
+            result: result, query: trimmedQuery,
+            isSaved: places.contains { $0.kind == .favorite && $0.destination.coordinate == result.destination.coordinate },
+            actionTitle: resultActionTitle, isStop: selectsRouteStop,
+            onSelect: { selectResult(result) }, onExpand: { isSearchFocused = false },
+            onSave: { onSavePlaceAs(result.navigationDestination, .favorite, contactIdentifier(for: result)) },
+            onRemove: { onRemoveFavorite(result.destination) },
+            onRename: { onRenameFavorite(result.destination, $0) },
+            onEstimate: travelEstimateOrigin == nil ? nil : { retryTravelEstimate(result) },
+            recoveryMessage: searchStore.travelRecoveryMessages[result.id])
+    }
+    #endif
 
     private func selectResult(_ result: SearchResult) {
         guard !searchStore.isShowingPreviousResults else { return }
@@ -1155,6 +1203,7 @@ struct DestinationSearchSheet: View {
         isSearchFocused = false
         speechInput.stop(keepAudioSessionActive: hasActiveRoute)
         searchStore.cancelSearches()
+        searchStore.discardPreviousResults()
         guard let kind = savingKind else {
             onSelectDestination(destination, selectsRouteStop)
             return

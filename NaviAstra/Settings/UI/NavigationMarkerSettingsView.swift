@@ -31,8 +31,6 @@ struct NavigationMarkerSettingsView: View {
                             Text("Pieszo").tag(NavigationPositionIcon.pedestrian)
                         }
                         .modifier(MarkerAdaptivePickerStyle())
-                        Text("Zmiana tutaj dotyczy wyglądu znacznika.")
-                            .font(.footnote).foregroundStyle(.secondary)
                     }
                     modelPicker
                 }
@@ -50,7 +48,7 @@ struct NavigationMarkerSettingsView: View {
                     Image(systemName: "tram.fill")
                 }
                 .font(.footnote).foregroundStyle(.secondary)
-                Text("Kierunek podkreśla delikatna poświata wychodząca spod modelu. Przerywany obrys oznacza słabszą lub nieaktualną lokalizację. W podglądzie trasy znacznik pozostaje w Twojej rzeczywistej pozycji.")
+                Text("Przerywany obrys oznacza przybliżoną pozycję.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .padding(20)
@@ -133,8 +131,6 @@ struct NavigationMarkerSettingsView: View {
                 }
             }
             if selectedTransport == .car {
-                Text("Modele samochodów są dostępne bez internetu.")
-                    .font(.footnote).foregroundStyle(.secondary)
                 Link("Modele: Kenney Car Kit · licencja CC0",
                      destination: URL(string: "https://kenney.nl/assets/car-kit")!)
                     .font(.footnote)

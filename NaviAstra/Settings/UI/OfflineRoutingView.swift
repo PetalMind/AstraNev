@@ -21,15 +21,17 @@ struct OfflineRoutingView: View {
             Section {
                 if let pack = store.activePack {
                     Label(pack.name, systemImage: "checkmark.circle.fill")
-                    Text(pack.motorVehiclesOnly ? "Trasy dla pojazdów silnikowych" : "Profile tras zgodnie z zawartością paczki")
-                        .font(.caption).foregroundStyle(.secondary)
+                    if pack.motorVehiclesOnly {
+                        Text("Tylko trasy dla pojazdów silnikowych")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 } else {
                     Text("Brak aktywnej paczki drogowej").foregroundStyle(.secondary)
                 }
-                Toggle("Wyznaczaj trasy na urządzeniu", isOn: $store.preferOffline)
+                Toggle("Preferuj trasy offline", isOn: $store.preferOffline)
                     .disabled(store.activePack == nil && !store.preferOffline)
-            } header: { Text("Trasowanie offline") } footer: {
-                Text("Bez internetu aplikacja korzysta automatycznie z aktywnej paczki. Włącz przełącznik, aby używać jej także przy dostępnym połączeniu. Cała trasa musi mieścić się w jednej paczce, łącznie z objazdami. Dane drogowe są pobierane osobno od mapy.")
+            } header: { Text("Trasy offline") } footer: {
+                Text("Bez internetu używana jest aktywna paczka. Włącz, aby korzystać z niej także online. Cała trasa, łącznie z objazdami, musi mieścić się w jej obszarze.")
             }
             if let error = store.error { Section { Text(error).foregroundStyle(.red) } }
             if store.isInstalling {
@@ -44,24 +46,24 @@ struct OfflineRoutingView: View {
                     Button("Anuluj", role: .cancel) { store.cancelTransfer() }
                 }
             }
-            Section {
+            Section("Dodaj dane drogowe") {
                 NavigationLink("Pobierz dane dla regionu") { catalogView }
-                Button("Importuj paczkę .tar", systemImage: "square.and.arrow.down") { showImporter = true }
-                Toggle("Importowana paczka tylko dla pojazdów", isOn: $motorVehiclesOnly)
-            } header: { Text("Dodaj dane drogowe") } footer: {
-                Text("Importuj nieskompresowane archiwum Valhalla zgodne z silnikiem 3.6.x. Polska nie jest dostępna w obecnym publicznym katalogu; możesz użyć własnej paczki lub adresu od dostawcy.")
+                DisclosureGroup("Własna paczka drogowa") {
+                    Text("Wymagane jest nieskompresowane archiwum .tar z danymi Valhalla 3.6.x.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Importuj paczkę .tar", systemImage: "square.and.arrow.down") { showImporter = true }
+                    Toggle("Paczka tylko dla pojazdów silnikowych", isOn: $motorVehiclesOnly)
+                    TextField("Nazwa regionu", text: $customName)
+                    TextField("Adres pobierania (https://…)", text: $customURL)
+                        .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    Button("Pobierz z adresu") {
+                        guard let url = downloadURL else { return }
+                        let name = customName.trimmingCharacters(in: .whitespacesAndNewlines)
+                        store.download(url: url, name: name.isEmpty ? url.deletingPathExtension().lastPathComponent : name,
+                                       motorVehiclesOnly: motorVehiclesOnly)
+                    }.disabled(downloadURL == nil || store.isInstalling)
+                }
             }.disabled(store.isInstalling)
-            Section("Pobierz z adresu") {
-                TextField("Nazwa regionu", text: $customName)
-                TextField("https://…/tiles.tar", text: $customURL)
-                    .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                Button("Pobierz paczkę") {
-                    guard let url = downloadURL else { return }
-                    let name = customName.trimmingCharacters(in: .whitespacesAndNewlines)
-                    store.download(url: url, name: name.isEmpty ? url.deletingPathExtension().lastPathComponent : name,
-                                   motorVehiclesOnly: motorVehiclesOnly)
-                }.disabled(downloadURL == nil || store.isInstalling)
-            }
             Section("Zapisane paczki") {
                 if store.packs.isEmpty {
                     ContentUnavailableView("Brak danych drogowych", systemImage: "shippingbox",
@@ -106,7 +108,7 @@ struct OfflineRoutingView: View {
     private var catalogView: some View {
         List {
             Section {
-                Text("Paczki dla pojazdów silnikowych z publicznego katalogu Librescoot. Nie obsługują tras pieszych i rowerowych. Dostępność ogranicza się do wymienionych regionów; nie zawierają mapy do wyświetlania.")
+                Text("Dane tylko dla pojazdów silnikowych, bez tras pieszych i rowerowych. Mapę obszaru pobierz osobno.")
                     .font(.subheadline).foregroundStyle(.secondary)
                 if store.isLoadingCatalog { ProgressView("Odczytywanie katalogu") }
                 if let error = store.error { Text(error).foregroundStyle(.red) }

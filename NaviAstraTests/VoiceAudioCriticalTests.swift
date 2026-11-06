@@ -82,7 +82,7 @@ struct VoiceAudioCriticalTests {
 
     @Test func transcriptionStallIsNotAnAcousticEndpoint() {
         var policy = VoiceRecognitionEndpointPolicy()
-        policy.observeTranscript(at: 100)
+        policy.observeTranscript("prowadź do ulicy Lipowej", at: 100)
         policy.observeAudio(active: true, at: 102)
         let endWhileSpeaking = policy.requestEndIfSilent(at: 102.1)
         #expect(!endWhileSpeaking)
@@ -101,12 +101,12 @@ struct VoiceAudioCriticalTests {
         policy.observeAudio(active: false, at: 100)
         let endWithoutWords = policy.requestEndIfSilent(at: 100.1)
         #expect(!endWithoutWords)
-        policy.observeTranscript(at: 100)
+        policy.observeTranscript("prowadź do ulicy Lipowej", at: 100)
         policy.observeAudio(active: false, at: 101)
         let endBeforeQuietInterval = policy.requestEndIfSilent(at: 101.1)
         #expect(!endBeforeQuietInterval)
         policy.observeAudio(active: false, at: 102)
-        policy.observeTranscript(at: 102) // delayed recognition still arriving
+        policy.observeTranscript("prowadź do ulicy Lipowej 14", at: 102) // delayed recognition still arriving
         let endDuringRecognition = policy.requestEndIfSilent(at: 102.1)
         #expect(!endDuringRecognition)
         policy.observeAudio(active: false, at: 105)
@@ -117,18 +117,55 @@ struct VoiceAudioCriticalTests {
     @Test func aNaturalPauseDoesNotDiscardTheRestOfACommand() {
         var policy = VoiceRecognitionEndpointPolicy()
         policy.observeAudio(active: true, at: 100)
-        policy.observeTranscript(at: 100) // „Znajdź stację paliw…”
+        policy.observeTranscript("prowadź do ulicy Lipowej", at: 100)
         policy.observeAudio(active: false, at: 102)
         let endedInPause = policy.requestEndIfSilent(at: 102.1)
         #expect(!endedInPause)
         policy.observeAudio(active: true, at: 102.2)
-        policy.observeTranscript(at: 102.4) // „…po trasie”
+        policy.observeTranscript("prowadź do ulicy Lipowej 14 A", at: 102.4)
         policy.observeAudio(active: false, at: 104.6)
         let endedBeforeCompleteSilence = policy.requestEndIfSilent(at: 104.7)
         #expect(!endedBeforeCompleteSilence)
         policy.observeAudio(active: false, at: 105.1)
         let endedAfterWholeSentence = policy.requestEndIfSilent(at: 105.2)
         #expect(endedAfterWholeSentence)
+    }
+
+    @Test func repeatedSnapshotsDoNotLoseTheWholeAddressToTheListeningDeadline() {
+        var policy = VoiceRecognitionEndpointPolicy()
+        policy.observeAudio(active: true, at: 100)
+        policy.observeTranscript("prowadź do ulicy Lipowej 14", at: 100)
+        policy.observeTranscript("prowadź do ulicy Lipowej 14 A", at: 102)
+        policy.observeAudio(active: true, at: 102)
+        policy.observeTranscript("prowadź do ulicy Lipowej 14 A", at: 104.5)
+        policy.observeAudio(active: false, at: 104.6)
+        let shouldFinalize = policy.requestEndIfSilent(at: 104.7)
+        #expect(shouldFinalize)
+        // No partial (including a full-looking address) is executable before
+        // the recognizer supplies its final result.
+        var gate = VoiceRecognitionDeliveryGate()
+        let generation = gate.begin()
+        let partialDelivery = gate.claim(generation: generation, isFinal: false)
+        let finalDelivery = gate.claim(generation: generation, isFinal: true)
+        #expect(!partialDelivery)
+        #expect(finalDelivery)
+    }
+
+    @Test func microphoneHandoffWaitsForThePreviousSpokenReplyTail() {
+        var policy = VoiceCaptureHandoffPolicy()
+        #expect(policy.remainingDelay(at: 100) == 0)
+        policy.outputEnded(at: 100, outputLatency: 0.02, bufferDuration: 0.01)
+        #expect(policy.remainingDelay(at: 100) >= 0.34)
+        #expect(policy.remainingDelay(at: 100.4) == 0)
+        // A delayed route gets time to drain as well, bounded to avoid an
+        // indefinitely starting microphone when a driver reports bad latency.
+        policy.outputEnded(at: 101, outputLatency: 2, bufferDuration: 0.1)
+        #expect(policy.remainingDelay(at: 102) > 1)
+        #expect(policy.remainingDelay(at: 104) == 0)
+        policy.outputEnded(at: 105, outputLatency: 999, bufferDuration: .infinity)
+        #expect(policy.remainingDelay(at: 105) == 3)
+        policy.outputEnded(at: 105, outputLatency: .nan, bufferDuration: .nan)
+        #expect(policy.remainingDelay(at: 105) == 3)
     }
 
     @Test func manuallyEndingAudioStillRequiresARecognizerFinalResult() {
@@ -148,17 +185,27 @@ struct VoiceAudioCriticalTests {
     }
 
     @Test func offlinePreferenceIsRequiredWithoutSilentlyFallingBackToNetwork() throws {
+        // Even an existing preference that permits online search dictation
+        // cannot opt Astra's commands into sending microphone audio away.
+        for offlineOnly in [false, true] {
+            #expect(VoiceRecognitionRequestFactory.make(offlineOnly: offlineOnly, supportsOnDeviceRecognition: false,
+                                                       commandMode: true, contextualStrings: []) == nil)
+            let command = try #require(VoiceRecognitionRequestFactory.make(
+                offlineOnly: offlineOnly, supportsOnDeviceRecognition: true, commandMode: true, contextualStrings: []))
+            #expect(command.requiresOnDeviceRecognition)
+            #expect(command.taskHint == .dictation)
+        }
         #expect(VoiceRecognitionRequestFactory.make(offlineOnly: true, supportsOnDeviceRecognition: false,
-                                                   commandMode: true, contextualStrings: []) == nil)
-        let offline = try #require(VoiceRecognitionRequestFactory.make(
-            offlineOnly: true, supportsOnDeviceRecognition: true, commandMode: true, contextualStrings: []))
-        #expect(offline.requiresOnDeviceRecognition)
+                                                   commandMode: false, contextualStrings: []) == nil)
+        let localSearch = try #require(VoiceRecognitionRequestFactory.make(
+            offlineOnly: true, supportsOnDeviceRecognition: true, commandMode: false, contextualStrings: []))
+        #expect(localSearch.requiresOnDeviceRecognition)
         for supportsOnDevice in [false, true] {
             let automatic = try #require(VoiceRecognitionRequestFactory.make(
                 offlineOnly: false, supportsOnDeviceRecognition: supportsOnDevice,
-                commandMode: true, contextualStrings: []))
+                commandMode: false, contextualStrings: []))
             #expect(!automatic.requiresOnDeviceRecognition)
-            #expect(automatic.taskHint == .dictation)
+            #expect(automatic.taskHint == .search)
         }
     }
 

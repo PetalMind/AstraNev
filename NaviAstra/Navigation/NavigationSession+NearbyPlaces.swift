@@ -167,11 +167,13 @@ extension NavigationSession {
               suggestion.estimateStatus != .calculating,
               (suggestion.travelTime == nil || suggestion.travelDistance == nil) else { return }
         await estimateNearbyTravel(for: [suggestion.candidate], from: origin,
-                                   preferences: state.routingPreferences, searchID: nearbySearchID)
+                                   preferences: state.routingPreferences, searchID: nearbySearchID,
+                                   individualRoute: true)
     }
 
     private func estimateNearbyTravel(for candidates: [NearbyPlaceCandidate], from origin: Coordinate,
-                                      preferences: RoutingPreferences, searchID: UUID) async {
+                                      preferences: RoutingPreferences, searchID: UUID,
+                                      individualRoute: Bool = false) async {
         let mode = state.transportMode
         for candidate in candidates {
             guard let index = state.nearbySuggestions.firstIndex(where: { $0.id == candidate.id }) else { continue }
@@ -181,7 +183,7 @@ extension NavigationSession {
             let resolvedPOIs = await cachedNearbyAccessTargets(for: candidates, mode: mode)
             try Task.checkCancellation()
             guard nearbySearchID == searchID else { return }
-            if mode != .transit, let matrix = routeProvider as? ValhallaRouteProvider {
+            if !individualRoute, mode != .transit, let matrix = routeProvider as? ValhallaRouteProvider {
                 let coordinates = candidates.indices.map { index in
                     resolvedPOIs.indices.contains(index) ? resolvedPOIs[index]?.coordinate ?? candidates[index].destination.coordinate
                         : candidates[index].destination.coordinate

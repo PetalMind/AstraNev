@@ -8,7 +8,8 @@ import Darwin
 enum WebsiteOpeningHoursProvider {
     private static var cache: [String: (hours: String?, checkedAt: Date)] = [:]
     private static var robots: [String: (text: String, checkedAt: Date)] = [:]
-    private static var inFlight = false
+    private static var activeHosts: Set<String> = []
+    private static let maximumConcurrentHosts = 2
     private static var cooldowns: [String: Date] = [:]
     private static let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
@@ -36,9 +37,11 @@ enum WebsiteOpeningHoursProvider {
             return details
         }
         do {
-            // One website fetch at a time across all cards; task cancellation never
-            // lets a previous card overwrite the newly selected place.
-            while inFlight { try await Task.sleep(for: .milliseconds(100)) }
+            // Unrelated sites need not wait for a slow host. Keep each host serial
+            // and cap the whole enrichment path to two active websites.
+            while activeHosts.contains(host) || activeHosts.count >= maximumConcurrentHosts {
+                try await Task.sleep(for: .milliseconds(100))
+            }
             try Task.checkCancellation()
             guard cooldowns[host].map({ $0 <= Date() }) ?? true else { return original }
             // The same card may have queued twice before the first download ended.
@@ -49,8 +52,8 @@ enum WebsiteOpeningHoursProvider {
                 if entry.hours != nil { details.websiteHoursSource = source(url: url, at: entry.checkedAt) }
                 return details
             }
-            inFlight = true
-            defer { inFlight = false }
+            activeHosts.insert(host)
+            defer { activeHosts.remove(host) }
             let policy: String
             if let entry = robots[host], Date().timeIntervalSince(entry.checkedAt) < 86_400 {
                 policy = entry.text
@@ -83,7 +86,9 @@ enum WebsiteOpeningHoursProvider {
             return details
         } catch {
             // Website facts are optional. A failure never hides OSM/Apple data.
-            if !(error is CancellationError) { cooldowns[host] = max(cooldowns[host] ?? .distantPast, Date().addingTimeInterval(60)) }
+            if !Task.isCancelled, !(error is CancellationError), (error as? URLError)?.code != .cancelled {
+                cooldowns[host] = max(cooldowns[host] ?? .distantPast, Date().addingTimeInterval(60))
+            }
             return original
         }
     }

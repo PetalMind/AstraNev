@@ -53,7 +53,8 @@ import Testing
                 intent: intent, context: context, withTravelEstimates: true))
             #expect(!SearchRanking.precedes(invalid, known,
                 intent: intent, context: context, withTravelEstimates: true))
-            #expect(invalid.travelSummary?.contains("niedostępn") == true)
+            #expect(invalid.needsTravelEstimate)
+            #expect(invalid.travelSummary == "0,2 km trasą")
         }
         let missing = result(1, straight: 100)
         #expect(SearchRanking.precedes(known, missing,
@@ -84,7 +85,8 @@ import Testing
         #expect(closer.travelSummary?.contains("123") == false)
         #expect(closer.travelSummary?.contains("0,1") == false)
         closer.travelEstimateStatus = .unavailable
-        #expect(closer.travelSummary?.contains("niedostępn") == true)
+        #expect(closer.needsTravelEstimate)
+        #expect(closer.travelSummary == nil)
         closer.travelDistance = 1_200
         #expect(closer.travelSummary?.contains("1,2 km trasą") == true)
     }
@@ -212,6 +214,89 @@ import Testing
         #expect(final.allSatisfy { $0.travelTime == nil && $0.travelDistance == nil && $0.travelEstimateStatus == .unavailable })
         _ = await search.complete(candidates)
         #expect(calls == 1)
+    }
+
+    @Test func boundedRouteRecoveryPublishesMatrixFirstAndSharesBudgetAcrossProviderUpdates() async throws {
+        let measured = result(1, straight: 100)
+        let recoverable = result(2, straight: 200)
+        let failed = result(3, straight: 300)
+        let unrequested = result(4, straight: 400)
+        let late = result(5, straight: 500)
+        let gate = EstimateGate()
+        var updates: [[SearchResult]] = []
+        var fallbackIDs: [UUID] = []
+        let search = ProgressiveSearchEstimates(intent: ClassifiedQuery(intent: .brand, text: "Lidl"),
+            context: SearchContext(origin: origin), resolver: { targets in
+                targets.contains { $0.id == measured.id }
+                    ? [measured.placeIdentity.cacheKey: .init(time: 600, distance: 1_200)] : [:]
+            }, fallbackResolver: { target in
+                fallbackIDs.append(target.id)
+                if target.id == failed.id { throw URLError(.cannotConnectToHost) }
+                return try await gate.resolve([target])[target.placeIdentity.cacheKey]
+            }, onUpdate: { updates.append($0) })
+        defer { search.cancel() }
+        let completion = Task { @MainActor in
+            await search.complete([measured, recoverable, failed, unrequested])
+        }
+        try await waitUntil { gate.calls.count == 1 }
+        #expect(updates.last?.first { $0.id == measured.id }?.travelTime == 600)
+        #expect(updates.last?.first { $0.id == recoverable.id }?.travelEstimateStatus == .calculating)
+        gate.finish([recoverable.placeIdentity.cacheKey: .init(time: 180, distance: 700)])
+        let recovered = await completion.value
+        #expect(fallbackIDs == [recoverable.id, failed.id])
+        #expect(recovered.first { $0.id == measured.id }?.travelTime == 600)
+        #expect(recovered.first { $0.id == recoverable.id }?.travelTime == 180)
+        #expect(recovered.first { $0.id == failed.id }?.travelTime == nil)
+        #expect(recovered.first { $0.id == unrequested.id }?.travelTime == nil)
+        let final = await search.complete([measured, recoverable, failed, unrequested, late])
+        #expect(fallbackIDs == [recoverable.id, failed.id])
+        #expect(final.first { $0.id == late.id }?.travelTime == nil)
+        #expect(final.first { $0.id == recoverable.id }?.travelTime == 180)
+    }
+
+    @Test func cancelledRecoveryCannotPublishLateRouteOrStartAnotherRequest() async throws {
+        let first = result(1, straight: 100)
+        let second = result(2, straight: 200)
+        for cancelCompletion in [false, true] {
+            let gate = EstimateGate()
+            var updates: [[SearchResult]] = []
+            var fallbackCalls = 0
+            let search = ProgressiveSearchEstimates(intent: ClassifiedQuery(intent: .brand, text: "Lidl"),
+                context: SearchContext(origin: origin), resolver: { _ in throw URLError(.badServerResponse) },
+                fallbackResolver: { target in
+                    fallbackCalls += 1
+                    return try await gate.resolve([target])[target.placeIdentity.cacheKey]
+                }, onUpdate: { updates.append($0) })
+            let completion = Task { @MainActor in await search.complete([first, second]) }
+            try await waitUntil { gate.calls.count == 1 }
+            let updateCount = updates.count
+            if cancelCompletion { completion.cancel() } else { search.cancel() }
+            await Task.yield()
+            gate.finish([first.placeIdentity.cacheKey: .init(time: 120, distance: 800)])
+            _ = await completion.value
+            #expect(fallbackCalls == 1)
+            #expect(updates.count == updateCount)
+            #expect(!updates.contains { $0.contains { $0.travelTime == 120 } })
+            search.cancel()
+        }
+    }
+
+    @Test func invalidRecoveryMetricsNeverReplaceUnknownWithFabricatedTravel() async {
+        let first = result(1, straight: 100)
+        let second = result(2, straight: 200)
+        var fallbackCalls = 0
+        let search = ProgressiveSearchEstimates(intent: ClassifiedQuery(intent: .brand, text: "Lidl"),
+            context: SearchContext(origin: origin), resolver: { _ in [:] },
+            fallbackResolver: { target in
+                fallbackCalls += 1
+                return .init(time: target.id == first.id ? .nan : 120, distance: -1)
+            }, onUpdate: { _ in })
+        defer { search.cancel() }
+        let final = await search.complete([first, second])
+        #expect(fallbackCalls == 2)
+        #expect(final.allSatisfy { $0.travelTime == nil && $0.travelDistance == nil })
+        _ = await search.complete([first, second])
+        #expect(fallbackCalls == 2)
     }
 
 }

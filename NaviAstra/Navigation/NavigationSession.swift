@@ -173,6 +173,7 @@ final class NavigationSession {
         }
         locationManager.onAuthorization = { [weak self] authorization in
             guard let self else { return }
+            self.state.isLocationAuthorized = authorization == .authorizedAlways || authorization == .authorizedWhenInUse
             self.state.transitBackgroundLocationAvailable = authorization == .authorizedAlways &&
                 self.locationManager.backgroundLocationModeEnabled
             if authorization == .denied || authorization == .restricted {

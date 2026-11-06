@@ -9,6 +9,7 @@ nonisolated enum VoiceCommand: Equatable {
     case setMuted(Bool)
     case setVerbosity(VoiceVerbosity)
     case adjustRate(Double)
+    case adjustVolume(Double)
     case overview
     case follow
     case start
@@ -16,6 +17,7 @@ nonisolated enum VoiceCommand: Equatable {
     case removeNextStop
     case avoidHighways
     case avoidTolls
+    case alternativeRoute
     case confirm
     case cancel
     /// The index is zero based; the dialogue must check it against its current results.
@@ -37,15 +39,26 @@ nonisolated struct VoiceCommandParser {
 
     /// Only complete utterances belong here. Partial recognition must never execute an action.
     static func parse(_ text: String) -> VoiceCommand {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.hasPrefix("„"), !trimmed.hasPrefix("\""), !trimmed.hasPrefix("“") else { return .unknown }
         let words = text.split(whereSeparator: \.isWhitespace).map(String.init)
         guard !words.isEmpty else { return .unknown }
         var raw = words.joined(separator: " ")
             .trimmingCharacters(in: boundaryPunctuation)
         var phrase = normalize(raw)
 
+        // The name is an optional address inside a completed utterance, not a
+        // wake word. Remove only the first whole word, keeping all qualifiers.
+        if phrase.hasPrefix("astra ") || phrase.hasPrefix("astra, ") {
+            raw = raw.split(separator: " ", maxSplits: 1).dropFirst().joined(separator: " ")
+            guard !raw.hasPrefix("„"), !raw.hasPrefix("\""), !raw.hasPrefix("“") else { return .unknown }
+            phrase = normalize(raw)
+        }
+
         // A single polite wrapper is accepted, without discarding a negation or other intent.
         if phrase.hasPrefix("prosze ") || phrase.hasPrefix("prosze, ") {
             raw = raw.split(separator: " ", maxSplits: 1).dropFirst().joined(separator: " ")
+            guard !raw.hasPrefix("„"), !raw.hasPrefix("\""), !raw.hasPrefix("“") else { return .unknown }
             phrase = normalize(raw)
         }
         if phrase.hasSuffix(" prosze") {
@@ -65,18 +78,36 @@ nonisolated struct VoiceCommandParser {
             "chodzi mi o", "chodzilo mi o", "chodzi o", "chodzilo o",
             "popraw adres na", "popraw cel na"
         ]) {
-            return .correct(corrected)
+            return .correct(VoiceAddressQuery.normalized(corrected))
+        }
+        if let correctedNumber = argument(in: raw, normalized: phrase, prefixes: [
+            "popraw numer budynku na", "zmien numer budynku na", "popraw numer na", "zmien numer na"
+        ]) {
+            return .correct(VoiceAddressQuery.normalized("numer " + correctedNumber))
+        }
+        if let corrected = argument(in: raw, normalized: phrase, prefixes: ["nie,"]),
+           normalize(corrected).hasPrefix("numer ") || normalize(corrected).hasPrefix("litera ") {
+            return .correct(VoiceAddressQuery.normalized(corrected))
+        }
+        // "Numer 2" keeps its established list-selection meaning above. A
+        // qualified building number or a letter is instead a contextual edit.
+        if ["numer budynku ", "numer domu ", "numer ", "litera ", "litere "].contains(where: phrase.hasPrefix) {
+            return .correct(VoiceAddressQuery.normalized(raw))
         }
 
         if let stop = stopSearch(in: phrase) { return stop }
 
         if let destination = argument(in: raw, normalized: phrase, prefixes: [
+            "czy mozesz mnie poprowadzic do", "czy mozesz poprowadzic mnie do",
+            "mozesz mnie poprowadzic do", "chcialbym jechac do", "chcialabym jechac do",
+            "chce jechac do", "chce dojechac do", "chce dotrzec do",
             "wyznacz trase do", "wyznacz droge do", "rozpocznij nawigacje do",
             "rozpocznij prowadzenie do", "zmien cel na", "prowadz mnie do",
             "poprowadz mnie do", "nawiguj do", "prowadz do", "poprowadz do",
+            "nawiguj pod adres", "prowadz pod adres", "jedz pod adres",
             "jedz do", "zabierz mnie do"
         ]) {
-            return .navigate(destination)
+            return .navigate(VoiceAddressQuery.normalized(destination))
         }
         return .unknown
     }
@@ -143,24 +174,38 @@ nonisolated struct VoiceCommandParser {
     }
 
     private static func stopSearch(in phrase: String) -> VoiceCommand? {
-        let prefixes = ["znajdz mi ", "wyszukaj mi ", "dodaj postoj na ", "dodaj postoj przy ",
-                        "znajdz ", "wyszukaj ", "dodaj ", "potrzebuje "]
-        guard let prefix = prefixes.first(where: phrase.hasPrefix) else { return nil }
-        var category = String(phrase.dropFirst(prefix.count))
+        var request = phrase
         let nearDestinationSuffixes = [" w poblizu miejsca docelowego", " przy miejscu docelowym",
                                        " w poblizu celu", " przy celu", " blisko celu"]
         let routeSuffixes = [" po trasie", " po drodze", " w poblizu", " blisko mnie"]
         var nearDestination = false
-        if let suffix = nearDestinationSuffixes.first(where: category.hasSuffix) {
-            category = String(category.dropLast(suffix.count))
+        if let suffix = nearDestinationSuffixes.first(where: request.hasSuffix) {
+            request = String(request.dropLast(suffix.count))
             nearDestination = true
-        } else if let suffix = routeSuffixes.first(where: category.hasSuffix) {
-            category = String(category.dropLast(suffix.count))
+        } else if let suffix = routeSuffixes.first(where: request.hasSuffix) {
+            request = String(request.dropLast(suffix.count))
         }
+        // Match complete requests so a negation, compound command or unsupported
+        // requirement (brand, price, coffee, opening hours) is never discarded.
+        let naturalRequests: [(NearbyPlaceCategory, [String])] = [
+            (.parking, ["gdzie zaparkowac", "gdzie moge zaparkowac", "chce zaparkowac", "potrzebuje zaparkowac"]),
+            (.fuel, ["gdzie zatankowac", "gdzie moge zatankowac", "chce zatankowac", "potrzebuje zatankowac"]),
+            (.charging, ["gdzie naladowac samochod", "gdzie moge naladowac samochod",
+                         "chce naladowac samochod", "potrzebuje naladowac samochod"])
+        ]
+        if let match = naturalRequests.first(where: { $0.1.contains(request) }) {
+            return .searchStop(match.0, nearDestination: nearDestination)
+        }
+        let prefixes = ["znajdz mi ", "wyszukaj mi ", "dodaj postoj na ", "dodaj postoj przy ",
+                        "znajdz ", "wyszukaj ", "dodaj ", "potrzebuje "]
+        guard let prefix = prefixes.first(where: request.hasPrefix) else { return nil }
+        let category = String(request.dropFirst(prefix.count))
         let categories: [(NearbyPlaceCategory, [String])] = [
-            (.fuel, ["stacje paliw", "stacja paliw", "stacji paliw", "paliwo", "stacje benzynowa"]),
+            (.fuel, ["stacje paliw", "stacja paliw", "stacji paliw", "paliwo", "paliwa",
+                     "stacje benzynowa", "stacji benzynowej", "benzyne", "benzyny"]),
             (.food, ["restauracje", "restauracja", "restauracji", "jedzenie"]),
-            (.parking, ["parking", "parkingi", "parkingu"]),
+            (.parking, ["parking", "parkingi", "parkingu", "miejsce parkingowe", "miejsca parkingowego",
+                        "miejsce do zaparkowania", "miejsca do zaparkowania", "miejsce na postoj", "postoj"]),
             (.charging, ["ladowarke", "ladowarki", "ladowarke ev", "stacje ladowania", "stacji ladowania"]),
             (.restArea, ["mop", "miejsce odpoczynku", "miejsce obslugi podroznych"]),
             (.parcels, ["paczkomat", "paczkomaty", "paczkomatu", "punkt odbioru", "punkt odbioru paczek"])
@@ -187,13 +232,16 @@ nonisolated struct VoiceCommandParser {
             (.setVerbosity(.detailed), ["mow wiecej", "wiecej komunikatow", "szczegolowe komunikaty"]),
             (.adjustRate(-0.04), ["mow wolniej", "wolniej mow", "wolniejsze komunikaty"]),
             (.adjustRate(0.04), ["mow szybciej", "szybciej mow", "szybsze komunikaty"]),
+            (.adjustVolume(0.15), ["glosniej", "mow glosniej", "zwieksz glosnosc", "glosniejsze komunikaty"]),
+            (.adjustVolume(-0.15), ["ciszej", "mow ciszej", "zmniejsz glosnosc", "cichsze komunikaty"]),
             (.overview, ["pokaz cala trase", "pokaz trase", "pokaz przeglad trasy"]),
             (.follow, ["wroc do prowadzenia", "pokaz moja pozycje", "sledz moja pozycje", "wroc do mojej pozycji"]),
             (.start, ["rozpocznij nawigacje", "rozpocznij prowadzenie", "uruchom nawigacje", "zacznij nawigacje"]),
             (.stop, ["zakoncz nawigacje", "zakoncz prowadzenie", "zatrzymaj nawigacje", "wylacz nawigacje"]),
             (.removeNextStop, ["usun nastepny postoj", "usun kolejny postoj", "pomin nastepny postoj", "pomin kolejny postoj"]),
-            (.avoidHighways, ["omijaj autostrady", "unikaj autostrad", "wybierz trase bez autostrad", "trasa bez autostrad"]),
-            (.avoidTolls, ["omijaj oplaty", "unikaj oplat", "omijaj drogi platne", "unikaj drog platnych", "wybierz trase bez oplat", "trasa bez oplat"]),
+            (.avoidHighways, ["omin autostrady", "omijaj autostrady", "unikaj autostrad", "wybierz trase bez autostrad", "trasa bez autostrad"]),
+            (.avoidTolls, ["omin oplaty", "omijaj oplaty", "unikaj oplat", "omijaj drogi platne", "unikaj drog platnych", "wybierz trase bez oplat", "trasa bez oplat"]),
+            (.alternativeRoute, ["inna trasa", "trasa alternatywna", "znajdz inna trase", "znajdz trase alternatywna", "objazd"]),
             (.confirm, ["tak", "tak prosze", "potwierdzam", "potwierdz", "zatwierdz", "zgadzam sie"]),
             (.cancel, ["nie", "anuluj", "anuluj polecenie", "anuluj zmiane", "nie zmieniaj", "rezygnuje"]),
             (.next, ["nastepna", "nastepny", "kolejna", "kolejny", "a nastepna", "a nastepny", "pokaz nastepna", "pokaz nastepny", "inna propozycja"]),

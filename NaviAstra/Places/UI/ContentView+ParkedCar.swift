@@ -77,7 +77,7 @@ extension ContentView {
         }
     }
 
-    var parkedCarFloatingAction: some View {
+    var recentParkingSuggestion: some View {
         Group {
             if let expiresAt = parkedCarPromptExpiresAt {
                 TimelineView(.periodic(from: .now, by: 15)) { context in
@@ -85,6 +85,12 @@ extension ContentView {
                         (navigationStore.state.status != .arrived || arrivalCarPromptDismissed) {
                         Button(action: saveCurrentParkedCar) {
                             Label("Tu zaparkowałem", systemImage: "car.side.fill")
+#if os(iOS)
+                                .font(.subheadline.weight(.semibold))
+                                .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                                .padding(.horizontal, 12)
+                                .iosCardSurface(radius: 16)
+#else
                                 .font(.system(size: 13, weight: .semibold, design: .rounded))
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 16)
@@ -92,6 +98,7 @@ extension ContentView {
                                 .background(Color.accentColor, in: Capsule())
                                 .overlay(Capsule().strokeBorder(Color.white.opacity(0.22), lineWidth: 1))
                                 .shadow(color: .black.opacity(0.2), radius: 12, y: 5)
+#endif
                         }
                         .buttonStyle(.plain)
                         .disabled(currentParkedCarLocation == nil)
@@ -113,7 +120,7 @@ extension ContentView {
                         Text("Samochód zapisany")
                             .font(.system(size: 14, weight: .bold, design: .rounded))
                             .foregroundStyle(Color.naviTextPrimary)
-                        Text(parkedCarToast.gpsAccuracy.map { "Dokładność GPS ±\(Int($0.rounded())) m" }
+                        Text(parkedCarToast.gpsAccuracy.map { "Dokładność GPS ±\($0.formatted(.number.precision(.fractionLength(0)).locale(PolishRegionalFormat.locale))) m" }
                              ?? "Punkt wybrany na mapie")
                             .font(.system(size: 11, weight: .medium, design: .rounded))
                             .foregroundStyle(Color.naviTextSecondary)
@@ -220,10 +227,16 @@ extension ContentView {
         let destination = car.destination
         navigationStore.state.routeOrigin = nil
         navigationStore.selectDestination(destination, applyConfiguredMode: false)
-        Task {
-            await navigationStore.selectTransportMode(.walking)
-            await navigationStore.planRoute()
-            guard navigationStore.state.status == .routePreview else { return }
+        navigationStore.setJourneyTimeMode(.now)
+        Task { @MainActor in
+            guard placeStore.parkedCar?.id == car.id,
+                  navigationStore.state.destination?.id == car.id,
+                  navigationStore.state.status == .destinationPreview else { return }
+            await navigationStore.previewNewTrip(destination, transportMode: .walking)
+            guard navigationStore.state.status == .routePreview,
+                  navigationStore.state.transportMode == .walking,
+                  navigationStore.state.destination?.id == car.id,
+                  placeStore.parkedCar?.id == car.id else { return }
             navigationStore.begin()
         }
     }

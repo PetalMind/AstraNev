@@ -156,13 +156,14 @@ private struct TrafficMapEvent {
     let isMapPOI: Bool
     let displayPriority: Int
 
-    init(_ incident: TrafficIncident) {
+    init?(_ incident: TrafficIncident) {
+        guard let alert = incident.visualAlert else { return nil }
         id = "incident:\(incident.id)"
         coordinate = incident.coordinate
-        title = incident.mapTitle
+        title = alert.title
         subtitle = incident.mapSubtitle
-        categoryLabel = incident.category.mapLabel
-        presentation = TrafficMapPresentation(incident)
+        categoryLabel = alert.title
+        presentation = TrafficMapPresentation(incident, symbolName: alert.symbolName)
         isMapPOI = false
         displayPriority = incident.isRoadClosure ? 950 : 850
     }
@@ -645,10 +646,12 @@ struct MapLibreView: UIViewRepresentable {
             guard recognizer.state == .ended, let map else { return }
             let point = recognizer.location(in: map)
             guard !routeLayerRenderer.containsETAMarker(at: point, on: map) else { return }
+            if let parkedCarPin, let marker = map.view(for: parkedCarPin),
+               marker.bounds.contains(marker.convert(point, from: map)) { return }
             let tappedCoordinate = map.convert(point, toCoordinateFrom: map)
             let tappedLocation = CLLocation(latitude: tappedCoordinate.latitude, longitude: tappedCoordinate.longitude)
             let appAnnotations = searchPins + trafficEventPins + Array(transitVehiclePins.values)
-                + transitStopRenderer.annotations + [destinationPin, vehiclePin, closurePin, parkedCarPin].compactMap { $0 }
+                + transitStopRenderer.annotations + [destinationPin, vehiclePin, closurePin].compactMap { $0 }
             guard !appAnnotations.contains(where: { annotation in
                 let location = CLLocation(latitude: annotation.coordinate.latitude, longitude: annotation.coordinate.longitude)
                 return location.distance(from: tappedLocation) < 25
@@ -939,12 +942,15 @@ struct MapLibreView: UIViewRepresentable {
             }
 
             if let car = parent.scene.parkedCar {
-                if parkedCarPin == nil || shownParkedCarID != car.id || parkedCarPin?.subtitle != car.mapTimestamp {
+                let timestamp = Calendar.current.isDateInToday(car.parkedAt)
+                    ? PolishRegionalFormat.time(car.parkedAt)
+                    : car.parkedAt.formatted(.dateTime.locale(PolishRegionalFormat.locale).day().month(.abbreviated).hour().minute())
+                if parkedCarPin == nil || shownParkedCarID != car.id || parkedCarPin?.subtitle != timestamp {
                     if let parkedCarPin { map.removeAnnotation(parkedCarPin) }
                     let pin = MLNPointAnnotation()
                     pin.coordinate = car.coordinate.cl
                     pin.title = "Zaparkowany samochód"
-                    pin.subtitle = car.mapTimestamp
+                    pin.subtitle = timestamp
                     parkedCarPin = pin
                     shownParkedCarID = car.id
                     map.addAnnotation(pin)
@@ -1012,6 +1018,7 @@ struct MapLibreView: UIViewRepresentable {
             let roadAlerts = (showsRoadAlerts && (!isNavigating || MapDisplayPriorityEngine.canPresentRouteAlerts(parent.state))
                               ? parent.state.roadSafetyAlerts : [])
                 .filter { alert in
+                    guard alert.type != .congestion else { return false }
                     if let category = alert.mapSafetyPOICategory,
                        !parent.settings.safetyPOICategories.contains(category) { return false }
                     guard let distance = alert.distanceAlongRoute else { return false }
@@ -1306,6 +1313,9 @@ struct MapLibreView: UIViewRepresentable {
         private func updatePOIMarkerAppearance(on map: MLNMapView) {
             let dark = usesDarkMapAppearance
             guard lastPOIMarkerDark != dark || lastShopLogosEnabled != parent.settings.shopLogosEnabled else { return }
+            if let parkedCarPin, let marker = map.view(for: parkedCarPin) as? ParkedCarAnnotationView {
+                marker.applyMapAppearance(dark: dark)
+            }
             lastPOIMarkerDark = dark
             lastShopLogosEnabled = parent.settings.shopLogosEnabled
             for (index, pin) in searchPins.enumerated()
@@ -1605,54 +1615,11 @@ struct MapLibreView: UIViewRepresentable {
 
         func mapView(_ mapView: MLNMapView, viewFor annotation: MLNAnnotation) -> MLNAnnotationView? {
             if let marker = routeLayerRenderer.annotationView(for: annotation, on: mapView) { return marker }
-            if let pin = parkedCarPin, annotation === pin {
+            if let pin = parkedCarPin, annotation === pin, let car = parent.scene.parkedCar {
                 let identifier = "parked-car"
-                let marker = mapView.dequeueReusableAnnotationView(withIdentifier: identifier)
-                    ?? MLNAnnotationView(reuseIdentifier: identifier)
-                marker.subviews.forEach { $0.removeFromSuperview() }
-                marker.frame = CGRect(x: 0, y: 0, width: 80, height: 70)
-                marker.centerOffset = CGVector(dx: 0, dy: -35)
-                marker.scalesWithViewingDistance = false
-                marker.backgroundColor = .clear
-                marker.layer.sublayers?.filter { $0.name == "parked-car-bubble" }.forEach { $0.removeFromSuperlayer() }
-                let bubble = CAShapeLayer()
-                bubble.name = "parked-car-bubble"
-                let path = UIBezierPath(roundedRect: CGRect(x: 1, y: 1, width: 78, height: 58), cornerRadius: 18)
-                path.move(to: CGPoint(x: 31, y: 57))
-                path.addLine(to: CGPoint(x: 40, y: 69))
-                path.addLine(to: CGPoint(x: 49, y: 57))
-                path.close()
-                bubble.path = path.cgPath
-                bubble.fillColor = PlacePOIMapPalette.accentColor(dark: usesDarkMapAppearance).cgColor
-                bubble.strokeColor = UIColor.white.cgColor
-                bubble.lineWidth = 2
-                bubble.shadowColor = UIColor.black.cgColor
-                bubble.shadowOpacity = 0.25
-                bubble.shadowRadius = 4
-                bubble.shadowOffset = CGSize(width: 0, height: 2)
-                marker.layer.insertSublayer(bubble, at: 0)
-
-                let icon = UIImageView(image: UIImage(systemName: "car.side.fill"))
-                icon.tintColor = .white
-                icon.contentMode = .scaleAspectFit
-                icon.frame = CGRect(x: 28, y: 6, width: 24, height: 23)
-                marker.addSubview(icon)
-                let label = UILabel(frame: CGRect(x: 4, y: 29, width: 72, height: 16))
-                label.text = "Auto"
-                label.textAlignment = .center
-                label.textColor = .white
-                label.font = .boldSystemFont(ofSize: 12)
-                marker.addSubview(label)
-                let time = UILabel(frame: CGRect(x: 4, y: 44, width: 72, height: 13))
-                time.text = pin.subtitle.flatMap { $0 }
-                time.textAlignment = .center
-                time.textColor = UIColor.white.withAlphaComponent(0.9)
-                time.font = .systemFont(ofSize: 10, weight: .medium)
-                marker.addSubview(time)
-                marker.isAccessibilityElement = true
-                marker.accessibilityLabel = "Zaparkowany samochód, \(pin.subtitle.flatMap { $0 } ?? "")"
-                marker.accessibilityHint = "Otwórz kartę samochodu"
-                marker.accessibilityTraits = .button
+                let marker = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) as? ParkedCarAnnotationView
+                    ?? ParkedCarAnnotationView(reuseIdentifier: identifier)
+                marker.configure(timestamp: pin.subtitle ?? "", parkedAt: car.parkedAt, dark: usesDarkMapAppearance)
                 return marker
             }
             if let index = trafficEventPins.firstIndex(where: { $0 === annotation }),
@@ -2057,7 +2024,7 @@ struct MapLibreView: UIViewRepresentable {
                     events.append(TrafficMapEvent(poi))
                 }
                 for incident in shownIncidents {
-                    events.append(TrafficMapEvent(incident))
+                    if let event = TrafficMapEvent(incident) { events.append(event) }
                 }
                 events.append(contentsOf: shownRoadAlerts.map {
                     TrafficMapEvent($0, routeDistance: parent.state.roadAlertRouteDistance)

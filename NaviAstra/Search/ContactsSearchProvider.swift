@@ -26,6 +26,88 @@ enum ContactsAccessStatus: Equatable {
     }
 }
 
+#if os(iOS)
+extension ContactsSearchProvider {
+    /// Uses existing Contacts access only. Ordinary place commands must not prompt for permission.
+    func resolveVoiceDestination(_ query: String, near coordinate: Coordinate?) async throws -> VoiceContactResolution {
+        guard ContactsAccessStatus.current().canReadContacts else { return .unavailable(.accessNotGranted) }
+        guard let terms = VoiceContactQuery(query) else { return .noMatch }
+        let matches = try await Task.detached(priority: .userInitiated) {
+            try Self.fetchVoiceContacts(matching: terms)
+        }.value
+        try Task.checkCancellation()
+        return try await VoiceContactResolver.resolve(matches) { address in
+            try await geocodedVoiceResults(for: address, near: coordinate)
+        }
+    }
+
+    nonisolated private static func fetchVoiceContacts(matching query: VoiceContactQuery) throws -> VoiceContactMatches {
+        let keys: [CNKeyDescriptor] = [
+            CNContactGivenNameKey as CNKeyDescriptor,
+            CNContactMiddleNameKey as CNKeyDescriptor,
+            CNContactFamilyNameKey as CNKeyDescriptor,
+            CNContactNicknameKey as CNKeyDescriptor,
+            CNContactPostalAddressesKey as CNKeyDescriptor
+        ]
+        let request = CNContactFetchRequest(keysToFetch: keys)
+        request.sortOrder = .userDefault
+        var matched: [VoiceContactRecord] = []
+        try CNContactStore().enumerateContacts(with: request) { contact, _ in
+            var record = VoiceContactRecord(givenName: contact.givenName,
+                middleName: contact.middleName, familyName: contact.familyName,
+                nickname: contact.nickname, addresses: [])
+            guard query.matches(record) else { return }
+            let fullName = [contact.givenName, contact.middleName, contact.familyName]
+                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                .joined(separator: " ")
+            let name = fullName.isEmpty ? contact.nickname : fullName
+            for (index, address) in contact.postalAddresses.enumerated() {
+                let label = polishLabel(address.label)
+                guard query.matchesLabel(label) else { continue }
+                let formatted = CNPostalAddressFormatter.string(from: address.value, style: .mailingAddress)
+                    .components(separatedBy: .newlines)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: ", ")
+                guard !formatted.isEmpty else { continue }
+                record.addresses.append(VoiceContactAddress(contactID: contact.identifier,
+                    addressIndex: index, name: name, label: label, address: formatted))
+            }
+            // A same-name contact without an address must still count before geocoding.
+            matched.append(record)
+        }
+        return query.select(from: matched)
+    }
+
+    @MainActor
+    private func geocodedVoiceResults(for address: VoiceContactAddress,
+                                      near coordinate: Coordinate?) async throws -> [SearchResult] {
+        guard let request = MKGeocodingRequest(addressString: address.address) else { return [] }
+        request.preferredLocale = Locale(identifier: "pl_PL")
+        if let coordinate {
+            request.region = MKCoordinateRegion(center: coordinate.cl,
+                latitudinalMeters: 100_000, longitudinalMeters: 100_000)
+        }
+        let mapItems = try await withTaskCancellationHandler(
+            operation: { try await requestMapItems(for: request) },
+            onCancel: { Task { @MainActor in request.cancel() } })
+        try Task.checkCancellation()
+        guard mapItems.count <= 1 else { throw VoiceContactGeocodingError.ambiguousAddress }
+        // Validate the single result only after checking the original map-item count.
+        return mapItems.compactMap { item in
+            let point = item.location.coordinate
+            guard point.latitude.isFinite, point.longitude.isFinite,
+                  (-90...90).contains(point.latitude), (-180...180).contains(point.longitude) else { return nil }
+            let destination = Destination(name: address.name,
+                coordinate: Coordinate(latitude: point.latitude, longitude: point.longitude), address: address.address)
+            return SearchResult(destination: destination, street: nil, houseNumber: nil, city: nil,
+                countryCode: nil, providerID: "contact-\(address.contactID)-\(address.addressIndex)",
+                placeProvider: .mapKit, isContact: true, contactAddressLabel: address.label)
+        }
+    }
+}
+#endif
+
 struct ContactsSearchProvider: SearchProvider {
     nonisolated private struct ContactAddress: Sendable {
         var contactID: String

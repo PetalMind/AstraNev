@@ -117,34 +117,6 @@ extension ContentView {
         return details
     }
 
-    var navigationCongestionBanner: some View {
-        TimelineView(.periodic(from: .now, by: 30)) { context in
-            if isNavigating, let summary = congestionSummary(at: context.date),
-               let congestion = summary.congestion.first,
-               congestion.start <= navigationStore.state.roadAlertRouteDistance + 12_000 {
-                let traveled = navigationStore.state.roadAlertRouteDistance
-                let remaining = max(0, congestion.start - traveled)
-                VStack(alignment: .leading, spacing: 4) {
-                    NavigationAlertDisclosure(title: congestion.title,
-                        distanceText: remaining <= 10 ? "Teraz" : distance(remaining), distance: remaining,
-                        details: congestionDetails(congestion) + ["Czas rozładowania korka jest nieznany"],
-                        tint: Color(naviHex: congestion.colorHex), cornerRadius: 17,
-                        symbol: Image(systemName: "car.side.fill").foregroundStyle(Color(naviHex: congestion.colorHex)))
-                        .id(congestion.id)
-                    Text(congestion.travelTime.flatMap { travelTime in
-                        congestion.delay.map { delay in
-                            "Przejazd: około \(congestionDuration(travelTime)) · opóźnienie: \(congestionDuration(delay))"
-                        }
-                    }
-                         ?? "Brak wiarygodnego czasu przejazdu przez odcinek")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(Color.naviTextSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-    }
-
     var routeTrafficDelaySummary: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
             if let summary = congestionSummary(at: context.date) {

@@ -15,6 +15,9 @@ final class IOSTripPlaceSearchModel {
         let query: String
         let scope: Scope
         let revision: Int
+        var origin: Coordinate? = nil
+        var area: Coordinate? = nil
+        var mode: TransportMode = .car
     }
 
     private(set) var results: [SearchResult] = []
@@ -28,6 +31,8 @@ final class IOSTripPlaceSearchModel {
     @ObservationIgnored private var resultIdentities = SearchResultIdentityRegistry()
 
     static func localMatches(query: String, destinations: [Destination]) -> [Destination] {
+        let intent = QueryClassifier().classify(query)
+        guard intent.intent != .category, intent.intent != .brand else { return [] }
         let words = normalized(query).split(whereSeparator: { !$0.isLetter && !$0.isNumber })
         guard !words.isEmpty else { return [] }
         var matches: [Destination] = []

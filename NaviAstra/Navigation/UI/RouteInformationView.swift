@@ -1,7 +1,9 @@
 import SwiftUI
 import Charts
+import OSLog
 
 struct RouteInformationView: View {
+    private static let logger = Logger(subsystem: "NaviAstra", category: "RouteInformation")
     let route: NavigationRoute
     @State private var expanded = false
     @State private var details: DetailedRouteInformation?
@@ -19,7 +21,9 @@ struct RouteInformationView: View {
                         detailedContent
                             .task(id: retry) { await load(information.source) }
                     }
-                    Text("Dane drogowe pochodzą z Valhalli i OpenStreetMap. Brak wpisu nie potwierdza braku ograniczenia. Opłaty oznaczają obecność odcinka płatnego, bez kwoty.")
+                    Text("Ograniczenia mogą być niepełne. Kwoty opłat nie są uwzględnione.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Link("© OpenStreetMap", destination: URL(string: "https://www.openstreetmap.org/copyright")!)
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 .padding(.top, 8)
@@ -30,8 +34,6 @@ struct RouteInformationView: View {
 
     private func summary(_ information: RouteInformation) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let departure = information.departureLocalTime { row("Wyjazd (czas lokalny)", departure.replacingOccurrences(of: "T", with: " ")) }
-            if let arrival = information.arrivalLocalTime { row("Przyjazd (czas lokalny)", arrival.replacingOccurrences(of: "T", with: " ")) }
             row("Odcinki płatne", flag(information.toll))
             row("Autostrady", flag(information.highway))
             row("Promy", flag(information.ferry))
@@ -40,7 +42,7 @@ struct RouteInformationView: View {
             if let side = information.destinationSide, side == "left" || side == "right" {
                 row("Cel po stronie", side == "left" ? "Lewej" : "Prawej")
             }
-            let notices = Array(Set(route.maneuvers.flatMap { $0.information?.notices ?? [] } + information.warnings)).sorted()
+            let notices = Array(Set(route.maneuvers.flatMap { $0.information?.notices ?? [] })).sorted()
             ForEach(notices, id: \.self) { Text($0).font(.caption).foregroundStyle(.orange) }
         }
     }
@@ -55,11 +57,10 @@ struct RouteInformationView: View {
         }
         if let details {
             if details.completedLegs < details.totalLegs {
-                Text("Dane częściowe: \(details.completedLegs) z \(details.totalLegs) części trasy.")
+                Text("Nie udało się pobrać wszystkich szczegółów trasy.")
                     .font(.caption).foregroundStyle(.orange)
                 Button("Ponów pobieranie") { retry += 1 }.font(.caption)
             }
-            ForEach(details.notices, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
             if !details.countries.isEmpty { row("Kraje odcinków", details.countries.joined(separator: " · ")) }
             if !details.regions.isEmpty { row("Regiony", details.regions.joined(separator: " · ")) }
             if !details.sections.isEmpty {
@@ -75,13 +76,13 @@ struct RouteInformationView: View {
                     }.padding(.top, 6)
                 }
                 elevation(details)
-                DisclosureGroup("Odcinki drogi (\(details.sections.count))") {
+                DisclosureGroup("Odcinki drogi") {
                     LazyVStack(alignment: .leading, spacing: 10) {
                         ForEach(details.sections) { section in
                             DisclosureGroup {
                                 VStack(alignment: .leading, spacing: 4) {
                                     row("Długość", formatDistance(section.lengthMeters))
-                                    ForEach(section.attributes) { item in row(item.title, item.value) }
+                                    ForEach(roadInformationItems(section.attributes)) { item in row(item.title, item.value) }
                                 }.padding(.top, 4)
                             } label: {
                                 VStack(alignment: .leading, spacing: 2) {
@@ -109,14 +110,14 @@ struct RouteInformationView: View {
                 .chartXAxisLabel("km")
                 .frame(height: 150)
                 if let low = known.compactMap(\.heightMeters).min(), let high = known.compactMap(\.heightMeters).max() {
-                    row("Najniższa / najwyższa próbka", "\(Int(low.rounded())) / \(Int(high.rounded())) m n.p.m.")
+                    row("Najniższy / najwyższy punkt", "\(Int(low.rounded())) / \(Int(high.rounded())) m n.p.m.")
                 }
                 row("Podejścia / podjazdy", details.ascent.map { "około \(Int($0.rounded())) m" } ?? "Brak pełnych danych")
                 row("Zejścia / zjazdy", details.descent.map { "około \(Int($0.rounded())) m" } ?? "Brak pełnych danych")
-                Text("Przewyższenia są szacowane z próbek terenu; nie uwzględniają dokładnego profilu mostów i tuneli.")
+                Text("Wysokości i przewyższenia są szacunkowe.")
                     .font(.caption2).foregroundStyle(.secondary)
             } else {
-                Text("Serwer nie udostępnił profilu wysokości tej trasy.").font(.caption).foregroundStyle(.secondary)
+                Text("Profil wysokości niedostępny.").font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -157,15 +158,38 @@ struct RouteInformationView: View {
         }.font(.caption)
     }
 
+    private func roadInformationItems(_ attributes: [RouteInformationItem]) -> [RouteInformationItem] {
+        // Provider identifiers, model measurements and graph details stay in the data model.
+        let visibleTitles: Set<String> = [
+            "Nawierzchnia", "Klasa drogi", "Rodzaj odcinka", "Limit prędkości", "Liczba pasów",
+            "Chodnik", "Pas rowerowy", "Sieć rowerowa", "Trudność szlaku", "Opłaty",
+            "Nawierzchnia nieutwardzona lub nierówna", "Tunel", "Most", "Rondo", "Pobocze",
+            "Przekroczenie granicy", "Sygnalizacja świetlna", "Trasa dla ciężarówek", "Strona ruchu",
+            "Średnia wysokość", "Maksymalny podjazd", "Maksymalny zjazd", "Pas HOV",
+            "Numery zjazdów", "Drogi na zjeździe", "Kierunki na drogowskazie", "Nazwa węzła"
+        ]
+        return attributes.compactMap { item in
+            if item.title == "Zamknięcie zgłoszone przez serwer" {
+                return RouteInformationItem(title: "Zamknięty odcinek", value: item.value)
+            }
+            return visibleTitles.contains(item.title) ? item : nil
+        }
+    }
+
     private func flag(_ value: Bool?) -> String {
         value.map { $0 ? "Występują" : "Nie wykryto w danych" } ?? "Brak danych"
     }
 
     private func formatDistance(_ value: Double) -> String {
-        value >= 1000 ? String(format: "%.1f km", value / 1000) : "\(Int(value.rounded())) m"
+        value >= 1000
+            ? (value / 1000).formatted(.number.locale(PolishRegionalFormat.locale).precision(.fractionLength(1))) + " km"
+            : "\(Int(value.rounded())) m"
     }
 
     @MainActor private func load(_ source: RouteInformationSource?) async {
+        for warning in route.information?.warnings ?? [] {
+            Self.logger.debug("Ostrzeżenie dostawcy trasy: \(warning, privacy: .private)")
+        }
         guard let source else { failure = "Szczegóły odcinków niedostępne dla tej trasy."; return }
         let token = UUID()
         loadID = token
@@ -176,10 +200,14 @@ struct RouteInformationView: View {
             let loaded = try await ValhallaRouteInformationProvider.shared.load(source)
             try Task.checkCancellation()
             guard loadID == token else { return }
+            for notice in loaded.notices {
+                Self.logger.debug("Szczegóły dostawcy trasy: \(notice, privacy: .private)")
+            }
             details = loaded
         } catch is CancellationError {
             // Closing details or changing route cancels the request; it isn't a data error.
         } catch {
+            Self.logger.error("Pobieranie szczegółów trasy: \(error.localizedDescription, privacy: .private)")
             if loadID == token { failure = "Nie udało się pobrać szczegółów trasy." }
         }
     }

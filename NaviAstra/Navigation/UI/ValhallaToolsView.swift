@@ -23,8 +23,10 @@ struct ValhallaToolsView: View {
                 ValhallaPointMap(origin: point) { selectedPoint = $0; height = nil; heightLoaded = false }
                     .frame(height: 240)
                 if let point {
+#if !os(iOS)
                     Text("\(point.latitude.formatted(.number.precision(.fractionLength(5)).locale(PolishRegionalFormat.locale))), \(point.longitude.formatted(.number.precision(.fractionLength(5)).locale(PolishRegionalFormat.locale)))")
                         .font(.caption.monospacedDigit())
+#endif
                     Button("Pobierz wysokość punktu", systemImage: "mountain.2") { loadHeight(point) }
                         .disabled(busy)
                 } else { Text("Wskaż punkt na mapie lub poczekaj na lokalizację GPS.").font(.caption) }
@@ -32,11 +34,13 @@ struct ValhallaToolsView: View {
                     Text(height.map { "Wysokość terenu: \(Int($0.rounded())) m n.p.m." } ?? "Brak danych wysokości dla tego punktu.")
                 }
             }
+#if !os(iOS)
             Section("Diagnostyka decyzji") {
                 NavigationLink("Ranking, jakość danych i benchmarki") {
                     RoutingDiagnosticsView(navigation: navigation, trips: trips)
                 }
             }
+#endif
             if let endpoint {
                 Section("Analiza i planowanie") {
                     NavigationLink("Zasięg czasu lub odległości") {
@@ -51,6 +55,7 @@ struct ValhallaToolsView: View {
                     NavigationLink("Profile i preferencje tras") { ValhallaPreferencesView(navigation: navigation) }
                 }
             }
+#if !os(iOS)
             Section("Możliwości serwera") {
                 Button("Sprawdź serwer", systemImage: "network") { loadStatus() }.disabled(busy || endpoint == nil)
                 if let status {
@@ -68,6 +73,7 @@ struct ValhallaToolsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
+#endif
             if busy { ProgressView("Pobieranie danych…") }
             if let error { Section { Text(error).foregroundStyle(.orange) } }
         }

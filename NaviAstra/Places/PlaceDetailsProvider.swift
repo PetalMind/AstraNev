@@ -315,11 +315,128 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
     }
 
     func cachedDetails(for identity: PlaceIdentity) async -> PlaceDetails? {
-        await PlaceDetailsCache.shared.value(for: identity.cacheKey, allowExpired: true)
+        guard let cached = await PlaceDetailsCache.shared.value(for: identity.cacheKey, allowExpired: true) else { return nil }
+        if NominatimFuelStationLookup.object(for: identity) != nil,
+           !Self.matchesFuelIdentity(cached, identity: identity) { return nil }
+        return cached
+    }
+
+    /// The lookup API returns tagged objects by known typed ID. It does not search
+    /// around a coordinate, and its ready matches must not wait for Overpass.
+    func fuelStationLookupDetails(for identities: [PlaceIdentity], forceRefresh: Bool = false) async throws -> [String: PlaceDetails] {
+        var matches: [String: PlaceDetails] = [:]
+        var missing: [PlaceIdentity] = []
+        for identity in identities.prefix(8) {
+            guard NominatimFuelStationLookup.object(for: identity) != nil else { continue }
+            if !forceRefresh, let cached = await PlaceDetailsCache.shared.value(for: identity.cacheKey),
+               let fresh = Self.reusableFuelHours(cached, for: identity) {
+                matches[FuelStationHoursBatch.requestKey(identity)] = PlaceDetails.partial(for: identity).merging(fresh)
+            } else { missing.append(identity) }
+        }
+        guard !missing.isEmpty else { return matches }
+        let reply: NominatimFuelStationLookup.Reply
+        do { reply = try await NominatimFuelStationLookup.lookup(missing) }
+        catch {
+            try Task.checkCancellation()
+            if !matches.isEmpty { return matches }
+            throw error
+        }
+        try Task.checkCancellation()
+        for identity in missing {
+            guard let record = NominatimFuelStationLookup.records(reply.records, matching: identity),
+                  let object = record.object, let tags = record.tags(for: identity) else { continue }
+            var downloaded = Self.makeDetails(id: object.cacheKey, fallbackName: identity.name, tags: tags)
+            downloaded.coordinate = record.coordinate
+            downloaded.fetchedAt = reply.fetchedAt
+            downloaded.cacheGroupFetchedAt = ["identity": reply.fetchedAt, "contact": reply.fetchedAt,
+                "hours": reply.fetchedAt, "access": reply.fetchedAt]
+            let details = PlaceDetails.partial(for: identity).merging(downloaded)
+            try Task.checkCancellation()
+            await PlaceDetailsCache.shared.store(details, for: [identity.cacheKey])
+            matches[FuelStationHoursBatch.requestKey(identity)] = details
+        }
+        return matches
+    }
+
+    /// Older versions cached partial OSM objects after a failed hours request.
+    /// Such a negative entry must not suppress the independent lookup source.
+    static func reusableFuelHours(_ cached: PlaceDetails, for identity: PlaceIdentity) -> PlaceDetails? {
+        guard matchesFuelIdentity(cached, identity: identity) else { return nil }
+        let fresh = PlaceSearchOpeningHours.removingExpiredHours(from: cached)
+        guard let hours = fresh.openingHours,
+              !hours.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return fresh
+    }
+
+    private static func matchesFuelIdentity(_ details: PlaceDetails, identity: PlaceIdentity) -> Bool {
+        guard let object = NominatimFuelStationLookup.object(for: identity), details.id == object.cacheKey,
+              PaliwoMapaFuelPriceProvider.isFuelStation(category: details.category),
+              let coordinate = details.coordinate, coordinate.distance(to: identity.coordinate) <= 150,
+              !PlaceAddressMatching.hasStreetConflict(identity.address, actual: details.address) else { return false }
+        if let expected = identity.address.flatMap(PhotonSearchProvider.houseNumber(in:)),
+           let actual = details.address.flatMap(PhotonSearchProvider.houseNumber(in:)), expected != actual { return false }
+        return true
+    }
+
+    /// Visible station rows share one small lookup instead of one Overpass call
+    /// per card. Matching remains branch-specific before any schedule is cached.
+    func fuelStationHoursDetails(for identities: [PlaceIdentity]) async throws -> [String: PlaceDetails] {
+        let identities = Array(identities.filter {
+            PaliwoMapaFuelPriceProvider.isFuelStation(category: $0.category)
+        }.prefix(8))
+        guard !identities.isEmpty else { return [:] }
+        let selectors = Set(identities.map { identity in
+            if identity.provider == .openStreetMap, let type = identity.osmType,
+               let externalID = identity.externalID, let object = OpenStreetMapObjectID("\(type):\(externalID)") {
+                return "\(object.selector);"
+            }
+            return "nwr(around:150,\(identity.coordinate.latitude),\(identity.coordinate.longitude))[amenity=fuel];"
+        })
+        let query = "[out:json][timeout:6];(" + selectors.sorted().joined() + ")out center tags;"
+        let reply = try await fetchReply(query: query, from: endpoint, timeout: 8)
+        try Task.checkCancellation()
+        var matches: [String: PlaceDetails] = [:]
+        for identity in identities {
+            guard let element = Self.fuelStationMatch(in: reply.elements, for: identity),
+                  let object = OpenStreetMapObjectID("\(element.type):\(element.id)"), let tags = element.tags else { continue }
+            var downloaded = Self.makeDetails(id: object.cacheKey, fallbackName: identity.name, tags: tags)
+            downloaded.coordinate = element.coordinate
+            let details = PlaceDetails.partial(for: identity).merging(downloaded)
+            await PlaceDetailsCache.shared.store(details, for: Array(Set([object.cacheKey, identity.cacheKey])))
+            matches[FuelStationHoursBatch.requestKey(identity)] = details
+        }
+        return matches
+    }
+
+    static func fuelStationMatch(in elements: [Element], for identity: PlaceIdentity) -> Element? {
+        guard PaliwoMapaFuelPriceProvider.isFuelStation(category: identity.category) else { return nil }
+        let stations = elements.filter { $0.tags?["amenity"] == "fuel" }
+        if identity.provider == .openStreetMap, let type = identity.osmType,
+           let externalID = identity.externalID, let object = OpenStreetMapObjectID("\(type):\(externalID)") {
+            return stations.first {
+                $0.type == object.type && $0.id == object.value &&
+                ($0.coordinate.map { $0.distance(to: identity.coordinate) <= 150 } ?? false) &&
+                !hasConflictingAddress(identity.address, tags: $0.tags ?? [:])
+            }
+        }
+        if let matched = bestMatch(in: stations, for: identity) { return matched }
+        // A generic Apple label has no brand to compare. Require a single station
+        // at the same building number and within 40 m; proximity alone is not enough.
+        guard ["stacjabenzynowa", "stacjapaliw", "gasstation", "petrolstation"].contains(normalized(identity.name)),
+              let address = identity.address, let number = PhotonSearchProvider.houseNumber(in: address) else { return nil }
+        let candidates = stations.filter { station in
+            guard let tags = station.tags, let coordinate = station.coordinate,
+                  coordinate.distance(to: identity.coordinate) <= 40,
+                  tags["addr:housenumber"].map(PhotonSearchProvider.normalized) == number,
+                  !hasConflictingAddress(address, tags: tags) else { return false }
+            return true
+        }
+        return candidates.count == 1 ? candidates.first : nil
     }
 
     func supplementalDetails(_ details: PlaceDetails, for identity: PlaceIdentity,
-                             forceRefresh: Bool = false, hoursOnly: Bool = false) async -> PlaceDetails {
+                             forceRefresh: Bool = false, hoursOnly: Bool = false,
+                             onUpdate: (@MainActor (PlaceDetails) -> Void)? = nil) async -> PlaceDetails {
         let suffix = identity.category == "parcel_pickup" ? "/parcel-pickup" : ""
         let resolvedKey = details.id.hasSuffix(suffix) ? details.id : details.id + suffix
         let keys = Array(Set([identity.cacheKey, resolvedKey]))
@@ -329,9 +446,15 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
             base.openingHours = nil; base.websiteHoursCheckedAt = nil; base.websiteHoursSource = nil
         }
         var enriched = await OfficialStoreHoursProvider.enrich(base, for: identity, forceRefresh: forceRefresh)
+        guard !Task.isCancelled else { return details }
+        await onUpdate?(enriched)
         enriched = await WebsiteOpeningHoursProvider.enrich(enriched, for: identity, forceRefresh: forceRefresh)
+        guard !Task.isCancelled else { return details }
+        await onUpdate?(enriched)
         if !hoursOnly || enriched.openingHours == nil {
             enriched = await WikidataPlaceDetailsProvider.enrich(enriched, for: identity, forceRefresh: forceRefresh)
+            guard !Task.isCancelled else { return details }
+            await onUpdate?(enriched)
         }
         if details.website == nil, enriched.website != nil, enriched.openingHours == nil {
             enriched = await WebsiteOpeningHoursProvider.enrich(enriched, for: identity, forceRefresh: forceRefresh)
@@ -339,6 +462,8 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         guard !Task.isCancelled else { return details }
         await PlaceDetailsCache.shared.storeSupplement(enriched, for: keys, expectedRevisions: revisions,
                                                        originalFetchedAt: details.fetchedAt)
+        guard !Task.isCancelled else { return details }
+        await onUpdate?(enriched)
         return enriched
     }
 
@@ -349,7 +474,8 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
     func details(for identity: PlaceIdentity, forceRefresh: Bool) async throws -> PlaceDetails? {
         try Task.checkCancellation()
         let value = try await PlaceDetailsRequests.load(
-            key: endpoint.absoluteString + "/" + identity.cacheKey,
+            key: endpoint.absoluteString + "/" + (NominatimFuelStationLookup.object(for: identity) != nil
+                ? FuelStationHoursBatch.requestKey(identity) : identity.cacheKey),
             forceRefresh: forceRefresh
         ) {
             try await fetchDetails(for: identity, forceRefresh: forceRefresh)
@@ -374,7 +500,26 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
         }
         let requestKey = identity.cacheKey
         if !forceRefresh, let cached = await PlaceDetailsCache.shared.value(for: requestKey) {
-            return partial.merging(cached)
+            if NominatimFuelStationLookup.object(for: identity) != nil {
+                if let fresh = Self.reusableFuelHours(cached, for: identity) { return partial.merging(fresh) }
+            } else {
+                return partial.merging(cached)
+            }
+        }
+
+        if NominatimFuelStationLookup.object(for: identity) != nil {
+            if forceRefresh {
+                let refreshed = try? await fuelStationLookupDetails(for: [identity], forceRefresh: true)
+                try Task.checkCancellation()
+                if let station = refreshed?[FuelStationHoursBatch.requestKey(identity)], station.openingHours != nil {
+                    return partial.merging(station)
+                }
+            } else {
+                let station = await FuelStationHoursBatch.resolvedDetails(for: identity)
+                try Task.checkCancellation()
+                guard let station else { throw PlaceDetailsError.unavailable }
+                return partial.merging(station)
+            }
         }
 
         let selector: String
@@ -394,7 +539,9 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
             guard reply.remark == nil else { throw PlaceDetailsError.unavailable }
 
             let element: Element?
-            if let requestedID {
+            if NominatimFuelStationLookup.object(for: identity) != nil {
+                element = Self.fuelStationMatch(in: reply.elements, for: identity)
+            } else if let requestedID {
                 element = reply.elements.first(where: { $0.type == requestedID.type && $0.id == requestedID.value })
             } else {
                 element = Self.bestMatch(in: reply.elements, for: identity)
@@ -409,8 +556,9 @@ struct OpenStreetMapPlaceDetailsProvider: PlaceDetailsProvider {
             logger.info("Resolved OSM type=\(element.type, privacy: .public) id=\(element.id) hasHours=\(tags["opening_hours"] != nil)")
             let resolvedKey = resolvedID.cacheKey
             let isPickupService = identity.category == "parcel_pickup"
-            let downloaded = Self.makeDetails(id: resolvedKey, fallbackName: partial.name, tags: tags,
+            var downloaded = Self.makeDetails(id: resolvedKey, fallbackName: partial.name, tags: tags,
                                               includePickupServices: isPickupService)
+            downloaded.coordinate = element.coordinate
             let resolvedCacheKey = resolvedKey + (isPickupService ? "/parcel-pickup" : "")
             await PlaceDetailsCache.shared.store(downloaded, for: Array(Set([resolvedCacheKey, requestKey])))
             return partial.merging(downloaded)

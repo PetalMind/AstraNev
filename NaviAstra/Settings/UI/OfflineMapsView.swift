@@ -36,7 +36,7 @@ struct OfflineMapsView: View {
                     }
                 }
             } footer: {
-                Text("Mapa i dane drogowe są osobnymi paczkami. Aby wyznaczać trasy bez internetu, pobierz również dane drogowe dla całego przebiegu trasy.")
+                Text("Do wyznaczania tras bez internetu pobierz również dane drogowe dla całej trasy.")
             }
             Section {
                 TextField("Nazwa obszaru", text: $name)
@@ -52,8 +52,6 @@ struct OfflineMapsView: View {
                     }
                     if let selectedBounds {
                         Text(selectedBounds.dimensions).font(.subheadline)
-                        Text("\(OfflineStorageFormat.coordinate(selectedBounds.south)); \(OfflineStorageFormat.coordinate(selectedBounds.west)) — \(OfflineStorageFormat.coordinate(selectedBounds.north)); \(OfflineStorageFormat.coordinate(selectedBounds.east))")
-                            .font(.caption).foregroundStyle(.secondary)
                     }
                 } else {
                     if destination != nil {
@@ -62,10 +60,7 @@ struct OfflineMapsView: View {
                             Text("Cel podróży").tag(true)
                         }
                     }
-                    if let center {
-                        Text("\(OfflineStorageFormat.coordinate(center.latitude)); \(OfflineStorageFormat.coordinate(center.longitude))")
-                            .font(.caption).foregroundStyle(.secondary)
-                    } else {
+                    if center == nil {
                         Text("Brak pozycji. Wybierz cel podróży albo poczekaj na ustalenie lokalizacji.")
                             .foregroundStyle(.secondary)
                     }
@@ -89,7 +84,7 @@ struct OfflineMapsView: View {
                 }
                 .disabled(downloadBounds?.isValid != true || store.isCreating || store.isLoading)
             } header: { Text("Nowy obszar") } footer: {
-                Text("W trybie mapy pobierany jest prostokąt wewnątrz ramki, a wokół miejsca — kwadrat obejmujący wskazany zasięg. Większy obszar i większa szczegółowość wymagają więcej miejsca i transferu. Pobieranie jest wstrzymywane po przejściu aplikacji do tła. Możesz je wznowić po powrocie.")
+                Text("Większy obszar i więcej szczegółów zajmują więcej miejsca. Pozostaw aplikację otwartą podczas pobierania; po powrocie możesz je wznowić.")
             }
             if let error = store.error {
                 Section { Text(error).foregroundStyle(.red) }
@@ -107,7 +102,7 @@ struct OfflineMapsView: View {
             }
 
             Section {
-                Text("Pobrana mapa jest używana automatycznie na zapisanym obszarze i w pobranym zakresie przybliżeń. Poza nimi mogą brakować szczegółów. Trasy drogowe można wyznaczać offline po pobraniu odpowiedniej paczki danych drogowych. Wyszukiwanie miejsc, komunikacja publiczna oraz aktualne dane ruchu i pogody wymagają internetu.")
+                Text("Pobrana mapa działa bez internetu w wybranym obszarze i poziomie szczegółowości. Wyszukiwanie, komunikacja publiczna, ruch i pogoda wymagają połączenia.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }

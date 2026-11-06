@@ -44,6 +44,14 @@ extension ContentView {
                     VStack(alignment: .leading, spacing: 0) {
                         currentStepGuidanceCard
 
+                        if navigationStore.state.gpsQuality == .noSignal {
+                            Text("Ustalanie bieżącej pozycji…")
+                                .font(.caption)
+                                .foregroundStyle(Color.naviTextSecondary)
+                                .padding(.horizontal, 18)
+                                .padding(.bottom, 6)
+                        }
+
                         if showsCurrentStepLaneGuidance {
                             laneGuidance
                         }
@@ -276,7 +284,7 @@ extension ContentView {
                     drivingNavigationRouteOptions
                 }
 
-                if let confidence = navigationStore.state.etaConfidence {
+                if let confidence = navigationStore.state.etaConfidence, confidence.level == .blocked {
                     Label {
                         Text(confidence.explanation)
                             .fixedSize(horizontal: false, vertical: true)
@@ -551,7 +559,7 @@ extension ContentView {
                         .padding(.top, 4)
 #endif
                     if detent == .expanded, navigationStore.state.transportMode == .car,
-                       let confidence = navigationStore.state.etaConfidence {
+                       let confidence = navigationStore.state.etaConfidence, confidence.level == .blocked {
                         Text(confidence.explanation).font(.caption).foregroundStyle(.secondary)
                             .padding(.horizontal, 18).padding(.bottom, 6)
                     }
@@ -1442,28 +1450,28 @@ extension ContentView {
         guard leg.realTime || hasLiveTransitUpdate(for: leg) else { return "wg rozkładu" }
         switch journey.realtimeFreshness {
         case .live: return "Na żywo"
-        case .degraded: return "Realtime opóźnione"
-        case .stale: return "Realtime nieświeże"
-        case .unavailable: return "Realtime bez potwierdzonej świeżości"
+        case .degraded: return "Aktualizacja opóźniona"
+        case .stale: return "Godzina niepotwierdzona"
+        case .unavailable: return "Godzina niepotwierdzona"
         }
     }
 
     func transitRealtimeStatus(for journey: Journey) -> String {
         if journey.sourceID != nil {
             return journey.realtimeFeedAvailable
-                ? "Dane realtime zwrócone przez Transitous"
-                : "Aktualne odjazdy według rozkładu Transitous"
+                ? "Odjazdy z aktualizacjami"
+                : "Odjazdy według rozkładu"
         }
-        let time = journey.realtimeFeedUpdatedAt?.formatted(date: .omitted, time: .shortened)
+        let time = journey.realtimeFeedUpdatedAt.map { PolishRegionalFormat.time($0) }
         switch journey.realtimeFreshness {
         case .live:
-            return "Aktualizacje opóźnień na żywo · \(time ?? "teraz")"
+            return "Odjazdy na żywo · \(time ?? "teraz")"
         case .degraded:
-            return "Opóźnione aktualizacje realtime · \(time ?? "bez czasu")"
+            return time.map { "Ostatnia aktualizacja: \($0)" } ?? "Aktualizacja odjazdów opóźniona"
         case .stale:
-            return "Dane realtime są nieświeże · pokazano rozkład"
+            return "Odjazdy według rozkładu"
         case .unavailable:
-            return "Dane o opóźnieniach niedostępne · pokazano rozkład"
+            return "Odjazdy według rozkładu"
         }
     }
 
@@ -1721,7 +1729,7 @@ extension ContentView {
             }
 
             if stops.isEmpty {
-                Text("Brak kolejnych przystanków w danych trasy")
+                Text("Lista przystanków niedostępna")
                     .font(.caption)
                     .foregroundStyle(Color.naviTextSecondary)
                     .padding(.vertical, 4)
@@ -1910,7 +1918,7 @@ extension ContentView {
 
     var arrivalCard: some View {
 #if os(iOS)
-        arrivalSuccessCard
+        arrivalSummaryContent
 #else
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 11) {
@@ -1982,13 +1990,37 @@ extension ContentView {
 #endif
     }
 
-    var arrivalSuccessCard: some View {
+#if os(iOS)
+    func arrivalSuccessPanel(summary: some View, bottomInset: CGFloat) -> some View {
         let shape = UnevenRoundedRectangle(
             cornerRadii: RectangleCornerRadii(topLeading: 32, bottomLeading: 0,
                                               bottomTrailing: 0, topTrailing: 32),
             style: .continuous)
 
         return VStack(spacing: 0) {
+            summary
+                .scrollBounceBehavior(.basedOnSize)
+
+            Divider()
+            Button {
+                navigationStore.stop()
+            } label: {
+                arrivalActionLabel(symbol: "checkmark", title: "Zakończ trasę", primary: true)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(ArrivalActionButtonStyle())
+            .accessibilityLabel("Zakończ trasę")
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .padding(.bottom, max(12, bottomInset))
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .clipShape(shape)
+        .modifier(NavigationGlassPanelSurface(shape: shape))
+    }
+
+    private var arrivalSummaryContent: some View {
+        VStack(spacing: 0) {
             Capsule()
                 .fill(Color.primary.opacity(0.18))
                 .frame(width: 38, height: 4)
@@ -2085,14 +2117,6 @@ extension ContentView {
 
                     arrivalShareAction
                 }
-
-                Button {
-                    navigationStore.stop()
-                } label: {
-                    arrivalActionLabel(symbol: "checkmark", title: "Zakończ", primary: true)
-                }
-                .buttonStyle(ArrivalActionButtonStyle())
-                .accessibilityLabel("Zakończ nawigację")
             }
             .padding(.horizontal, 16)
             .padding(.top, 16)
@@ -2100,8 +2124,8 @@ extension ContentView {
             .modifier(ArrivalSectionEntrance(delay: 0.40))
         }
         .frame(maxWidth: .infinity, alignment: .top)
-        .modifier(NavigationGlassPanelSurface(shape: shape))
     }
+#endif
 
     @ViewBuilder
     private var arrivalDrivingScoreSummary: some View {

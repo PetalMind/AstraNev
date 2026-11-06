@@ -23,6 +23,11 @@ struct QueryClassifier {
 
     func classify(_ raw: String) -> ClassifiedQuery {
         let text = Self.normalize(raw)
+        for prefix in ["najblizsza ", "najblizsze ", "najblizszy ", "najblizszej ", "najblizszych "]
+            where text.hasPrefix(prefix) {
+            let nearby = classify(String(text.dropFirst(prefix.count)))
+            if nearby.intent == .category || nearby.intent == .brand { return nearby }
+        }
         let parts = text.split { $0 == "," || $0 == ";" || $0.isWhitespace }.compactMap { Double($0) }
         if parts.count == 2, text.range(of: #"^[\d\s.,;+\-]+$"#, options: .regularExpression) != nil,
            (-90...90).contains(parts[0]), (-180...180).contains(parts[1]) {
@@ -30,6 +35,7 @@ struct QueryClassifier {
         }
         let along = text.hasSuffix(" po trasie")
         let clean = along ? String(text.dropLast(" po trasie".count)) : text
+        if let postOffice = classifyPostOffice(clean, alongRoute: along) { return postOffice }
         if let parcel = classifyParcel(clean, alongRoute: along) { return parcel }
         let brands = ["mcdonald's", "mcdonalds", "biedronka", "lidl", "orlen", "shell", "bp", "auchan", "aldi", "kaufland", "zabka", "rossmann", "ikea", "kfc", "doz"]
         for brand in brands where clean == brand || clean.hasPrefix(brand + " ") || clean.hasPrefix(brand + ",") {
@@ -42,6 +48,8 @@ struct QueryClassifier {
                                    photonTag: "brand:\(canonical)", alongRoute: along)
         }
         let categories: [(String, String)] = [
+            ("stacja benzynowa", "amenity=fuel"), ("stacje benzynowe", "amenity=fuel"),
+            ("stacji benzynowej", "amenity=fuel"), ("stacje benzynowa", "amenity=fuel"),
             ("stacja paliw", "amenity=fuel"), ("stacje paliw", "amenity=fuel"), ("paliwo", "amenity=fuel"),
             ("apteka", "amenity=pharmacy"), ("apteki", "amenity=pharmacy"),
             ("parking", "amenity=parking"), ("parkingi", "amenity=parking"),
@@ -74,6 +82,28 @@ struct QueryClassifier {
             break
         }
         return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func classifyPostOffice(_ text: String, alongRoute: Bool) -> ClassifiedQuery? {
+        let names = ["poczta polska", "poczty polskiej", "urzad pocztowy", "urzedu pocztowego",
+                     "placowka pocztowa", "placowki pocztowej", "poczta", "poczty"]
+        guard let name = names.first(where: {
+            text == $0 || text.hasPrefix($0 + " ") || text.hasPrefix($0 + ",")
+        }) else { return nil }
+        let suffix = String(text.dropFirst(name.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ",;")))
+        // A postal office is not a parcel locker or a pickup service in a shop.
+        // Explicit parcel requests retain the existing carrier/scope classifier.
+        if suffix.range(of: #"^(paczkomat|paczkopunkt|automat|punkt odbioru|punkty odbioru)"#,
+                        options: .regularExpression) != nil { return nil }
+        let branded = name == "poczta polska" || name == "poczty polskiej"
+        let location = locationSuffix(suffix)
+        let brandFilter = branded ? "[~\"^(brand|name|operator)$\"~\"Poczta[ _-]+Polska\",i]" : ""
+        return ClassifiedQuery(intent: branded ? .brand : .category,
+                               text: branded ? "Poczta Polska" : "poczta",
+                               location: location.isEmpty ? nil : location,
+                               filter: "[amenity=post_office]" + brandFilter,
+                               photonTag: "amenity:post_office", alongRoute: alongRoute)
     }
 
     private func classifyParcel(_ text: String, alongRoute: Bool) -> ClassifiedQuery? {
@@ -135,12 +165,19 @@ struct SearchContext {
     var localDestinations: [Destination] = []
 }
 
+@MainActor
+private final class SearchCandidatePublicationState {
+    var hasLocalPlaces = false
+    var hasPublishedResults = false
+}
+
 struct SearchEngine {
     var photon = PhotonSearchProvider()
     var poi = POISearchProvider()
     var matrix: ValhallaRouteProvider
 
     func search(_ query: String, context: SearchContext, includeUUGFallback: Bool = false,
+                includeContacts: Bool = true,
                 routeEstimator: SearchRouteEstimator = { _, _, _ in nil },
                 onUpdate: @escaping @MainActor ([SearchResult]) -> Void = { _ in }) async throws -> [SearchResult] {
         let intent = QueryClassifier().classify(query)
@@ -150,12 +187,22 @@ struct SearchEngine {
             center = try await resolve(location, near: center)
         }
         let searchCenter = center
-        let routeOrigin = context.origin ?? searchCenter
+        // A map center or a geocoded city scopes places, but cannot stand in for
+        // the actual departure point when presenting a route distance or time.
+        let routeOrigin = context.origin
         let identities = SearchResultIdentityRegistry()
+        #if os(iOS)
+        let usesLocalEstimates = OfflineRoutingStore.shared.preferOffline || OfflineRoutingStore.shared.networkUnavailable
+        #else
+        let usesLocalEstimates = false
+        #endif
         let progressive: ProgressiveSearchEstimates?
         if (intent.intent == .brand || intent.intent == .category), !intent.alongRoute,
            context.mode != .transit, let origin = routeOrigin {
             progressive = ProgressiveSearchEstimates(intent: intent, context: context, resolver: { targets in
+                // The matrix endpoint has no local implementation. Use the same
+                // bounded single-route recovery immediately when routing offline.
+                guard !usesLocalEstimates else { return [:] }
                 var coordinates: [Coordinate] = []
                 for result in targets {
                     let destination = result.navigationDestination
@@ -172,17 +219,33 @@ struct SearchEngine {
                     }
                 }
                 return values
+            }, fallbackResolver: { result in
+                let destination = result.navigationDestination
+                let target = await POIAccessResolver.shared.cachedTarget(for: destination, mode: context.mode)?.coordinate
+                    ?? destination.coordinate
+                try Task.checkCancellation()
+                guard let estimate = try await matrix.searchRouteEstimate(from: origin, to: target,
+                    mode: context.mode, preferences: context.preferences) else { return nil }
+                return .init(time: estimate.travelTime, distance: estimate.distanceMeters)
             }, onUpdate: onUpdate)
         } else { progressive = nil }
         defer { progressive?.cancel() }
         // The suffix is part of the request, not only a geocoding hint. Searching
         // just "BP" loses the street even when the provider knows its address.
         let providerQuery = [intent.text, intent.location].compactMap { $0 }.joined(separator: ", ")
+        let publicationState = SearchCandidatePublicationState()
         // Publish provider replies before waiting for other sources or route estimates.
         let publishCandidates: ([SearchResult]) -> Void = { candidates in
-            let ranked = identities.stabilize(Array(SearchDeduplicator.mergeAndRank(
+            let scoped = SearchDeduplicator.mergeAndRank(
                 candidates, intent: intent, context: context,
-                searchCenter: searchCenter, routeOrigin: routeOrigin).prefix(progressive == nil ? 8 : 16)))
+                searchCenter: searchCenter, routeOrigin: routeOrigin,
+                allowsExpansion: false)
+            let ranked = identities.stabilize(SearchRanking.routeEstimateCandidates(scoped,
+                intent: intent, context: context, searchCenter: searchCenter,
+                limit: progressive == nil ? 8 : 16))
+            publicationState.hasLocalPlaces = publicationState.hasLocalPlaces || ranked.contains { !$0.isContact }
+            if ranked.isEmpty, publicationState.hasPublishedResults { return }
+            publicationState.hasPublishedResults = publicationState.hasPublishedResults || !ranked.isEmpty
             if let progressive { progressive.publish(ranked) }
             else { onUpdate(ranked) }
         }
@@ -206,24 +269,46 @@ struct SearchEngine {
         } else if intent.intent == .address {
             candidates = try await AddressSearchProvider().search(intent.text, near: searchCenter,
                                                                   includeUUGFallback: includeUUGFallback,
+                                                                  includeContacts: includeContacts,
                                                                   onUpdate: publishCandidates)
         } else {
-            let photonTag = intent.intent == .category ? intent.photonTag : nil
+            let photonTag = intent.intent == .category || intent.photonTag == "amenity:post_office"
+                ? intent.photonTag : nil
             var requests: [SearchProviderBatch.Request] = []
             if intent.intent == .brand || intent.intent == .category {
                 guard let searchCenter else { throw SearchError.locationRequired }
                 // Keep local OSM coverage, but never block faster sources on Overpass.
                 requests.append(.init {
-                    try await poi.search(intent, near: searchCenter, route: intent.alongRoute ? context.route : [])
+                    try await poi.search(intent, near: searchCenter, route: intent.alongRoute ? context.route : [],
+                                         mayExpand: { !publicationState.hasLocalPlaces })
                 })
             }
             requests.append(.init {
-                try await photon.search(providerQuery, near: searchCenter, addressesOnly: false, osmTag: photonTag)
+                #if os(iOS)
+                if let searchCenter, PhotonCategorySearchProvider.supports(intent, endpoint: photon.endpoint) {
+                    return try await PhotonCategorySearchProvider(endpoint: photon.endpoint)
+                        .search(intent, near: searchCenter)
+                }
+                #endif
+                return try await photon.search(providerQuery, near: searchCenter, addressesOnly: false, osmTag: photonTag)
             })
+            #if os(iOS)
+            if let searchCenter, MapKitCategorySearchProvider.supports(intent) {
+                requests.append(.init {
+                    try await MapKitCategorySearchProvider().search(intent, near: searchCenter)
+                })
+            }
+            #endif
             requests.append(.init {
-                try await MapKitSearchProvider().search(providerQuery, near: searchCenter)
+                #if os(iOS)
+                if let searchCenter, intent.photonTag == "amenity:fuel",
+                   MapKitCategorySearchProvider.supports(intent) {
+                    return try await MapKitCategorySearchProvider().searchTextFallback(intent, near: searchCenter)
+                }
+                #endif
+                return try await MapKitSearchProvider().search(providerQuery, near: searchCenter)
             })
-            if ContactsAccessStatus.current().canReadContacts {
+            if includeContacts, intent.intent != .category, ContactsAccessStatus.current().canReadContacts {
                 requests.append(.init {
                     try await ContactsSearchProvider().search(query, near: searchCenter)
                 })
@@ -245,9 +330,11 @@ struct SearchEngine {
         // Along-route road searches retain extra candidates to compare detours.
         // Transit needs a full journey plan per result, so only plan the visible rows.
         let candidateLimit = intent.alongRoute && context.mode != .transit ? 20 : progressive == nil ? 8 : 16
-        var results = identities.stabilize(Array(SearchDeduplicator.mergeAndRank(
+        let scoped = SearchDeduplicator.mergeAndRank(
             candidates, intent: intent, context: context,
-            searchCenter: searchCenter, routeOrigin: routeOrigin).prefix(candidateLimit)))
+            searchCenter: searchCenter, routeOrigin: routeOrigin)
+        var results = identities.stabilize(SearchRanking.routeEstimateCandidates(scoped,
+            intent: intent, context: context, searchCenter: searchCenter, limit: candidateLimit))
         if let progressive {
             results = await progressive.complete(results)
         } else if let origin = routeOrigin, !results.isEmpty {
@@ -286,12 +373,17 @@ struct SearchEngine {
                     let coordinates = routedTargets.map { $0.coordinate }
                     let rows: [[ValhallaRouteProvider.MatrixCell]]?
                     do {
-                        rows = try await matrix.searchMatrix(sources: [origin], targets: coordinates,
-                                                             mode: context.mode, preferences: context.preferences)
+                        if usesLocalEstimates {
+                            rows = nil
+                        } else {
+                            rows = try await matrix.searchMatrix(sources: [origin], targets: coordinates,
+                                mode: context.mode, preferences: context.preferences)
+                        }
                     } catch {
                         try Task.checkCancellation()
                         rows = nil
                     }
+                    var missingTargets: [(index: Int, coordinate: Coordinate)] = []
                     for (rowIndex, target) in routedTargets.enumerated() {
                         let cell: ValhallaRouteProvider.MatrixCell?
                         if let firstRow = rows?.first, firstRow.indices.contains(rowIndex) {
@@ -305,8 +397,30 @@ struct SearchEngine {
                             results[target.index].travelDistance = distance * 1_000
                             results[target.index].travelEstimateStatus = .notRequested
                         } else {
-                            // A failed matrix must not fan out into up to eight sequential
-                            // full route requests to the same unavailable service.
+                            results[target.index].travelEstimateStatus = .unavailable
+                            missingTargets.append(target)
+                        }
+                        onUpdate(Array(results.prefix(8)))
+                    }
+                    // Recover at most two visible results with single routes. Good
+                    // matrix cells remain visible and a failed row is never retried.
+                    let recovery = Array(missingTargets.filter { $0.index < 8 }.prefix(2))
+                    for target in recovery { results[target.index].travelEstimateStatus = .calculating }
+                    if !recovery.isEmpty { onUpdate(Array(results.prefix(8))) }
+                    for target in recovery {
+                        try Task.checkCancellation()
+                        do {
+                            if let estimate = try await matrix.searchRouteEstimate(from: origin, to: target.coordinate,
+                                mode: context.mode, preferences: context.preferences) {
+                                try Task.checkCancellation()
+                                results[target.index].travelTime = estimate.travelTime
+                                results[target.index].travelDistance = estimate.distanceMeters
+                                results[target.index].travelEstimateStatus = .notRequested
+                            } else {
+                                results[target.index].travelEstimateStatus = .unavailable
+                            }
+                        } catch {
+                            try Task.checkCancellation()
                             results[target.index].travelEstimateStatus = .unavailable
                         }
                         onUpdate(Array(results.prefix(8)))
@@ -376,22 +490,24 @@ struct SearchEngine {
 struct POISearchProvider {
     var endpoint = MapRoadPOIEndpoint.url
 
-    func search(_ intent: ClassifiedQuery, near center: Coordinate?, route: [Coordinate]) async throws -> [SearchResult] {
+    func search(_ intent: ClassifiedQuery, near center: Coordinate?, route: [Coordinate],
+                mayExpand: @MainActor () -> Bool = { true }) async throws -> [SearchResult] {
         var results: [SearchResult] = []
         let radii: [Int]
         if intent.parcelQuery?.reference != nil {
             radii = [0]
         } else if !route.isEmpty {
             radii = [1500]
-        } else if intent.intent == .brand {
-            radii = [5000, 15000, 50000]
         } else {
-            radii = [3000, 10000, 30000]
+            radii = SearchGeographicScope.radii(for: intent).map { Int($0) }
         }
         // Bound the entire radius expansion, not each of three requests independently.
         let deadline = Date().addingTimeInterval(12)
-        for radius in radii {
+        for (index, radius) in radii.enumerated() {
             try Task.checkCancellation()
+            // Faster providers may already have found local matches. Expanding
+            // Overpass then adds latency and distant branches with no benefit.
+            if index > 0, !mayExpand() { break }
             let remaining = deadline.timeIntervalSinceNow
             guard remaining >= 1 else { throw SearchError.timeout }
             let serverTimeout = max(1, min(6, Int(remaining) - 1))

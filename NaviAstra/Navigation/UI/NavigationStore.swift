@@ -29,6 +29,7 @@ final class NavigationStore {
     }
 
     func startLocation() { session.startLocation() }
+    func refreshSearchLocation() { session.locationManager.requestCurrentLocation() }
     func setAppIsForeground(_ isForeground: Bool) { session.setAppIsForeground(isForeground) }
     func refreshEnergyPolicy() { session.refreshEnergyPolicy() }
 
@@ -136,6 +137,12 @@ final class NavigationStore {
     func replaceVoiceDestination(_ destination: Destination) async { await session.replaceVoiceDestination(destination) }
     var nextVoiceWaypoint: Destination? { session.nextVoiceWaypoint }
     func addVoiceWaypoint(_ destination: Destination) async { await session.addVoiceWaypoint(destination) }
+    func voiceAlternativeRoute() async throws -> VoiceAlternativeRouteProposal {
+        try await session.voiceAlternativeRoute()
+    }
+    func applyVoiceAlternativeRoute(_ proposal: VoiceAlternativeRouteProposal) async throws {
+        try await session.applyVoiceAlternativeRoute(proposal)
+    }
     #endif
     func refreshTraffic(force: Bool = false, forceRouteRefresh: Bool = true) {
         session.refreshTraffic(force: force, forceRouteRefresh: forceRouteRefresh)

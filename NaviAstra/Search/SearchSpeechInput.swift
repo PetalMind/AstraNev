@@ -32,6 +32,7 @@ nonisolated struct VoiceRecognitionEndpointPolicy {
     private var lastActivity: TimeInterval?
     private var lastAudio: TimeInterval?
     private var lastTranscript: TimeInterval?
+    private var transcript = ""
     private(set) var isFinalizing = false
 
     mutating func observeAudio(active: Bool, at uptime: TimeInterval) {
@@ -39,7 +40,14 @@ nonisolated struct VoiceRecognitionEndpointPolicy {
         if active { lastActivity = uptime }
     }
 
-    mutating func observeTranscript(at uptime: TimeInterval) { lastTranscript = uptime }
+    mutating func observeTranscript(_ text: String, at uptime: TimeInterval) {
+        // Speech sends revised snapshots of the entire utterance. Repeated
+        // identical snapshots are not new words and must not postpone endpointing.
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              text != transcript else { return }
+        transcript = text
+        lastTranscript = uptime
+    }
 
     mutating func requestEndIfSilent(at uptime: TimeInterval) -> Bool {
         guard !isFinalizing, let lastAudio, let lastTranscript,
@@ -90,20 +98,26 @@ nonisolated struct VoiceRecognitionEndpointPolicy {
 /// One configuration path keeps the offline privacy setting authoritative.
 nonisolated enum VoiceRecognitionRequestFactory {
     static let commandContext = [
-        "NaviAstra", "prowadź do domu", "prowadź do pracy", "kiedy dojadę",
+        "Astra", "NaviAstra", "prowadź do domu", "prowadź do pracy", "kiedy dojadę",
         "znajdź stację paliw po trasie", "znajdź ładowarkę po trasie",
         "znajdź parking po trasie", "znajdź restaurację po trasie",
+        "gdzie mogę zaparkować", "Astra głośniej", "inna trasa",
         "powtórz wskazówkę", "który pas", "anuluj", "potwierdzam"
     ]
 
+    static func requiresLocalRecognition(offlineOnly: Bool, commandMode: Bool) -> Bool {
+        commandMode || offlineOnly
+    }
+
     static func make(offlineOnly: Bool, supportsOnDeviceRecognition: Bool,
                      commandMode: Bool, contextualStrings: [String]) -> SFSpeechAudioBufferRecognitionRequest? {
-        guard !offlineOnly || supportsOnDeviceRecognition else { return nil }
+        let localOnly = requiresLocalRecognition(offlineOnly: offlineOnly, commandMode: commandMode)
+        guard !localOnly || supportsOnDeviceRecognition else { return nil }
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
-        // Let Speech choose its processing path unless the user explicitly
-        // requires local recognition. Capability alone is not that preference.
-        request.requiresOnDeviceRecognition = offlineOnly
+        // Astra never sends microphone audio to a recognition server. Search
+        // dictation retains its separate, explicit privacy preference.
+        request.requiresOnDeviceRecognition = localOnly
         request.taskHint = commandMode ? .dictation : .search
         request.addsPunctuation = false
         if commandMode {
@@ -149,6 +163,12 @@ final class SearchSpeechInput {
     @ObservationIgnored private var contextualStrings: [String] = []
 
     var supportsOnDeviceRecognition: Bool { speechRecognizer?.supportsOnDeviceRecognition == true }
+
+    var commandRecognitionAvailabilityLabel: String {
+        supportsOnDeviceRecognition
+            ? "Astra rozpoznaje polskie polecenia wyłącznie na urządzeniu."
+            : "Polskie rozpoznawanie lokalne jest niedostępne na tym urządzeniu. Astra nie wyśle nagrania do internetu."
+    }
 
     var recognitionAvailabilityLabel: String {
         if UserDefaults.standard.bool(forKey: "voiceOfflineOnly") {
@@ -239,14 +259,28 @@ final class SearchSpeechInput {
 
         #if os(iOS)
         let offlineOnly = UserDefaults.standard.bool(forKey: "voiceOfflineOnly")
-        guard !offlineOnly || speechRecognizer.supportsOnDeviceRecognition else {
-            fail("Polskie rozpoznawanie offline jest niedostępne. Wyłącz tryb tylko offline w ustawieniach głosu, aby korzystać z internetu.")
+        let requiresLocalRecognition = VoiceRecognitionRequestFactory.requiresLocalRecognition(
+            offlineOnly: offlineOnly, commandMode: commandFinal != nil)
+        guard !requiresLocalRecognition || speechRecognizer.supportsOnDeviceRecognition else {
+            fail(commandFinal != nil
+                ? "Polskie rozpoznawanie lokalne jest niedostępne na tym urządzeniu. Astra nie wysyła nagrań do internetu. Użyj przycisków na mapie."
+                : "Polskie rozpoznawanie offline jest niedostępne. Wyłącz tryb tylko offline w ustawieniach głosu, aby korzystać z internetu.")
             return
         }
         do {
-            captureLease = try VoiceAudioCoordinator.shared.beginCapture { [weak self] reason in
+            let lease = try VoiceAudioCoordinator.shared.beginCapture { [weak self] reason in
                 guard let self, self.startGeneration == generation else { return }
                 self.fail(reason)
+            }
+            captureLease = lease
+            // The lease blocks other app speech while the previous output drains.
+            // Cancellation or an urgent instruction invalidates the lease before
+            // a delayed start is allowed to install a microphone tap.
+            let ready = await VoiceAudioCoordinator.shared.waitUntilCaptureReady(lease)
+            guard generation == startGeneration else { return }
+            guard ready else {
+                fail("Nie można teraz rozpocząć nasłuchiwania. Dotknij mikrofonu, aby spróbować ponownie.")
+                return
             }
         } catch {
             fail((error as? VoiceAudioCoordinator.AudioError)?.errorDescription
@@ -308,7 +342,7 @@ final class SearchSpeechInput {
                 if let result {
                     let transcript = result.bestTranscription.formattedString
                     self.lastTranscript = transcript
-                    self.endpointPolicy.observeTranscript(at: ProcessInfo.processInfo.systemUptime)
+                    self.endpointPolicy.observeTranscript(transcript, at: ProcessInfo.processInfo.systemUptime)
                     onTranscript(transcript)
                     guard self.isListening, self.startGeneration == generation else { return }
                     if result.isFinal {

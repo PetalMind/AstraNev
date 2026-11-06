@@ -62,7 +62,7 @@ extension NavigationSession {
         } catch { return nil }
     }
 
-    private func makeVoiceQuoteSession(preferences: RoutingPreferences, removingWaypointID: UUID?) -> NavigationSession {
+    func makeVoiceQuoteSession(preferences: RoutingPreferences, removingWaypointID: UUID?) -> NavigationSession {
         let address = UserDefaults.standard.string(forKey: "routingServer") ?? ""
         let endpoint = URL(string: address) ?? URL(string: "https://valhalla1.openstreetmap.de")!
         let quote = NavigationSession(dependencies: .live(routeEndpoint: endpoint, trafficAPIKey: nil,

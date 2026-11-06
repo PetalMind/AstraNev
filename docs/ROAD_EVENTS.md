@@ -11,8 +11,11 @@ Pobiera też `startTime`, `endTime`, `numberOfReports`, `lastReportTime` oraz
 nie uzupełnia ich szacunkami. Wygasłe i przyszłe zdarzenia nie są przyjmowane
 do bieżącego zestawu, a dopasowanie do trasy ponownie sprawdza ich ważność.
 
-Mapa i panel nawigacyjny pokazują wszystkie różne opisy oraz dostępne dane
-o zgłoszeniach. Komunikat głosowy może uzupełnić kategorię o szczegółowy opis.
+Podczas jazdy korek widać po kolorze odcinka trasy. Aplikacja pomija pinezkę
+i baner z odległością, gdy zgłoszenie dotyczy wyłącznie korka. Jeśli w tym
+samym miejscu zgłoszono także wypadek lub inne zagrożenie, mapa i panel
+nawigacyjny nadal pokazują to ostrzeżenie. Komunikat głosowy może uzupełnić
+kategorię o szczegółowy opis.
 Zamknięcie drogi wymaga dotychczasowego dopasowania geometrii do używanej drogi;
 sam punkt obok trasy nie stanowi podstawy objazdu.
 

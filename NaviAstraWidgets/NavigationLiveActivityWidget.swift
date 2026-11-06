@@ -61,18 +61,18 @@ private struct NavigationActivityPresentation {
         return state.roadName.isEmpty ? state.instruction : state.roadName
     }
     var maneuverLabel: String {
-        if isPositionStale { return "Czekam na GPS" }
+        if isPositionStale { return "Ustalanie pozycji" }
         if state.isRerouting { return "Przeliczanie trasy" }
         return state.maneuverDistance.map { Self.distance($0) } ?? "Do celu"
     }
     var compactLabel: String {
-        isPositionStale ? "GPS" : state.isRerouting ? "…" : Self.distance(state.maneuverDistance)
+        isPositionStale ? "…" : state.isRerouting ? "…" : Self.distance(state.maneuverDistance)
     }
     var statusSymbol: String {
         isPositionStale ? "location.slash" : state.isRerouting ? "arrow.triangle.2.circlepath" : "map"
     }
     var statusDescription: String {
-        if isPositionStale { return "Oczekiwanie na aktualną pozycję GPS" }
+        if isPositionStale { return "Ustalanie bieżącej pozycji" }
         if state.isRerouting { return "Obliczanie nowej trasy…" }
         return "Odległość i czas trasy niedostępne"
     }

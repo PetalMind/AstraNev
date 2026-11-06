@@ -151,10 +151,12 @@ extension ContentView {
                 errorNotice(message)
                     .padding(.horizontal, usesFullBleedNavigationPanel ? 16 : 0)
             }
+#if !os(iOS)
             if isNavigating && !isMapBottomSheetExpanded {
                 gpsStatusIndicator
                     .padding(.horizontal, usesFullBleedNavigationPanel ? 16 : 0)
             }
+#endif
 
             Spacer(minLength: 16)
 
@@ -358,8 +360,10 @@ extension ContentView {
         }
     }
 
+    @ViewBuilder
     private func activeScrollableMapPanel(in geometry: GeometryProxy) -> some View {
-        ScrollView(.vertical) {
+        let maximumHeight = geometry.size.height * (geometry.size.height < 500 ? 0.48 : 0.64)
+        let scrollingContent = ScrollView(.vertical) {
             activePanel
                 .padding(.horizontal, usesFullBleedNavigationPanel ? 0 : 2)
                 .padding(.top, usesFullBleedNavigationPanel ? 0 : 2)
@@ -367,9 +371,19 @@ extension ContentView {
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { panelHeight = $0 }
         }
         .scrollIndicators(.hidden)
-        .frame(height: min(panelHeight, geometry.size.height *
-                           (geometry.size.height < 500 ? 0.48 : 0.64)))
-        .overlay(alignment: .bottom) { transitPreviewBeginRouteOverlay }
+        let standardPanel = scrollingContent
+            .frame(height: min(panelHeight, maximumHeight))
+            .overlay(alignment: .bottom) { transitPreviewBeginRouteOverlay }
+#if os(iOS)
+        if navigationStore.state.status == .arrived {
+            arrivalSuccessPanel(summary: scrollingContent, bottomInset: geometry.safeAreaInsets.bottom)
+                .frame(maxHeight: maximumHeight)
+        } else {
+            standardPanel
+        }
+#else
+        standardPanel
+#endif
     }
 
     private func nearbyPlacesSheet(for request: NearbySearchRequest) -> some View {
@@ -401,7 +415,9 @@ extension ContentView {
                 .ignoresSafeArea()
             mapTopGradient
             mapInteractionLayer
+#if !os(iOS)
             parkedCarActionOverlay
+#endif
             parkedCarToastOverlay
         }
     }
@@ -435,14 +451,16 @@ extension ContentView {
         }
     }
 
+#if !os(iOS)
     private var parkedCarActionOverlay: some View {
-        parkedCarFloatingAction
+        recentParkingSuggestion
             .frame(maxWidth: 560, maxHeight: .infinity, alignment: .bottomTrailing)
             .padding(.trailing, 18)
             .padding(.bottom, mapPanelInset + 12)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
             .zIndex(2)
     }
+#endif
 
     private var parkedCarToastOverlay: some View {
         parkedCarToastView
@@ -777,7 +795,6 @@ extension ContentView {
                 guard !isNavigating, placeStore.parkedCar?.id == car.id else { return nil }
                 return try await navigationStore.estimatedWalkingRoute(to: car.destination)
             },
-            onLoadPhoto: { await placeStore.parkedCarPhotoData(for: car) },
             startsEditing: parkedCarStartsInEditMode,
             canGuide: freshParkedCarLocation != nil && !isNavigating,
             guideUnavailableReason: isNavigating ? "Zakończ bieżącą nawigację, aby wrócić do auta." : "Czekam na aktualną pozycję GPS.",
@@ -792,30 +809,30 @@ extension ContentView {
                 selectedParkedCar = placeStore.parkedCar
                 return true
             },
-            onSavePhoto: { data in
-                guard let path = placeStore.saveParkedCarPhoto(data, for: car.id) else { return nil }
-                selectedParkedCar = placeStore.parkedCar
-                return path
-            },
             onRemove: {
                 guard placeStore.parkedCar?.id == car.id,
                       placeStore.removeParkedCar() else { return false }
                 selectedParkedCar = nil
                 return true
             })
-            .task {
-                while !Task.isCancelled {
-                    if !isNavigating { navigationStore.refreshCurrentLocation() }
-                    do { try await Task.sleep(for: .seconds(10)) }
-                    catch { return }
-                }
-            }
 #if os(iOS)
-        return sheet
-            .presentationDragIndicator(.visible)
+        let content = sheet.presentationDragIndicator(.visible)
 #else
-        return sheet
+        var content = sheet
+        content.onLoadPhoto = { await placeStore.parkedCarPhotoData(for: car) }
+        content.onSavePhoto = { data in
+            guard let path = placeStore.saveParkedCarPhoto(data, for: car.id) else { return nil }
+            selectedParkedCar = placeStore.parkedCar
+            return path
+        }
 #endif
+        return content.task {
+            while !Task.isCancelled {
+                if !isNavigating { navigationStore.refreshCurrentLocation() }
+                do { try await Task.sleep(for: .seconds(10)) }
+                catch { return }
+            }
+        }
     }
 
 }

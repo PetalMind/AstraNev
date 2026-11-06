@@ -97,4 +97,90 @@ struct VoiceDialogCriticalTests {
         return state
     }
 }
+
+extension VoiceSavedNavigationCriticalTests {
+    @Test
+    func alternativeRouteRequiresConfirmationAndOnlyChangesThePreview() async throws {
+        let fixture = try SavedVoiceFixture(places: [])
+        defer { fixture.close() }
+        let routes = prepareAlternativeRoutes(fixture)
+
+        await fixture.submit("Inna trasa")
+        #expect(fixture.assistant.canConfirm)
+        #expect(fixture.session.state.route?.id == routes[0].id)
+        #expect(fixture.session.state.status == .routePreview)
+
+        await fixture.submit("Tak")
+        #expect(fixture.session.state.route?.id == routes[1].id)
+        #expect(fixture.session.state.status == .routePreview)
+        #expect(!fixture.assistant.canConfirm)
+        #expect(fixture.replies.last == "Wybrano inny wariant trasy.")
+        #expect(fixture.provider.requestCount == 0)
+    }
+
+    @Test
+    func alternativeRouteDisappearingDuringConfirmationCannotBeApplied() async throws {
+        let fixture = try SavedVoiceFixture(places: [])
+        defer { fixture.close() }
+        let routes = prepareAlternativeRoutes(fixture)
+        await fixture.submit("Inna trasa")
+        fixture.session.state.routeOptions = [routes[0]]
+
+        await fixture.submit("Tak")
+
+        #expect(fixture.session.state.route?.id == routes[0].id)
+        #expect(fixture.session.state.status == .routePreview)
+        #expect(!fixture.assistant.canConfirm)
+        #expect(fixture.replies.last?.contains("nie jest już dostępny") == true)
+    }
+
+    @Test
+    func previewAlternativeConfirmationCannotSurviveStartingNavigation() async throws {
+        let fixture = try SavedVoiceFixture(places: [])
+        defer { fixture.close() }
+        let routes = prepareAlternativeRoutes(fixture)
+        await fixture.submit("Inna trasa")
+        fixture.session.state.status = .navigating
+
+        await fixture.submit("Tak")
+
+        #expect(fixture.session.state.route?.id == routes[0].id)
+        #expect(fixture.session.state.status == .navigating)
+        #expect(!fixture.assistant.canConfirm)
+        #expect(fixture.provider.requestCount == 0)
+        #expect(!fixture.replies.contains("Wybrano inny wariant trasy."))
+    }
+
+    @Test
+    func cancellationAndMissingAlternativeLeaveThePreviewIntact() async throws {
+        let fixture = try SavedVoiceFixture(places: [])
+        defer { fixture.close() }
+        let routes = prepareAlternativeRoutes(fixture)
+        await fixture.submit("Inna trasa")
+        await fixture.submit("Anuluj")
+        await fixture.submit("Tak")
+        #expect(fixture.session.state.route?.id == routes[0].id)
+        #expect(!fixture.assistant.canConfirm)
+
+        fixture.session.state.routeOptions = [routes[0]]
+        await fixture.submit("Inna trasa")
+        #expect(!fixture.assistant.canConfirm)
+        #expect(fixture.session.state.route?.id == routes[0].id)
+        #expect(fixture.replies.last?.contains("Nie ma teraz innego") == true)
+    }
+
+    private func prepareAlternativeRoutes(_ fixture: SavedVoiceFixture) -> [NavigationRoute] {
+        let destination = Destination(name: "Cel", coordinate: .init(latitude: 52.02, longitude: 21))
+        let first = SavedVoiceProvider.route(from: fixture.origin, to: destination.coordinate)
+        var second = first
+        second.id = UUID()
+        second.coordinates.insert(.init(latitude: 52.01, longitude: 21.005), at: 1)
+        second.expectedTravelTime += 120
+        fixture.session.state.destination = destination
+        fixture.session.state.route = first
+        fixture.session.state.routeOptions = [first, second]
+        fixture.session.state.status = .routePreview
+        return [first, second]
+    }
+}
 #endif

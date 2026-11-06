@@ -12,6 +12,8 @@ struct NearbyPlacesSheet: View {
     let onRenameSaved: (Destination, String) -> Bool
     let onSelect: (Destination) -> Void
     @State private var category: NearbyPlaceCategory
+    @State private var travelEstimateTasks: [String: Task<Void, Never>] = [:]
+    @State private var travelEstimateGeneration = UUID()
     @State private var retryID = UUID()
     @State private var nameQuery = ""
     @State private var expandedRadius = false
@@ -553,6 +555,21 @@ struct NearbyPlacesSheet: View {
         .id(category)
     }
 
+    private func requestTravelEstimate(for id: String) {
+        guard travelEstimateTasks[id] == nil else { return }
+        let generation = travelEstimateGeneration
+        travelEstimateTasks[id] = Task {
+            defer { if travelEstimateGeneration == generation { travelEstimateTasks[id] = nil } }
+            await navigationStore.estimateNearbyTravel(for: id)
+        }
+    }
+
+    private func cancelTravelEstimates() {
+        travelEstimateGeneration = UUID()
+        for task in travelEstimateTasks.values { task.cancel() }
+        travelEstimateTasks.removeAll()
+    }
+
     private func nearbyResultRow(_ suggestion: RouteStopSuggestion, index: Int) -> some View {
         let result = searchResult(suggestion)
         let details = supplementalDetails(for: suggestion.candidate)
@@ -562,7 +579,7 @@ struct NearbyPlacesSheet: View {
             && suggestion.estimateStatus != .calculating
             && (suggestion.travelTime == nil || suggestion.travelDistance == nil)
         let estimateOnExpand: (() -> Void)? = shouldEstimateOnExpand
-            ? { _ = Task { await navigationStore.estimateNearbyTravel(for: suggestion.id) } }
+            ? { requestTravelEstimate(for: suggestion.id) }
             : nil
         let navigationActive = navigationStore.state.status == .navigating || navigationStore.state.status == .rerouting
         let primaryActionTitle = nearDestination
@@ -589,6 +606,7 @@ struct NearbyPlacesSheet: View {
             showsSourceSubtitle: false,
             primaryMetaLine: operatorName,
             onExpand: estimateOnExpand,
+            onEstimate: estimateOnExpand,
             showsQuickRouteAction: true)
     }
 
@@ -686,7 +704,9 @@ struct NearbyPlacesSheet: View {
                         .disabled(navigationStore.state.nearbyStatus == .searching)
                 }
             }
+            .onDisappear(perform: cancelTravelEstimates)
             .task(id: nearbySearchRefreshKey) {
+                cancelTravelEstimates()
                 await navigationStore.searchNearbyPlaces(
                     category,
                     nearDestination: nearDestination,

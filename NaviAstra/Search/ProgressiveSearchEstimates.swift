@@ -13,9 +13,11 @@ final class ProgressiveSearchEstimates {
         }
     }
     typealias Resolver = @MainActor ([SearchResult]) async throws -> [String: Estimate]
+    typealias FallbackResolver = @MainActor (SearchResult) async throws -> Estimate?
     private let intent: ClassifiedQuery
     private let context: SearchContext
     private let resolver: Resolver
+    private let fallbackResolver: FallbackResolver?
     private let onUpdate: @MainActor ([SearchResult]) -> Void
     private var current: [SearchResult] = []
     private var values: [String: Estimate] = [:]
@@ -23,10 +25,13 @@ final class ProgressiveSearchEstimates {
     private var inFlight: Set<String> = []
     private var task: Task<Void, Never>?
     private var cancelled = false
+    private var fallbackRequestsRemaining = 2
 
     init(intent: ClassifiedQuery, context: SearchContext, resolver: @escaping Resolver,
+         fallbackResolver: FallbackResolver? = nil,
          onUpdate: @escaping @MainActor ([SearchResult]) -> Void) {
         self.intent = intent; self.context = context; self.resolver = resolver; self.onUpdate = onUpdate
+        self.fallbackResolver = fallbackResolver
     }
 
     func publish(_ results: [SearchResult]) {
@@ -83,12 +88,41 @@ final class ProgressiveSearchEstimates {
                 try Task.checkCancellation()
                 guard !self.cancelled else { return }
                 for (key, value) in estimates where keys.contains(key) && value.isValid { self.values[key] = value }
+            } catch is CancellationError {
+                self.cancel()
+                return
             } catch {
                 guard !Task.isCancelled, !self.cancelled else { return }
             }
-            self.inFlight.subtract(keys)
-            self.task = nil
+            // Publish usable matrix cells before recovering individual failures.
+            // Reserve the budget once for the whole search, including late sources.
+            let recovery = self.fallbackResolver == nil ? [] : Array(self.current.filter {
+                keys.contains($0.placeIdentity.cacheKey) && self.values[$0.placeIdentity.cacheKey] == nil
+            }.prefix(self.fallbackRequestsRemaining))
+            self.fallbackRequestsRemaining -= recovery.count
+            let recoveryKeys = Set(recovery.map { $0.placeIdentity.cacheKey })
+            self.inFlight.subtract(keys.subtracting(recoveryKeys))
             self.emit()
+            for target in recovery {
+                guard !Task.isCancelled, !self.cancelled else { return }
+                let key = target.placeIdentity.cacheKey
+                do {
+                    if let estimate = try await self.fallbackResolver?(target), estimate.isValid {
+                        try Task.checkCancellation()
+                        guard !self.cancelled else { return }
+                        self.values[key] = estimate
+                    }
+                } catch is CancellationError {
+                    self.cancel()
+                    return
+                } catch {
+                    guard !Task.isCancelled, !self.cancelled else { return }
+                }
+                guard !Task.isCancelled, !self.cancelled else { return }
+                self.inFlight.remove(key)
+                self.emit()
+            }
+            self.task = nil
             self.startIfNeeded()
         }
     }

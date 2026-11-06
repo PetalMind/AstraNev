@@ -278,6 +278,10 @@ extension NavigationSession {
             let target = await POIAccessResolver.shared.cachedTarget(for: destination, mode: mode)?.coordinate
                 ?? destination.coordinate
             try Task.checkCancellation()
+            if let provider = routeProvider as? ValhallaRouteProvider {
+                return try await provider.searchRouteEstimate(from: origin, to: target, mode: mode,
+                                                               preferences: state.routingPreferences)
+            }
             let routes: [NavigationRoute]
             if let provider = routeProvider as? AdvancedRouteProvider {
                 routes = try await provider.calculateRoutes(from: origin, to: target, through: [], mode: mode,

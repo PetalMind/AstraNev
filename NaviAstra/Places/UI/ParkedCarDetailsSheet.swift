@@ -1,9 +1,9 @@
 import SwiftUI
-import PhotosUI
-import ImageIO
 #if os(iOS)
 import UIKit
 #else
+import PhotosUI
+import ImageIO
 import AppKit
 #endif
 
@@ -21,6 +21,7 @@ private struct ParkedCarRouteRequest: Equatable {
 struct ParkedCarDetailsSheet: View {
     @Environment(\.dismiss) private var dismiss
 #if os(iOS)
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var selectedDetent: PresentationDetent
 #endif
     @State private var isEditing: Bool
@@ -31,11 +32,15 @@ struct ParkedCarDetailsSheet: View {
     @State private var hasParkingExpiry: Bool
     @State private var parkingExpiry: Date
     @State private var showingRemovalConfirmation = false
-    @State private var photoSelection: PhotosPickerItem?
-    @State private var photoImage: Image?
     @State private var displayedCar: ParkedCar
     @State private var errorMessage: String?
+#if !os(iOS)
+    @State private var photoSelection: PhotosPickerItem?
+    @State private var photoImage: Image?
     @State private var isLoadingPhoto = false
+    var onSavePhoto: (Data) -> String? = { _ in nil }
+    var onLoadPhoto: () async -> Data? = { nil }
+#endif
 
     let car: ParkedCar
     @State private var walkingEstimate: SearchRouteEstimate?
@@ -47,14 +52,12 @@ struct ParkedCarDetailsSheet: View {
     let onShowMap: () -> Void
     let onGuide: () -> Void
     let onUpdate: (ParkedCar) -> Bool
-    let onSavePhoto: (Data) -> String?
-    let onLoadPhoto: () async -> Data?
     let onRemove: () -> Bool
 
-    init(car: ParkedCar, onEstimateRoute: @escaping () async throws -> SearchRouteEstimate?, onLoadPhoto: @escaping () async -> Data?,
+    init(car: ParkedCar, onEstimateRoute: @escaping () async throws -> SearchRouteEstimate?,
          startsEditing: Bool = false, canGuide: Bool, guideUnavailableReason: String,
          onShowMap: @escaping () -> Void, onGuide: @escaping () -> Void,
-         onUpdate: @escaping (ParkedCar) -> Bool, onSavePhoto: @escaping (Data) -> String?,
+         onUpdate: @escaping (ParkedCar) -> Bool,
          onRemove: @escaping () -> Bool) {
         self.car = car
         self.onEstimateRoute = onEstimateRoute
@@ -63,8 +66,6 @@ struct ParkedCarDetailsSheet: View {
         self.onShowMap = onShowMap
         self.onGuide = onGuide
         self.onUpdate = onUpdate
-        self.onSavePhoto = onSavePhoto
-        self.onLoadPhoto = onLoadPhoto
         self.onRemove = onRemove
 #if os(iOS)
         _selectedDetent = State(initialValue: startsEditing ? .large : .medium)
@@ -88,12 +89,15 @@ struct ParkedCarDetailsSheet: View {
                     details
                 }
             }
-            .navigationTitle(isEditing ? "Szczegóły parkowania" : "Zaparkowany samochód")
 #if os(iOS)
+            .navigationTitle(isEditing ? "Szczegóły postoju" : "Moje auto")
+            .background(Color(uiColor: .systemGroupedBackground))
             .navigationBarTitleDisplayMode(.inline)
             .onChange(of: isEditing) { _, editing in
-                if editing { selectedDetent = .large }
+                selectedDetent = editing || dynamicTypeSize.isAccessibilitySize ? .large : .medium
             }
+#else
+            .navigationTitle(isEditing ? "Szczegóły parkowania" : "Zaparkowany samochód")
 #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -147,6 +151,7 @@ struct ParkedCarDetailsSheet: View {
                     catch { return }
                 }
             }
+#if !os(iOS)
             .task(id: displayedCar.photoPath) {
                 guard displayedCar.photoPath != nil else {
                     photoImage = nil
@@ -183,52 +188,106 @@ struct ParkedCarDetailsSheet: View {
                     if !Task.isCancelled { errorMessage = "Nie udało się wczytać zdjęcia. Spróbuj ponownie." }
                 }
             }
+#endif
         }
 #if os(iOS)
-        .presentationDetents([.medium, .large], selection: $selectedDetent)
+        .presentationDetents(dynamicTypeSize.isAccessibilitySize ? [.large] : [.medium, .large],
+                             selection: dynamicTypeSize.isAccessibilitySize ? .constant(.large) : $selectedDetent)
 #endif
-        .environment(\.locale, Locale(identifier: "pl_PL"))
+        .environment(\.locale, PolishRegionalFormat.locale)
     }
 
+#if os(iOS)
     private var details: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                HStack(spacing: 14) {
-                    Image(systemName: "car.side.fill")
-                        .font(.system(size: 24, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 56, height: 56)
-                        .background(Color.accentColor.gradient, in: RoundedRectangle(cornerRadius: 18))
-                    VStack(alignment: .leading, spacing: 5) {
-                        walkingRouteSummary
-                        Text(displayedCar.parkedAt.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(Locale(identifier: "pl_PL"))))
-                            .font(.subheadline)
-                            .foregroundStyle(Color.naviTextSecondary)
+            VStack(alignment: .leading, spacing: 14) {
+                walkingRouteSummary
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityElement(children: .combine)
+
+                VStack(spacing: 4) {
+                    Button(action: onGuide) {
+                        Label("Prowadź pieszo do auta", systemImage: "figure.walk")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Color(uiColor: .systemBackground))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canGuide)
+
+                    removalButton
+                }
+
+                Divider()
+                Button(action: onShowMap) {
+                    Label(displayedCar.address ?? "Pokaż auto na mapie", systemImage: "mappin.and.ellipse")
+                        .font(.subheadline.weight(.semibold))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityHint("Pokazuje zapisane miejsce parkowania na mapie")
+
+                if let parkingDetails = displayedCar.parkingDetails {
+                    Label(parkingDetails, systemImage: "parkingsign.circle")
+                }
+                if let note = displayedCar.note, !note.isEmpty {
+                    Label(note, systemImage: "note.text")
+                }
+                if let expiry = displayedCar.parkingExpiresAt {
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                        let title = expiry <= context.date ? "Czas parkowania minął" : "Koniec parkowania"
+                        Label("\(title) · \(PolishRegionalFormat.dateTime(expiry))", systemImage: "clock")
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .font(.subheadline)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 12)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+    }
+#else
+    private var details: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                walkingRouteSummary
 
                 VStack(alignment: .leading, spacing: 14) {
                     Label(displayedCar.address ?? "Zapisana lokalizacja na mapie", systemImage: "mappin.and.ellipse")
                         .font(.subheadline.weight(.semibold))
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(String(format: "%.5f, %.5f", displayedCar.coordinate.latitude, displayedCar.coordinate.longitude))
+                    Label("Zapisano \(PolishRegionalFormat.dateTime(displayedCar.parkedAt))",
+                          systemImage: "clock")
+                        .font(.subheadline)
+                        .foregroundStyle(Color.naviTextSecondary)
+                    let coordinateFormat = FloatingPointFormatStyle<Double>.number
+                        .precision(.fractionLength(5)).locale(PolishRegionalFormat.locale)
+                    Text("\(displayedCar.coordinate.latitude.formatted(coordinateFormat)) · \(displayedCar.coordinate.longitude.formatted(coordinateFormat))")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(Color.naviTextSecondary)
                         .textSelection(.enabled)
                     if let accuracy = displayedCar.gpsAccuracy, accuracy.isFinite, accuracy >= 0 {
-                        Label("Dokładność zapisu GPS ±\(Int(accuracy.rounded())) m", systemImage: "location.circle")
+                        Label("Dokładność zapisu GPS ±\(accuracy.formatted(.number.precision(.fractionLength(0)).locale(PolishRegionalFormat.locale))) m",
+                              systemImage: "location.circle")
                             .font(.caption)
                             .foregroundStyle(Color.naviTextSecondary)
                     }
                     Button(action: onShowMap) {
                         Label("Pokaż auto na mapie", systemImage: "map")
-                            .frame(maxWidth: .infinity, minHeight: 36)
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity, minHeight: 44)
                     }
                     .buttonStyle(.bordered)
                 }
                 .padding(16)
+#if os(iOS)
+                .iosCardSurface()
+#else
                 .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20))
+#endif
 
                 if let expiration = displayedCar.parkingExpiresAt {
                     TimelineView(.periodic(from: .now, by: 30)) { context in
@@ -237,13 +296,17 @@ struct ParkedCarDetailsSheet: View {
                             Label(expired ? "Czas parkowania minął" : "Koniec parkowania",
                                   systemImage: expired ? "exclamationmark.circle.fill" : "clock")
                                 .font(.subheadline.weight(.semibold))
-                            Text(expiration.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(Locale(identifier: "pl_PL"))))
+                            Text(PolishRegionalFormat.dateTime(expiration))
                                 .font(.subheadline.monospacedDigit())
                         }
                         .foregroundStyle(expired ? Color(naviHex: NaviAstraColorPalette.warning) : Color.naviTextPrimary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(16)
+#if os(iOS)
+                        .iosCardSurface()
+#else
                         .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 20))
+#endif
                     }
                 }
 
@@ -276,15 +339,17 @@ struct ParkedCarDetailsSheet: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(isLoadingPhoto)
+                removalButton
             }
-            .padding(20)
+            .padding(16)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 8) {
                 Button(action: onGuide) {
                     Label("Prowadź pieszo do auta", systemImage: "figure.walk")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .font(.subheadline.weight(.semibold))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, minHeight: 44)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!canGuide)
@@ -294,13 +359,14 @@ struct ParkedCarDetailsSheet: View {
                         .foregroundStyle(Color.naviTextSecondary)
                         .multilineTextAlignment(.center)
                 }
-                removalButton
             }
-            .padding(.horizontal, 20)
+            .padding(.horizontal, 16)
             .padding(.vertical, 12)
             .background(.regularMaterial)
         }
     }
+
+#endif
 
     private var editForm: some View {
         Form {
@@ -323,9 +389,11 @@ struct ParkedCarDetailsSheet: View {
             } footer: {
                 Text("Zapisana godzina jest widoczna w karcie auta. Nie wysyła powiadomienia.")
             }
+#if !os(iOS)
             Section {
                 removalButton
             }
+#endif
         }
         .scrollContentBackground(.hidden)
     }
@@ -359,30 +427,39 @@ struct ParkedCarDetailsSheet: View {
             if canGuide, let estimate = walkingEstimate, let updatedAt = estimateUpdatedAt,
                context.date.timeIntervalSince(updatedAt) <= 60 {
                 let minutes = max(1, Int(ceil(estimate.travelTime / 60)))
-                Text(estimate.travelTime < 60 ? "Mniej niż minuta pieszo" : "\(minutes) min pieszo")
-                    .font(.title3.bold())
-                Text("\(routeDistanceLabel(estimate.distanceMeters)) · dojście o \(context.date.addingTimeInterval(estimate.travelTime).formatted(Date.FormatStyle(date: .omitted, time: .shortened).locale(Locale(identifier: "pl_PL"))))")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(Color.naviTextSecondary)
+                let arrival = PolishRegionalFormat.time(context.date.addingTimeInterval(estimate.travelTime))
+                PlaceDetailsHeroSummary(
+                    title: estimate.travelTime < 60 ? "Mniej niż minuta pieszo" : "\(TravelDurationFormatter.string(minutes: minutes)) pieszo",
+                    symbol: "figure.walk", showsPOIIcon: true,
+                    categoryTitle: nil,
+                    travelSummary: "\(routeDistanceLabel(estimate.distanceMeters)) · na miejscu o \(arrival)")
             } else {
-                Text("Zaparkowany samochód").font(.title3.bold())
-                Text(!canGuide ? guideUnavailableReason : isEstimatingRoute ? "Wyznaczam trasę pieszą…" : "Trasa piesza i ETA niedostępne")
-                    .font(.caption)
-                    .foregroundStyle(Color.naviTextSecondary)
+                PlaceDetailsHeroSummary(
+                    title: "Powrót do samochodu", symbol: "figure.walk", showsPOIIcon: true,
+                    categoryTitle: !canGuide ? guideUnavailableReason
+                        : isEstimatingRoute ? "Wyznaczam trasę pieszą…" : "Czas i odległość dojścia są niedostępne.",
+                    travelSummary: nil)
             }
         }
     }
 
     private func routeDistanceLabel(_ meters: Double) -> String {
-        if meters < 1_000 { return "\(Int(meters.rounded())) m" }
-        return String(format: "%.1f km", meters / 1_000)
+        if meters < 1_000 {
+            return meters.formatted(.number.precision(.fractionLength(0)).locale(PolishRegionalFormat.locale)) + " m"
+        }
+        return (meters / 1_000).formatted(.number.precision(.fractionLength(1)).locale(PolishRegionalFormat.locale)) + " km"
     }
 
     private var removalButton: some View {
-        Button("Usuń miejsce parkowania", systemImage: "trash", role: .destructive) {
+        Button(role: .destructive) {
             showingRemovalConfirmation = true
+        } label: {
+            Label("Usuń miejsce parkowania", systemImage: "trash")
+                .font(.subheadline.weight(.semibold))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
         }
-        .frame(maxWidth: .infinity, minHeight: 44)
         .confirmationDialog("Usunąć zapisane miejsce samochodu?", isPresented: $showingRemovalConfirmation,
                             titleVisibility: .visible) {
             Button("Usuń miejsce parkowania", role: .destructive) {
@@ -394,10 +471,11 @@ struct ParkedCarDetailsSheet: View {
             }
             Button("Anuluj", role: .cancel) { }
         } message: {
-            Text("Tej czynności nie można cofnąć.")
+            Text("Usuniesz lokalizację samochodu i zapisane szczegóły postoju.")
         }
     }
 
+#if !os(iOS)
     nonisolated private static func photoThumbnail(from data: Data) async -> CGImage? {
         await Task.detached(priority: .utility) { () -> CGImage? in
             guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
@@ -417,6 +495,7 @@ struct ParkedCarDetailsSheet: View {
         Image(nsImage: NSImage(cgImage: thumbnail, size: .zero))
 #endif
     }
+#endif
 }
 
 private extension String {
@@ -425,3 +504,24 @@ private extension String {
         return trimmed.isEmpty ? nil : trimmed
     }
 }
+
+#if DEBUG && os(iOS)
+/// A device preview with an in-memory parking record and no navigation or storage callbacks.
+struct ParkedCarSheetPreview: View {
+    @State private var isPresented = true
+    private let car = ParkedCar(coordinate: Coordinate(latitude: 0, longitude: 0),
+                                floor: "1", sector: "B", spot: "12")
+
+    var body: some View {
+        Color(uiColor: .secondarySystemGroupedBackground)
+            .sheet(isPresented: $isPresented) {
+                ParkedCarDetailsSheet(
+                    car: car, onEstimateRoute: { SearchRouteEstimate(travelTime: 35, distanceMeters: 28) },
+                    canGuide: true, guideUnavailableReason: "", onShowMap: {}, onGuide: {},
+                    onUpdate: { _ in false }, onRemove: { false })
+                    .presentationDragIndicator(.visible)
+                    .dynamicTypeSize(CommandLine.arguments.contains("--duzy-tekst-podgladu") ? .accessibility2 : .large)
+            }
+    }
+}
+#endif

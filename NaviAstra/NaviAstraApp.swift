@@ -79,7 +79,15 @@ struct NaviAstraApp: App {
         .defaultSize(width: 1100, height: 760)
         #else
         WindowGroup {
+#if DEBUG && os(iOS)
+            if CommandLine.arguments.contains("--podglad-karty-postoju") {
+                ParkedCarSheetPreview()
+            } else {
+                AppScene(appPhase: scenePhase, dependencies: dependencies)
+            }
+#else
             AppScene(appPhase: scenePhase, dependencies: dependencies)
+#endif
         }
         #endif
     }

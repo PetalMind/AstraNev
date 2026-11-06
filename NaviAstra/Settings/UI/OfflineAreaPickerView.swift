@@ -29,7 +29,7 @@ struct OfflineAreaPickerView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 12) {
-                Text("Przesuwaj i przybliżaj mapę. Pobierzesz teren wewnątrz ramki. Przytrzymaj mapę, aby wskazać miejsce pinezką.")
+                Text("Przesuń i przybliż mapę, aby wybrać teren wewnątrz ramki.")
                     .font(.subheadline).foregroundStyle(.secondary).padding(.horizontal)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {
@@ -65,10 +65,10 @@ struct OfflineAreaPickerView: View {
                 VStack(spacing: 8) {
                     if let selection {
                         Text(selection.dimensions).font(.headline)
-                        Text("Około \(selection.approximateAreaSquareKilometers.formatted(.number.precision(.fractionLength(0)))) km²")
+                        Text("Około \(selection.approximateAreaSquareKilometers.formatted(.number.precision(.fractionLength(0)).locale(PolishRegionalFormat.locale))) km²")
                             .font(.caption).foregroundStyle(.secondary)
                     } else {
-                        Text("Dopasuj ramkę do obszaru między 85°S a 85°N, bez przekraczania południka 180°.")
+                        Text("Przesuń lub przybliż mapę, aby wybrać obszar do pobrania.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Button {

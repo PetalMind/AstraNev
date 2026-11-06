@@ -77,13 +77,9 @@ extension ContentView {
             }
             .accessibilityLabel("Wygląd i warstwy mapy")
 
-            if showsParkedCar && placeStore.parkedCar != nil {
+            if showsParkedCar && (!isNavigating || placeStore.parkedCar != nil) {
                 mapToolDivider(compact: compact, controlSize: controlSize)
-                Button { openParkedCarDetails() } label: {
-                    mapToolLabel(symbol: "car.side.fill", size: controlSize)
-                }
-                .accessibilityLabel("Zaparkowany samochód")
-                .accessibilityHint("Pokaż zapisane miejsce i trasę pieszą do auta")
+                parkingMapControl(size: controlSize)
             }
 
             if isNavigating {
@@ -109,6 +105,30 @@ extension ContentView {
         }
         .buttonStyle(.plain)
         .modifier(NavigationGlassSurface(radius: 24))
+    }
+
+    @ViewBuilder
+    private func parkingMapControl(size: CGFloat) -> some View {
+        if placeStore.parkedCar != nil {
+            Button { openParkedCarDetails() } label: {
+                mapToolLabel(symbol: "car.side.fill", size: size)
+            }
+            .accessibilityLabel("Zaparkowany samochód")
+            .accessibilityHint("Pokaż zapisane miejsce i trasę pieszą do auta")
+            .contextMenu { saveParkingButton }
+        } else {
+            Button(action: saveCurrentParkedCar) {
+                mapToolLabel(symbol: "parkingsign.circle", secondary: currentParkedCarLocation == nil, size: size)
+            }
+            .disabled(currentParkedCarLocation == nil)
+            .accessibilityLabel("Tu zaparkowałem")
+            .accessibilityHint("Zapisz bieżącą pozycję samochodu")
+        }
+    }
+
+    private var saveParkingButton: some View {
+        Button("Tu zaparkowałem", systemImage: "parkingsign.circle", action: saveCurrentParkedCar)
+            .disabled(currentParkedCarLocation == nil)
     }
 
     private func mapToolDivider(compact: Bool, controlSize: CGFloat = 48) -> some View {
@@ -182,8 +202,7 @@ extension ContentView {
             Button(isNavigating ? "Wróć do nawigacji" : "Moja pozycja", systemImage: "location.fill") {
                 navigationStore.returnToFollow()
             }
-            Button("Tu zaparkowałem", systemImage: "car.side.fill", action: saveCurrentParkedCar)
-                .disabled(currentParkedCarLocation == nil)
+            saveParkingButton
             if placeStore.parkedCar != nil {
                 Button("Zaparkowany samochód", systemImage: "car.side.fill") {
                     openParkedCarDetails()

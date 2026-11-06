@@ -11,6 +11,7 @@ struct SearchFeedbackView: View {
 
     let state: State
     var onRetry: () -> Void = {}
+    var onEditQuery: (() -> Void)? = nil
 
     var body: some View {
         Group {
@@ -45,7 +46,12 @@ struct SearchFeedbackView: View {
                 ContentUnavailableView {
                     Label("Brak wyników", systemImage: "mappin.slash")
                 } description: {
-                    Text("Nie znaleziono miejsc dla „\(query)”. Zmień nazwę lub obszar wyszukiwania.")
+                    Text("Nie znaleziono miejsc dla „\(query)”. Dopisz miejscowość, zmień nazwę lub obszar wyszukiwania.")
+                } actions: {
+                    if let onEditQuery {
+                        Button("Zmień zapytanie", systemImage: "pencil", action: onEditQuery)
+                            .buttonStyle(.bordered).controlSize(.large)
+                    }
                 }
             }
         }

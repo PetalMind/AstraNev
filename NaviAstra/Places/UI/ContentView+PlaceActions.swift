@@ -305,7 +305,11 @@ extension ContentView {
     }
 
     var nextNavigationRoadSafetyAlert: RoadSafetyAlert? {
+#if os(iOS)
+        MapDisplayPriorityEngine.upcomingAlerts(in: navigationStore.state).first { $0.type != .congestion }
+#else
         MapDisplayPriorityEngine.upcomingAlerts(in: navigationStore.state).first
+#endif
     }
 
     @ViewBuilder

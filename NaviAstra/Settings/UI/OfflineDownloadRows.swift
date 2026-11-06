@@ -7,10 +7,6 @@ enum OfflineStorageFormat {
     static func bytes(_ value: Int64) -> String {
         value.formatted(.byteCount(style: .file).locale(PolishRegionalFormat.locale))
     }
-
-    static func coordinate(_ value: Double) -> String {
-        value.formatted(.number.precision(.fractionLength(4)).locale(PolishRegionalFormat.locale))
-    }
 }
 
 struct OfflineMapRegionRow: View {
@@ -42,12 +38,6 @@ struct OfflineMapRegionRow: View {
                 } else {
                     ProgressView("Pobieranie mapy")
                 }
-            }
-            if region.state != .complete {
-                Text(region.exactResourceCount
-                     ? "Zasoby: \(region.downloadedResources) / \(region.expectedResources)"
-                     : "Pobrane zasoby: \(region.downloadedResources)")
-                    .font(.caption).foregroundStyle(.secondary)
             }
             if let error = region.error {
                 Label(error, systemImage: "exclamationmark.triangle")

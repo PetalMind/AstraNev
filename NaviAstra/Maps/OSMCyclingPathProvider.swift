@@ -152,15 +152,26 @@ nonisolated private enum OSMCyclingEndpoint {
 actor OSMCyclingRequestGate {
     static let shared = OSMCyclingRequestGate()
     private var lastRequestStartedAt: Date?
-    private var requestInFlight = false
+    private var backgroundInFlight = false
+    private var interactiveInFlight = false
     private var priorityWaiters = 0
+    private var inFlightHosts: Set<String> = []
 
-    func waitUntilAllowed(priority: Bool = false) async -> Bool {
+    func occupiedHosts() -> Set<String> { inFlightHosts }
+
+    func waitUntilAllowed(priority: Bool = false, host: String? = nil) async -> Bool {
         if priority { priorityWaiters += 1 }
         defer { if priority { priorityWaiters -= 1 } }
         while true {
             if Task.isCancelled { return false }
-            if requestInFlight || (!priority && priorityWaiters > 0) {
+            // Reserve one slot for an explicit place/search action. A large map
+            // download must not consume its entire deadline in our own queue.
+            // At most two requests can run: one existing background download
+            // and one interactive request. New background work yields to both
+            // queued and active interactive work; start spacing remains shared.
+            let occupied = priority ? interactiveInFlight
+                : (backgroundInFlight || interactiveInFlight || priorityWaiters > 0)
+            if occupied || host.map({ inFlightHosts.contains($0) }) == true {
                 try? await Task.sleep(nanoseconds: 100_000_000)
                 if Task.isCancelled { return false }
                 continue
@@ -174,13 +185,17 @@ actor OSMCyclingRequestGate {
                 }
             }
             lastRequestStartedAt = Date()
-            requestInFlight = true
+            if priority { interactiveInFlight = true }
+            else { backgroundInFlight = true }
+            if let host { inFlightHosts.insert(host) }
             return true
         }
     }
 
-    func requestDidFinish() {
-        requestInFlight = false
+    func requestDidFinish(priority: Bool = false, host: String? = nil) {
+        if priority { interactiveInFlight = false }
+        else { backgroundInFlight = false }
+        if let host { inFlightHosts.remove(host) }
     }
 }
 
@@ -272,6 +287,13 @@ actor OSMRequestTransport {
         var endpoints = [request.url].compactMap { $0 }
         if let fallback = URL(string: "https://overpass.private.coffee/api/interpreter"),
            !endpoints.contains(fallback) { endpoints.append(fallback) }
+        if priority {
+            // Use an idle mirror instead of waiting behind a map request. Each
+            // server still receives only one in-flight query from this app.
+            let occupied = await OSMCyclingRequestGate.shared.occupiedHosts()
+            endpoints = endpoints.filter { !occupied.contains($0.host?.lowercased() ?? "") }
+                + endpoints.filter { occupied.contains($0.host?.lowercased() ?? "") }
+        }
         var lastError: Error = URLError(.badServerResponse)
         for (index, endpoint) in endpoints.enumerated() {
             if let until = unavailableUntil[endpoint.absoluteString], until > .now { continue }
@@ -309,14 +331,15 @@ actor OSMRequestTransport {
         // before the fallback was ever contacted.
         let retries = deadline == nil ? 1 : 0
         for attempt in 0...retries {
-            guard await OSMCyclingRequestGate.shared.waitUntilAllowed(priority: priority) else {
+            let host = request.url?.host?.lowercased()
+            guard await OSMCyclingRequestGate.shared.waitUntilAllowed(priority: priority, host: host) else {
                 throw CancellationError()
             }
             var candidate = request
             if let deadline {
                 let remaining = deadline.timeIntervalSinceNow
                 guard remaining > 0.5 else {
-                    await OSMCyclingRequestGate.shared.requestDidFinish()
+                    await OSMCyclingRequestGate.shared.requestDidFinish(priority: priority, host: host)
                     throw URLError(.timedOut)
                 }
                 candidate.timeoutInterval = min(request.timeoutInterval,
@@ -325,9 +348,9 @@ actor OSMRequestTransport {
             let result: (Data, URLResponse)
             do {
                 result = try await URLSession.shared.data(for: candidate)
-                await OSMCyclingRequestGate.shared.requestDidFinish()
+                await OSMCyclingRequestGate.shared.requestDidFinish(priority: priority, host: host)
             } catch {
-                await OSMCyclingRequestGate.shared.requestDidFinish()
+                await OSMCyclingRequestGate.shared.requestDidFinish(priority: priority, host: host)
                 logger.error("Overpass host=\(request.url?.host ?? "unknown", privacy: .public) network=\(String(describing: error), privacy: .public)")
                 if attempt < retries, let error = error as? URLError,
                    [.timedOut, .networkConnectionLost].contains(error.code) {

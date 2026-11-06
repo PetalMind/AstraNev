@@ -158,12 +158,12 @@ extension ContentView {
         case .personalization: "Twoje trasy, skróty i preferowane drogi"
         case .marker: mapStore.transportPositionIconsEnabled ? "Modele i kolory" : "Klasyczna strzałka"
         case .energy: energyStore.selectedVehicle?.name ?? "Pojazdy, tankowania i ładowania"
-        case .history: "Przejazdy, ślady GPS i oceny prowadzenia"
+        case .history: "Przejazdy i oceny prowadzenia"
         case .map: "\((MapAppearance(rawValue: mapStore.mapAppearance) ?? .auto).title) · \((MapDimension(rawValue: mapStore.mapDimension) ?? .flat).title)"
-        case .offline: "Pobrane mapy i dane drogowe"
-        case .traffic: TrafficCredential.read() != nil ? "TomTom, GDDKiA i zgłoszenia" : "GDDKiA i zgłoszenia"
-        case .transit: "Transitous i MPK Łódź"
-        case .advanced: "Zasięg, ślady GPS i serwer tras"
+        case .offline: "Pobieranie map do użycia bez internetu"
+        case .traffic: "Korki i utrudnienia w pobliżu"
+        case .transit: "Połączenia, przystanki i odjazdy"
+        case .advanced: "Zasięg podróży i obszary omijane"
         case .privacy: "Lokalna historia, źródła danych i licencje"
         }
     }
@@ -188,9 +188,9 @@ extension ContentView {
         case .traffic: settingsPage("Ruch drogowy") { settingsTrafficSection }
         case .transit: settingsPage("Komunikacja publiczna") { settingsTransitSection }
         case .advanced:
-            settingsPage("Narzędzia i zaawansowane") {
-                Section("Analiza trasy") {
-                    NavigationLink("Zasięg, ślady GPS i obszary omijane") {
+            settingsPage("Narzędzia tras") {
+                Section("Planowanie") {
+                    NavigationLink("Zasięg i obszary omijane") {
                         ValhallaToolsView(endpoint: URL(string: serverAddress),
                             origin: navigationStore.state.location?.coordinate,
                             navigation: navigationStore, trips: placeStore.trips)
@@ -209,7 +209,7 @@ extension ContentView {
                     Link("MapLibre · silnik mapy", destination: URL(string: "https://maplibre.org")!)
                     if MapTilerEnvironmentStyle.configuredURL != nil {
                         Link("MapTiler · szczegóły otoczenia", destination: URL(string: "https://www.maptiler.com/copyright/")!)
-                        Text("Otoczenie pochodzi z MapTiler Planet v4. Szczegóły pojawiają się wraz ze zbliżeniem i zależą od danych w danym miejscu. Symbole przejść nie określają rodzaju oznakowania ani pierwszeństwa.")
+                        Text("Symbole przejść nie określają pierwszeństwa.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
@@ -276,6 +276,7 @@ extension ContentView {
         _ title: String, @ViewBuilder content: () -> Content
     ) -> some View {
         Form { content() }
+            .environment(\.locale, PolishRegionalFormat.locale)
             .formStyle(.grouped)
             .navigationTitle(title)
             #if os(iOS)
@@ -347,16 +348,16 @@ extension ContentView {
                 }
             }
             if !mapCapabilities.supportsSatellite {
-                unavailableReason("Mapa satelitarna", reason: "Obecne źródło mapy nie udostępnia zdjęć satelitarnych.")
+                unavailableReason("Mapa satelitarna", reason: "Niedostępna.")
             }
             #if os(iOS)
             if mapStore.mapBase == BaseMap.satellite.rawValue {
-                Text(SatelliteMapStyle.description)
+                Text("Zdjęcia satelitarne wymagają internetu i nie są pobierane do map offline.")
                     .font(.footnote).foregroundStyle(Color.naviTextSecondary)
             }
             #endif
             if !mapCapabilities.supportsTerrain {
-                unavailableReason("Mapa terenowa", reason: "Obecne źródło mapy nie udostępnia terenu.")
+                unavailableReason("Mapa terenowa", reason: "Niedostępna.")
             }
         }
     }
@@ -368,7 +369,7 @@ extension ContentView {
             }
             .disabled(!mapCapabilities.supportsApplicationDarkMode)
             if !mapCapabilities.supportsMapDarkStyle {
-                Text("Styl mapy nie obsługuje wariantu nocnego. Wybór zmienia tylko wygląd aplikacji.")
+                Text("Wybrana mapa nie ma wariantu nocnego.")
                     .font(.footnote).foregroundStyle(Color.naviTextSecondary)
             }
         }
@@ -384,7 +385,7 @@ extension ContentView {
             if mapCapabilities.supports3DBuildings {
                 Toggle("Budynki 3D", isOn: $mapStore.mapBuildingsVisible)
             } else {
-                unavailableToggle("Budynki 3D", reason: "Obecny styl mapy nie udostępnia osobnej warstwy budynków.")
+                unavailableToggle("Budynki 3D", reason: "Niedostępne dla wybranej mapy.")
             }
         }
     }
@@ -394,22 +395,22 @@ extension ContentView {
             if mapCapabilities.supportsTrafficOverlay {
                 Toggle("Ruch drogowy", isOn: $mapStore.mapTrafficVisible)
             } else {
-                unavailableToggle("Ruch drogowy", reason: "Obecny dostawca nie udostępnia warstwy ruchu.")
+                unavailableToggle("Ruch drogowy", reason: "Niedostępny dla wybranej mapy.")
             }
             if mapCapabilities.supportsPOIToggle {
                 Toggle("Miejsca na mapie", isOn: $mapStore.mapPOIVisible)
             } else {
-                unavailableToggle("Miejsca na mapie", reason: "Obecny styl mapy nie pozwala osobno ukryć punktów zainteresowania.")
+                unavailableToggle("Miejsca na mapie", reason: "Wybrana mapa nie pozwala ukrywać miejsc.")
             }
             if mapCapabilities.supportsTransitOverlay {
                 Toggle("Wyróżnij kolej i tramwaje", isOn: $mapStore.mapTransitVisible)
             } else {
-                unavailableToggle("Transport publiczny", reason: "Brak niezależnej warstwy u obecnego dostawcy mapy.")
+                unavailableToggle("Transport publiczny", reason: "Niedostępny dla wybranej mapy.")
             }
             if mapCapabilities.supportsCyclingOverlay {
-                Toggle("Ścieżki rowerowe (OSM)", isOn: $mapStore.mapCyclingVisible)
+                Toggle("Ścieżki rowerowe", isOn: $mapStore.mapCyclingVisible)
             } else {
-                unavailableToggle("Ścieżki rowerowe (OSM)", reason: "Brak niezależnej warstwy u obecnego dostawcy mapy.")
+                unavailableToggle("Ścieżki rowerowe", reason: "Niedostępne dla wybranej mapy.")
             }
         }
     }
@@ -421,7 +422,7 @@ extension ContentView {
             } header: {
                 Text("Wygląd sklepów")
             } footer: {
-                Text("Logotypy zastępują standardowe ikony sklepów po zbliżeniu mapy. Jeśli marka lub logo są niedostępne, pozostaje ikona sklepu. Wyłączenie przywraca standardowe ikony. Źródła i licencje pobranych logotypów znajdziesz w Danych i prywatności.")
+                Text("Pokazuj loga zamiast ikon sklepów po zbliżeniu mapy.")
             }
             Section {
                 ForEach(MapPOICategory.allCases) { category in
@@ -439,7 +440,7 @@ extension ContentView {
                 if !mapStore.mapPOIVisible {
                     Text("Kategorie są nieaktywne, ponieważ miejsca na mapie są ukryte. Włącz je w sekcji Szczegóły mapy.")
                 }
-                Text("Podczas prowadzenia mapa wybiera z zaznaczonych kategorii miejsca przydatne dla danego sposobu podróży. Przy celu wyróżnia parkingi i przystanki.")
+                Text("Podczas nawigacji widoczne są wybrane miejsca przydatne w podróży.")
                     .font(.footnote).foregroundStyle(Color.naviTextSecondary)
             }
         }
@@ -447,7 +448,7 @@ extension ContentView {
 
     private var settingsShopLogoCredits: some View {
         Section("Logotypy sklepów") {
-            Text("Marki są identyfikowane na podstawie OpenStreetMap, a logotypy pochodzą z Wikidata (P154) i Wikimedia Commons. Dostępność zależy od danych konkretnego sklepu. Znaki towarowe należą do ich właścicieli.")
+            Text("Dane sklepów: OpenStreetMap. Logotypy: Wikidata i Wikimedia Commons. Znaki towarowe należą do ich właścicieli.")
                 .font(.footnote).foregroundStyle(Color.naviTextSecondary)
             Link("OpenStreetMap · źródło danych", destination: URL(string: "https://www.openstreetmap.org/copyright")!)
             Link("Wikimedia Commons", destination: URL(string: "https://commons.wikimedia.org")!)
@@ -477,10 +478,12 @@ extension ContentView {
             } header: {
                 Text("Szczegóły drogowe")
             } footer: {
-                Text("Znaki, sygnalizacja, przejścia, progi, przejazdy i ograniczenia pojawiają się przy dużym zbliżeniu mapy (zoom 17+). Podczas jazdy mapa pokazuje tylko ważne ostrzeżenia przypisane do Twojej trasy i kierunku. Komunikaty głosowe ustawisz w kategorii Głos i ostrzeżenia.")
+                Text("Szczegóły zobaczysz po zbliżeniu mapy. Podczas jazdy wyświetlamy ostrzeżenia dotyczące Twojej trasy.")
             }
             Section("Dane drogowe") {
+                #if !os(iOS)
                 roadPOIStatusLabel
+                #endif
                 DisclosureGroup("Źródła i ograniczenia danych") {
                     settingsRoadDataDescription
                 }
@@ -502,7 +505,7 @@ extension ContentView {
     }
 
     private var settingsRoadDataDescription: some View {
-        Text("Punkty pochodzą z OpenStreetMap oraz publicznej mapy CANARD w Polsce. Dane CANARD są odświeżane co 24 godziny i mają charakter poglądowy. Kamery monitoringu i sygnalizatory pojawiają się po zbliżeniu mapy. Sygnalizacja oznacza lokalizację świateł, bez informacji o ich aktualnym kolorze. Ograniczenia wysokości B-16 są dostępne bez profilu ciężarówki: z oznaczonych znaków lub początku odcinka drogi z maxheight. Szczegóły punktu wskazują sposób wyznaczenia lokalizacji. Sam tag maxheight:physical nie jest pokazywany jako znak. B-18 przedstawia limit masy rzeczywistej (maxweight), a B-5 zakaz wjazdu ciężarówek (hgv=no) lub próg DMC (maxweightrating:hgv). Te znaki również są dostępne bez profilu ciężarówki.")
+        Text("Dane: OpenStreetMap i CANARD / GITD. Mapa ma charakter pomocniczy — stosuj się do znaków na drodze. Symbole sygnalizacji wskazują miejsce świateł, nie ich aktualny kolor.")
             .font(.footnote)
             .foregroundStyle(Color.naviTextSecondary)
     }
@@ -578,7 +581,7 @@ extension ContentView {
         } header: {
             Text("Preferencje dróg")
         } footer: {
-            Text("Serwer może poprowadzić tym typem drogi, jeśli nie ma rozsądnej alternatywy.")
+            Text("Trasa może uwzględniać te drogi, gdy nie ma rozsądnej alternatywy.")
         }
     }
 
@@ -587,13 +590,13 @@ extension ContentView {
             Toggle("Uwzględnij zasięg EV", isOn: routePreferenceBinding(\.evPlanningEnabled))
             if routePlanningStore.draftPreferences.evPlanningEnabled {
                 TextField("Zasięg przy pełnej baterii (km)", value: routePreferenceBinding(\.evRangeKilometers),
-                          format: .number.precision(.fractionLength(0)))
+                          format: .number.precision(.fractionLength(0)).locale(PolishRegionalFormat.locale))
                 Stepper("Poziom baterii: \(routePlanningStore.draftPreferences.evBatteryPercent)%",
                         value: routePreferenceBinding(\.evBatteryPercent), in: 1...100, step: 5)
                 TextField("Zużycie (kWh/100 km)", value: routePreferenceBinding(\.evConsumptionKWhPer100Km),
-                          format: .number.precision(.fractionLength(1)))
+                          format: .number.precision(.fractionLength(1)).locale(PolishRegionalFormat.locale))
                 TextField("Maks. moc ładowania auta (kW)", value: routePreferenceBinding(\.evMaximumChargingPowerKW),
-                          format: .number.precision(.fractionLength(0)))
+                          format: .number.precision(.fractionLength(0)).locale(PolishRegionalFormat.locale))
                 LabeledContent("Dostępny zasięg",
                                value: "\(Int(routePlanningStore.draftPreferences.availableEVRangeKilometers.rounded())) km")
                 EVBatteryStatusView(navigation: navigationStore,
@@ -603,7 +606,7 @@ extension ContentView {
             Text("Pojazd elektryczny")
         } footer: {
             if routePlanningStore.draftPreferences.evPlanningEnabled {
-                Text("Czas ładowania szacujemy z zużycia auta i mocy w OpenStreetMap, bez sprawdzania zajętości na żywo.")
+                Text("Czas ładowania jest szacunkowy. Zajętość ładowarek nie jest sprawdzana na żywo.")
             }
         }
     }
@@ -632,24 +635,30 @@ extension ContentView {
             } label: {
                 Label("Bieżące warunki", systemImage: "car.side")
             }
-            Text("TomTom dostarcza pomiary ruchu w granicach limitu konta. GDDKiA udostępnia biuletyn utrudnień na drogach krajowych. Zgłoszenia lokalne są widoczne tylko na urządzeniu; udostępnianie wymaga skonfigurowanej usługi. Każde źródło może być chwilowo niedostępne.")
+            Text("Zgłoszenia zapisane lokalnie są widoczne tylko na tym urządzeniu.")
                 .font(.footnote)
                 .foregroundStyle(Color.naviTextSecondary)
         }
     }
 
     private var settingsValhallaSection: some View {
-        Section("Serwer Valhalla") {
-            TextField("https://…", text: $serverAddress)
-                .autocorrectionDisabled()
-            Button("Zapisz serwer") {
-                guard let url = URL(string: serverAddress), url.scheme == "https", url.host != nil else {
-                    navigationStore.state.errorMessage = "Podaj poprawny adres HTTPS serwera Valhalla."
-                    return
+        Section {
+            DisclosureGroup("Własny serwer tras") {
+                TextField("Adres serwera (https://…)", text: $serverAddress)
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
+                    #endif
+                Button("Zapisz serwer") {
+                    guard let url = URL(string: serverAddress), url.scheme == "https", url.host != nil else {
+                        navigationStore.state.errorMessage = "Podaj poprawny adres serwera zaczynający się od https://."
+                        return
+                    }
+                    UserDefaults.standard.set(serverAddress, forKey: "routingServer")
+                    navigationStore.updateRoutingEndpoint(url)
+                    appRouter.dismiss(.settings)
                 }
-                UserDefaults.standard.set(serverAddress, forKey: "routingServer")
-                navigationStore.updateRoutingEndpoint(url)
-                appRouter.dismiss(.settings)
             }
         }
     }
@@ -657,9 +666,10 @@ extension ContentView {
     private var settingsTransitSection: some View {
         Group {
             Section("Dostępność połączeń") {
-                Text("Trasy, wyszukiwanie przystanków, odjazdy i przystanki widoczne na mapie korzystają z Transitous w obsługiwanych regionach. Dostępność i realtime zależą od źródeł danych Transitous. Rzeczywiste pozycje pojazdów są obecnie dostępne tylko z feedu MPK Łódź.")
+                Text("Pozycje pojazdów na żywo są dostępne dla MPK Łódź. W pozostałych regionach korzystamy z dostępnych rozkładów i odjazdów.")
                     .foregroundStyle(Color.naviTextSecondary)
             }
+            #if !os(iOS)
             Section {
                 TextField("Publiczny e-mail lub URL projektu", text: $transitousContact)
                     #if os(iOS)
@@ -669,7 +679,20 @@ extension ContentView {
             } header: {
                 Text("Kontakt dla usługi Transitous")
             } footer: {
-                Text("Zapytania o trasę i przystanki oraz obszar widoczny na mapie są wysyłane do Transitous. Usługa wymaga publicznego kontaktu w User-Agent; jej zasady proszą też o kontakt przed użyciem kosztownego routingu.")
+                Text("Usługa wymaga adresu kontaktowego twórcy aplikacji.")
+            }
+            #else
+            if TransitousClientConfiguration().userAgent == nil {
+                Section("Przywróć dostęp do połączeń") {
+                    Text("Zapisana konfiguracja komunikacji publicznej jest nieprawidłowa.")
+                        .font(.footnote).foregroundStyle(Color.naviTextSecondary)
+                    Button("Przywróć ustawienia domyślne") { transitousContact = "" }
+                }
+            }
+            #endif
+            Section("Prywatność") {
+                Text("Zapytania o połączenia i przystanki oraz widoczny obszar mapy są wysyłane do Transitous.")
+                    .font(.footnote).foregroundStyle(Color.naviTextSecondary)
             }
             Section("Źródła i zasady usług") {
                 Link("Transitous · zasady API", destination: URL(string: "https://transitous.org/api/")!)
@@ -682,7 +705,7 @@ extension ContentView {
 
     private var settingsDisclaimer: some View {
         #if os(iOS)
-        let text = "Pobrane obszary mapy można przeglądać bez internetu. Wyszukiwanie, wyznaczanie nowych tras, limity i ruch na żywo wymagają połączenia. TomTom może zmienić ETA i wybór spośród wariantów Valhalli; limity są informacyjne. Trasy i GPS są zapisywane tylko w lokalnej historii podróży."
+        let text = "Trasy offline wymagają pobranych danych drogowych. Wyszukiwanie i ruch na żywo wymagają internetu. Historia przejazdów i zapis drogi są przechowywane na urządzeniu."
         #else
         let text = "Mapa, wyszukiwanie, routing, limity i ruch na żywo wymagają internetu. TomTom może zmienić ETA i wybór spośród wariantów Valhalli; limity są informacyjne. Trasy i GPS są zapisywane tylko w lokalnej historii podróży. Tryb offline nie jest dostępny."
         #endif
@@ -697,7 +720,7 @@ extension ContentView {
                     NavigationLink("Profile, dostępność i preferencje") {
                         ValhallaPreferencesView(navigation: navigationStore)
                     }
-                    NavigationLink("Zasięg, ślady GPS i obszary omijane") {
+                    NavigationLink("Zasięg i obszary omijane") {
                         ValhallaToolsView(endpoint: URL(string: serverAddress),
                             origin: routeOriginPoint?.coordinate ?? navigationStore.state.location?.coordinate,
                             navigation: navigationStore, trips: placeStore.trips)
@@ -717,19 +740,19 @@ extension ContentView {
                         Toggle("Uwzględnij zasięg EV", isOn: routePreferenceBinding(\.evPlanningEnabled))
                         if routePlanningStore.draftPreferences.evPlanningEnabled {
                             TextField("Zasięg przy pełnej baterii (km)", value: routePreferenceBinding(\.evRangeKilometers),
-                                      format: .number.precision(.fractionLength(0)))
+                                      format: .number.precision(.fractionLength(0)).locale(PolishRegionalFormat.locale))
                             Stepper("Poziom baterii: \(routePlanningStore.draftPreferences.evBatteryPercent)%",
                                     value: routePreferenceBinding(\.evBatteryPercent), in: 1...100, step: 5)
                             TextField("Zużycie (kWh/100 km)", value: routePreferenceBinding(\.evConsumptionKWhPer100Km),
-                                      format: .number.precision(.fractionLength(1)))
+                                      format: .number.precision(.fractionLength(1)).locale(PolishRegionalFormat.locale))
                             TextField("Maks. moc ładowania auta (kW)", value: routePreferenceBinding(\.evMaximumChargingPowerKW),
-                                      format: .number.precision(.fractionLength(0)))
+                                      format: .number.precision(.fractionLength(0)).locale(PolishRegionalFormat.locale))
                             evConnectorToggle("ccs", title: "CCS")
                             evConnectorToggle("type2", title: "Type 2")
                             evConnectorToggle("chademo", title: "CHAdeMO")
                             EVBatteryStatusView(navigation: navigationStore,
                                 enteredPercent: routePlanningStore.draftPreferences.evBatteryPercent)
-                            Text("Złącza, moc i status stacji pochodzą z OpenStreetMap. Brak wpisu o dostępności oznacza stan nieznany; aplikacja nie pobiera zajętości ładowarek.")
+                            Text("Sprawdź dostępność ładowarki przed przyjazdem. Aplikacja nie pokazuje zajętości na żywo.")
                                 .font(.footnote).foregroundStyle(Color.naviTextSecondary)
                         }
                     }
@@ -742,6 +765,7 @@ extension ContentView {
                 }
             }
             .navigationTitle("Ustawienia trasy")
+            .environment(\.locale, PolishRegionalFormat.locale)
             .onAppear { routePlanningStore.loadPreferences(from: navigationStore) }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -820,17 +844,17 @@ extension ContentView {
                 }
             }
 #endif
-            Text("Pomiar ruchu: TomTom. Utrudnienia: GDDKiA i niepotwierdzone zgłoszenia. Utrudnienie nie jest pomiarem korka.")
+            Text("Dane: TomTom i GDDKiA. Zgłoszenia użytkowników mogą być niepotwierdzone.")
                 .font(.caption).foregroundStyle(Color.naviTextSecondary)
             switch navigationStore.state.trafficStatus {
             case .notConfigured:
-                Label("Usługa ruchu jest niedostępna w tej konfiguracji aplikacji.", systemImage: "wifi.slash")
+                Label("Informacje o ruchu są teraz niedostępne.", systemImage: "wifi.slash")
                     .foregroundStyle(Color.naviTextSecondary)
             case .updating:
                 Label("Pobieranie danych o ruchu…", systemImage: "arrow.triangle.2.circlepath")
                     .foregroundStyle(Color.naviTextSecondary)
-            case .unavailable(let reason):
-                Label("Ruch niedostępny: \(reason)", systemImage: "wifi.slash")
+            case .unavailable:
+                Label("Nie udało się odświeżyć informacji o ruchu.", systemImage: "wifi.slash")
                     .foregroundStyle(Color.naviTextSecondary)
             case .available:
                 if let flow = navigationStore.state.traffic?.flow {
@@ -841,7 +865,7 @@ extension ContentView {
                         systemImage: flow.roadClosure ? "exclamationmark.triangle" : "car.side"
                     )
                 } else {
-                    Text("Brak pomiaru przepływu przy pozycji.")
+                    Text("Brak aktualnego pomiaru ruchu w pobliżu.")
                         .foregroundStyle(Color.naviTextSecondary)
                 }
 
@@ -860,10 +884,12 @@ extension ContentView {
                     }
                 }
 
+                #if !os(iOS)
                 if let partialError = navigationStore.state.traffic?.partialError {
                     Text(partialError)
                         .foregroundStyle(Color.naviTextSecondary)
                 }
+                #endif
 
                 if let updatedAt = navigationStore.state.traffic?.updatedAt {
                     Text("Aktualizacja: \(PolishRegionalFormat.time(updatedAt))")

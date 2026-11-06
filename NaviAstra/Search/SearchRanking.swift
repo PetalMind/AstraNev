@@ -1,6 +1,56 @@
 import Foundation
 
+/// Geography chooses a search area, never a travel distance or an ETA. Each
+/// response uses the smallest populated area; distant sources cannot displace
+/// local places merely because their route estimate finished first.
+enum SearchGeographicScope {
+    static func radii(for intent: ClassifiedQuery) -> [Double] {
+        guard !intent.alongRoute, intent.parcelQuery?.reference == nil else { return [] }
+        switch intent.intent {
+        case .category: return [3_000, 10_000, 20_000]
+        case .brand: return [5_000, 15_000, 30_000]
+        default: return []
+        }
+    }
+
+    static func filter(_ candidates: [SearchResult], intent: ClassifiedQuery,
+                       context: SearchContext, searchCenter: Coordinate?,
+                       allowsExpansion: Bool) -> [SearchResult] {
+        let radii = radii(for: intent)
+        guard !radii.isEmpty else { return candidates }
+        // An explicitly named city/street overrides the nearby/map search area.
+        let center = intent.location != nil ? searchCenter : context.area ?? context.origin ?? searchCenter
+        guard let center else { return [] }
+        let candidates = intent.intent == .category ? candidates.filter { !$0.isContact } : candidates
+        let places = candidates.filter { !$0.isContact }
+        let allowedRadii = allowsExpansion ? radii : Array(radii.prefix(1))
+        guard let radius = allowedRadii.first(where: { radius in
+            places.contains { center.distance(to: $0.destination.coordinate) <= radius }
+        }) else { return candidates.filter(\.isContact) }
+        return candidates.filter { $0.isContact || center.distance(to: $0.destination.coordinate) <= radius }
+    }
+}
+
 enum SearchRanking {
+    /// Pick the bounded routing workload from the requested area before ETA is
+    /// available. Geometry selects candidates only; it is never a road metric.
+    static func routeEstimateCandidates(_ results: [SearchResult], intent: ClassifiedQuery,
+                                        context: SearchContext, searchCenter: Coordinate?,
+                                        limit: Int) -> [SearchResult] {
+        let limit = max(0, limit)
+        let center = intent.location != nil ? searchCenter : context.area ?? context.origin ?? searchCenter
+        guard !SearchGeographicScope.radii(for: intent).isEmpty, let center else {
+            return Array(results.prefix(limit))
+        }
+        return Array(results.sorted { lhs, rhs in
+            if lhs.isContact != rhs.isContact { return lhs.isContact }
+            let left = center.distance(to: lhs.destination.coordinate)
+            let right = center.distance(to: rhs.destination.coordinate)
+            if left != right { return left < right }
+            return precedes(lhs, rhs, intent: intent, context: context)
+        }.prefix(limit))
+    }
+
     static func locationMatch(_ result: SearchResult, location: String) -> Int {
         let tokens = QueryClassifier.normalize(location)
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
@@ -116,15 +166,19 @@ enum SearchDeduplicator {
         intent: ClassifiedQuery,
         context: SearchContext,
         searchCenter: Coordinate?,
-        routeOrigin: Coordinate?
+        routeOrigin: Coordinate?,
+        allowsExpansion: Bool = true
     ) -> [SearchResult] {
         var unique: [SearchResult] = []
-        // A street's geocoded midpoint only scopes provider requests. Rank its
-        // branches from the selected map area or the user's position, not that
-        // midpoint, which can be several kilometres down the same street.
-        let proximityCenter = intent.intent == .brand || intent.intent == .category
-            ? context.area ?? context.origin ?? searchCenter : searchCenter
+        let proximityCenter = intent.location != nil
+            ? searchCenter : context.area ?? context.origin ?? searchCenter
         for result in candidates {
+            // Category searches describe a type of place, not a person whose
+            // contact name happens to contain the same words.
+            if intent.intent == .category, result.isContact { continue }
+            if intent.photonTag == "amenity:fuel", !PaliwoMapaFuelPriceProvider.isFuelStation(category: result.category) {
+                continue
+            }
             if let parcelQuery = intent.parcelQuery {
                 guard parcelQuery.matches(result) else { continue }
             } else if intent.intent == .brand {
@@ -148,7 +202,9 @@ enum SearchDeduplicator {
             unique.append(value)
         }
 
-        return unique.sorted { lhs, rhs in
+        let scoped = SearchGeographicScope.filter(unique, intent: intent, context: context,
+                                                 searchCenter: searchCenter, allowsExpansion: allowsExpansion)
+        return scoped.sorted { lhs, rhs in
             SearchRanking.precedes(lhs, rhs, intent: intent, context: context)
         }
     }

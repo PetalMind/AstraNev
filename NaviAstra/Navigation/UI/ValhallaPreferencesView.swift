@@ -24,7 +24,7 @@ struct ValhallaPreferencesView: View {
                     Stepper("Maksymalna prędkość: \(Int(draft.advanced.scooterTopSpeed)) km/h",
                             value: $draft.advanced.scooterTopSpeed, in: 20...120, step: 5)
                 }
-                Text("Profil pojazdu jest używany w trybie Auto. Ograniczenia pojazdu zależą od kompletności danych OpenStreetMap.")
+                Text("Profil obowiązuje w trybie Auto. Zawsze uwzględniaj znaki i ograniczenia na drodze.")
                     .font(.caption).foregroundStyle(.secondary)
                 if draft.evPlanningEnabled && draft.advanced.vehicle != .auto {
                     Text("Wyłącz planowanie ładowania EV lub wybierz samochód, aby wyznaczyć trasę.")
@@ -42,7 +42,7 @@ struct ValhallaPreferencesView: View {
                 Toggle("Preferuj oświetlone ulice", isOn: $draft.advanced.preferLit)
                 Stepper("Maksymalna trudność szlaku: \(draft.advanced.hikingDifficulty)",
                         value: $draft.advanced.hikingDifficulty, in: 0...6)
-                Text("Skala 0–6: od łatwych ścieżek do trudnych szlaków alpejskich. Profil wózka dostosowuje koszty schodów i tempo; dane mapowe nie gwarantują dostępności całej trasy. Preferowanie oświetlenia nie gwarantuje oświetlonej drogi.")
+                Text("Skala 0–6: od łatwych ścieżek do trudnych szlaków alpejskich. Dostępność dla wózków i oświetlenie nie są potwierdzone na całej trasie.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Rower") {
@@ -87,24 +87,22 @@ struct ValhallaPreferencesView: View {
                     set: { draft.advanced.routePreference = $0; draft.advanced.shortest = $0 == .shortest })) {
                     ForEach(RoutePreference.allCases) { Text($0.title).tag($0) }
                 }
-                Text("Najszybsza wybiera najkrótszy szacowany czas. Polecana dla mnie uwzględnia zapamiętane wybory, jeśli uczenie tras jest włączone. Historia nie zmienia wyboru w pozostałych profilach ani wyświetlanego czasu jazdy.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Text("Zrównoważona i polecana: do 15% i najwyżej 5 min dłużej, do 20% i najwyżej 5 km dalej od najszybszej trasy. Wygodna: do 25% i najwyżej 10 min dłużej, do 30% i najwyżej 10 km dalej. Mniej manewrów i lepsza znana nawierzchnia pomagają wybrać wariant w tych granicach.")
+                Text("„Polecana dla mnie” uwzględnia Twoje zapamiętane wybory, gdy uczenie tras jest włączone.")
                     .font(.caption).foregroundStyle(.secondary)
                 Text("Najkrótsza odległość wpływa także na profil tras pieszych i rowerowych.")
                     .font(.caption).foregroundStyle(.secondary)
                 if draft.advanced.effectiveRoutePreference == .shortest {
-                    Text("Przy wyborze najkrótszej odległości serwer pomija miękkie preferencje dróg, opłat i podjazdów. Ograniczenia dostępu i wykluczone obszary nadal obowiązują.")
+                    Text("Najkrótsza trasa może uwzględniać płatne drogi i podjazdy mimo Twoich preferencji. Nadal omija wykluczone obszary.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Picker("Strona dojazdu do celu", selection: $draft.advanced.arrivalSide) {
                     ForEach(ValhallaArrivalSide.allCases) { Text($0.title).tag($0) }
                 }
-                Text("Strona ruchu oznacza prawą w Polsce i lewą w krajach z ruchem lewostronnym. Ustawienie może nie mieć zastosowania przy skrzyżowaniu lub celu na osi drogi.")
+                Text("„Strona ruchu” oznacza prawą stronę w Polsce, a lewą w krajach z ruchem lewostronnym.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
-                Text("Ustawienia zapisują się automatycznie. W podglądzie przeliczają trasę. Podczas jazdy zostaną użyte przy następnym przeliczeniu. Godzinę wyjazdu lub przyjazdu wybierzesz w planowaniu trasy.")
+                Text("Zmiany zapisują się automatycznie. Podczas jazdy zostaną użyte przy następnym przeliczeniu trasy.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

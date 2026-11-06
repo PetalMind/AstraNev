@@ -153,6 +153,10 @@ struct SearchResult: Identifiable {
         return merged
     }
 
+    var needsTravelEstimate: Bool {
+        requiresRouteEstimate && RoutedTravelMetrics(time: travelTime, distance: travelDistance) == nil
+    }
+
     var travelSummary: String? {
         func valid(_ value: Double?, limit: Double) -> Double? {
             value.flatMap { $0.isFinite && (0...limit).contains($0) ? $0 : nil }
@@ -173,15 +177,18 @@ struct SearchResult: Identifiable {
             return "\(kilometers(distance)) km trasą · ~\(duration)"
         }
         if let distance = valid(travelDistance, limit: 400_000_000) {
-            return "\(kilometers(distance)) km trasą · czas niedostępny"
+            return "\(kilometers(distance)) km trasą"
+        }
+        if let time = valid(travelTime, limit: 31_536_000) {
+            return "~\(TravelDurationFormatter.string(minutes: max(1, Int((time / 60).rounded(.up)))))"
         }
         switch travelEstimateStatus {
         case .calculating:
-            return "Obliczam trasę po drogach i ścieżkach…"
-        case .unavailable:
-            return requiresRouteEstimate ? "Odległość po drogach i czas niedostępne" : nil
-        case .notRequested:
-            return requiresRouteEstimate ? "Odległość po drogach i czas niedostępne" : nil
+            return "Sprawdzam dojazd…"
+        case .unavailable, .notRequested:
+            // Missing metrics are handled by an actionable recovery control in
+            // the list. Never substitute geometric distance for routed distance.
+            return nil
         }
     }
     var isAddress: Bool {
@@ -277,12 +284,13 @@ struct AddressSearchProvider: SearchProvider {
     }
 
     func search(_ query: String, near: Coordinate?, includeUUGFallback: Bool = false,
+                includeContacts: Bool = true,
                 onUpdate: ([SearchResult]) -> Void) async throws -> [SearchResult] {
         var requests: [SearchProviderBatch.Request] = [
             .init { try await PhotonSearchProvider().search(query, near: near) },
             .init { try await MapKitSearchProvider().search(query, near: near) }
         ]
-        if ContactsAccessStatus.current().canReadContacts {
+        if includeContacts, ContactsAccessStatus.current().canReadContacts {
             requests.append(.init { try await ContactsSearchProvider().search(query, near: near) })
         }
         if includeUUGFallback, PhotonSearchProvider.houseNumber(in: query) != nil {

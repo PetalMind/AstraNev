@@ -76,7 +76,7 @@ enum IOSSettingsCategory: String, CaseIterable, Identifiable, Hashable {
         case .offline: "Mapy offline"
         case .traffic: "Ruch drogowy"
         case .transit: "Komunikacja publiczna"
-        case .advanced: "Narzędzia i zaawansowane"
+        case .advanced: "Narzędzia tras"
         case .privacy: "Dane i prywatność"
         }
     }
@@ -110,7 +110,7 @@ enum IOSSettingsCategory: String, CaseIterable, Identifiable, Hashable {
         case .offline: "bez internetu pobieranie obszar paczki"
         case .traffic: "korki TomTom zgłoszenia GDDKiA"
         case .transit: "autobus tramwaj pociąg MPK Transitous"
-        case .advanced: "serwer Valhalla zasięg GPX diagnostyka obszary omijane"
+        case .advanced: "zasięg podróży obszary omijane"
         case .privacy: "licencje źródła internet dane lokalne"
         }
     }

@@ -29,10 +29,10 @@ import RealityKit
 import AVFoundation
 import UIKit
 import simd
+import OSLog
 
 private enum ARGuidanceMode: Equatable {
     case local, geographic
-    var title: String { self == .geographic ? "AR geograficzne" : "AR · GPS i kompas" }
 }
 
 struct ARNavigationView: View {
@@ -46,7 +46,6 @@ struct ARNavigationView: View {
     @State private var cameraChecked = false
     @State private var mode: ARGuidanceMode = .local
     @State private var trackingMessage: String? = "Skieruj telefon na otoczenie."
-    @State private var geoMessage: String?
     @State private var sessionFailed = false
     @State private var geometry: RouteProgressGeometry?
 
@@ -118,22 +117,14 @@ struct ARNavigationView: View {
                 }
                 .accessibilityLabel("Wróć do mapy")
                 Spacer()
-                Label(mode.title, systemImage: mode == .geographic ? "viewfinder" : "location.north.circle")
-                    .font(.caption.weight(.semibold))
-                    .padding(12)
-                    .modifier(NavigationStableSurface(radius: 24))
             }
             if let status = statusMessage(points: points, at: now) {
                 messageCard(status, symbol: "location.magnifyingglass")
             }
             Spacer(minLength: 0)
             if mode == .local {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Wskazówki orientacyjne").font(.subheadline.weight(.semibold))
-                    Text("\(gpsAccuracyText) · Strzałki nie wyznaczają dokładnej pozycji chodnika.")
-                        .font(.caption)
-                    if let geoMessage { Text(geoMessage).font(.caption) }
-                }
+                Text("Strzałki pokazują orientacyjny kierunek. Obserwuj otoczenie.")
+                .font(.caption)
                 .padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .modifier(NavigationStableSurface(radius: 18))
@@ -144,19 +135,12 @@ struct ARNavigationView: View {
         .foregroundStyle(Color.naviTextPrimary)
     }
 
-    private var gpsAccuracyText: String {
-        guard let location, location.accuracy.isFinite, (0...25).contains(location.accuracy) else {
-            return "Dokładność GPS niedostępna"
-        }
-        return "GPS ±\(Int(location.accuracy.rounded())) m"
-    }
-
     private func statusMessage(points: [ARArrowPoint], at now: Date) -> String? {
-        if sessionFailed { return "Śledzenie AR zostało przerwane. Wróć do mapy lub spróbuj ponownie." }
+        if sessionFailed { return "Widok AR jest niedostępny. Wróć do mapy lub spróbuj ponownie." }
         guard ARRouteGuidance.hasUsableLocation(location, at: now) else {
-            return "Oczekiwanie na świeży GPS o dokładności do 25 m. Strzałki są ukryte."
+            return "Ustalam pozycję. Korzystaj z mapy, aż pojawią się strzałki."
         }
-        if points.isEmpty { return "Brak pewnego odcinka trasy przed Tobą. Kontynuuj według mapy i instrukcji." }
+        if points.isEmpty { return "Korzystaj ze wskazówek na mapie." }
         return trackingMessage
     }
 
@@ -234,26 +218,25 @@ struct ARNavigationView: View {
 
     @MainActor private func selectGeographicMode(at coordinate: Coordinate) async {
         guard ARGeoTrackingConfiguration.isSupported else {
-            geoMessage = "Tryb GPS działa bez Apple Geo Tracking."
+            Logger(subsystem: "NaviAstra", category: "AR").debug("Apple Geo Tracking nie jest obsługiwany; używam trybu lokalnego.")
             return
         }
         let available = await ARGeoAvailabilityProbe().check(at: coordinate)
         guard !Task.isCancelled else { return }
         if available {
             mode = .geographic
-            trackingMessage = "Ustalanie położenia AR. Stań i skieruj telefon na otoczenie."
-            geoMessage = nil
+            trackingMessage = "Zatrzymaj się i skieruj telefon na otoczenie."
         } else {
             mode = .local
-            geoMessage = "Brak dostępnego pozycjonowania Apple w tej okolicy."
+            Logger(subsystem: "NaviAstra", category: "AR").debug("Apple Geo Tracking niedostępny w tej okolicy; używam trybu lokalnego.")
         }
     }
 
     private func handleSessionFailure(_ reason: String) {
+        Logger(subsystem: "NaviAstra", category: "AR").debug("Sesja AR: \(reason, privacy: .public)")
         if mode == .geographic {
             mode = .local
-            geoMessage = reason
-            trackingMessage = "Ustalanie kierunku z GPS i kompasu…"
+            trackingMessage = "Zatrzymaj się i skieruj telefon na otoczenie."
         } else {
             trackingMessage = reason
             sessionFailed = true
@@ -262,7 +245,9 @@ struct ARNavigationView: View {
 
     private func distanceText(_ meters: Double) -> String {
         guard meters.isFinite, meters >= 0 else { return "Dystans niedostępny" }
-        if meters >= 1000 { return String(format: "Za %.1f km", meters / 1000) }
+        if meters >= 1000 {
+            return "Za \((meters / 1000).formatted(.number.precision(.fractionLength(1)).locale(PolishRegionalFormat.locale))) km"
+        }
         return "Za \(Int(meters.rounded())) m"
     }
 }
@@ -720,17 +705,17 @@ enum ARLaunchReadinessChecker {
             return .unavailable("Brak dostępu do kamery")
         }
         guard ARRouteGuidance.hasUsableLocation(location) else {
-            return .unavailable("Wymagany jest świeży GPS o dokładności do 25 m")
+            return .unavailable("Poczekaj na ustalenie pozycji")
         }
         guard let route else {
-            return .unavailable("Brak pewnego odcinka trasy przed bieżącą pozycją")
+            return .unavailable("Wskazówki AR są niedostępne na tym odcinku. Użyj mapy.")
         }
         let geometry = await Task.detached(priority: .userInitiated) {
             RouteProgressGeometry(route)
         }.value
         guard !Task.isCancelled,
               !ARRouteGuidance.points(geometry: geometry, progress: progress, location: location).isEmpty else {
-            return .unavailable("Brak pewnego odcinka trasy przed bieżącą pozycją")
+            return .unavailable("Wskazówki AR są niedostępne na tym odcinku. Użyj mapy.")
         }
         // Apple geographic coverage is an optional improvement, not a launch gate.
         return .ready

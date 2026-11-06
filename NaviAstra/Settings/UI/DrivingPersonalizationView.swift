@@ -25,17 +25,22 @@ struct DrivingPersonalizationView: View {
             } header: {
                 Text("Uczenie tras")
             } footer: {
-                Text("Uczenie działa automatycznie po ukończonych przejazdach autem bez punktów pośrednich i postojów ładowania. Przerwa w GPS nie przekreśla zapisanych fragmentów drogi. Wariant powtarzany przez co najmniej trzy różne dni może wpłynąć na kolejne propozycje, także bez ręcznego potwierdzania. Pora jazdy pomaga wybrać właściwy wariant. ETA pozostaje wyliczane z trasy i ruchu.")
+                Text("Zapamiętuj powtarzane przejazdy samochodem, aby otrzymywać propozycje znajomych tras.")
             }
-            Section("Dopasowanie śladu i prywatność") {
-                Toggle("Zezwalaj na dopasowanie na serwerze", isOn: setting(\.allowRemoteMatching))
+            Section("Prywatność") {
+                Toggle("Pozwól wysyłać przejazdy do analizy", isOn: setting(\.allowRemoteMatching))
                     .disabled(!engine.settings.enabled)
-                Text("Uczenie działa lokalnie także bez pobranej paczki dróg: porównuje powtarzane ślady GPS z propozycją trasy. Paczka offline pozwala dodatkowo rozpoznać konkretne odcinki dróg. Historia i statystyki pozostają na iPhonie. Włączenie opcji powyżej pozwala wysłać ślad do skonfigurowanego serwera Valhalla. Proponowany znajomy wariant jest każdorazowo przeliczany według aktualnych ograniczeń ruchu.")
+                Text("Historia i preferencje pozostają na urządzeniu. Ta opcja pozwala dodatkowo wysyłać zapis przejechanej drogi do usługi wyznaczania tras. Uczenie działa również bez niej.")
                     .font(.footnote).foregroundStyle(.secondary)
                 #if os(macOS)
                 Text("Na Macu dopasowanie śladów wymaga zezwolenia na użycie serwera.")
                     .font(.footnote).foregroundStyle(.secondary)
                 #endif
+                Text("Dane uczenia przechowujemy przez rok, dla maksymalnie 300 przejazdów. Możesz je usunąć poniżej.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            #if !os(iOS)
+            Section("Diagnostyka uczenia") {
                 LabeledContent("Dopasowane przejazdy", value: "\(engine.learnedTripCount)")
                 LabeledContent("Oczekują na dopasowanie", value: "\(engine.pendingCount)")
                 if engine.isProcessing { ProgressView("Dopasowywanie przejazdu…") }
@@ -49,10 +54,11 @@ struct DrivingPersonalizationView: View {
                 Text("Przechowujemy do 300 dopasowanych przejazdów z ostatniego roku. Kolejka do dopasowania mieści 10 skompresowanych śladów. Wyłączenie uczenia usuwa tę kolejkę. Preferencje możesz usunąć poniżej.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            #endif
             Section("Nauczone preferencje") {
                 if engine.patterns.isEmpty {
                     Label {
-                        Text("Preferencje pojawią się po ukończonych przejazdach i dopasowaniu ich do dróg.")
+                        Text("Preferencje pojawią się po kolejnych przejazdach.")
                     } icon: {
                         Image(systemName: "point.3.connected.trianglepath.dotted")
                     }
@@ -97,6 +103,7 @@ struct DrivingPersonalizationView: View {
                     Text(shortcut.deviation.preferred.flatMap(\.names).uniqued().joined(separator: ", ").nonEmpty ?? "Własny wariant drogi")
                     Text(shortcut.kind.title).font(.caption.weight(.medium))
                     Text("\(shortcut.uses) przejazdów")
+                    #if !os(iOS)
                     Group {
                         if let offered = shortcut.offeredCount {
                             Text("Zaproponowano \(offered) razy · wybrano \(shortcut.chosenCount) · pominięto \(shortcut.avoidedCount)")
@@ -107,11 +114,14 @@ struct DrivingPersonalizationView: View {
                     .font(.caption).foregroundStyle(.secondary)
                     Text("Pewność: \(shortcut.confidence.formatted(.percent.precision(.fractionLength(0)).locale(PolishRegionalFormat.locale)))")
                         .font(.caption).foregroundStyle(.secondary)
+                    #endif
                     if let duration = shortcut.averageObservedDuration {
                         Text("Średni zarejestrowany czas wariantu: " + TripHistoryFormat.duration(duration)).font(.caption)
                     }
+                    #if !os(iOS)
                     Text("Oszczędność czasu: brak porównywalnego pomiaru alternatywy")
                         .font(.caption).foregroundStyle(.secondary)
+                    #endif
                     Button("Usuń preferencję wariantu", role: .destructive) { engine.removeShortcut(shortcut.id) }
                         .font(.caption)
                 }
@@ -126,11 +136,13 @@ struct DrivingPersonalizationView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(road.names.joined(separator: ", ").nonEmpty ?? "Odcinek drogi bez nazwy")
                     Text("\(road.uses) przejazdów · \(road.selfSelected) własnych wyborów · \(road.avoided) ominięć").font(.caption).foregroundStyle(.secondary)
+                    #if !os(iOS)
                     if road.offeredCountKnown {
                         Text("Zaproponowano \(road.offeredCount) razy · wybrano z propozycji \(road.chosenCount)").font(.caption).foregroundStyle(.secondary)
                     } else {
                         Text("Dawne propozycje odcinka: brak danych").font(.caption).foregroundStyle(.secondary)
                     }
+                    #endif
                     Button("Usuń preferencję drogi", role: .destructive) { engine.removeRoad(road.id) }
                         .font(.caption)
                 }
@@ -170,9 +182,11 @@ struct DrivingPersonalizationView: View {
                 Text("Do: \(pattern.representative.destinationName)")
                 LabeledContent("Liczba przejazdów", value: "\(pattern.usageCount)")
                 LabeledContent("Średni zarejestrowany czas", value: TripHistoryFormat.duration(pattern.averageDuration))
+                #if !os(iOS)
                 LabeledContent("Pewność dowodów", value: pattern.confidence.formatted(.percent.precision(.fractionLength(0)).locale(PolishRegionalFormat.locale)))
-                LabeledContent("Potwierdzona przez Ciebie", value: pattern.confirmed ? "Tak" : "Nie")
                 LabeledContent("Siła preferencji", value: pattern.strength.formatted(.percent.precision(.fractionLength(0)).locale(PolishRegionalFormat.locale)))
+                #endif
+                LabeledContent("Potwierdzona przez Ciebie", value: pattern.confirmed ? "Tak" : "Nie")
                 Text("Średni czas opisuje wcześniejsze przejazdy. Nie zastępuje przewidywanego czasu nowej trasy.")
                     .font(.footnote).foregroundStyle(.secondary)
                 let buckets = Set(pattern.trips.map { $0.context.hourBucket }).sorted()

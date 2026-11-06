@@ -187,8 +187,8 @@ struct TrafficMapPresentation {
     let clusterPriority: Int
     let isCritical: Bool
 
-    init(_ incident: TrafficIncident) {
-        symbolName = incident.alertSymbolName
+    init(_ incident: TrafficIncident, symbolName: String? = nil) {
+        self.symbolName = symbolName ?? incident.alertSymbolName
         markerText = nil
         roadSign = nil
         isDirectionUncertain = false
@@ -405,6 +405,22 @@ nonisolated struct TrafficIncident: Identifiable, Sendable {
     var isRoadClosure: Bool { affectsRouting && category == .roadClosed }
     var alertTitle: String { cause.label ?? category.mapLabel }
     var alertSymbolName: String { cause == .policeCheckpoint ? "shield.fill" : category.mapSymbolName }
+
+    var visualAlert: (title: String, symbolName: String)? {
+#if os(iOS)
+        // A provider can group a jam with a separate hazard at the same location.
+        if category == .jam || ((category == .cluster || category == .unknown) && events.contains { $0.category == .jam }) {
+            if let title = cause.label {
+                return (title, cause == .policeCheckpoint ? "shield.fill" : "exclamationmark.triangle.fill")
+            }
+            guard let hazard = TrafficIncidentCategory(rawValue: cause.rawValue) ?? events.first(where: {
+                $0.category != .unknown && $0.category != .jam && $0.category != .cluster
+            })?.category else { return nil }
+            return (hazard.mapLabel, hazard.mapSymbolName)
+        }
+#endif
+        return (alertTitle, alertSymbolName)
+    }
 
     var detailDescriptions: [String] {
         var seen = Set<String>()

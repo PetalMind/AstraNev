@@ -2,6 +2,24 @@
 import AVFoundation
 import UIKit
 
+/// Give the output route time to settle after synthesis, reducing the chance
+/// that its buffered tail enters the next command's microphone input.
+nonisolated struct VoiceCaptureHandoffPolicy {
+    private var readyUptime: TimeInterval = 0
+
+    mutating func outputEnded(at uptime: TimeInterval, outputLatency: TimeInterval,
+                              bufferDuration: TimeInterval) {
+        let latency = outputLatency.isFinite ? max(0, outputLatency) : 0
+        let buffer = bufferDuration.isFinite ? max(0, bufferDuration) : 0
+        let settling = min(3, max(0.35, latency + buffer + 0.15))
+        readyUptime = max(readyUptime, uptime + settling)
+    }
+
+    func remainingDelay(at uptime: TimeInterval) -> TimeInterval {
+        max(0, min(3, readyUptime - uptime))
+    }
+}
+
 /// Owns the app's audio session. A microphone, navigation instruction and
 /// assistant reply must never own it at the same time.
 @MainActor
@@ -32,6 +50,7 @@ final class VoiceAudioCoordinator: NSObject, AVSpeechSynthesizerDelegate {
     private var replyWatchdog: Task<Void, Never>?
     private var observers: [NSObjectProtocol] = []
     private var sessionInterrupted = false
+    private var captureHandoff = VoiceCaptureHandoffPolicy()
 
     private override init() {
         super.init()
@@ -91,6 +110,7 @@ final class VoiceAudioCoordinator: NSObject, AVSpeechSynthesizerDelegate {
         interruptCapture("Rozpoczęto nową rozmowę głosową.")
         if let previous = guidance {
             guidance = nil
+            recordOutputEnd()
             previous.interrupted()
         }
         do {
@@ -104,6 +124,17 @@ final class VoiceAudioCoordinator: NSObject, AVSpeechSynthesizerDelegate {
         let id = UUID()
         capture = Capture(id: id, interrupted: onInterrupted)
         return id
+    }
+
+    func waitUntilCaptureReady(_ id: UUID) async -> Bool {
+        guard capture?.id == id else { return false }
+        let delay = captureHandoff.remainingDelay(at: ProcessInfo.processInfo.systemUptime)
+        if delay > 0 {
+            do { try await Task.sleep(for: .seconds(delay)) }
+            catch { return false }
+        }
+        return !Task.isCancelled && capture?.id == id && !sessionInterrupted
+            && UIApplication.shared.applicationState == .active
     }
 
     func endCapture(_ id: UUID) {
@@ -138,6 +169,7 @@ final class VoiceAudioCoordinator: NSObject, AVSpeechSynthesizerDelegate {
 
     func endGuidance(owner: UUID) {
         guard guidance?.owner == owner else { return }
+        recordOutputEnd()
         guidance = nil
         resumePendingReply()
         deactivateIfIdle()
@@ -157,6 +189,7 @@ final class VoiceAudioCoordinator: NSObject, AVSpeechSynthesizerDelegate {
 
     func cancelReply() {
         let completion = replyCompletion ?? pendingReply?.completion
+        if replyID != nil || synthesizer.isSpeaking { recordOutputEnd() }
         pendingReply = nil
         replyID = nil
         replyCompletion = nil
@@ -203,6 +236,7 @@ final class VoiceAudioCoordinator: NSObject, AVSpeechSynthesizerDelegate {
 
     private func finishReply(identifier: ObjectIdentifier? = nil, successfully: Bool = false) {
         if let identifier, replyID != identifier { return }
+        if replyID != nil || synthesizer.isSpeaking { recordOutputEnd() }
         let completion = replyCompletion ?? pendingReply?.completion
         pendingReply = nil
         replyCompletion = nil
@@ -212,6 +246,12 @@ final class VoiceAudioCoordinator: NSObject, AVSpeechSynthesizerDelegate {
         synthesizer.stopSpeaking(at: .immediate)
         deactivateIfIdle()
         completion?(successfully)
+    }
+
+    private func recordOutputEnd() {
+        captureHandoff.outputEnded(at: ProcessInfo.processInfo.systemUptime,
+                                   outputLatency: session.outputLatency,
+                                   bufferDuration: session.ioBufferDuration)
     }
 
     private func interruptCapture(_ reason: String) {

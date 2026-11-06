@@ -368,7 +368,9 @@ extension ContentView {
         Section("Warstwy") {
             Toggle("Znaki drogowe", isOn: $mapStore.mapRoadSignsVisible)
             if mapStore.mapRoadSignsVisible {
+#if !os(iOS)
                 roadPOIStatusLabel
+#endif
                 Text("Zbliż mapę, aby zobaczyć znaki drogowe")
                     .font(.caption)
                     .foregroundStyle(Color.naviTextSecondary)
@@ -396,6 +398,20 @@ extension ContentView {
 
     @ViewBuilder
     private var cyclingPathsStatusLabel: some View {
+#if os(iOS)
+        switch mapStore.cyclingPathsStatus {
+        case .zoomIn:
+            Label("Zbliż mapę, aby zobaczyć ścieżki", systemImage: "plus.magnifyingglass")
+                .font(.caption)
+                .foregroundStyle(Color.naviTextSecondary)
+        case .unavailable:
+            Label("Nie można wyświetlić ścieżek. Spróbuj później.", systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(Color.naviTextSecondary)
+        case .disabled, .loading, .loaded:
+            EmptyView()
+        }
+#else
         switch mapStore.cyclingPathsStatus {
         case .disabled:
             EmptyView()
@@ -421,6 +437,7 @@ extension ContentView {
                 .font(.caption)
                 .foregroundStyle(Color(naviHex: NaviAstraColorPalette.warning))
         }
+#endif
     }
 
     var mapLayersMenu: some View {

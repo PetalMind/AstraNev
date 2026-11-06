@@ -7,10 +7,13 @@ import Foundation
 final class VoiceNavigationActions {
     private let navigationStore: NavigationStore
     private let placeStore: PlaceStore
+    private let destinationResolver: VoiceDestinationResolver
 
-    init(navigationStore: NavigationStore, placeStore: PlaceStore) {
+    init(navigationStore: NavigationStore, placeStore: PlaceStore,
+         destinationResolver: VoiceDestinationResolver? = nil) {
         self.navigationStore = navigationStore
         self.placeStore = placeStore
+        self.destinationResolver = destinationResolver ?? VoiceDestinationResolver()
     }
 
     func answer(_ query: VoiceQuery) -> String {
@@ -18,23 +21,34 @@ final class VoiceNavigationActions {
     }
 
     func savedDestination(named name: String) -> Destination? {
+        let matches = savedDestinations(named: name)
+        return matches.count == 1 ? matches.first : nil
+    }
+
+    func savedDestinations(named name: String) -> [Destination] {
         let normalized = QueryClassifier.normalize(name)
         let kind: PlaceKind? = switch normalized {
         case "dom", "domu", "do domu": .home
         case "praca", "pracy", "do pracy": .work
         default: nil
         }
-        let matches = placeStore.places.filter {
-            if let kind { return $0.kind == kind }
-            return QueryClassifier.normalize($0.displayName) == normalized
+        if let kind {
+            let assigned = placeStore.places.filter { $0.kind == kind }
+            if !assigned.isEmpty { return assigned.map(\.navigationDestination) }
         }
-        // A duplicate saved label needs the same disambiguation as a search.
-        return matches.count == 1 ? matches.first?.navigationDestination : nil
+        let labels: Set<String> = switch kind {
+        case .some(.home): ["dom", "domu", "do domu"]
+        case .some(.work): ["praca", "pracy", "do pracy"]
+        default: [normalized]
+        }
+        return placeStore.places.filter {
+            labels.contains(QueryClassifier.normalize($0.displayName))
+        }.map(\.navigationDestination)
     }
 
-    func searchDestinations(_ query: String) async throws -> [Destination] {
-        if let saved = savedDestination(named: query) { return [saved] }
+    func resolveDestination(_ query: String) async throws -> VoiceDestinationSelection.Outcome {
         let state = navigationStore.state
+        let origin = currentOrigin
         var remainingRoute: [Coordinate] = []
         if state.status == .navigating, let route = state.route,
            let origin = state.location?.coordinate,
@@ -42,18 +56,31 @@ final class VoiceNavigationActions {
             remainingRoute = [projection.coordinate] + Array(route.coordinates.dropFirst(projection.segment + 1))
         }
         let context = SearchContext(
-            origin: state.location?.coordinate ?? state.searchMapCenter,
+            origin: origin ?? state.searchMapCenter,
             route: remainingRoute,
             routeTarget: state.navigationTarget?.coordinate ?? state.destination?.coordinate,
             mode: state.transportMode, preferences: state.routingPreferences,
             localDestinations: placeStore.places.map(\.navigationDestination)
                 + placeStore.searches.map(\.destination))
-        let address = UserDefaults.standard.string(forKey: "routingServer") ?? ""
-        let endpoint = URL(string: address) ?? URL(string: "https://valhalla1.openstreetmap.de")!
-        let results = try await SearchEngine(matrix: ValhallaRouteProvider(endpoint: endpoint))
-            .search(query, context: context)
+        let result = try await destinationResolver.resolve(query, context: context, currentOrigin: origin)
         try Task.checkCancellation()
-        return Array(results.prefix(5)).map(\.navigationDestination)
+        let intent = QueryClassifier().classify(query)
+        if case .direct = result, intent.intent == .brand || intent.intent == .category,
+           intent.parcelQuery?.reference == nil {
+            guard let origin, let latest = currentOrigin, origin.distance(to: latest) < 500 else {
+                return .unavailable("Pozycja zmieniła się podczas wyszukiwania. Powtórz polecenie, żebym wybrała najbliższe miejsce z aktualnej lokalizacji.")
+            }
+        }
+        return result
+    }
+
+    private var currentOrigin: Coordinate? {
+        guard let location = navigationStore.state.location,
+              (-5...30).contains(Date.now.timeIntervalSince(location.timestamp)),
+              location.accuracy.isFinite, (0...100).contains(location.accuracy),
+              (-90...90).contains(location.coordinate.latitude),
+              (-180...180).contains(location.coordinate.longitude) else { return nil }
+        return location.coordinate
     }
 
     func findStops(_ category: NearbyPlaceCategory, nearDestination: Bool) async -> [RouteStopSuggestion] {

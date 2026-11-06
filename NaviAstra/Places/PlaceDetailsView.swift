@@ -29,6 +29,7 @@ struct PlaceDetailsView: View {
     let showsPrimaryAction: Bool
     let onExpandDetails: (() -> Void)?
     let onAddFuelEntry: ((PlaceIdentity) -> Void)?
+    let onOpeningHoursUpdate: ((PlaceDetails) -> Void)?
 
     @State private var details: PlaceDetails?
     @State private var isSaved: Bool
@@ -39,6 +40,7 @@ struct PlaceDetailsView: View {
     @State private var savedName = ""
     @State private var favoritePulseScale: CGFloat = 1
     @State private var isLoading = false
+    @State private var isLoadingSupplementalHours = false
     @State private var loadError: String?
     @State private var retry = 0
     @State private var showHours = false
@@ -53,6 +55,7 @@ struct PlaceDetailsView: View {
     @State private var showLookAround = false
     @State private var failedPhotoURLs: Set<URL> = []
     @State private var hasAppleDetails = false
+    @State private var appleDetailsSnapshot: PlaceDetails?
     private let provider = OpenStreetMapPlaceDetailsProvider()
 
     init(result: SearchResult, isSaved: Bool, onSave: @escaping () -> Bool,
@@ -66,6 +69,7 @@ struct PlaceDetailsView: View {
          onRemove: (() -> Bool)? = nil,
          onRename: ((String) -> Bool)? = nil,
          onAddFuelEntry: ((PlaceIdentity) -> Void)? = nil,
+         onOpeningHoursUpdate: ((PlaceDetails) -> Void)? = nil,
          onPlanRoute: @escaping () -> Void) {
         self.result = result
         self.isFavoriteFromParent = isSaved
@@ -75,6 +79,7 @@ struct PlaceDetailsView: View {
         self.onRemove = onRemove
         self.onRename = onRename
         self.onAddFuelEntry = onAddFuelEntry
+        self.onOpeningHoursUpdate = onOpeningHoursUpdate
         self.isNavigating = isNavigating
         self.primaryActionTitle = primaryActionTitle
         self.presentation = presentation
@@ -229,8 +234,13 @@ struct PlaceDetailsView: View {
                     .textSelection(.enabled)
             }
             if result.isPOI, let details {
-                PlaceDetailsCompactAttributesSection(details: details, isLoading: isLoading,
+                PlaceDetailsCompactAttributesSection(details: details,
+                                                     isLoading: isLoading || isLoadingSupplementalHours,
                                                      showHours: $showHours)
+                if isLoadingSupplementalHours, details.openingHours == nil {
+                    ProgressView("Sprawdzam godziny otwarcia…")
+                        .font(.caption)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -333,16 +343,30 @@ struct PlaceDetailsView: View {
             await loadPlacePhoto(for: current, forceRefresh: retry > 0)
         }
         .task(id: supplementalRefreshKey) {
-            guard !isLoading, result.isPOI, let original = details, original.wikidataID != nil || original.website != nil else { return }
+            isLoadingSupplementalHours = false
+            guard result.isPOI, let original = details,
+                  original.wikidataID != nil || original.website != nil ||
+                    [original.brand, original.name].compactMap({ $0 }).contains(where: {
+                        OfficialStoreHoursParser.normalized($0) == "biedronka"
+                    }) else { return }
+            // Known website/branch facts can load while unrelated OSM and Apple
+            // attributes are still pending. Never wait for those to start hours.
+            isLoadingSupplementalHours = original.openingHours == nil
+            defer { if !Task.isCancelled { isLoadingSupplementalHours = false } }
             let key = result.placeIdentity.cacheKey
-            let enriched = await provider.supplementalDetails(original, for: result.placeIdentity, forceRefresh: retry > 0)
-            guard !Task.isCancelled, key == result.placeIdentity.cacheKey,
-                  details?.fetchedAt == original.fetchedAt else { return }
-            let timeZone = details?.timeZoneIdentifier
-            let countryCode = details?.countryCode
-            details = enriched
-            if details?.timeZoneIdentifier == nil { details?.timeZoneIdentifier = timeZone }
-            if details?.countryCode == nil { details?.countryCode = countryCode }
+            _ = await provider.supplementalDetails(original, for: result.placeIdentity, forceRefresh: retry > 0) { enriched in
+                guard !Task.isCancelled, key == result.placeIdentity.cacheKey,
+                      details?.fetchedAt == original.fetchedAt else { return }
+                let timeZone = details?.timeZoneIdentifier
+                let countryCode = details?.countryCode
+                details = enriched
+                if details?.timeZoneIdentifier == nil { details?.timeZoneIdentifier = timeZone }
+                if details?.countryCode == nil { details?.countryCode = countryCode }
+                if let updated = details, updated.openingHours != nil {
+                    isLoadingSupplementalHours = false
+                    onOpeningHoursUpdate?(updated)
+                }
+            }
         }
         .task(id: timeZoneRefreshKey) {
             guard result.isPOI, details?.timeZoneIdentifier == nil || details?.countryCode == nil else { return }
@@ -362,11 +386,12 @@ struct PlaceDetailsView: View {
         details = PlaceDetails.partial(for: result)
         loadedAt = nil
         hasAppleDetails = false
+        appleDetailsSnapshot = nil
         loadError = nil
         guard result.isPOI else { return }
         isLoading = true
         if result.placeProvider == .inPost {
-            defer { if !Task.isCancelled { isLoading = false } }
+            defer { finishLoadingPlaceDetails() }
             do {
                 let loaded = try await InPostPointProvider().details(for: result.placeIdentity)
                 guard !Task.isCancelled else { return }
@@ -379,29 +404,47 @@ struct PlaceDetailsView: View {
             }
             return
         }
-        defer { if !Task.isCancelled { isLoading = false } }
+        defer { finishLoadingPlaceDetails() }
         if let cached = await provider.cachedDetails(for: result.placeIdentity) {
             guard !Task.isCancelled else { return }
-            details = details?.merging(cached) ?? cached
+            let freshCached = PlaceSearchOpeningHours.removingExpiredHours(from: cached)
+            details = details?.merging(freshCached) ?? freshCached
+            if let raw = result.openingHours, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let merged = details {
+                details = PlaceSearchOpeningHours.applyingSearchHours(raw, to: merged)
+            }
             loadedAt = cached.fetchedAt
         }
         let needsAppleContact = result.placeProvider == .mapKit &&
             (details?.phone == nil || details?.website == nil || details?.countryCode == nil || details?.timeZoneIdentifier == nil)
-        async let appleDetails = needsAppleContact ? (try? await MapKitPlaceDetailsProvider().details(for: result.placeIdentity)) : nil
+        let refreshKey = detailsRefreshKey
+        async let native: Void = loadApplePlaceDetails(needed: needsAppleContact, refreshKey: refreshKey)
+        async let osm: Void = loadOSMPlaceDetails(refreshKey: refreshKey)
+        _ = await (native, osm)
+    }
+
+    @MainActor
+    private func loadApplePlaceDetails(needed: Bool, refreshKey: String) async {
+        guard needed else { return }
+        let native = try? await MapKitPlaceDetailsProvider().details(for: result.placeIdentity)
+        guard !Task.isCancelled, refreshKey == detailsRefreshKey, let native else { return }
+        appleDetailsSnapshot = native
+        // Keep already-published OSM hours while filling Apple's contact fields.
+        details = details.map { native.merging($0) } ?? native
+        hasAppleDetails = true
+        if loadedAt == nil { loadedAt = native.fetchedAt }
+    }
+
+    @MainActor
+    private func loadOSMPlaceDetails(refreshKey: String) async {
         do {
-            async let refreshedDetails = provider.details(for: result.placeIdentity, forceRefresh: retry > 0)
-            let native = await appleDetails
-            guard !Task.isCancelled else { return }
-            if let native {
-                details = details.map { native.merging($0) } ?? native
-                hasAppleDetails = true
-            }
-            if let loaded = try await refreshedDetails {
-                guard !Task.isCancelled else { return }
+            let loaded = try await provider.details(for: result.placeIdentity, forceRefresh: retry > 0)
+            guard !Task.isCancelled, refreshKey == detailsRefreshKey else { return }
+            if let loaded {
                 // A fresh response replaces stale fields; removed hours/contact data must disappear.
                 let timeZone = details?.timeZoneIdentifier
                 let countryCode = details?.countryCode
-                if let native {
+                if let native = appleDetailsSnapshot {
                     details = native.merging(loaded)
                 } else {
                     details = loaded
@@ -409,16 +452,23 @@ struct PlaceDetailsView: View {
                 if details?.timeZoneIdentifier == nil { details?.timeZoneIdentifier = timeZone }
                 if details?.countryCode == nil { details?.countryCode = countryCode }
                 loadedAt = loaded.fetchedAt
+                if let details, details.openingHours != nil { onOpeningHoursUpdate?(details) }
             } else {
                 // An identified object that disappeared must not keep displaying its old cached hours.
-                details = native ?? PlaceDetails.partial(for: result.placeIdentity)
-                loadedAt = native?.fetchedAt
+                details = appleDetailsSnapshot ?? PlaceDetails.partial(for: result.placeIdentity)
+                loadedAt = appleDetailsSnapshot?.fetchedAt
             }
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, refreshKey == detailsRefreshKey else { return }
             loadError = (error as? PlaceDetailsError)?.errorDescription
                 ?? "Nie udało się odświeżyć informacji. Pokazujemy dostępne dane; mogą być nieaktualne."
         }
+    }
+
+    private func finishLoadingPlaceDetails() {
+        guard !Task.isCancelled else { return }
+        isLoading = false
+        if let details, details.openingHours != nil { onOpeningHoursUpdate?(details) }
     }
 
     private func toggleSavedState() {
@@ -675,6 +725,7 @@ struct PlaceSearchResultRow: View {
     var showsSourceSubtitle = true
     var primaryMetaLine: String? = nil
     var onExpand: (() -> Void)? = nil
+    var onEstimate: (() -> Void)? = nil
     var showsQuickRouteAction = false
     var showsOpeningHours = false
 
@@ -790,6 +841,21 @@ struct PlaceSearchResultRow: View {
                     .disabled(showsAsSaved && onRemove == nil)
                 }
             }
+
+            #if os(iOS)
+            if result.needsTravelEstimate, result.travelEstimateStatus != .calculating {
+                Button(action: onEstimate ?? onSelect) {
+                    Label(onEstimate == nil ? primaryActionTitle : "Sprawdź dojazd",
+                          systemImage: "arrow.triangle.turn.up.right.diamond")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(minHeight: 44)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+                .padding(.leading, 51)
+                .accessibilityHint(onEstimate == nil ? primaryActionTitle : "Oblicz czas i odległość dla tego miejsca")
+            }
+            #endif
 
             if favoriteFeedback != nil {
                 FavoriteFeedbackOverlay(feedback: $favoriteFeedback)

@@ -12,14 +12,17 @@ struct VoiceAssistantButton: View {
 
     var body: some View {
         Button { assistant.isPresented ? assistant.close() : assistant.open() } label: {
-            Image(systemName: assistant.isCapturingSpeech ? "waveform" : "mic")
-                .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(assistant.isPresented ? Color.accentColor : Color.naviTextPrimary)
-                .frame(width: max(44, controlSize), height: max(44, controlSize))
-                .contentShape(Rectangle())
+            VStack(spacing: 2) {
+                Image(systemName: assistant.isCapturingSpeech ? "waveform" : "mic")
+                    .font(.system(size: 17, weight: .medium))
+                Text("Astra").font(.caption2)
+            }
+            .foregroundStyle(assistant.isPresented ? Color.accentColor : Color.naviTextPrimary)
+            .frame(minWidth: max(44, controlSize), minHeight: max(44, controlSize))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(assistant.isPresented ? "Zakończ rozmowę" : "Porozmawiaj z nawigacją")
+        .accessibilityLabel(assistant.isPresented ? "Zakończ rozmowę z Astrą" : "Astra — asystent głosowy")
         .accessibilityValue(status)
         .accessibilityHint(assistant.isPresented
             ? "Zamyka asystenta głosowego."
@@ -38,7 +41,8 @@ struct VoiceAssistantPanel: View {
             if !assistant.transcript.isEmpty { return assistant.transcript }
             if assistant.speechInput.isFinalizing { return "Czekam na pełny wynik rozpoznania" }
             if !assistant.isCapturingSpeech { return "Za chwilę możesz mówić" }
-            return assistant.canConfirm ? assistant.response : "Powiedz całe polecenie"
+            return assistant.canConfirm || assistant.isAwaitingDestinationDetails
+                ? assistant.response : "Powiedz całe polecenie"
         case .working:
             return assistant.transcript.isEmpty ? "Sprawdzam Twoje polecenie" : assistant.transcript
         case .idle, .speaking:
@@ -81,7 +85,10 @@ struct VoiceAssistantPanel: View {
                     : "Możesz zapytać o trasę lub wydać polecenie.")
                 .accessibilityIdentifier("voice-conversation-microphone")
 
-                Button { showsConversation = true } label: {
+                Button {
+                    assistant.setConversationDetailsPresented(true)
+                    showsConversation = true
+                } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 5) {
                             Text(assistant.statusTitle)
@@ -133,7 +140,9 @@ struct VoiceAssistantPanel: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("voice-conversation-bar")
         .sensoryFeedback(.selection, trigger: assistant.isCapturingSpeech) { _, ready in ready }
-        .sheet(isPresented: $showsConversation) {
+        .sheet(isPresented: $showsConversation, onDismiss: {
+            assistant.setConversationDetailsPresented(false)
+        }) {
             VoiceConversationDetails(assistant: assistant)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
@@ -162,11 +171,17 @@ struct VoiceAssistantSettings: View {
     let assistant: VoiceAssistant
 
     var body: some View {
-        Section("Polecenia głosowe") {
-            Toggle("Rozpoznawaj tylko na urządzeniu", isOn: $offlineOnly)
+        Section("Astra — polecenia głosowe") {
+            Text(assistant.speechInput.commandRecognitionAvailabilityLabel)
+                .font(.footnote).foregroundStyle(.secondary)
+            Text("Dotknij mikrofonu i powiedz na przykład „Astra, gdzie mogę zaparkować?” lub „Astra, głośniej”. Podczas odpowiedzi dotknij mikrofonu, aby ją przerwać i mówić. Astra nie nasłuchuje w tle na swoje imię.")
+                .font(.footnote).foregroundStyle(.secondary)
+            Toggle("Dyktowanie w wyszukiwarce tylko na urządzeniu", isOn: $offlineOnly)
             Text(assistant.speechInput.recognitionAvailabilityLabel)
                 .font(.footnote).foregroundStyle(.secondary)
-            Text("Mikrofon na mapie obsługuje pytania o trasę, cel, postoje i komunikaty. Zmiany trasy potwierdzasz słowem „tak”.")
+            Text("Polecenie „prowadź do” od razu uruchamia prowadzenie do zapisanego miejsca, jednoznacznego adresu kontaktu lub konkretnego miejsca. Nazwa sieci, np. „Poczta Polska”, wybiera najbliższą pasującą placówkę. Przy kilku adresach powiedz np. „wybierz drugi”, aby od razu rozpocząć prowadzenie. „Następna” tylko odczytuje kolejną propozycję. Postoje i pozostałe propozycje zmian potwierdzasz słowem „tak”.")
+                .font(.footnote).foregroundStyle(.secondary)
+            Text("Adresy kontaktów są dostępne po udzieleniu NaviAstra dostępu do kontaktów w ustawieniach iOS. Wyszukiwanie najbliższej placówki wymaga aktualnej lokalizacji.")
                 .font(.footnote).foregroundStyle(.secondary)
             Text("Rozmowa kończy się po przejściu aplikacji w tło lub zablokowaniu ekranu. Komunikaty aktywnej nawigacji nadal mogą być odtwarzane. Wyszukiwanie miejsc i nowe trasy mogą wymagać internetu także przy lokalnym rozpoznawaniu mowy.")
                 .font(.footnote).foregroundStyle(.secondary)

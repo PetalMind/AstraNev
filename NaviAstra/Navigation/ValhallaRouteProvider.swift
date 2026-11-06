@@ -52,6 +52,28 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
                                   preferences: RoutingPreferences(), avoiding: [])
     }
 
+    /// One real route for a search row. Keep the normal access/profile/offline
+    /// contract, without alternate routes or supplementary profile requests.
+    func searchRouteEstimate(from: Coordinate, to: Coordinate, mode: TransportMode,
+                             preferences: RoutingPreferences) async throws -> SearchRouteEstimate? {
+        try RoadRoutingContext.checkCancellation()
+        var request = try makeRouteRequest(from: from, to: to, through: [], mode: mode,
+                                           preferences: preferences, avoiding: [])
+        guard let body = request.httpBody,
+              var payload = try JSONSerialization.jsonObject(with: body) as? [String: Any] else {
+            throw RoutingError.invalidResponse
+        }
+        payload["alternates"] = 0
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        request.timeoutInterval = 6
+        let (data, _) = try await routeData(for: request, mode: mode)
+        try RoadRoutingContext.checkCancellation()
+        let response = try JSONDecoder().decode(SearchEstimateResponse.self, from: data)
+        guard let metric = RoutedTravelMetrics(time: response.trip.summary.time,
+            distance: response.trip.summary.length * 1_000) else { throw RoutingError.invalidResponse }
+        return SearchRouteEstimate(travelTime: metric.time, distanceMeters: metric.distance)
+    }
+
     func walkingCosts(from source: Coordinate, to targets: [Coordinate]) async throws -> [WalkingRouteCost?] {
         guard endpoint.scheme == "https", !targets.isEmpty else { throw RoutingError.invalidEndpoint }
         var request = URLRequest(url: endpoint.appendingPathComponent("sources_to_targets"))
@@ -396,6 +418,16 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
     private struct Response: Decodable {
         let trip: Trip
         let alternates: [Alternate]?
+    }
+    private struct SearchEstimateResponse: Decodable {
+        let trip: SearchEstimateTrip
+    }
+    private struct SearchEstimateTrip: Decodable {
+        let summary: SearchEstimateSummary
+    }
+    private struct SearchEstimateSummary: Decodable {
+        let time: Double
+        let length: Double
     }
     private struct MatrixResponse: Decodable {
         let sourcesToTargets: WalkingMatrix

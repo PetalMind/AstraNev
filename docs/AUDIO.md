@@ -15,7 +15,7 @@ VoiceAnnouncementScheduler
         ↓
 VoiceAudioCoordinator + AVSpeechSynthesizer → AVAudioSession
 
-Mikrofon na mapie
+Przycisk „Astra” na mapie
         ↓
 SearchSpeechInput → VoiceCommandParser → VoiceAssistant
                                          ↓
@@ -26,11 +26,13 @@ SearchSpeechInput → VoiceCommandParser → VoiceAssistant
 Uwierzytelniony Skrót → VoiceIntentBridge → VoiceAssistant.open/submit
 ```
 
-`NavigationSession` dostarcza kontekst GPS i trasę. `VoiceGuidanceEngine` zamienia go na komunikaty, a prywatny `VoiceAnnouncementScheduler` ustala ich kolejność. `VoiceAudioCoordinator` rozdziela dostęp do audio między mikrofon, prowadzenie i odpowiedzi asystenta. Pytania odczytują aktualny stan podróży; zmiany celu, postojów i preferencji przechodzą przez potwierdzenie w `VoiceAssistant` oraz istniejącą sesję nawigacji.
+`NavigationSession` dostarcza kontekst GPS i trasę. `VoiceGuidanceEngine` zamienia go na komunikaty, a prywatny `VoiceAnnouncementScheduler` ustala ich kolejność. `VoiceAudioCoordinator` rozdziela dostęp do audio między mikrofon, prowadzenie i odpowiedzi asystenta. Pytania odczytują aktualny stan podróży. Jednoznaczne polecenie prowadzenia do zapisanego miejsca, kontaktu lub konkretnego celu oraz wybór najbliższej placówki od razu trafiają do istniejącej sesji nawigacji. Niejednoznaczne propozycje, postoje i preferencje wymagają wyboru lub potwierdzenia w `VoiceAssistant`.
 
 ## Etap 1 — polecenia, pytania i panel na mapie
 
-Przycisk mikrofonu w dolnej grupie narzędzi mapy otwiera kompaktowy pasek rozmowy przy dolnej krawędzi. Na czas rozmowy pasek zastępuje dolny panel, zachowując jego stan i przewijanie; nie zajmuje miejsca przy manewrach. Dwuwierszowy podgląd pokazuje bieżącą wypowiedź lub odpowiedź. Dotknięcie tekstu otwiera pełną treść w arkuszu. Przyciski potwierdzenia nazywają czynność, np. „Dodaj postój” lub „Zmień cel”; głosowe „tak” działa jak wcześniej. Są też anulowanie, następna propozycja i zamknięcie rozmowy. Pola dotykowe mają co najmniej 44 pkt, a powierzchnia respektuje ograniczenie przezroczystości i zwiększony kontrast.
+Przycisk mikrofonu „Astra” w dolnej grupie narzędzi mapy otwiera kompaktowy pasek rozmowy przy dolnej krawędzi. Na czas rozmowy pasek zastępuje dolny panel, zachowując jego stan i przewijanie; nie zajmuje miejsca przy manewrach. Dwuwierszowy podgląd pokazuje bieżącą wypowiedź lub odpowiedź. Dotknięcie tekstu otwiera pełną treść w arkuszu. Przyciski potwierdzenia nazywają czynność, np. „Dodaj postój” lub „Zmień cel”; głosowe „tak” działa jak wcześniej. Są też anulowanie, następna propozycja i zamknięcie rozmowy. Pola dotykowe mają co najmniej 44 pkt, a powierzchnia respektuje ograniczenie przezroczystości i zwiększony kontrast.
+
+Po zakończonej odpowiedzi pasek znika po 4 sekundach. Odliczanie zaczyna się po zakończeniu odczytu, a komunikat po błędzie nasłuchu otrzymuje taki sam czas na przeczytanie. Nowe polecenie kasuje poprzednie odliczanie. Aktywne nasłuchiwanie, oczekujący wybór lub potwierdzenie, rozpoczęta zmiana trasy oraz otwarta pełna treść rozmowy chronią panel przed automatycznym zamknięciem. Po zamknięciu pełnej treści bezczynny panel dostaje nowe 4 sekundy. Zamknięcie paska nie kończy prowadzenia.
 
 Pasek odróżnia przygotowanie mikrofonu, rzeczywiste słuchanie, kończenie rozpoznawania, obliczanie i odpowiedź. Gotowość sygnalizuje dopiero po uruchomieniu silnika audio; rozpoznawacz otrzymuje strumień od jego początku. Słupki reagują na zmierzony poziom PCM, nie na zapętloną animację. Dotknięcie słupków kończy wypowiedź i czeka na wynik końcowy — nie wykonuje widocznego tekstu częściowego. Wykorzystywany jest tryb dyktowania i kontekst pełnych poleceń, w tym „znajdź stację paliw po trasie”. Sam fragment „stację paliw” nie dopowiada brakującej intencji.
 
@@ -41,9 +43,9 @@ Pasek odróżnia przygotowanie mikrofonu, rzeczywiste słuchanie, kończenie roz
 | Najbliższy manewr | „Powtórz”, „Który pas?”, „Który zjazd z ronda?” |
 | Ruch | „Czy są korki?”, „Jakie są utrudnienia?” |
 | Komunikacja miejska | „Za ile wysiadam?”, „Gdzie mam przesiadkę?”, „Jaka jest następna linia?” |
-| Komunikaty i mapa | „Wycisz komunikaty”, „Włącz głos”, „Mów mniej”, „Mów więcej”, „Mów wolniej”, „Pokaż całą trasę”, „Wróć do prowadzenia” |
+| Komunikaty i mapa | „Wycisz komunikaty”, „Włącz głos”, „Mów mniej”, „Mów więcej”, „Mów wolniej”, „Astra, głośniej”, „Ciszej”, „Pokaż całą trasę”, „Wróć do prowadzenia” |
 
-Parser rozpoznaje określone pełne polskie frazy i ich warianty. Nie wykonuje poleceń na podstawie pojedynczego znalezionego słowa: samo „stop” lub „zakończ” nie kończy podróży. Nazwy własne i adresy pozostają w oryginalnym zapisie. Dom i praca są rozwiązywane na podstawie zapisanych miejsc.
+Parser działa lokalnie, bez LLM, serwera asystenta i klucza API. Rozpoznaje określone pełne polskie frazy i ich warianty, także z początkowym zwrotem „Astra”. Obsługuje m.in. „Gdzie mogę zaparkować?”, „Potrzebuję miejsca parkingowego” i „Gdzie mogę zatankować po drodze?”. Zwrot „Astra” nie uruchamia mikrofonu samoczynnie. Nierozpoznane polecenie otrzymuje ogólną odpowiedź „Nie zrozumiałam polecenia” i przykłady. Nie wykonuje poleceń na podstawie pojedynczego znalezionego słowa: samo „stop” lub „zakończ” nie kończy podróży. Nazwy własne i adresy pozostają w oryginalnym zapisie. Dom i praca są rozwiązywane na podstawie zapisanych miejsc.
 
 „Powtórz” odczytuje manewr dla bieżącej pozycji, a nie ostatnie nagranie. Odpowiedzi wymagają aktualnej pozycji, postępu dla bieżącej trasy oraz, dla trasy drogowej, wiarygodnego dopasowania do jej geometrii. Brak pasów, numeru zjazdu lub danych o ruchu daje polski komunikat o niedostępności. Dane ruchu starsze niż 180 sekund nie służą do odpowiedzi; brak pomiarów nie jest interpretowany jako brak korków. W komunikacji rozkład jest odróżniany od danych bieżących.
 
@@ -53,7 +55,15 @@ Automatyczne zakończenie wypowiedzi wymaga jednocześnie co najmniej 2,5 sekund
 
 ## Etap 2 — wybór miejsc i zmiany podróży
 
-Asystent odczytuje do trzech propozycji pojedynczo. „Następna” lub „Wybierz drugą” przełącza propozycję, a „Tak” potwierdza wskazany cel albo postój. „Anuluj” odrzuca oczekujące polecenie. Adres można poprawić frazą „Nie, chodziło o Kraków” albo „Popraw adres na Kraków, Wawel”; poprawka uruchamia wyszukiwanie celu.
+„Prowadź do dom”, „Prowadź do domu”, „Prowadź do pracy” oraz dokładna nazwa pojedynczego zapisanego miejsca rozpoczynają prowadzenie bez pytania „Tak”. Przypisany dom lub praca ma pierwszeństwo; przy braku takiego przypisania rozpoznawane jest również zwykłe zapisane miejsce nazwane „Dom” lub „Praca”. Kilka zapisów o tej samej nazwie pozostaje lokalną listą; wskazanie numeru adresu od razu rozpoczyna prowadzenie. Brak zapisanego domu/pracy daje komunikat o potrzebie zapisania adresu. Błąd obliczenia nie jest ogłaszany jako rozpoczęte prowadzenie.
+
+Po zapisanych miejscach `VoiceDestinationResolver` sprawdza udostępnione aplikacji kontakty. „Prowadź do Ania Kowalska” z dokładną nazwą kontaktu i jednym adresem uruchamia prowadzenie bez potwierdzenia. Obsługiwane są odwrócona kolejność imienia i nazwiska, polskie znaki oraz zapisany pseudonim; dopisanie „dom” albo „praca” wybiera etykietę adresu. Liczba pasujących osób i adresów jest ustalana lokalnie przed geokodowaniem. Niepowodzenie jednego z kilku adresów nie zamienia pozostałego w jednoznaczny cel. Wieloznaczny geokoder wymaga uzupełnienia adresu. Do geokodera trafia tylko pasujący adres, a nazwisko rozpoznanego kontaktu nie trafia do publicznego wyszukiwania miejsc. Ta ścieżka korzysta z już nadanego dostępu do Kontaktów; zwykłe polecenie nie wywołuje systemowej prośby o uprawnienie.
+
+„Prowadź do Poczta Polska”, „Prowadź do Orlen” lub rozpoznana kategoria wybierają najbliższy zgodny punkt i rozpoczynają prowadzenie. Poczta Polska wymaga placówki `post_office` z pasującą nazwą/operatorami, a nie automatu paczkowego ani punktu odbioru w sklepie. Dopisana miejscowość, ulica i numer ograniczają wybór; kod paczkomatu wskazuje konkretny punkt. Porównywane są odległości drogowe, jeśli wszystkie wyniki je mają; przy niepełnych pomiarach cała grupa jest porównywana geometrycznie. Nie miesza się tych dwóch miar. Wybór najbliższego wymaga aktualnego GPS, nie środka mapy. Duża zmiana pozycji podczas wyszukiwania wymaga powtórzenia polecenia.
+
+Dokładna nazwa pojedynczego publicznego POI lub pełny adres z zgodnym numerem budynku także uruchamia prowadzenie od razu. Sama miejscowość, środek ulicy i niejednoznaczne wyniki pozostają propozycjami. Dla takich celów i postojów asystent odczytuje do trzech propozycji pojedynczo. „Następna” tylko odczytuje kolejną propozycję. Przy wyborze celu „Wybierz drugi”, „Wybierz drugą” lub „Wybierz numer 2” od razu rozpoczynają prowadzenie do wskazanego adresu, bez kolejnego pytania. „Tak” nadal akceptuje aktualnie odczytaną propozycję. Wybór postoju zachowuje osobne potwierdzenie dodania. „Anuluj” odrzuca oczekujące polecenie. Adres można poprawić frazą „Nie, chodziło o Kraków” albo „Popraw adres na Kraków, Wawel”; poprawka uruchamia wyszukiwanie celu; prowadzenie zaczyna się dopiero po wskazaniu numeru lub „Tak”.
+
+Rozpoczęcie prowadzenia do nowego celu oznacza wyjazd teraz, również po wcześniejszym planie na inną godzinę. Zamknięcie i ponowne otwarcie rozmowy w trakcie obliczeń nie pozostawia paska w stanie „Sprawdzam…” po ich zakończeniu i nie odtwarza nieaktualnego komunikatu sukcesu.
 
 | Zmiana | Obsługiwane przykłady i zachowanie |
 |---|---|
@@ -66,9 +76,21 @@ Postoje są obsługiwane dla samochodu, roweru i marszu; zmiana preferencji auto
 
 Propozycja czasu po zmianie preferencji lub usunięciu postoju korzysta z pełnego `calculateRoutes` w odizolowanej sesji. Zachowuje dostawcę tras, ustawienia pojazdu, potwierdzone zamknięcia oraz kontekst baterii EV; uwzględnia ponowne planowanie ładowania. Podczas prowadzenia punktem początkowym jest aktualny GPS, a lista postojów obejmuje pozostałą część podróży. W podglądzie używany jest wybrany punkt początkowy, ręczne postoje i zaplanowany czas wyjazdu lub przyjazdu, z odpowiednią strefą czasową. Samo obliczenie propozycji nie zmienia aktywnej podróży, zapisanych preferencji, punktów dojazdu ani historii i nie publikuje diagnostyki czy ocen personalizacji. Zatwierdzenie ponownie przelicza trasę; wynik może różnić się od propozycji po zmianie warunków.
 
-Rozpoczęcie i zakończenie prowadzenia, zmiana celu, dodanie/usunięcie postoju oraz zastosowanie preferencji wymagają „Tak”. Odpowiedzi na pytania, regulacja mowy i sterowanie mapą nie wymagają potwierdzenia. Po pytaniu asystenta nasłuch może wznowić się bez ponownego dotykania ekranu dopiero wtedy, gdy syntezator potwierdzi zakończenie całej odpowiedzi przez `didFinish`.
+Osobne polecenia rozpoczęcia i zakończenia prowadzenia, dodanie/usunięcie postoju oraz zastosowanie preferencji wymagają „Tak”. Przy kilku adresach wybór numeru jest już ostatecznym poleceniem prowadzenia. Wybór jest sprawdzany względem aktualnej listy i kontekstu podróży; błędny numer, wygasła lista lub ręczna zmiana trasy nie uruchamiają nawigacji. Odpowiedzi na pytania, regulacja mowy i sterowanie mapą nie wymagają potwierdzenia. Po pytaniu asystenta nasłuch może wznowić się bez ponownego dotykania ekranu dopiero wtedy, gdy syntezator potwierdzi zakończenie całej odpowiedzi przez `didFinish`.
 
-Potwierdzenie oraz lista propozycji są przypisane do celu, trasy, postojów, preferencji, trybu i stanu podróży. Wygasają po 90 sekundach lub przy zmianie tego kontekstu. Powtórzone „Tak” nie uruchamia ponownie tej samej zmiany. Błąd rozpoznawania, przerwanie nasłuchu lub zamknięcie panelu usuwa oczekujący dialog. Przerwana albo niedokończona odpowiedź asystenta również usuwa potwierdzenie i propozycje; nie włącza automatycznie mikrofonu. Już zatwierdzona i rozpoczęta zmiana trasy kończy swoje obliczenia również po zamknięciu panelu.
+Potwierdzenie oraz lista propozycji są przypisane do celu, trasy, postojów, preferencji, trybu i stanu podróży. Wygasają po 90 sekundach lub przy zmianie tego kontekstu. Powtórzone „Tak” nie uruchamia ponownie tej samej zmiany. Błąd rozpoznawania lub przerwanie nasłuchu zachowuje aktualny szkic adresu, bez ponownego wyszukiwania i bez automatycznego włączenia mikrofonu. Szkic i propozycje są odrzucane po zmianie podróży lub upływie 90 sekund. Zamknięcie panelu usuwa oczekujące potwierdzenie i wybór. Po uruchomieniu trasy krótko zachowany szkic pozwala wyłącznie na jawne poprawienie adresu, np. „numer domu 24B”; sam nie może ponownie uruchomić trasy. Przerwana odpowiedź również nie włącza mikrofonu. Już zatwierdzona i rozpoczęta zmiana trasy kończy swoje obliczenia również po zamknięciu panelu.
+
+### Pełny adres i doprecyzowanie celu (iOS 1.1.171)
+
+Wypowiedź trafia do parsera w całości dopiero po końcowym wyniku rozpoznawania. Numery takie jak „24 B”, „czternaście a” i „numer dwadzieścia cztery litera be” są normalizowane bez odrzucania ulicy i miejscowości. Daty w nazwach ulic, np. „11 Listopada”, i kody pocztowe pozostają częścią adresu. Powtarzany identyczny wynik częściowy nie przedłuża już bez końca oczekiwania na ciszę. Po odpowiedzi syntezatora nasłuch czeka krótko na wyciszenie wyjścia audio, uwzględniając jego opóźnienie.
+
+Przy braku dokładnego adresu asystent zachowuje zapytanie i pyta o miejscowość lub korektę. Odpowiedź „Nowa Wieś” doprecyzowuje poprzedni adres; „numer domu 26B” albo „litera B” zmienia tylko numer. „Popraw adres na…” zastępuje cały adres, a „nie” odrzuca propozycję i otwiera doprecyzowanie. „Anuluj” kończy oczekującą zmianę. Po błędzie połączenia „spróbuj ponownie” świadomie ponawia zapisane pełne zapytanie. Doprecyzowany wynik wymaga wyboru numeru propozycji lub „tak”.
+
+Wyszukiwanie głosowe korzysta również z zapasowego dostawcy GUGiK. Adres miejscowości z numerem budynku nie wymaga nazwy ulicy. Wynik z innym numerem lub inną miejscowością nie jest podstawiany zamiast żądanego adresu. Rozpoznanie pisowni i pokrycie adresowe nadal zależą od Apple Speech i danych dostawców; nie stosujemy wyjątków dla przykładowych miejsc. Odmieniona lub błędna nazwa, której nie da się jednoznacznie potwierdzić w danych, może wymagać ponownego podania nazwy bez odmiany. Próby na symulatorze nie zastępują odsłuchu mikrofonu, głośnika i Bluetooth na urządzeniu.
+
+„Inna trasa”, „Trasa alternatywna” i „Objazd” działają w podglądzie oraz podczas aktywnego prowadzenia samochodem, rowerem i pieszo. W podglądzie proponują kolejny gotowy wariant. Podczas prowadzenia Astra oblicza nową propozycję od aktualnej pozycji, zachowując cel oraz pozostałe zaplanowane postoje w ich kolejności. Zaplanowane postoje ładowania również pozostają obowiązkowe. Jeżeli zasięg wymaga dodatkowych ładowarek, Astra wymienia je przed potwierdzeniem. Obliczanie propozycji nie zmienia aktywnej trasy ani zapisu podróży. Astra odczytuje szacowany czas dalszej podróży i pyta „Zmienić trasę?”. Dopiero „Tak” lub przycisk „Zmień trasę” stosuje zaakceptowany wariant; „Anuluj” pozostawia prowadzenie bez zmian.
+
+Potwierdzenie wymaga aktualnego planu, ważnej pozycji GPS i możliwości dalszej jazdy po zaproponowanym wariancie. Zmiana celu, postojów, ustawień lub bieżącej trasy, utrata wiarygodnej lokalizacji albo zjechanie poza proponowany wariant unieważniają propozycję. Wtedy trzeba ponownie poprosić o inną trasę. Astra nie zastępuje zaakceptowanej propozycji innym, nieodczytanym wariantem. Brak rzeczywiście innej trasy lub błąd obliczeń daje polski komunikat i zachowuje dotychczasowe prowadzenie. Zmiana nie rozpoczyna nowej podróży; aktualizuje geometrię, postęp, wskazówki i dane ruchu w istniejącej sesji. W komunikacji miejskiej wybór innego połączenia pozostaje dostępny w podglądzie podróży.
 
 ## Etap 3 — Skróty, rozpoznawanie offline i blokada ekranu
 
@@ -78,7 +100,9 @@ Potwierdzenie oraz lista propozycji są przypisane do celu, trasy, postojów, pr
 
 Polskie nazwy i frazy Skrótów nie oznaczają gwarancji polskojęzycznej obsługi przez Siri. Dostępność Siri zależy od języków i funkcji udostępnianych przez system. Własny asystent NaviAstry rozpoznaje i odpowiada po polsku; akcje są także dostępne w aplikacji Skróty.
 
-W ustawieniach, w sekcji „Polecenia głosowe”, przełącznik „Rozpoznawaj tylko na urządzeniu” zapisuje `voiceOfflineOnly`. Włączony wymaga `supportsOnDeviceRecognition` dla polskiego rozpoznawacza i ustawia `requiresOnDeviceRecognition`; przy braku obsługi aplikacja odmawia uruchomienia zamiast przejść na sieć. Wyłączony pozostawia wybór przetwarzania systemowi Apple, bez wymuszania rozpoznawania lokalnego; nagranie może być przetwarzane przez Apple przez internet. Wyszukiwanie nowych miejsc i obliczanie tras nadal może wymagać internetu.
+Astra zawsze wymaga lokalnego polskiego rozpoznawania mowy: sprawdza `supportsOnDeviceRecognition` przed uruchomieniem mikrofonu i ustawia `requiresOnDeviceRecognition`. Przy braku obsługi informuje po polsku o niedostępności i nie przechodzi na rozpoznawanie sieciowe. Ustawienie to obowiązuje także przy zapisanym wcześniej `voiceOfflineOnly = false`.
+
+W ustawieniach „Astra — polecenia głosowe” osobny przełącznik „Dyktowanie w wyszukiwarce tylko na urządzeniu” zapisuje `voiceOfflineOnly` i dotyczy zwykłego dyktowania w polu wyszukiwania. Wyłączony pozostawia wybór przetwarzania tego dyktowania systemowi Apple; nagranie z wyszukiwarki może być przetwarzane przez Apple przez internet. Nie zmienia lokalnego trybu Astry. Wyszukiwanie nowych miejsc, dane ruchu i obliczanie tras nadal mogą wymagać internetu — lokalność dotyczy rozpoznawania i interpretacji poleceń, a nie wszystkich źródeł mapy.
 
 Mikrofon asystenta działa wyłącznie przy aktywnej aplikacji i dostępnych chronionych danych. Przejście w tło lub blokada ekranu kończy rozmowę, usuwa potwierdzenia i zatrzymuje nasłuch. Powrót nie włącza mikrofonu samoczynnie; potrzebne jest kolejne jawne uruchomienie. Automatyczne komunikaty już aktywnej nawigacji nadal mogą działać w tle, zgodnie z uprawnieniami i systemową obsługą audio. Nie wdrożono stałego nasłuchu ani rozmowy z asystentem przez zablokowany ekran.
 
@@ -147,7 +171,9 @@ Użytkownik może ustawić:
 - **Tempo:** suwak `0.38–0.62` przekazywany do `AVSpeechUtterance.rate`.
 - **Głośność komunikatu:** suwak `0–1` przekazywany do `AVSpeechUtterance.volume`; nie zmienia systemowej głośności ani muzyki.
 
-Ustawienia są w sekcji „Komunikaty głosowe”; osobna sekcja „Polecenia głosowe” zawiera ustawienie lokalnego rozpoznawania oraz objaśnienie zachowania w tle. Podczas prowadzenia przycisk głośnika przełącza mowę, a panel pod ikoną suwaków udostępnia opcje komunikatów w skrócie.
+Polecenia „Głośniej” i „Ciszej” zmieniają głośność komunikatów o 0,15 w granicach 0–1. Nie zmieniają głośności systemowej. Przy osiągnięciu granicy Astra podaje ten fakt; przy zerze odpowiedź pozostaje tekstowa.
+
+Ustawienia są w sekcji „Komunikaty głosowe”; osobna sekcja „Astra — polecenia głosowe” zawiera ustawienie lokalnego rozpoznawania oraz objaśnienie zachowania w tle. Podczas prowadzenia przycisk głośnika przełącza mowę, a panel pod ikoną suwaków udostępnia opcje komunikatów w skrócie.
 
 Wyłączenie głosu natychmiast zatrzymuje bieżącą wypowiedź, opróżnia kolejkę i unieważnia oczekujące aktywacje audio. Ponowne włączenie nie odtwarza anulowanych komunikatów; następne zdarzenia mogą zostać wygenerowane normalnie. Jawne zakończenie nawigacji zatrzymuje mowę i czyści deduplikację.
 
@@ -174,6 +200,7 @@ Systemowy głos `pl-PL` może nie być dostępny — wtedy automatyczny wybór p
 | Dialog i potwierdzenia | [`VoiceAssistant.swift`](../NaviAstra/Voice/VoiceAssistant.swift), [`VoiceAssistant+Dialog.swift`](../NaviAstra/Voice/VoiceAssistant+Dialog.swift), [`VoiceDialogContext.swift`](../NaviAstra/Voice/VoiceDialogContext.swift) — stan rozmowy, propozycje, ważność kontekstu |
 | Odpowiedzi i wyszukiwanie | [`VoiceNavigationActions.swift`](../NaviAstra/Voice/VoiceNavigationActions.swift) — aktualne dane podróży, zapisane cele, propozycje postojów |
 | Propozycja wariantu | [`NavigationSession+VoiceQuote.swift`](../NaviAstra/Voice/NavigationSession+VoiceQuote.swift) — `voiceRouteEstimate`, odizolowane obliczenie pełnej trasy z postojami, czasem planu i EV |
+| Alternatywa podczas prowadzenia | [`NavigationSession+VoiceAlternative.swift`](../NaviAstra/Voice/NavigationSession+VoiceAlternative.swift) — odizolowana propozycja, kontrola postojów i aktualności, zastosowanie po potwierdzeniu |
 | Zmiany aktywnej podróży | [`NavigationSession+VoiceEditing.swift`](../NaviAstra/Voice/NavigationSession+VoiceEditing.swift) — zmiana celu/preferencji, dodanie i usunięcie ręcznego postoju |
 | Panel i ustawienia poleceń | [`VoiceAssistantPanel.swift`](../NaviAstra/Voice/VoiceAssistantPanel.swift) — `VoiceAssistantButton`, `VoiceAssistantPanel`, `VoiceAssistantSettings` |
 | Skróty i uruchomienie aplikacji | [`VoiceAppIntents.swift`](../NaviAstra/Voice/VoiceAppIntents.swift) — intencje, `NaviAstraVoiceShortcuts`, `VoiceIntentBridge` |

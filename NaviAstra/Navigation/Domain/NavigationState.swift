@@ -8,6 +8,7 @@ final class NavigationState {
     var searchResults: [SearchResult] = []
     var arrivalLocation: NavigationLocation?
     var location: NavigationLocation?
+    var isLocationAuthorized = false
     var cameraLocation: NavigationLocation?
     var deviceHeading: Double?
     var route: NavigationRoute?
