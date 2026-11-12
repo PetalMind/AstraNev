@@ -11,7 +11,9 @@ final class NavigationState {
     var isLocationAuthorized = false
     var cameraLocation: NavigationLocation?
     var deviceHeading: Double?
-    var route: NavigationRoute?
+    var route: NavigationRoute? {
+        didSet { if oldValue?.id != route?.id { speedLimitRemainingMeters = nil } }
+    }
     var transportMode: TransportMode = .car
     var journeyTimeMode: JourneyTimeMode = .now
     var journeyTargetTime = Date()
@@ -78,7 +80,10 @@ final class NavigationState {
             voicePreferences = updated
         }
     }
-    var speedLimitKph: Int?
+    var speedLimitKph: Int? {
+        didSet { if oldValue != speedLimitKph { speedLimitRemainingMeters = nil } }
+    }
+    var speedLimitRemainingMeters: Double?
     var speedLimitSource: SpeedLimitSource?
     var speedLimitMessage: String?
     var roadSafetyAlerts: [RoadSafetyAlert] = []

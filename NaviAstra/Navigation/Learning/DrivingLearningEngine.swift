@@ -3,7 +3,7 @@ import Observation
 
 @MainActor @Observable
 final class DrivingLearningEngine {
-    static let shared = DrivingLearningEngine()
+    static let shared = DrivingLearningEngine(preparesInitialProfileInBackground: true)
     private(set) var settings = DrivingLearningSettings()
     private(set) var patterns: [DrivingRoutePattern] = []
     private(set) var approaches: [DrivingApproachPreference] = []
@@ -32,7 +32,18 @@ final class DrivingLearningEngine {
     var segmentCount: Int { snapshot.trips.reduce(0) { $0 + $1.segments.count } }
     var offeredVariantCount: Int { snapshot.trips.reduce(0) { $0 + $1.offeredVariants.count } }
 
-    private struct RoadEvidence {
+    @ObservationIgnored private var initialProfileWorker: Task<DerivedProfile?, Never>?
+
+    private nonisolated struct DerivedProfile: Sendable {
+        let patterns: [DrivingRoutePattern]
+        let roads: [DrivingRoadPreference]
+        let shortcuts: [DrivingShortcutPreference]
+        let approaches: [DrivingApproachPreference]
+        let excludedHabitTripIDs: Set<UUID>
+        let roadEvidence: [String: RoadEvidence]
+    }
+
+    private nonisolated struct RoadEvidence: Sendable {
         var segment: LearnedRoadSegment
         var usage = 0
         var selfSelected = 0
@@ -57,7 +68,7 @@ final class DrivingLearningEngine {
         let patterns: [DrivingRoutePattern]
     }
 
-    init(store: DrivingProfileStore? = nil) {
+    init(store: DrivingProfileStore? = nil, preparesInitialProfileInBackground: Bool = false) {
         let store = store ?? DrivingProfileStore()
         self.store = store
         do { snapshot = try store.load() }
@@ -84,7 +95,7 @@ final class DrivingLearningEngine {
             do { try store.save(snapshot) }
             catch { message = "Nie udało się zapisać ustawień uczenia tras na urządzeniu." }
         }
-        rebuild()
+        rebuild(inBackground: preparesInitialProfileInBackground)
     }
 
     func updateSettings(_ value: DrivingLearningSettings) {
@@ -313,7 +324,8 @@ final class DrivingLearningEngine {
                 continue
             }
             guard case let .success(plan) = result else { return }
-            _ = commit(plan.snapshot, preparedPatterns: plan.patterns)
+            _ = commit(plan.snapshot, preparedPatterns: plan.patterns, rebuildInBackground: true)
+            await waitForInitialProfile()
             return
         }
     }
@@ -515,7 +527,7 @@ final class DrivingLearningEngine {
     }
 
     @discardableResult private func commit(_ input: DrivingProfileSnapshot,
-                                          preparedPatterns: [DrivingRoutePattern]? = nil) -> Bool {
+                                          preparedPatterns: [DrivingRoutePattern]? = nil, rebuildInBackground: Bool = false) -> Bool {
         guard canWriteProfile else {
             message = "Zapis preferencji tras jest wstrzymany, aby zachować dane wymagające odzyskania."
             return false
@@ -549,7 +561,7 @@ final class DrivingLearningEngine {
             snapshotRevision &+= 1
             historyRecoveryWorker?.cancel()
             historyPresentationRevision &+= 1
-            rebuild(preparedPatterns: preparedPatterns)
+            rebuild(preparedPatterns: preparedPatterns, inBackground: rebuildInBackground || initialProfileWorker != nil)
             return true
         } catch {
             message = "Nie udało się zapisać preferencji tras na urządzeniu."
@@ -575,15 +587,56 @@ final class DrivingLearningEngine {
         }
     }
 
-    private func rebuild(preparedPatterns: [DrivingRoutePattern]? = nil) {
+    private func rebuild(preparedPatterns: [DrivingRoutePattern]? = nil, inBackground: Bool = false) {
+        initialProfileWorker?.cancel()
+        initialProfileWorker = nil
         let trips = profileTrips()
-        patterns = preparedPatterns ?? DrivingLearningMath.patterns(trips)
         learnedTripCount = trips.count
         pendingCount = snapshot.pending.count
         evidence = snapshot.evidence.sorted { $0.timestamp > $1.timestamp }
         databaseBytes = store.databaseBytes()
-        roadEvidence = [:]
+        if inBackground && !trips.isEmpty {
+            let input = snapshot
+            let worker = Task.detached(priority: .utility) {
+                Self.deriveProfile(from: input, trips: trips, preparedPatterns: preparedPatterns)
+            }
+            initialProfileWorker = worker
+            Task { [weak self] in await self?.waitForInitialProfile() }
+        } else if let profile = Self.deriveProfile(from: snapshot, trips: trips, preparedPatterns: preparedPatterns,
+                                                   isCancelled: { false }) {
+            apply(profile)
+        }
+    }
+
+    /// Personalized routing can wait for the history without holding the scene's main thread.
+    func waitForInitialProfile() async {
+        while let worker = initialProfileWorker {
+            let generation = snapshotRevision
+            let profile = await worker.value
+            guard generation == snapshotRevision else { continue }
+            guard initialProfileWorker != nil else { return }
+            initialProfileWorker = nil
+            if let profile { apply(profile) }
+        }
+    }
+
+    private func apply(_ profile: DerivedProfile) {
+        patterns = profile.patterns
+        roads = profile.roads
+        shortcuts = profile.shortcuts
+        approaches = profile.approaches
+        excludedHabitTripIDs = profile.excludedHabitTripIDs
+        roadEvidence = profile.roadEvidence
+    }
+
+    private nonisolated static func deriveProfile(from snapshot: DrivingProfileSnapshot, trips: [LearnedDrivingTrip],
+                                                  preparedPatterns: [DrivingRoutePattern]?,
+                                                  isCancelled: () -> Bool = { Task.isCancelled }) -> DerivedProfile? {
+        guard !isCancelled() else { return nil }
+        let patterns = preparedPatterns ?? DrivingLearningMath.patterns(trips)
+        var roadEvidence: [String: RoadEvidence] = [:]
         for trip in trips {
+            guard !isCancelled() else { return nil }
             guard let observation = snapshot.evidence.first(where: {
                 $0.tripID == trip.id && [.normalTraversal, .selectedAlternative, .repeatedDeviation, .legacyImport, .historyRecovery].contains($0.source)
             }) else { continue }
@@ -607,7 +660,7 @@ final class DrivingLearningEngine {
                 roadEvidence[segment.id] = value
             }
         }
-        roads = roadEvidence.values.filter {
+        let roads = roadEvidence.values.filter {
             !snapshot.ignoredRoadIDs.contains($0.segment.id) && ($0.selfSelected >= 3 || $0.avoided >= 3 || $0.confirmed)
         }.map { value in
             DrivingRoadPreference(id: value.segment.id, names: value.segment.names, uses: value.usage,
@@ -615,30 +668,52 @@ final class DrivingLearningEngine {
                 preference: Double(value.chosen) / Double(max(1, value.offered)),
                 avoidance: min(1, Double(value.avoided) / Double(max(1, value.offered))),
                 offeredCount: value.offered, chosenCount: value.chosen,
-                metrics: roadMetrics(value, at: Date()), lastUsedAt: value.observations.map(\.timestamp).max(),
+                metrics: roadMetrics(value, evidence: snapshot.evidence, at: Date()), lastUsedAt: value.observations.map(\.timestamp).max(),
                 offeredCountKnown: value.observations.contains { $0.offeredAlternative != nil || $0.offeredSegments?.contains(value.segment.id) == true })
         }.sorted { $0.uses + $0.avoided > $1.uses + $1.avoided }
         let deviations = Dictionary(grouping: trips.flatMap(\.deviations), by: \.id)
-        shortcuts = deviations.compactMap { id, items in
-            guard let deviation = items.first, !snapshot.ignoredShortcutIDs.contains(id),
+        let choices = deviations.compactMapValues { items -> (deviation: DrivingDeviation, containsTrace: Bool)? in
+            guard let deviation = items.first, !snapshot.ignoredShortcutIDs.contains(deviation.id),
                   !snapshot.ignoredShortcutIDs.contains(deviation.boundaryID) else { return nil }
+            return (deviation, deviation.preferred.contains { $0.id.hasPrefix("trace:") })
+        }
+        var offeredCounts: [String: Int] = [:]
+        var chosenCounts: [String: Int] = [:]
+        // Compare all deviations with this trip before moving on. A long history
+        // only retains spatial indexes for one trip and its offered variants.
+        for trip in trips where !choices.isEmpty && !trip.offeredVariants.isEmpty {
+            var variants = trip.offeredVariants.map { DrivingLearningMath.SimilarityCandidate($0.segments) }
+            var driven = DrivingLearningMath.SimilarityCandidate(trip.segments)
+            for (id, choice) in choices {
+                guard !isCancelled() else { return nil }
+                let preferred = choice.deviation.preferred
+                guard variants.indices.contains(where: {
+                    variants[$0].similarity(to: preferred, containsTrace: choice.containsTrace) >= 0.85
+                }) else { continue }
+                offeredCounts[id, default: 0] += 1
+                if driven.similarity(to: preferred, containsTrace: choice.containsTrace) >= 0.85 {
+                    chosenCounts[id, default: 0] += 1
+                }
+            }
+        }
+        let shortcuts: [DrivingShortcutPreference] = deviations.compactMap { id, items in
+            guard !isCancelled(), let deviation = choices[id]?.deviation else { return nil }
             let users = trips.filter { $0.deviations.contains { $0.id == id } }
             let eligible = users.filter { $0.automaticPreferenceEligible || $0.confirmed }
-            let offeredUsers = trips.filter { trip in
-                trip.offeredVariants.contains { DrivingLearningMath.similarity(deviation.preferred, $0.segments) >= 0.85 }
-            }
-            let chosenOffered = offeredUsers.filter { DrivingLearningMath.similarity(deviation.preferred, $0.segments) >= 0.85 }
+            let offered = offeredCounts[id] ?? 0
+            let chosen = chosenCounts[id] ?? 0
             let durations = items.compactMap(\.elapsed).filter { $0 > 0 }
             let metrics = DrivingEvidenceMath.metrics(trips: eligible, at: Date())
             return DrivingShortcutPreference(id: id, deviation: deviation, uses: users.count,
-                acceptanceRate: Double(chosenOffered.count) / Double(max(1, offeredUsers.count)), confidence: metrics.confidence,
+                acceptanceRate: Double(chosen) / Double(max(1, offered)), confidence: metrics.confidence,
                 averageObservedDuration: durations.isEmpty ? nil : durations.reduce(0, +) / Double(durations.count),
                 metrics: metrics, confirmed: metrics.userConfirmed,
-                offeredCount: offeredUsers.isEmpty ? nil : offeredUsers.count,
-                chosenCount: chosenOffered.count, avoidedCount: offeredUsers.count - chosenOffered.count)
+                offeredCount: offered == 0 ? nil : offered,
+                chosenCount: chosen, avoidedCount: offered - chosen)
         }.sorted { $0.uses > $1.uses }
         var arrivals: [DrivingApproachPreference] = []
         for trip in trips.sorted(by: { $0.startedAt < $1.startedAt }) {
+            guard !isCancelled() else { return nil }
             var final: [LearnedRoadSegment] = [], length = 0.0
             for segment in trip.segments.reversed() {
                 final.insert(segment, at: 0); length += segment.length
@@ -654,11 +729,13 @@ final class DrivingLearningEngine {
             else { arrivals.append(DrivingApproachPreference(id: trip.id, destination: trip.destination,
                 name: trip.destinationName, segments: final, trips: [trip], approachBearing: bearing, entry: final.first?.coordinates.first)) }
         }
-        excludedHabitTripIDs = Set(arrivals.filter { snapshot.ignoredApproachIDs.contains($0.id) }.flatMap { $0.trips.map(\.id) })
-        approaches = arrivals.filter { !snapshot.ignoredApproachIDs.contains($0.id) }
+        let excludedHabitTripIDs = Set(arrivals.filter { snapshot.ignoredApproachIDs.contains($0.id) }.flatMap { $0.trips.map(\.id) })
+        return DerivedProfile(patterns: patterns, roads: roads, shortcuts: shortcuts,
+                              approaches: arrivals.filter { !snapshot.ignoredApproachIDs.contains($0.id) },
+                              excludedHabitTripIDs: excludedHabitTripIDs, roadEvidence: roadEvidence)
     }
 
-    private func roadMetrics(_ value: RoadEvidence, at date: Date,
+    private nonisolated static func roadMetrics(_ value: RoadEvidence, evidence: [PreferenceEvidence], at date: Date,
                              context: DrivingPreferenceContext? = nil, avoiding: Bool = false) -> PreferenceMetrics {
         let signal = avoiding ? value.avoided : value.selfSelected
         let confirmed = value.confirmed && !avoiding
@@ -670,7 +747,7 @@ final class DrivingLearningEngine {
         var recency = supporting.isEmpty ? 0 : supporting.reduce(0) { $0 + DrivingEvidenceMath.recency($1.timestamp, at: date) } / Double(supporting.count)
         if confirmed {
             let ids = Set(supporting.compactMap(\.tripID))
-            if let manual = snapshot.evidence.filter({ $0.source == .manualRouteSave && $0.tripID.map { ids.contains($0) } == true }).map(\.timestamp).max() {
+            if let manual = evidence.filter({ $0.source == .manualRouteSave && $0.tripID.map { ids.contains($0) } == true }).map(\.timestamp).max() {
                 recency = max(recency, DrivingEvidenceMath.recency(manual, at: date))
             }
         }
@@ -804,8 +881,8 @@ final class DrivingLearningEngine {
                       let point = road.segment.coordinates.first, geometry.project(point, within: 30) != nil else { continue }
                 let overlap = DrivingLearningMath.overlap([road.segment], geometry: geometry, from: start)
                 let fraction = min(1, road.segment.length / max(500, geometry.length - start))
-                var positive = roadMetrics(road, at: date, context: context)
-                var negative = roadMetrics(road, at: date, context: context, avoiding: true)
+                var positive = Self.roadMetrics(road, evidence: snapshot.evidence, at: date, context: context)
+                var negative = Self.roadMetrics(road, evidence: snapshot.evidence, at: date, context: context, avoiding: true)
                 positive.relevance *= overlap * fraction
                 negative.relevance *= overlap * fraction
                 reward += positive.effective

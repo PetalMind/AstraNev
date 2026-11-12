@@ -75,13 +75,8 @@ extension NavigationSession {
             for calculated in routes {
                 guard calculated.id != current.id,
                       calculated.coordinates.first.map({ $0.distance(to: location.coordinate) <= 100 }) == true else { continue }
-                // The EV planner resolves new charger entrances before routing,
-                // but its temporary candidates are not yet in a saved plan.
-                // Resolve them on the isolated state so the accepted plan keeps
-                // access coordinates instead of reverting to a station's pin.
-                quote.state.evChargingStops = calculated.chargingStops.map(\.destination)
-                let routedCharges = await quote.routedDestinations(quote.state.evChargingStops, mode: plan.mode)
-                try Task.checkCancellation()
+                quote.commitEVChargingStops(for: calculated)
+                let chargingTargets = calculated.chargingStops.map { $0.navigationTarget?.coordinate ?? $0.destination.coordinate }
                 var route = calculated
                 let missingCharges = oldCharging.filter { old in
                     !route.chargingStops.contains { new in
@@ -109,15 +104,15 @@ extension NavigationSession {
                 let proposal = VoiceAlternativeRouteProposal(route: route, additionalChargingStops: additional,
                     plan: plan, rerouteGeneration: rerouteGeneration, remainingStops: remaining,
                     stopTargets: targets, navigationTargets: quote.state.waypointNavigationTargets,
-                    chargingTargets: routedCharges.map(\.coordinate),
-                    requiredEnergyStop: routedCharges.first?.coordinate,
+                    chargingTargets: chargingTargets,
+                    requiredEnergyStop: chargingTargets.first,
                     createdAt: createdAt)
                 // Plan invalidation is a stale proposal, not a provider failing
                 // to supply a distinct alternative.
                 try validateVoiceAlternativePlan(proposal)
                 guard let freshLocation = voiceEditingLocation,
                       voiceAlternativeGeometryIsUsable(proposal, location: freshLocation) else { continue }
-                try validateVoiceAlternativeClosures(route)
+                guard voiceAlternativeAvoidsClosures(route) else { continue }
                 return proposal
             }
             try validateVoiceAlternativePlan(VoiceAlternativeRouteProposal(route: current,
@@ -139,7 +134,7 @@ extension NavigationSession {
         guard voiceAlternativeGeometryIsUsable(proposal, location: location) else {
             throw VoiceAlternativeRouteError.stale
         }
-        try validateVoiceAlternativeClosures(proposal.route)
+        guard voiceAlternativeAvoidsClosures(proposal.route) else { throw VoiceAlternativeRouteError.stale }
         // No suspension follows these checks: accepting the proposal is one
         // atomic main-actor transition, without ending/restarting trip recording.
         roadRerouteCancellationToken?.cancel()
@@ -204,11 +199,10 @@ extension NavigationSession {
         }
     }
 
-    private func validateVoiceAlternativeClosures(_ route: NavigationRoute) throws {
-        for closure in knownRoadClosures.values where closure.isFresh() {
-            guard let avoidance = try? closure.avoidance(), !avoidance.intersects(route) else {
-                throw VoiceAlternativeRouteError.stale
-            }
+    private func voiceAlternativeAvoidsClosures(_ route: NavigationRoute) -> Bool {
+        knownRoadClosures.values.filter { $0.isFresh() }.allSatisfy { closure in
+            guard let avoidance = try? closure.avoidance() else { return false }
+            return !avoidance.intersects(route)
         }
     }
 

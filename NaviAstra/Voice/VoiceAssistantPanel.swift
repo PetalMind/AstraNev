@@ -12,14 +12,11 @@ struct VoiceAssistantButton: View {
 
     var body: some View {
         Button { assistant.isPresented ? assistant.close() : assistant.open() } label: {
-            VStack(spacing: 2) {
-                Image(systemName: assistant.isCapturingSpeech ? "waveform" : "mic")
-                    .font(.system(size: 17, weight: .medium))
-                Text("Astra").font(.caption2)
-            }
-            .foregroundStyle(assistant.isPresented ? Color.accentColor : Color.naviTextPrimary)
-            .frame(minWidth: max(44, controlSize), minHeight: max(44, controlSize))
-            .contentShape(Rectangle())
+            Image(systemName: assistant.isCapturingSpeech ? "mic.fill" : "mic")
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(assistant.isPresented ? Color.accentColor : Color.naviTextPrimary)
+                .frame(minWidth: max(44, controlSize), minHeight: max(44, controlSize))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(assistant.isPresented ? "Zakończ rozmowę z Astrą" : "Astra — asystent głosowy")

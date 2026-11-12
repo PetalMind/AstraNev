@@ -173,6 +173,13 @@ final class TripPlanningService {
 
         var candidates = session.state.routeOptions
         var knownClosures: [String: ConfirmedRoadClosure] = [:]
+        var savedVariantClosed = false
+        func preferredOpenOption(in options: [NavigationRoute], measuredTravelTimes: [UUID: TimeInterval] = [:])
+            -> (route: NavigationRoute?, matched: Bool) {
+            let option = trip.preferredOption(in: options, measuredTravelTimes: measuredTravelTimes)
+            // A detour can still pass near every saved fingerprint point.
+            return (option.route, option.matched && !savedVariantClosed)
+        }
         for attempt in 0...1 {
             try Task.checkCancellation()
             let previousAvoidances = try knownClosures.values.filter { $0.isFresh() }.map { try $0.avoidance() }
@@ -186,7 +193,7 @@ final class TripPlanningService {
                     isNavigating: false, isForeground: false, wholeRoute: true, requireComparableCoverage: false)
             } catch is CancellationError { throw CancellationError() }
             catch {
-                let fallback = trip.preferredOption(in: candidates)
+                let fallback = preferredOpenOption(in: candidates)
                 guard let route = fallback.route else { throw RoutingError.invalidResponse }
                 return Calculation(route: route, matched: fallback.matched, duration: route.expectedTravelTime,
                     note: "Dane o ruchu są niedostępne. Użyto czasu silnika tras.")
@@ -199,6 +206,10 @@ final class TripPlanningService {
             }
             let avoidances = try knownClosures.values.filter { $0.isFresh() }.map { try $0.avoidance() }
             let openRoutes = candidates.filter { route in !avoidances.contains { $0.intersects(route) } }
+            if attempt == 0, !trip.preferredRoute.isEmpty, baseline.matched,
+               !openRoutes.contains(where: { $0.id == baseline.route.id }) {
+                savedVariantClosed = true
+            }
             if openRoutes.isEmpty {
                 guard attempt == 0 else {
                     throw TripPlanningError.message("Nie znaleziono przejezdnego objazdu zamkniętej drogi. Plan pozostaje zapisany.")
@@ -216,7 +227,7 @@ final class TripPlanningService {
                 continue
             }
             guard TrafficRouteEvaluator.hasComparableCoverage(routes: openRoutes, traffic: snapshots, wholeRoute: true) else {
-                let fallback = trip.preferredOption(in: openRoutes)
+                let fallback = preferredOpenOption(in: openRoutes)
                 guard let route = fallback.route else { throw RoutingError.invalidResponse }
                 let note = knownClosures.isEmpty
                     ? "Pomiary ruchu nie pozwalają porównać wariantów. Użyto czasu silnika tras."
@@ -231,7 +242,7 @@ final class TripPlanningService {
             let durations = Dictionary(uniqueKeysWithValues: ranked.map { route in
                 (route.id, RoadRouteETA.estimate(route, from: 0, traffic: snapshots[route.id]))
             })
-            let chosen = trip.preferredOption(in: ranked, measuredTravelTimes: durations)
+            let chosen = preferredOpenOption(in: ranked, measuredTravelTimes: durations)
             guard let route = chosen.route, let duration = durations[route.id], duration.isFinite else {
                 throw RoutingError.invalidResponse
             }

@@ -87,6 +87,13 @@ nonisolated struct ValhallaAvoidArea: Codable, Equatable, Identifiable {
         guard let first = vertices.first else { return [] }
         return (vertices + [first]).map { [$0.longitude, $0.latitude] }
     }
+
+    static func validatedRings(_ areas: [Self]) throws -> [[[Double]]] {
+        guard areas.count <= 8, areas.allSatisfy(\.isValid) else {
+            throw ValhallaFeatureError.message("Obszary omijane muszą mieć 3–32 wierzchołki bez przecięć. Maksymalnie 8 obszarów.")
+        }
+        return areas.map(\.closedRing)
+    }
 }
 
 nonisolated struct ValhallaRoutingOptions: Codable, Equatable {
@@ -294,10 +301,7 @@ extension RoutingPreferences {
                 payload["locations"] = locations
             }
         }
-        guard profile.avoidAreas.count <= 8, profile.avoidAreas.allSatisfy(\.isValid) else {
-            throw ValhallaFeatureError.message("Obszary omijane muszą mieć 3–32 wierzchołki bez przecięć. Maksymalnie 8 obszarów.")
-        }
-        let polygons = profile.avoidAreas.map(\.closedRing) + RoadRoutingContext.closurePolygons
+        let polygons = try ValhallaAvoidArea.validatedRings(profile.avoidAreas) + RoadRoutingContext.closurePolygons
             + RoadRoutingContext.congestionAvoidancePolygons
         if !polygons.isEmpty { payload["exclude_polygons"] = polygons }
         payload["date_time"] = (RoadRoutingContext.planningTime ?? ValhallaPlanningTime(type: 0)).payload

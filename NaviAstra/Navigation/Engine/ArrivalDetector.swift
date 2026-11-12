@@ -3,19 +3,20 @@ import Foundation
 /// Arrival requires fresh, accurate, distinct fixes; timer and traffic callbacks
 /// must never turn one old GPS sample into evidence of a stopped vehicle.
 struct ArrivalDetector {
+    static let carRemainingMeters = 35.0
+    static let carRadiusMeters = 25.0
     private var firstTimestamp: Date?
     private var lastTimestamp: Date?
     private var sampleCount = 0
 
     mutating func observe(_ location: NavigationLocation, destinationDistance: Double,
-                          remainingDistance: Double?, destinationRadius: Double = 50,
+                          remainingDistance: Double, mode: TransportMode,
                           now: Date = Date()) -> Bool {
-        // A car can arrive from another access road while map matching still
-        // reports a long detour. Only require route completion when supplied.
-        let routeIsComplete = remainingDistance.map { $0 >= 0 && $0 < 75 } ?? true
-        guard location.accuracy >= 0, location.accuracy <= 30,
+        let driving = mode == .car
+        guard location.accuracy >= 0, location.accuracy <= (driving ? 20 : 30),
               location.speed.isFinite, location.speed >= 0, location.speed < 5 / 3.6,
-              destinationDistance >= 0, destinationDistance <= destinationRadius, routeIsComplete,
+              destinationDistance >= 0, destinationDistance <= (driving ? Self.carRadiusMeters : 50),
+              remainingDistance >= 0, remainingDistance < (driving ? Self.carRemainingMeters : 75),
               abs(now.timeIntervalSince(location.timestamp)) <= 5 else {
             reset()
             return false

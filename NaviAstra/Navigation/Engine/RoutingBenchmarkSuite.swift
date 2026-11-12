@@ -76,9 +76,14 @@ nonisolated enum RoutingBenchmarkSuite {
                       measured: "fastest=\(fast), shortest=\(short)", routes: [a, b])
             }
             let busy = route(distance: 19_000, time: 1_860, turns: 41), easy = route(distance: 22_000, time: 1_980, turns: 8)
-            let balanced = RouteScoringEngine.ranked([busy, easy], preference: .balanced).first?.id == easy.id
-            check("mieszana", passed: balanced, expected: "Mniej złożonych manewrów przy małej różnicy czasu",
-                  measured: "easy=\(balanced)", routes: [busy, easy], preference: .balanced)
+            // The final three distances add over 5 km. The balanced profile's
+            // absolute detour limit then takes precedence over the simpler turns.
+            let withinDetourLimit = easy.distance - busy.distance <= 5_000
+            let selected = RouteScoringEngine.ranked([busy, easy], preference: .balanced).first?.id
+            check("mieszana", passed: selected == (withinDetourLimit ? easy.id : busy.id),
+                  expected: withinDetourLimit ? "Mniej skrętów przy małej różnicy czasu" : "Objazd przekracza 5 km",
+                  measured: selected == easy.id ? "Wariant z mniejszą liczbą skrętów" : "Wariant bez objazdu",
+                  routes: [busy, easy], preference: .balanced)
             let active = route(distance: 2_000, time: 100)
             let geometry = RouteProgressGeometry(active)
             let segment = RouteTrafficSegment(id: "flow", routeID: active.id, startDistance: 0,

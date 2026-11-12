@@ -134,6 +134,7 @@ struct EVChargingStop: Identifiable, Sendable {
     let estimatedChargingTime: TimeInterval
     let availabilityKnown: Bool
     let publicAccess: Bool?
+    var navigationTarget: POINavigationTarget? = nil
 }
 
 enum TransportMode: String, Codable, CaseIterable, Identifiable, Sendable {
@@ -309,6 +310,17 @@ nonisolated enum RoadRoutingContext {
     @TaskLocal static var personalRoutingHints = false
     @TaskLocal static var closurePolygons: [[[Double]]] = []
     @TaskLocal static var congestionAvoidancePolygons: [[[Double]]] = []
+    // Local validation always uses the full set, even when a retry sends fewer rings.
+    @TaskLocal static var routeExclusions: [RoadExclusionPolygon] = []
+    @TaskLocal static var recoveringPolygonLimit = false
+
+    static func routesAvoidingExclusions(_ routes: [NavigationRoute]) throws -> [NavigationRoute] {
+        try checkCancellation()
+        guard !routeExclusions.isEmpty, !routes.isEmpty else { return routes }
+        let safe = routes.filter { route in !routeExclusions.contains { $0.intersects(route) } }
+        guard !safe.isEmpty else { throw RoadExclusionConflict(routes: routes) }
+        return safe
+    }
 
     static func checkCancellation() throws {
         try Task.checkCancellation()

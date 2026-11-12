@@ -146,6 +146,9 @@ private struct VoiceAnnouncement {
 @MainActor
 final class VoiceGuidanceEngine {
     private let scheduler = VoiceAnnouncementScheduler()
+#if os(iOS)
+    private var trafficKeysByReportID: [String: String] = [:]
+#endif
     private(set) var preferences: VoiceGuidancePreferences
 
     init(preferences: VoiceGuidancePreferences = .load()) {
@@ -164,6 +167,9 @@ final class VoiceGuidanceEngine {
     }
 
     func reset(preservingSpokenAnnouncements: Bool = false) {
+#if os(iOS)
+        if !preservingSpokenAnnouncements { trafficKeysByReportID.removeAll() }
+#endif
         scheduler.reset(preservingSpokenAnnouncements: preservingSpokenAnnouncements)
     }
 
@@ -212,6 +218,13 @@ final class VoiceGuidanceEngine {
     }
 
     func announce(_ alert: RoadSafetyAlert, distance: Double) {
+#if os(iOS)
+        if alert.type == .congestion || alert.type == .roadClosed {
+            announceTrafficNotice(alert.type == .congestion ? .jam : .roadClosed,
+                                  coordinate: alert.coordinate, distance: distance, reportID: alert.id)
+            return
+        }
+#endif
         guard preferences.verbosity.includes(alert.type),
               let stage = roadAlertStage(for: distance) else { return }
         let priority: VoiceAnnouncementPriority = alert.type == .roadClosed ? .critical : .safety
@@ -226,6 +239,14 @@ final class VoiceGuidanceEngine {
     }
 
     func announce(_ incident: TrafficIncident, distance: Double) {
+#if os(iOS)
+        if incident.isActive(), let category = incident.trafficNoticeCategory {
+            announceTrafficNotice(category, coordinate: incident.coordinate, distance: distance, reportID: incident.id)
+            // A grouped incident can also carry a distinct safety warning.
+            if incident.cause.label == nil && (incident.category == category || incident.category == .cluster ||
+                incident.category == .unknown) { return }
+        }
+#endif
         guard incident.isActive(),
               (preferences.verbosity.includes(incident.category) ||
                (preferences.verbosity != .concise && incident.isImportantDuringNavigation)),
@@ -251,6 +272,38 @@ final class VoiceGuidanceEngine {
             priority: stage == 2 ? max(priority, .maneuverNow) : priority
         )
     }
+
+#if os(iOS)
+    func trafficNotice(_ category: TrafficIncidentCategory, coordinate: Coordinate,
+                       distance: Double, reportID: String? = nil) -> (key: String, text: String)? {
+        guard preferences.isEnabled, preferences.volume > 0, coordinate.isValidValhallaCoordinate,
+              (0...1_200).contains(distance), category == .jam || category == .roadClosed else { return nil }
+        let event = category == .jam ? "zaczyna się korek" : "droga jest zamknięta"
+        let text: String
+        if distance < 3 {
+            text = "Tu \(event)."
+        } else {
+            let meters = max(5, Int((distance / 5).rounded()) * 5)
+            text = "Za \(meters.formatted(.number.locale(PolishRegionalFormat.locale))) metrów \(event)."
+        }
+        // Nearby and route reports can give different coordinates for the same ID.
+        // Other sources at the same point share the initial geographic key.
+        let geographicKey = "traffic|\(voiceEventIdentity(kind: category.rawValue, coordinate: coordinate))"
+        if let reportID {
+            let identity = "\(category.rawValue)|\(reportID)"
+            if let known = trafficKeysByReportID[identity] { return (known, text) }
+            trafficKeysByReportID[identity] = geographicKey
+        }
+        return (geographicKey, text)
+    }
+
+    private func announceTrafficNotice(_ category: TrafficIncidentCategory, coordinate: Coordinate,
+                                       distance: Double, reportID: String) {
+        if let notice = trafficNotice(category, coordinate: coordinate, distance: distance, reportID: reportID) {
+            scheduler.enqueue(key: notice.key, text: notice.text, priority: .safety)
+        }
+    }
+#endif
 
     func announceArrival(destination: Destination?, transportMode: TransportMode) {
         let destinationKey = destination.map {

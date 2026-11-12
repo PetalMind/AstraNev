@@ -65,6 +65,54 @@ final class MapPOIVisualRenderer {
     private var selectionKey = ""
     private var refreshTask: Task<Void, Never>?
 
+    private static let images = NSCache<NSString, UIImage>()
+    private static let imageFactories: [String: @MainActor () -> UIImage] = {
+        var factories: [String: @MainActor () -> UIImage] = [:]
+        for dark in [false, true] {
+            for kind in PlacePOIMapMarkerKind.allCases {
+                factories[imageName(for: kind, dark: dark)] = { kind.makeMapStyleImage(dark: dark) }
+            }
+            for sport in MapSportKind.allCases {
+                factories[sport.imageName(dark: dark)] = { sport.image(dark: dark) }
+            }
+            for (layer, symbol) in [("poi_education", "graduationcap.fill"), ("poi_sport", "sportscourt.fill"), ("landmark", "star.fill")] {
+                factories["naviastra-poi-special-\(layer)-\(dark)"] = {
+                    specialImage(layer: layer, symbol: symbol, dark: dark)
+                }
+            }
+        }
+        return factories
+    }()
+
+    static func imageName(for kind: PlacePOIMapMarkerKind, dark: Bool) -> String {
+        "naviastra-poi-\(kind.rawValue)-\(dark ? "dark" : "light")"
+    }
+
+    /// MapLibre asks for the resolved sprite of a visible feature. Reuse the
+    /// raster across styles and map views, including switches back to a theme.
+    static func image(for name: String) -> UIImage? {
+        guard name.hasPrefix("naviastra-poi-") || name.hasPrefix("naviastra-sport-") else { return nil }
+        let key = name as NSString
+        if let cached = images.object(forKey: key) { return cached }
+        guard let makeImage = imageFactories[name] else { return nil }
+        let result = makeImage()
+        images.setObject(result, forKey: key)
+        return result
+    }
+
+    private static func specialImage(layer: String, symbol: String, dark: Bool) -> UIImage {
+        UIGraphicsImageRenderer(size: CGSize(width: 36, height: 36)).image { renderer in
+            let rect = CGRect(x: 2, y: 2, width: 32, height: 32)
+            let color = UIColor(naviHex: layer == "landmark" ? PlacePOIMapMarkerKind.culture.colorHex(dark: dark)
+                : (dark ? 0xA5BFAD : 0x53795E))
+            renderer.cgContext.setFillColor(color.cgColor)
+            renderer.cgContext.fillEllipse(in: rect)
+            let glyph = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold))?
+                .withTintColor(.white, renderingMode: .alwaysOriginal)
+            glyph?.draw(in: CGRect(x: 9, y: 9, width: 18, height: 18))
+        }
+    }
+
     static func isPOILayer(_ layer: MLNSymbolStyleLayer) -> Bool {
         layer.sourceLayerIdentifier == "poi" || layer.identifier == pointsID
     }
@@ -90,24 +138,6 @@ final class MapPOIVisualRenderer {
                 probe.circleOpacity = NSExpression(forConstantValue: 0)
                 probe.circleStrokeOpacity = NSExpression(forConstantValue: 0)
                 style.addLayer(probe)
-            }
-        }
-        for dark in [false, true] {
-            for sport in MapSportKind.allCases {
-                style.setImage(sport.image(dark: dark), forName: sport.imageName(dark: dark))
-            }
-            for (layer, symbol) in [("poi_education", "graduationcap.fill"), ("poi_sport", "sportscourt.fill"), ("landmark", "star.fill")] {
-                let image = UIGraphicsImageRenderer(size: CGSize(width: 36, height: 36)).image { renderer in
-                    let rect = CGRect(x: 2, y: 2, width: 32, height: 32)
-                    let color = UIColor(naviHex: layer == "landmark" ? PlacePOIMapMarkerKind.culture.colorHex(dark: dark)
-                        : (dark ? 0xA5BFAD : 0x53795E))
-                    renderer.cgContext.setFillColor(color.cgColor)
-                    renderer.cgContext.fillEllipse(in: rect)
-                    let glyph = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold))?
-                        .withTintColor(.white, renderingMode: .alwaysOriginal)
-                    glyph?.draw(in: CGRect(x: 9, y: 9, width: 18, height: 18))
-                }
-                style.setImage(image, forName: "naviastra-poi-special-\(layer)-\(dark)")
             }
         }
         let source = MLNShapeSource(identifier: Self.sourceID, shape: nil, options: nil)

@@ -252,6 +252,13 @@ struct TrafficMapPresentation {
 }
 
 extension RoadAlertType {
+    var isTrafficIncident: Bool {
+        switch self {
+        case .roadClosed, .congestion, .accident, .roadworks: true
+        default: false
+        }
+    }
+
     var mapColorHex: UInt32 {
         switch self {
         case .speedCamera, .averageSpeedStart, .averageSpeedEnd, .redLightCamera,
@@ -286,6 +293,12 @@ extension RoadAlertType {
 }
 
 extension TrafficIncident {
+    nonisolated var trafficNoticeCategory: TrafficIncidentCategory? {
+        if category == .roadClosed || events.contains(where: { $0.category == .roadClosed }) { return .roadClosed }
+        if category == .jam || events.contains(where: { $0.category == .jam }) { return .jam }
+        return nil
+    }
+
     nonisolated var isImportantDuringNavigation: Bool {
         category.isImportantDuringNavigation || severity == .major ||
             cause == .policeCheckpoint || events.contains { $0.category.isImportantDuringNavigation }
@@ -421,6 +434,14 @@ nonisolated struct TrafficIncident: Identifiable, Sendable {
 #endif
         return (alertTitle, alertSymbolName)
     }
+
+#if os(iOS)
+    func mapAlert(showsCongestion: Bool) -> (title: String, symbolName: String)? {
+        if let visualAlert { return visualAlert }
+        guard showsCongestion, category == .jam || events.contains(where: { $0.category == .jam }) else { return nil }
+        return (TrafficIncidentCategory.jam.mapLabel, TrafficIncidentCategory.jam.mapSymbolName)
+    }
+#endif
 
     var detailDescriptions: [String] {
         var seen = Set<String>()

@@ -217,7 +217,9 @@ final class DetailedRoadRenderer {
     }
 
     private func configure(on map: MLNMapView) {
-        guard let style = map.style else { return }
+        // All detailed road layers and data start at zoom 16. The initial
+        // browsing map can render without creating 162 invisible layers.
+        guard map.zoomLevel >= 16, let style = map.style else { return }
         let sourceIdentifier: String
         var sources: [Group: MLNSource] = [:]
         var sourceLayers: [Group: String] = [:]
@@ -246,14 +248,22 @@ final class DetailedRoadRenderer {
             keepBelowOverlays(in: style)
             return
         }
-        var anchor = style.layers.last {
+        let existingLayers = style.layers
+        let anchorIndex = existingLayers.lastIndex {
             ($0 is MLNLineStyleLayer || $0 is MLNFillStyleLayer)
                 && ($0 as? MLNVectorStyleLayer)?.sourceLayerIdentifier == "transportation"
         }
-        let firstBridge = style.layers.first {
+        let firstBridge = existingLayers.firstIndex {
             $0 is MLNLineStyleLayer && $0.identifier.lowercased().contains("bridge")
                 && ($0 as? MLNVectorStyleLayer)?.sourceLayerIdentifier == "transportation"
         }
+        // Insertions below the same existing layer maintain insertion order.
+        // Compute both ceilings before the batch, avoiding 162 native layer-list copies.
+        let firstOverlay = existingLayers.firstIndex(where: isOverlay) ?? existingLayers.count
+        let upperIndex = min(anchorIndex.map { $0 + 1 } ?? existingLayers.count, firstOverlay)
+        let lowerIndex = firstBridge.map { min($0, firstOverlay) } ?? upperIndex
+        let lowerCeiling = existingLayers.indices.contains(lowerIndex) ? existingLayers[lowerIndex] : nil
+        let upperCeiling = existingLayers.indices.contains(upperIndex) ? existingLayers[upperIndex] : nil
         layerIDs = []
         for level in -3...5 {
           for bridge in [false, true] {
@@ -301,9 +311,11 @@ final class DetailedRoadRenderer {
                                              kind.rawValue, level, confidences, "underground")
                 let elevation = NSPredicate(format: bridge ? "bridge == YES" : "bridge != YES")
                 layer.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [attributes, elevation])
-                let belowBridge = level <= 0 ? firstBridge : nil
-                insert(layer, in: style, above: anchor, below: belowBridge)
-                if belowBridge == nil { anchor = layer }
+                if let ceiling = level <= 0 ? lowerCeiling : upperCeiling {
+                    style.insertLayer(layer, below: ceiling)
+                } else {
+                    style.addLayer(layer)
+                }
                 layerIDs.append(id)
             }
           }
@@ -319,17 +331,6 @@ final class DetailedRoadRenderer {
             || ["naviastra-active-route-", "naviastra-completed-route-", "naviastra-alternative-route-",
                 "naviastra-route-traffic-", "naviastra-incident-", "com.mapbox.annotations", "org.maplibre.annotations"]
                 .contains { layer.identifier.hasPrefix($0) }
-    }
-
-    private func insert(_ layer: MLNStyleLayer, in style: MLNStyle,
-                        above anchor: MLNStyleLayer?, below ceiling: MLNStyleLayer?) {
-        let layers = style.layers
-        let ceilingIndex = ceiling.flatMap { ceiling in layers.firstIndex { $0.identifier == ceiling.identifier } }
-        let anchorIndex = anchor.flatMap { anchor in layers.firstIndex { $0.identifier == anchor.identifier } }
-        let preferred = ceilingIndex ?? anchorIndex.map { $0 + 1 } ?? layers.count
-        let index = min(preferred, layers.firstIndex(where: isOverlay) ?? layers.count)
-        if index < layers.count { style.insertLayer(layer, below: layers[index]) }
-        else { style.addLayer(layer) }
     }
 
     private func keepBelowOverlays(in style: MLNStyle) {

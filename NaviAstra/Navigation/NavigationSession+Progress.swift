@@ -87,7 +87,7 @@ extension NavigationSession {
                 ?? route.coordinates.last
             if isActive, let destinationCoordinate, let location = state.location,
                arrivalDetector.observe(location, destinationDistance: location.coordinate.distance(to: destinationCoordinate),
-                                       remainingDistance: state.progress?.remainingDistance ?? .infinity) {
+                                       remainingDistance: state.progress?.remainingDistance ?? .infinity, mode: .transit) {
                 arriveAtDestination()
                 return
             }
@@ -97,6 +97,7 @@ extension NavigationSession {
             return
         }
         guard let route = state.route, let location = state.location else {
+            arrivalDetector.reset()
             state.routeMatch = nil
             state.mapMatchingResult = nil
             state.laneGuidance = nil
@@ -111,6 +112,7 @@ extension NavigationSession {
             location: location,
             previousMatch: previousMatch?.projection,
             previousTimestamp: previousMatch?.timestamp) else {
+            arrivalDetector.reset()
             state.routeMatch = nil
             state.mapMatchingResult = nil
             state.laneGuidance = nil
@@ -193,22 +195,7 @@ extension NavigationSession {
             arrivalDetector.reset()
             return
         }
-        guard let targetCoordinate = state.destination.map({ destinationRouteCoordinate(for: $0) })
-                ?? route.coordinates.last else { return }
-        var destinationDistance = location.coordinate.distance(to: targetCoordinate)
-        let isCarArrival = state.transportMode == .car
-        if isCarArrival, let destination = state.destination {
-            // Accept the place itself as well as its selected access point.
-            destinationDistance = min(destinationDistance,
-                                      location.coordinate.distance(to: destination.coordinate))
-        }
-        // Keep intermediate stops mandatory, but do not require the car to
-        // follow the planned final approach to recognize arrival.
-        let requiresRouteCompletion = !isCarArrival || !unvisitedStops(from: location.coordinate).isEmpty
-        if arrivalDetector.observe(location, destinationDistance: destinationDistance,
-                                   remainingDistance: requiresRouteCompletion
-                                       ? state.progress?.remainingDistance ?? .infinity : nil,
-                                   destinationRadius: isCarArrival ? 100 : 50) {
+        if reachedRoadDestination(route: route, measurement: measurement, location: location) {
             arriveAtDestination()
             return
         }
@@ -237,6 +224,14 @@ extension NavigationSession {
                     voice.announce(incident, distance: distance)
                 }
             }
+#if os(iOS)
+            if let snapshot = state.traffic {
+                for incident in RouteTrafficMonitor.flowNotices(in: snapshot, on: route) {
+                    guard let start = incident.distanceAlongRoute, start > projection.alongRoute else { continue }
+                    voice.announce(incident, distance: start - projection.alongRoute)
+                }
+            }
+#endif
         }
         let hasSustainedDeparture = offRouteDetector.shouldRequestReroute(
             location: location,
@@ -301,6 +296,33 @@ extension NavigationSession {
         }
         state.transitProgress = progress
         return progress
+    }
+
+    private func reachedRoadDestination(route: NavigationRoute, measurement: RouteProgressMeasurement,
+                                        location: NavigationLocation) -> Bool {
+        guard let end = route.coordinates.last else { arrivalDetector.reset(); return false }
+        let mode = state.transportMode
+        if mode != .car {
+            let target = state.destination.map { destinationRouteCoordinate(for: $0) } ?? end
+            return arrivalDetector.observe(location, destinationDistance: location.coordinate.distance(to: target),
+                remainingDistance: state.progress?.remainingDistance ?? .infinity, mode: mode)
+        }
+        // Use the current fix on the actual approach, not displayed/stabilized progress.
+        // A car can stop beside a POI well before reaching its parking entrance.
+        let remaining = measurement.geometryLength - measurement.projection.alongRoute
+        let distanceToEnd = location.coordinate.distance(to: end)
+        guard remaining < ArrivalDetector.carRemainingMeters, distanceToEnd <= ArrivalDetector.carRadiusMeters,
+              state.status == .navigating, !state.weakGPS, state.deviationState == .onRoute,
+              MapDisplayPriorityEngine.matchedRoad(in: state) != nil,
+              state.pendingWaypointIDs.isEmpty, unvisitedStops(from: location.coordinate).isEmpty else {
+            arrivalDetector.reset()
+            return false
+        }
+        let destination = state.destination
+        let access = destination?.poi != nil ? state.navigationTarget?.coordinate : destination?.coordinate
+        let distanceToAccess = access.map { location.coordinate.distance(to: $0) } ?? distanceToEnd
+        return arrivalDetector.observe(location, destinationDistance: max(distanceToEnd, distanceToAccess),
+                                       remainingDistance: remaining, mode: .car)
     }
 
     func arriveAtDestination() {

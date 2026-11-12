@@ -1,4 +1,43 @@
 import Foundation
+import OSLog
+
+nonisolated struct ValhallaServerError: LocalizedError {
+    let statusCode: Int
+    let serviceCode: Int?
+
+    var exceedsPolygonPerimeter: Bool { statusCode == 400 && serviceCode == 167 }
+
+    var canRetryWithNearbyRoads: Bool {
+        guard statusCode == 400 else { return false }
+        switch serviceCode {
+        case 170, 171, 442: return true
+        default: return false
+        }
+    }
+
+    var errorDescription: String? {
+        switch (statusCode, serviceCode) {
+        case (429, _):
+            "Serwer tras osiągnął limit zapytań. Odczekaj chwilę i spróbuj ponownie."
+        case (400, 150):
+            "Trasa ma za dużo punktów pośrednich. Usuń część z nich lub podziel podróż na etapy."
+        case (400, 154), (400, 166):
+            "Trasa jest za długa dla tego serwera. Podziel podróż na krótsze etapy."
+        case (400, 167):
+            "Serwer nie może uwzględnić obszarów omijanych o tak dużym łącznym obwodzie."
+        case (400, 170):
+            "Wybrane punkty leżą na niepołączonych odcinkach dróg. Sprawdź początek, postoje i cel na mapie."
+        case (400, 171):
+            "W pobliżu jednego z punktów nie znaleziono drogi dla wybranego środka transportu. Wskaż punkt bliżej dostępnej drogi."
+        case (400, 442):
+            "Nie znaleziono trasy zgodnej z profilem, ograniczeniami pojazdu lub obszarami omijanymi. Zmień punkty albo ustawienia trasy."
+        case (400, _):
+            "Serwer tras odrzucił zapytanie. Sprawdź wybrane punkty i ustawienia trasy."
+        default:
+            "Usługa wyznaczania tras jest niedostępna. Spróbuj ponownie później."
+        }
+    }
+}
 
 nonisolated struct ValhallaServerStatus: Sendable {
     var version: String?
@@ -38,14 +77,11 @@ struct ValhallaServices {
         guard let http = response as? HTTPURLResponse else { throw RoutingError.invalidResponse }
         guard !(200...299).contains(http.statusCode) else { return }
         let reply = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        if (reply?["error_code"] as? Int) == 442 {
-            throw ValhallaFeatureError.message("Nie znaleziono trasy zgodnej z profilem, ograniczeniami pojazdu lub obszarami omijanymi. Zmień punkty albo ustawienia trasy.")
-        }
-        if http.statusCode == 429 {
-            throw ValhallaFeatureError.message("Serwer tras osiągnął limit zapytań. Odczekaj chwilę i spróbuj ponownie.")
-        }
-        let reason = reply?["error"] as? String
-        throw ValhallaFeatureError.message("Serwer tras: HTTP \(http.statusCode). \(reason ?? "Usługa nie jest dostępna lub odrzuciła zapytanie.")")
+        let failure = ValhallaServerError(statusCode: http.statusCode, serviceCode: reply?["error_code"] as? Int)
+        let code = failure.serviceCode.map(String.init) ?? "brak"
+        Logger(subsystem: "NaviAstra", category: "Valhalla")
+            .error("HTTP \(failure.statusCode, privacy: .public), kod usługi \(code, privacy: .public)")
+        throw failure
     }
 
     func status() async throws -> ValhallaServerStatus {

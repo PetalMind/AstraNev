@@ -375,10 +375,6 @@ final class NaviAstraMapStyle {
     }
 
     private func configure(_ style: MLNStyle) {
-        for kind in PlacePOIMapMarkerKind.allCases {
-            style.setImage(kind.makeMapStyleImage(dark: false), forName: poiImageName(kind, dark: false))
-            style.setImage(kind.makeMapStyleImage(dark: true), forName: poiImageName(kind, dark: true))
-        }
         for dark in [false, true] {
             for leaf in ["unknown", "broadleaved", "needleleaved", "mixed"] {
                 for dense in [false, true] {
@@ -787,10 +783,6 @@ final class NaviAstraMapStyle {
         String(format: "#%06X", hex)
     }
 
-    private func poiImageName(_ kind: PlacePOIMapMarkerKind, dark: Bool) -> String {
-        "naviastra-poi-\(kind.rawValue)-\(dark ? "dark" : "light")"
-    }
-
     /// Match the exact tile object, preserving the tile's position, label and tap behavior.
     static var shopLogoKeyExpression: [Any] {
         ["concat", ["to-string", ["coalesce", ["get", "osm_id"], ["id"], ""]], "|",
@@ -823,14 +815,14 @@ final class NaviAstraMapStyle {
             var expression: [Any] = ["match", ["get", property]]
             for kind in kinds where !kind.tileValues.isEmpty {
                 expression.append(kind.tileValues)
-                expression.append(poiImageName(kind, dark: dark))
+                expression.append(MapPOIVisualRenderer.imageName(for: kind, dark: dark))
             }
             expression.append(fallback)
             return expression
         }
-        let classMatch = matchExpression(for: "class", fallback: poiImageName(.generic, dark: dark))
+        let classMatch = matchExpression(for: "class", fallback: MapPOIVisualRenderer.imageName(for: .generic, dark: dark))
         var normalized: [Any] = ["match", ["get", "_kind"]]
-        for kind in kinds { normalized += [kind.rawValue, poiImageName(kind, dark: dark)] }
+        for kind in kinds { normalized += [kind.rawValue, MapPOIVisualRenderer.imageName(for: kind, dark: dark)] }
         normalized.append(matchExpression(for: "subclass", fallback: classMatch))
         let fallback: [Any] = ["coalesce", ["get", "_sprite"], normalized]
         guard shopLogosEnabled, !shopLogoNames.isEmpty else { return NSExpression(mglJSONObject: fallback) }
@@ -902,6 +894,7 @@ final class NaviAstraMapStyle {
         detailEnabled = false
         detailWork?.cancel()
         detailWork = nil
+        buildingFallbackRenderer.suspend()
         crosswalkRenderer.suspend()
         surfaceNetworkRenderer.suspend()
         sportSurfaceRenderer.suspend()

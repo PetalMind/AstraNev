@@ -46,6 +46,12 @@ enum RoutingError: LocalizedError {
 
 struct ValhallaRouteProvider: AdvancedRouteProvider {
     let endpoint: URL
+    private let routeTransport: (URLRequest) async throws -> (Data, URLResponse)
+
+    init(endpoint: URL, routeTransport: @escaping (URLRequest) async throws -> (Data, URLResponse) = RoadRoutingContext.data(for:)) {
+        self.endpoint = endpoint
+        self.routeTransport = routeTransport
+    }
 
     func calculateRoutes(from: Coordinate, to: Coordinate, mode: TransportMode) async throws -> [NavigationRoute] {
         try await calculateRoutes(from: from, to: to, through: [], mode: mode,
@@ -116,17 +122,31 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
 
     func calculateRoutes(from: Coordinate, to: Coordinate, through: [Coordinate], mode: TransportMode,
                          preferences: RoutingPreferences, avoiding: [Coordinate]) async throws -> [NavigationRoute] {
-        let request = try makeRouteRequest(from: from, to: to, through: through, mode: mode,
-            preferences: preferences, avoiding: avoiding, personalHints: RoadRoutingContext.personalRoutingHints)
-        let (data, offline) = try await routeData(for: request, mode: mode)
+        func primaryRoute(includeNearbyRoads: Bool) async throws -> (Data, Bool) {
+            let request = try makeRouteRequest(from: from, to: to, through: through, mode: mode,
+                preferences: preferences, avoiding: avoiding, personalHints: RoadRoutingContext.personalRoutingHints,
+                includeNearbyRoads: includeNearbyRoads)
+            return try await routeData(for: request, mode: mode)
+        }
+        let (data, offline): (Data, Bool)
+        do {
+            (data, offline) = try await primaryRoute(includeNearbyRoads: false)
+        } catch let failure as ValhallaServerError where failure.canRetryWithNearbyRoads {
+            try RoadRoutingContext.checkCancellation()
+            (data, offline) = try await primaryRoute(includeNearbyRoads: true)
+        }
         try RoadRoutingContext.checkCancellation()
         let costing = preferences.advanced.costing(for: mode)
         var routes = try decodeRoutes(data, mode: mode, costing: costing, offline: offline)
         guard mode == .car else { return routes }
         let preference = preferences.advanced.effectiveRoutePreference
+        if preference == .personalized && RoadRoutingContext.allowsPersonalization {
+            await DrivingLearningEngine.shared.waitForInitialProfile()
+            try RoadRoutingContext.checkCancellation()
+        }
         var familiarCandidateIDs: Set<UUID> = []
         var optionalRequests: [(request: URLRequest, familiar: Bool)] = []
-        if !preferences.evPlanningEnabled, !RoadRoutingContext.personalRoutingHints,
+        if !preferences.evPlanningEnabled, !RoadRoutingContext.personalRoutingHints, !RoadRoutingContext.recoveringPolygonLimit,
            RoadRoutingContext.congestionAvoidancePolygons.isEmpty {
             if preference == .personalized, RoadRoutingContext.allowsPersonalization, through.isEmpty {
                 let hints = DrivingLearningEngine.shared.candidateHints(from: from, to: to,
@@ -163,6 +183,7 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
                 // Optional searches cannot replace a valid ordinary plan with an error.
             }
         }
+        routes = try RoadRoutingContext.routesAvoidingExclusions(routes)
         let ranked = RoadRoutingContext.allowsPersonalization
             ? DrivingLearningEngine.shared.ranked(routes, preference: preference,
                 date: RoadRoutingContext.preferenceDate ?? Date())
@@ -177,7 +198,8 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
     /// vehicle, waypoint, closure and planning-time contract. No recursive search.
     func makeRouteRequest(from: Coordinate, to: Coordinate, through: [Coordinate], mode: TransportMode,
                           preferences: RoutingPreferences, avoiding: [Coordinate], personalHints: Bool = false,
-                          candidateCosting: ValhallaRouteCandidateCosting? = nil) throws -> URLRequest {
+                          candidateCosting: ValhallaRouteCandidateCosting? = nil,
+                          includeNearbyRoads: Bool = false) throws -> URLRequest {
         guard endpoint.scheme == "https" else { throw RoutingError.invalidEndpoint }
         guard mode != .transit else { throw RoutingError.invalidEndpoint }
         var request = URLRequest(url: endpoint.appendingPathComponent("route"))
@@ -185,33 +207,34 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
         request.timeoutInterval = 15
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("NaviAstra", forHTTPHeaderField: "X-Client-Id")
+        var locations: [[String: Any]] = ([from] + through + [to]).map { ["lat": $0.latitude, "lon": $0.longitude] }
+        if includeNearbyRoads {
+            // Let Valhalla consider other eligible edges within 50 m of the same points.
+            for index in locations.indices { locations[index]["radius"] = 50 }
+        }
+        if let heading = RoadRoutingContext.heading, (0..<360).contains(heading) {
+            locations[0]["heading"] = Int(heading.rounded()) % 360
+            locations[0]["heading_tolerance"] = 45
+        }
+        if personalHints, !through.isEmpty {
+            for index in 1..<(locations.count - 1) { locations[index]["type"] = "via" }
+        }
         var payload: [String: Any] = [
-            "locations": ([from] + through + [to]).map { ["lat": $0.latitude, "lon": $0.longitude] },
+            "locations": locations,
             "costing": preferences.advanced.costing(for: mode),
             "units": "kilometers",
             "language": "pl-PL",
-            "alternates": through.isEmpty && RoadRoutingContext.congestionAvoidancePolygons.isEmpty ? 2 : 0,
+            "alternates": !includeNearbyRoads && through.isEmpty && RoadRoutingContext.congestionAvoidancePolygons.isEmpty ? 2 : 0,
             "turn_lanes": true,
             "roundabout_exits": true,
             "admin_crossings": true
         ]
-        if let heading = RoadRoutingContext.heading {
-            var locations = payload["locations"] as! [[String: Any]]
-            locations[0]["heading"] = heading
-            locations[0]["heading_tolerance"] = 45
-            payload["locations"] = locations
-        }
-        if personalHints, !through.isEmpty {
-            var locations = payload["locations"] as! [[String: Any]]
-            for index in 1..<(locations.count - 1) { locations[index]["type"] = "via" }
-            payload["locations"] = locations
-        }
         if !avoiding.isEmpty {
             payload["exclude_locations"] = avoiding.map { ["lat": $0.latitude, "lon": $0.longitude] }
         }
         try preferences.applyValhallaOptions(to: &payload, mode: mode)
         if mode == .car { candidateCosting?.apply(to: &payload, costing: preferences.advanced.costing(for: mode)) }
-        if through.isEmpty, (RoadRoutingContext.planningTime?.type ?? 0) == 0 {
+        if !includeNearbyRoads, through.isEmpty, (RoadRoutingContext.planningTime?.type ?? 0) == 0 {
             // Time-dependent A* returns only one path. For departure now, use
             // bidirectional A* to obtain alternatives while retaining date_time
             // for time-aware access checks and ETA calculation. Keep scheduled
@@ -232,7 +255,7 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
                 data = try await routeData(for: request, mode: mode).0
             } else {
                 try await ValhallaRequestGate.shared.waitUntilAllowed(for: endpoint)
-                let result = try await RoadRoutingContext.data(for: request)
+                let result = try await routeTransport(request)
                 try ValhallaServices.validate(data: result.0, response: result.1)
                 data = result.0
             }
@@ -262,10 +285,11 @@ struct ValhallaRouteProvider: AdvancedRouteProvider {
         #endif
         do {
             try await ValhallaRequestGate.shared.waitUntilAllowed(for: endpoint)
-            let (data, response) = try await RoadRoutingContext.data(for: request)
+            let (data, response) = try await routeTransport(request)
             try ValhallaServices.validate(data: data, response: response)
             return (data, false)
         } catch {
+            try RoadRoutingContext.checkCancellation()
             #if os(iOS)
             let connectionErrors: [URLError.Code] = [.notConnectedToInternet, .networkConnectionLost,
                 .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed, .timedOut]

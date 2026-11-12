@@ -155,20 +155,29 @@ private struct TrafficMapEvent {
     let presentation: TrafficMapPresentation
     let isMapPOI: Bool
     let displayPriority: Int
+    let compactIncident: Bool
 
-    init?(_ incident: TrafficIncident) {
-        guard let alert = incident.visualAlert else { return nil }
+    init?(_ incident: TrafficIncident, navigating: Bool, routeDistance: Double?) {
+        guard let alert = incident.mapAlert(showsCongestion: navigating) else { return nil }
         id = "incident:\(incident.id)"
         coordinate = incident.coordinate
         title = alert.title
-        subtitle = incident.mapSubtitle
+        if let routeDistance, let ahead = incident.distanceAlongRoute.map({ $0 - routeDistance }), ahead >= 0 {
+            let distance = ahead >= 1_000
+                ? (ahead / 1_000).formatted(.number.precision(.fractionLength(1)).locale(PolishRegionalFormat.locale)) + " km"
+                : ahead.formatted(.number.precision(.fractionLength(0)).locale(PolishRegionalFormat.locale)) + " m"
+            subtitle = "\(distance) przed Tobą. \(incident.mapSubtitle)"
+        } else {
+            subtitle = incident.mapSubtitle
+        }
         categoryLabel = alert.title
         presentation = TrafficMapPresentation(incident, symbolName: alert.symbolName)
         isMapPOI = false
+        compactIncident = navigating
         displayPriority = incident.isRoadClosure ? 950 : 850
     }
 
-    init(_ alert: RoadSafetyAlert, routeDistance: Double) {
+    init(_ alert: RoadSafetyAlert, routeDistance: Double, navigating: Bool) {
         id = "alert:\(alert.id)"
         coordinate = alert.coordinate
         title = alert.title
@@ -176,6 +185,7 @@ private struct TrafficMapEvent {
         categoryLabel = alert.type.title
         presentation = TrafficMapPresentation(alert)
         isMapPOI = false
+        compactIncident = navigating && alert.type.isTrafficIncident
         displayPriority = MapDisplayPriorityEngine.priority(of: alert)
     }
 
@@ -187,6 +197,7 @@ private struct TrafficMapEvent {
         categoryLabel = poi.category.title
         presentation = TrafficMapPresentation(poi)
         isMapPOI = true
+        compactIncident = false
         displayPriority = poi.category == .speedCameras ? 700 : 300
     }
 }
@@ -360,7 +371,8 @@ struct MapLibreView: UIViewRepresentable {
         private var tileShopIdentities: [String: PlaceIdentity] = [:]
         private var lastShopLogosEnabled: Bool?
         private var lastPOIMarkerDark: Bool?
-            private var lastStyleURL: URL?
+        private var lastStyleURL: URL?
+        private var styleIsReady = false
         private var lastViewportPadding: CameraPadding?
         private var lastMapSize: CGSize = .zero
         private var lastIntent: CameraIntent?
@@ -837,7 +849,7 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MLNMapView, didFailToLoadImage imageName: String) -> UIImage? {
-            detailedRoadRenderer.image(for: imageName)
+            detailedRoadRenderer.image(for: imageName) ?? MapPOIVisualRenderer.image(for: imageName)
         }
 
         func mapViewRendererDidError(_ mapView: MLNMapView) {
@@ -860,6 +872,7 @@ struct MapLibreView: UIViewRepresentable {
         func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
             mapLogger.info("Map style loaded: \(style.layers.count) layers, \(style.sources.count) sources")
             navigationStyle.reset()
+            styleIsReady = true
             navigationStyle.updateSatelliteRecovery(on: mapView, enabled: parent.settings.baseMap == .satellite,
                 renderingEnabled: parent.scene.energyPolicy.mapRenderingEnabled)
             detailedRoadRenderer.didLoadStyle(on: mapView)
@@ -964,9 +977,10 @@ struct MapLibreView: UIViewRepresentable {
 
             let requestedStyleURL = parent.styleURL
             if lastStyleURL != requestedStyleURL {
-                map.styleURL = requestedStyleURL
+                styleIsReady = false
                 lastStyleURL = requestedStyleURL
                 navigationStyle.reset()
+                map.styleURL = requestedStyleURL
             }
             updatePOIDensity(on: map)
             updatePOIMarkerAppearance(on: map)
@@ -1018,13 +1032,13 @@ struct MapLibreView: UIViewRepresentable {
             let roadAlerts = (showsRoadAlerts && (!isNavigating || MapDisplayPriorityEngine.canPresentRouteAlerts(parent.state))
                               ? parent.state.roadSafetyAlerts : [])
                 .filter { alert in
-                    guard alert.type != .congestion else { return false }
+                    if alert.type == .congestion && !isNavigating { return false }
                     if let category = alert.mapSafetyPOICategory,
                        !parent.settings.safetyPOICategories.contains(category) { return false }
                     guard let distance = alert.distanceAlongRoute else { return false }
                     guard isNavigating else { return true }
                     return distance >= roadAlertDistance && distance <= roadAlertDistance + 3_000
-                        && MapDisplayPriorityEngine.priority(of: alert) >= 800
+                        && (alert.type.isTrafficIncident || MapDisplayPriorityEngine.priority(of: alert) >= 800)
                 }
                 .sorted { ($0.distanceAlongRoute ?? .infinity) < ($1.distanceAlongRoute ?? .infinity) }
                 .prefix(40)
@@ -1185,8 +1199,7 @@ struct MapLibreView: UIViewRepresentable {
         }
 
         private func updatePOIDensity(on map: MLNMapView) {
-            guard !defersStartupDetails else { return }
-            guard let style = map.style else { return }
+            guard styleIsReady, !defersStartupDetails, let style = map.style else { return }
             updateObjectModelInputs()
             detailedRoadRenderer.update(on: map, dark: usesDarkMapAppearance,
                                         enabled: parent.scene.energyPolicy.mapRenderingEnabled
@@ -1632,6 +1645,7 @@ struct MapLibreView: UIViewRepresentable {
                 return trafficMarkerView(for: annotation,
                                          reuseIdentifier: "traffic-event-\(event.id)",
                                          presentation: event.presentation,
+                                         compactIncident: event.compactIncident,
                                          clusterCount: shownTrafficEventGroups[index].count > 1
                                             ? shownTrafficEventGroups[index].count : nil)
             }
@@ -1793,6 +1807,7 @@ struct MapLibreView: UIViewRepresentable {
         private func trafficMarkerView(for annotation: MLNAnnotation,
                                        reuseIdentifier: String,
                                        presentation: TrafficMapPresentation,
+                                       compactIncident: Bool,
                                        clusterCount: Int? = nil) -> MLNAnnotationView {
             if let roadSign = presentation.roadSign {
                 let marker = RoadSignMapLibreAnnotationView(reuseIdentifier: reuseIdentifier)
@@ -1807,37 +1822,47 @@ struct MapLibreView: UIViewRepresentable {
                 return marker
             }
             let marker = MLNAnnotationView(reuseIdentifier: reuseIdentifier)
-            let size = CGFloat(clusterCount == nil ? presentation.markerSize : 38)
-            marker.frame = CGRect(x: 0, y: 0, width: size, height: size)
-            marker.backgroundColor = UIColor(
+            let size = CGFloat(compactIncident ? 28 : (clusterCount == nil ? presentation.markerSize : 38))
+            let hitSize = compactIncident ? 44 : size
+            marker.frame = CGRect(x: 0, y: 0, width: hitSize, height: hitSize)
+            let face: UIView
+            if compactIncident {
+                face = UIView(frame: marker.bounds.insetBy(dx: (hitSize - size) / 2, dy: (hitSize - size) / 2))
+                face.isUserInteractionEnabled = false
+                marker.addSubview(face)
+            } else {
+                face = marker
+            }
+            face.backgroundColor = UIColor(
                 red: CGFloat((presentation.colorHex >> 16) & 0xff) / 255,
                 green: CGFloat((presentation.colorHex >> 8) & 0xff) / 255,
                 blue: CGFloat(presentation.colorHex & 0xff) / 255, alpha: 1)
-            marker.layer.cornerRadius = size / 2
-            marker.layer.borderWidth = presentation.isCritical ? 2.5 : 1.5
+            face.layer.cornerRadius = size / 2
+            face.layer.borderWidth = presentation.isCritical ? 2.5 : 1.5
             let danger = UIColor(naviHex: NaviAstraColorPalette.danger)
-            marker.layer.borderColor = (presentation.isCritical ? danger : UIColor.white).cgColor
-            marker.layer.shadowColor = (presentation.isCritical ? danger : marker.backgroundColor)?.cgColor
-            marker.layer.shadowOpacity = presentation.isCritical ? 0.48 : 0.24
-            marker.layer.shadowRadius = presentation.isCritical ? 5 : 3
+            face.layer.borderColor = (presentation.isCritical ? danger : UIColor.white).cgColor
+            face.layer.shadowColor = (presentation.isCritical ? danger : face.backgroundColor)?.cgColor
+            face.layer.shadowOpacity = presentation.isCritical ? 0.48 : 0.24
+            face.layer.shadowRadius = presentation.isCritical ? 5 : 3
             marker.isAccessibilityElement = true
             marker.accessibilityLabel = annotation.title ?? "Informacja o ruchu"
-            marker.accessibilityHint = annotation.subtitle.flatMap { $0 }
+            marker.accessibilityValue = annotation.subtitle.flatMap { $0 }
+            marker.accessibilityLanguage = "pl-PL"
             if let clusterCount {
-                let label = UILabel(frame: marker.bounds)
+                let label = UILabel(frame: face.bounds)
                 label.text = String(clusterCount)
                 label.textAlignment = .center
                 label.textColor = .white
                 label.font = .boldSystemFont(ofSize: 15)
-                marker.addSubview(label)
+                face.addSubview(label)
             } else if let text = presentation.markerText {
-                let label = UILabel(frame: marker.bounds)
+                let label = UILabel(frame: face.bounds)
                 label.text = text
                 label.textAlignment = .center
                 label.textColor = .white
                 label.font = .systemFont(ofSize: text.count > 2 ? 10 : 13, weight: .bold)
                 label.adjustsFontSizeToFitWidth = true
-                marker.addSubview(label)
+                face.addSubview(label)
             } else {
                 let glyphSize = size * 0.54
                 let image = UIImageView(image: UIImage(systemName: presentation.symbolName))
@@ -1845,7 +1870,7 @@ struct MapLibreView: UIViewRepresentable {
                 image.contentMode = .scaleAspectFit
                 image.frame = CGRect(x: (size - glyphSize) / 2, y: (size - glyphSize) / 2,
                                      width: glyphSize, height: glyphSize)
-                marker.addSubview(image)
+                face.addSubview(image)
             }
             return marker
         }
@@ -1964,7 +1989,7 @@ struct MapLibreView: UIViewRepresentable {
             let incidents = parent.settings.overlays.traffic
                 ? (parent.state.traffic?.incidents ?? []).filter { incident in
                     guard isNavigating else { return true }
-                    guard incident.isImportantDuringNavigation,
+                    guard incident.isActive(), incident.isImportantDuringNavigation,
                           let distance = incident.distanceAlongRoute else { return false }
                     return distance > routeDistance && distance <= routeDistance + 12_000
                 }
@@ -2023,17 +2048,29 @@ struct MapLibreView: UIViewRepresentable {
                     }
                     events.append(TrafficMapEvent(poi))
                 }
-                for incident in shownIncidents {
-                    if let event = TrafficMapEvent(incident) { events.append(event) }
+                let distance = isNavigating ? parent.state.progress?.traveledDistance : nil
+                var incidents = shownIncidents
+                if isNavigating, parent.settings.overlays.traffic, let distance,
+                   let route = parent.state.route, parent.state.progress?.geometryRouteID == route.id,
+                   let snapshot = parent.state.traffic {
+                    incidents += RouteTrafficMonitor.flowNotices(in: snapshot, on: route).filter {
+                        guard let along = $0.distanceAlongRoute else { return false }
+                        return along >= distance && along <= distance + 12_000
+                    }
+                }
+                for incident in incidents {
+                    if let event = TrafficMapEvent(incident, navigating: isNavigating, routeDistance: distance) {
+                        events.append(event)
+                    }
                 }
                 events.append(contentsOf: shownRoadAlerts.map {
-                    TrafficMapEvent($0, routeDistance: parent.state.roadAlertRouteDistance)
+                    TrafficMapEvent($0, routeDistance: parent.state.roadAlertRouteDistance, navigating: isNavigating)
                 })
                 return events
             }
             let groups = clusteredTrafficEvents(events, on: map, isNavigating: isNavigating)
             let groupIDs = groups.map {
-                $0.map { "\($0.id):\($0.presentation.colorHex):\($0.presentation.priority)" }
+                $0.map { "\($0.id):\($0.presentation.colorHex):\($0.presentation.priority):\($0.compactIncident)" }
                     .sorted().joined(separator: ",")
             }
             var retainedPins = Dictionary(uniqueKeysWithValues: zip(shownTrafficEventGroupIDs, trafficEventPins))
@@ -2066,7 +2103,13 @@ struct MapLibreView: UIViewRepresentable {
                     subtitle = trafficEventClusterSubtitle(group)
                 }
                 if pin.title != title { pin.title = title }
-                if pin.subtitle != subtitle { pin.subtitle = subtitle }
+                if pin.subtitle != subtitle {
+                    pin.subtitle = subtitle
+                    if group.first?.compactIncident == true, let view = map.view(for: pin) {
+                        view.accessibilityLabel = title
+                        view.accessibilityValue = subtitle
+                    }
+                }
             }
             if !addedPins.isEmpty { map.addAnnotations(addedPins) }
         }

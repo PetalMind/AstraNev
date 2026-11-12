@@ -92,10 +92,14 @@ enum IOSDebugDrivingScenario {
         state.gpsQuality = .excellent
         state.weakGPS = false
         state.estimatedArrival = Date().addingTimeInterval(360)
-        let limit = ProcessInfo.processInfo.environment["NAVIASTRA_DRIVING_UI_SPEED_LIMIT"]
+        let environment = ProcessInfo.processInfo.environment
+        let limit = environment["NAVIASTRA_DRIVING_UI_SPEED_LIMIT"]
             .flatMap(Int.init).flatMap { (1...300).contains($0) ? $0 : nil }
         state.speedLimitKph = limit
-        state.speedLimitSource = limit != nil ? .explicitSign : nil
+        let held = environment["NAVIASTRA_DRIVING_UI_HELD_LIMIT"] == "1"
+        state.speedLimitSource = limit.map { _ in held ? .lastKnown : .explicitSign }
+        state.speedLimitRemainingMeters = environment["NAVIASTRA_DRIVING_UI_LIMIT_METERS"]
+            .flatMap(Double.init).flatMap { $0.isFinite && $0 > 0 && limit != nil ? $0 : nil }
         state.speedLimitMessage = limit != nil ? nil : "Brak limitu w danych drogi."
         state.roadSafetyStatus = .loading
         // didStartLocation remains false: this updates only the render policy.

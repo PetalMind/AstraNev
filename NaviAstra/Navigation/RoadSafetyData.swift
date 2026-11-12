@@ -7,6 +7,7 @@ enum SpeedLimitSource: String, Codable, Equatable, Sendable {
     case trafficZone
     case legalDefault
     case commercialProvider
+    case lastKnown
 
     var shortTitle: String {
         switch self {
@@ -16,6 +17,7 @@ enum SpeedLimitSource: String, Codable, Equatable, Sendable {
         case .trafficZone: "Strefa"
         case .legalDefault: "Przepisy"
         case .commercialProvider: "Dostawca map"
+        case .lastKnown: "Ostatni odczyt"
         }
     }
 }
@@ -315,9 +317,9 @@ nonisolated struct RoadDataSnapshot: Codable, Sendable {
     // Keep roads without a speed tag too: they can separate a service road from an expressway.
     var roadSegments: [OSMRoadSpeedSegment]? = nil
 
-    func speedLimit(at location: NavigationLocation, date: Date = .now,
+    func speedLimit(at location: NavigationLocation, onWay wayID: Int64? = nil, date: Date = .now,
                     timeZone: TimeZone = .autoupdatingCurrent) -> SpeedLimitResult? {
-        guard let selected = matchedSpeedSegment(at: location),
+        guard let selected = matchedSpeedSegment(at: location, onWay: wayID),
               let speed = ConditionalSpeedLimitResolver.speedLimit(tags: selected.segment.tags,
                                                                    heading: location.course,
                                                                    segment: selected.segment,
@@ -350,10 +352,10 @@ nonisolated struct RoadDataSnapshot: Codable, Sendable {
         return SpeedLimitResult(speedKph: speed, source: source, confidence: confidence)
     }
 
-    func shouldSuppressRoutingFallback(at location: NavigationLocation,
+    func shouldSuppressRoutingFallback(at location: NavigationLocation, onWay wayID: Int64? = nil,
                                        date: Date = .now,
                                        timeZone: TimeZone = .autoupdatingCurrent) -> Bool {
-        guard let selected = matchedSpeedSegment(at: location) else { return false }
+        guard let selected = matchedSpeedSegment(at: location, onWay: wayID) else { return false }
         let tags = selected.segment.tags
         guard let forward = ConditionalSpeedLimitResolver.isForward(heading: location.course,
                                                                     segment: selected.segment,
@@ -483,12 +485,12 @@ nonisolated struct RoadDataSnapshot: Codable, Sendable {
         return min(150, usable * (oneWay ? 1.1 : 0.35))
     }
 
-    private func matchedSpeedSegment(at location: NavigationLocation)
+    private func matchedSpeedSegment(at location: NavigationLocation, onWay wayID: Int64?)
         -> (segment: OSMRoadSpeedSegment, projection: RouteProjection)? {
         let candidates = speedSegments.compactMap { segment -> (OSMRoadSpeedSegment, RouteProjection, Double)? in
-            guard segment.coordinates.count > 1,
+            guard wayID == nil || segment.id == wayID, segment.coordinates.count > 1,
                   let projection = MapMatcher.project(location.coordinate, onto: segment.coordinates),
-                  projection.distanceFromRoute <= max(45, min(120, location.accuracy * 1.5)) else { return nil }
+                  projection.distanceFromRoute <= max(12, min(35, location.accuracy)) else { return nil }
             let headingPenalty = Self.headingPenalty(location.course, segment: segment, projection: projection,
                                                      oneWay: segment.tags["oneway"] == "yes")
             return (segment, projection, projection.distanceFromRoute + headingPenalty)

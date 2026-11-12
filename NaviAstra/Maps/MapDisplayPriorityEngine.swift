@@ -4,20 +4,27 @@ import Foundation
 /// is performed before this stage; presentation never turns proximity into relevance.
 enum MapDisplayPriorityEngine {
     static func canPresentRouteAlerts(_ state: NavigationState, at now: Date = .now) -> Bool {
+        matchedRoad(in: state, at: now) != nil
+    }
+
+    static func matchedRoad(in state: NavigationState, at now: Date = .now)
+        -> (match: NavigationRouteMatch, wayID: Int64?)? {
         guard state.status == .navigating || state.status == .rerouting,
               let route = state.route, let match = state.routeMatch,
               match.routeID == route.id, !match.isAmbiguous, match.match.confidence >= 0.65,
               match.match.projection.distanceFromRoute <= 12,
               let location = state.location, location.accuracy >= 0, location.accuracy <= 30,
               abs(now.timeIntervalSince(location.timestamp)) <= 10,
-              abs(location.timestamp.timeIntervalSince(match.locationTimestamp)) <= 2 else { return false }
+              abs(location.timestamp.timeIntervalSince(match.locationTimestamp)) <= 2 else { return nil }
+        var wayID: Int64?
         if let roads = state.roadAlertRoadSegments, !roads.isEmpty {
             guard let driverRoad = RoadAlertRoadResolver.context(at: location.coordinate, roads: roads,
                                                                  requireDirection: false),
                   let position = MapMatcher.project(location.coordinate, onto: driverRoad.road),
                   driverRoad.applies(to: route.coordinates, at: position.coordinate),
                   RoadAlertRoadResolver.belongsToRoute(driverRoad, at: position.coordinate,
-                                                       route: route.coordinates, roads: roads) else { return false }
+                                                       route: route.coordinates, roads: roads) else { return nil }
+            wayID = driverRoad.roadID
         }
         let segment = match.match.projection.segment
         if location.speed >= 2, location.course.isFinite, (0..<360).contains(location.course),
@@ -27,9 +34,9 @@ enum MapDisplayPriorityEngine {
                                  longitude: location.coordinate.longitude + sin(radians) * 0.0001
                                      / max(0.1, cos(location.coordinate.latitude * .pi / 180)))
             guard RoadGeometryAlignment.isAligned(location.coordinate, end,
-                route.coordinates[segment], route.coordinates[segment + 1], directed: true) else { return false }
+                route.coordinates[segment], route.coordinates[segment + 1], directed: true) else { return nil }
         }
-        return state.transportMode == .car
+        return state.transportMode == .car ? (match, wayID) : nil
     }
 
     nonisolated static func priority(of alert: RoadSafetyAlert) -> Int {
@@ -75,13 +82,17 @@ enum MapDisplayPriorityEngine {
         }
     }
 
+    static func lastPassedSpeedRule(in state: NavigationState) -> RoadSafetyAlert? {
+        state.roadSafetyAlerts.last {
+            ($0.type == .speedLimitSign || $0.type == .trafficZoneSign
+             || PolishRoadSign.codes($0.signCode ?? "").contains("B-42"))
+                && ($0.distanceAlongRoute ?? .infinity) <= state.roadAlertRouteDistance - 3
+        }
+    }
+
     static func passedSpeedLimit(in state: NavigationState) -> Int? {
-        guard canPresentRouteAlerts(state), let location = state.location,
-              let sign = state.roadSafetyAlerts.last(where: {
-                  ($0.type == .speedLimitSign || $0.type == .trafficZoneSign
-                   || PolishRoadSign.codes($0.signCode ?? "").contains("B-42"))
-                    && ($0.distanceAlongRoute ?? .infinity) <= state.roadAlertRouteDistance - 3
-              }), let value = sign.speedLimitKph, value > 0,
+        guard let sign = lastPassedSpeedRule(in: state), let value = sign.speedLimitKph, value > 0,
+              canPresentRouteAlerts(state), let location = state.location,
               Set(PolishRoadSign.codes(sign.signCode ?? "")).isDisjoint(with: ["B-34", "B-42", "B-44", "D-41", "D-43"]),
               let context = sign.signRouteContext,
               let roadPosition = MapMatcher.project(location.coordinate, onto: context.road),

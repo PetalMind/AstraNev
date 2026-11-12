@@ -1,7 +1,7 @@
 #if os(iOS)
 import SwiftUI
 
-/// One quiet instrument; only a confirmed limit adds a road sign.
+/// Driving speed, posted limit and the distance to a known change.
 struct DrivingSpeedInstrument: View {
     @ScaledMetric(relativeTo: .largeTitle) private var speedFontSize: CGFloat = 30
     @ScaledMetric(relativeTo: .caption) private var unitFontSize: CGFloat = 11
@@ -11,6 +11,18 @@ struct DrivingSpeedInstrument: View {
     let limit: Int?
     let exceedsLimit: Bool
     var condensed = false
+    var remainingDistanceText: String?
+
+    static func remainingDistanceLabel(_ meters: Double?) -> String? {
+        guard let meters, meters.isFinite, meters > 0 else { return nil }
+        let locale = PolishRegionalFormat.locale
+        if meters < 1_000 {
+            let value = max(1, meters.rounded()).formatted(.number.precision(.fractionLength(0)).locale(locale))
+            return "\(value) m"
+        }
+        let value = (meters / 1_000).formatted(.number.precision(.fractionLength(0...1)).locale(locale))
+        return "\(value) km"
+    }
 
     var body: some View {
         HStack(spacing: condensed ? 6 : 10) {
@@ -37,22 +49,30 @@ struct DrivingSpeedInstrument: View {
                 Rectangle()
                     .fill(Color.naviTextSecondary.opacity(0.25))
                     .frame(width: 1, height: 30 * detailScale)
-                DrivingSpeedLimitLayout(minimumDiameter: (condensed ? 48 : 52) * detailScale,
-                                        inset: 7 * detailScale) {
-                    ZStack {
-                        Text("888")
-                            .hidden()
-                            .accessibilityHidden(true)
-                        Text(limit.formatted(.number.locale(PolishRegionalFormat.locale)))
+                VStack(spacing: 2) {
+                    DrivingSpeedLimitLayout(minimumDiameter: (condensed ? 48 : 52) * detailScale,
+                                            inset: 7 * detailScale) {
+                        ZStack {
+                            Text("888")
+                                .hidden()
+                                .accessibilityHidden(true)
+                            Text(limit.formatted(.number.locale(PolishRegionalFormat.locale)))
+                        }
+                        .font(.system(size: (condensed ? 17 : 18) * detailScale,
+                                      weight: .bold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.black)
+                        .lineLimit(1)
+                        .fixedSize()
                     }
-                    .font(.system(size: (condensed ? 17 : 18) * detailScale,
-                                  weight: .bold, design: .rounded).monospacedDigit())
-                    .foregroundStyle(.black)
-                    .lineLimit(1)
-                    .fixedSize()
+                    .background(.white, in: Circle())
+                    .overlay(Circle().strokeBorder(Color(naviHex: NaviAstraColorPalette.roadSignRed), lineWidth: 3))
+                    if let remainingDistanceText {
+                        Text(remainingDistanceText)
+                            .font(.caption2.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(Color.naviTextPrimary)
+                            .fixedSize()
+                    }
                 }
-                .background(.white, in: Circle())
-                .overlay(Circle().strokeBorder(Color(naviHex: NaviAstraColorPalette.roadSignRed), lineWidth: 3))
             }
         }
         .padding(.horizontal, condensed ? 8 : 12)

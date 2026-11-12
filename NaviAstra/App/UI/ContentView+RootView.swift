@@ -283,7 +283,8 @@ extension ContentView {
     private func drivingMapDock(maximumAlertsHeight: CGFloat) -> some View {
         VStack(spacing: drivingRoadAlertsHeight > 0 ? 10 : 0) {
             ScrollView(.vertical) {
-                navigationRoadAlertsPanel
+                VStack(alignment: .leading) { navigationRoadSafetyBanner }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .onGeometryChange(for: CGFloat.self) { $0.size.height.rounded(.up) } action: {
                         drivingRoadAlertsHeight = $0
                     }

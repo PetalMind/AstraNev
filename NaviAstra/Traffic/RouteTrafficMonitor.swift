@@ -33,6 +33,46 @@ struct RouteTrafficMonitor {
     nonisolated static let routeMatchToleranceMeters = 140.0
     nonisolated static let maximumFlowSamples = 96
 
+    /// One presentation event per contiguous measured section. These are never
+    /// inserted into the incident store or fed back into ETA and rerouting.
+    nonisolated static func flowNotices(in snapshot: TrafficSnapshot, on route: NavigationRoute,
+                                        at date: Date = .now) -> [TrafficIncident] {
+        var sections: [(first: RouteTrafficSegment, end: Double, category: TrafficIncidentCategory)] = []
+        for segment in snapshot.routeFlowSegments.sorted(by: { $0.startDistance < $1.startDistance }) {
+            guard segment.routeID == route.id, segment.endDistance > segment.startDistance,
+                  segment.startDistance >= 0, segment.coordinates.count > 1,
+                  segment.coordinates.first?.isValidValhallaCoordinate == true,
+                  (-5...240).contains(date.timeIntervalSince(segment.measuredAt ?? snapshot.updatedAt)) else { continue }
+            let category: TrafficIncidentCategory
+            if segment.isRoadClosure { category = .roadClosed }
+            else if let speed = segment.currentSpeedKph, speed.isFinite, speed >= 0,
+                    let free = segment.freeFlowSpeedKph, free.isFinite, free > 0, speed <= free * 0.5 {
+                category = .jam
+            } else { continue }
+            if let last = sections.last, last.category == category,
+               segment.startDistance <= last.end + 10 {
+                sections[sections.count - 1].end = max(last.end, segment.endDistance)
+            } else {
+                sections.append((segment, segment.endDistance, category))
+            }
+        }
+        return sections.compactMap { section in
+            let first = section.first
+            guard let coordinate = first.coordinates.first else { return nil }
+            let reported = snapshot.incidents.contains { incident in
+                guard incident.trafficNoticeCategory == section.category, incident.isActive(at: date),
+                      (-5...120).contains(date.timeIntervalSince(incident.observedAt ?? snapshot.updatedAt)),
+                      let along = incident.distanceAlongRoute else { return false }
+                return along >= first.startDistance - 30 && along <= section.end + 30
+            }
+            guard !reported else { return nil }
+            let id = "flow-\(section.category.rawValue)-\(Int((coordinate.latitude * 10_000).rounded()))-\(Int((coordinate.longitude * 10_000).rounded()))"
+            return TrafficIncident(id: id, description: section.category.mapLabel, coordinate: coordinate,
+                delaySeconds: nil, category: section.category, severity: .moderate, geometry: first.coordinates,
+                distanceAlongRoute: first.startDistance, observedAt: first.measuredAt ?? snapshot.updatedAt)
+        }
+    }
+
     /// A nearby point is not evidence that the route uses the affected road.
     /// Require a continuous, aligned overlap; point-only closures remain map context.
     nonisolated static func incidentProjection(_ incident: TrafficIncident,

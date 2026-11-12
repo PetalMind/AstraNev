@@ -250,6 +250,7 @@ extension NavigationSession {
         let isPreview = state.status == .routePreview
         guard state.transportMode == .car, isPreview || state.status == .navigating,
               state.journeyTimeMode == .now,
+              isPreview || state.pendingWaypointIDs.isEmpty,
               isPreview || state.routingPreferences.advanced.effectiveRoutePreference != .shortest,
               state.route?.id == currentRoute.id else { return }
         let origin = isPreview ? (currentRoute.coordinates.first ?? location) : location
@@ -275,6 +276,7 @@ extension NavigationSession {
         let selectionGeneration = trafficRouteSelectionGeneration
         let generation = trafficGeneration
         let planGeneration = requestGeneration
+        let rerouteGeneration = rerouteController.generation
         let currentRouteID = currentRoute.id
         let requestedPreferences = state.routingPreferences
         let requestedSelection = learningExplicitlySelectedRouteID
@@ -295,7 +297,8 @@ extension NavigationSession {
             @MainActor func isCurrent() -> Bool {
                 !Task.isCancelled && !token.isCancelled && generation == self.trafficGeneration &&
                     selectionGeneration == self.trafficRouteSelectionGeneration &&
-                    planGeneration == self.requestGeneration && self.state.route?.id == currentRouteID &&
+                    planGeneration == self.requestGeneration && self.rerouteController.isCurrent(rerouteGeneration) &&
+                    self.state.route?.id == currentRouteID &&
                     self.state.status == requestedStatus && self.state.journeyTimeMode == .now &&
                     self.state.routingPreferences == requestedPreferences &&
                     self.learningExplicitlySelectedRouteID == requestedSelection
@@ -305,18 +308,12 @@ extension NavigationSession {
                 try await RoadRoutingContext.$cancellationToken.withValue(token) {
                     var candidates = existing
                     if shouldGenerateCandidates, let destination = self.state.destination {
-                        let closures = self.knownRoadClosures.values.filter { $0.isFresh() }
-                        let avoidances = try closures.map { try $0.avoidance() }
-                        let polygons = avoidances.flatMap(\.polygons)
-                        guard polygons.count <= 256 else { return }
                         let stops = isPreview ? self.state.waypoints : self.unvisitedStops(from: origin)
-                        let fresh = try await RoadRoutingContext.$closurePolygons.withValue(polygons) {
-                            try await self.calculateRoutes(from: origin,
-                                to: self.destinationRouteCoordinate(for: destination),
-                                through: stops.map(\.coordinate), commitEVStops: false)
-                        }
+                        let fresh = try await self.calculateRoutes(from: origin,
+                            to: self.destinationRouteCoordinate(for: destination),
+                            through: stops.map(\.coordinate), commitEVStops: false)
                         guard isCurrent() else { return }
-                        candidates = fresh.filter { route in !avoidances.contains { $0.intersects(route) } } + existing
+                        candidates = fresh + existing
                         let target = self.destinationRouteCoordinate(for: destination)
                         if !isPreview, let congestion = CongestionDetourCandidate.largest(on: currentRoute,
                             after: start, traffic: snapshot,
@@ -364,6 +361,10 @@ extension NavigationSession {
                     guard let currentTraffic = snapshots[currentRouteID] else { return }
                     let currentClosed = self.confirmedClosureAhead(in: currentTraffic, on: currentRoute,
                         progress: isPreview ? nil : self.state.progress) != nil
+                    if !isPreview, currentClosed {
+                        self.handleConfirmedClosure(in: currentTraffic, near: origin)
+                        return
+                    }
                     if preservesManualSelection {
                         if currentClosed { self.publishManualPreviewClosureWarning(for: currentRouteID) }
                         else if self.state.errorMessage == Self.manualPreviewClosureMessage { self.state.errorMessage = nil }
@@ -374,6 +375,21 @@ extension NavigationSession {
                         starts: starts, traffic: snapshots) else { return }
                     guard let comparisonUpdatedAt = snapshots.values.map(\.updatedAt).min(),
                           !isPreview || (0...120).contains(Date().timeIntervalSince(comparisonUpdatedAt)) else { return }
+                    // A cached alternative (or a freshly calculated one) may have become
+                    // unsafe while comparing traffic. Check the remaining geometry using
+                    // all fresh evidence, including closures reported on another candidate.
+                    let closures = try self.knownRoadClosures.values.filter { $0.isFresh() }.map { try $0.avoidance() }
+                    if !closures.isEmpty {
+                        candidates = candidates.filter { route in
+                            if route.id == currentRouteID { return preservesManualSelection || !currentClosed }
+                            var remaining = route
+                            if let start = starts[route.id], start > 0 {
+                                let geometry = RouteProgressGeometry(route)
+                                remaining.coordinates = geometry.corridor(from: start, through: geometry.length)
+                            }
+                            return !closures.contains { $0.intersects(remaining) }
+                        }
+                    }
                     let ranked = DrivingLearningEngine.shared.ranked(candidates,
                         preference: requestedPreferences.advanced.effectiveRoutePreference, from: starts, traffic: snapshots)
                     guard let selected = preservesManualSelection ? currentRoute : ranked.first,
@@ -384,10 +400,6 @@ extension NavigationSession {
                                                             traffic: selectedTraffic)
                     guard selectedETA.isFinite || (preservesManualSelection && currentClosed) else { return }
                     if !isPreview {
-                        if currentClosed {
-                            self.handleConfirmedClosure(in: currentTraffic, near: origin)
-                            return
-                        }
                         guard selected.id != currentRouteID, currentETA.isFinite,
                               currentETA - selectedETA >= max(120, currentETA * 0.15) else { return }
                     }
@@ -422,7 +434,7 @@ extension NavigationSession {
                     }
                     self.state.route = publishedRoutes.first { $0.id == selected.id } ?? selected
                     self.state.routeOptions = publishedRoutes
-                    self.state.evChargingStops = selected.chargingStops.map(\.destination)
+                    self.commitEVChargingStops(for: selected)
                     if selected.id != currentRouteID {
                         self.loadRoadData(for: selected)
                         self.invalidateSpeedLimit()

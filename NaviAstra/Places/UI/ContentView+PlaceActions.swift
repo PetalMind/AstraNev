@@ -172,19 +172,30 @@ extension ContentView {
         let limit = navigationStore.state.speedLimitKph
         let aboveLimit = speedWarningsEnabled && (current.map { value in limit.map { value > $0 + 5 } ?? false } ?? false)
         let speedDescription = current.map { "Prędkość \($0) kilometrów na godzinę" } ?? "Prędkość niedostępna"
+#if !os(iOS)
         let accessibilityDescription = [
             limit.map { "Limit \($0) kilometrów na godzinę" },
             speedDescription,
             navigationStore.state.speedLimitSource.map { "Źródło limitu: \($0.shortTitle)" }
         ].compactMap { $0 }.joined(separator: ", ")
+#endif
 #if os(iOS)
+        let freshDistanceFix = navigationStore.state.location.map { abs(now.timeIntervalSince($0.timestamp)) <= 10 } == true
+        let remaining = limit != nil && freshDistanceFix
+            ? DrivingSpeedInstrument.remainingDistanceLabel(navigationStore.state.speedLimitRemainingMeters) : nil
+        let description = [limit.map { "Limit \($0) kilometrów na godzinę" },
+                           remaining.map { "Obowiązuje przez \($0)" }, speedDescription]
+            .compactMap { $0 }.joined(separator: ", ")
         if compact {
-            DrivingSpeedInstrument(speed: current, limit: limit, exceedsLimit: aboveLimit, condensed: condensed)
+            DrivingSpeedInstrument(speed: current, limit: limit, exceedsLimit: aboveLimit, condensed: condensed,
+                                   remainingDistanceText: remaining)
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel(accessibilityDescription)
+                .accessibilityLabel(description)
+                .accessibilityIdentifier("driving-speed-instrument")
         } else {
             legacySpeedCard(current: current, limit: limit, aboveLimit: aboveLimit,
-                            accessibilityDescription: accessibilityDescription, fresh: fresh, compact: compact)
+                            accessibilityDescription: description, fresh: fresh, compact: compact,
+                            remainingDistanceText: remaining)
         }
 #else
         legacySpeedCard(current: current, limit: limit, aboveLimit: aboveLimit,
@@ -193,7 +204,9 @@ extension ContentView {
     }
 
     private func legacySpeedCard(current: Int?, limit: Int?, aboveLimit: Bool,
-                                 accessibilityDescription: String, fresh: Bool, compact: Bool) -> some View {
+                                 accessibilityDescription: String, fresh: Bool, compact: Bool,
+                                 remainingDistanceText: String? = nil) -> some View {
+        let signWidth: CGFloat = compact ? 54 : 76
         let instrumentsLayout = compact
             ? AnyLayout(HStackLayout(alignment: .top, spacing: 8))
             : AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
@@ -210,14 +223,23 @@ extension ContentView {
                             .overlay(Circle().strokeBorder(Color(naviHex: NaviAstraColorPalette.roadSignRed), lineWidth: 4))
                             .shadow(color: .black.opacity(0.12), radius: 9, y: 4)
                             .accessibilityHidden(true)
+#if os(iOS)
+                        if let remainingDistanceText {
+                            Text(remainingDistanceText)
+                                .font(.caption2.weight(.semibold).monospacedDigit())
+                                .foregroundStyle(Color.naviTextPrimary)
+                                .fixedSize()
+                        }
+#else
                         if let source = navigationStore.state.speedLimitSource {
                             Text(source.shortTitle)
                                 .font(.system(size: 8, weight: .semibold))
                                 .foregroundStyle(Color.naviTextPrimary.opacity(0.82))
                                 .lineLimit(1)
                         }
+#endif
                     }
-                    .frame(width: compact ? 54 : 76)
+                    .frame(minWidth: signWidth, maxWidth: remainingDistanceText == nil ? signWidth : nil)
                 }
 
                 VStack(spacing: 0) {
@@ -238,6 +260,9 @@ extension ContentView {
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilityDescription)
+#if os(iOS)
+            .accessibilityIdentifier("driving-speed-instrument")
+#endif
 
             if current == nil {
                 Label(navigationStore.state.location == nil
@@ -306,7 +331,7 @@ extension ContentView {
 
     var nextNavigationRoadSafetyAlert: RoadSafetyAlert? {
 #if os(iOS)
-        MapDisplayPriorityEngine.upcomingAlerts(in: navigationStore.state).first { $0.type != .congestion }
+        MapDisplayPriorityEngine.upcomingAlerts(in: navigationStore.state).first { !$0.type.isTrafficIncident }
 #else
         MapDisplayPriorityEngine.upcomingAlerts(in: navigationStore.state).first
 #endif

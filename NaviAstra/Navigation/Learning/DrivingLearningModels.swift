@@ -193,13 +193,30 @@ nonisolated enum DrivingLearningMath {
     }
 
     static func similarity(_ a: [LearnedRoadSegment], _ b: [LearnedRoadSegment]) -> Double {
-        if a.contains(where: { $0.id.hasPrefix("trace:") }) || b.contains(where: { $0.id.hasPrefix("trace:") }) {
-            return overlap(a, geometries: continuousGeometries(b))
+        var candidate = SimilarityCandidate(b)
+        return candidate.similarity(to: a, containsTrace: a.contains { $0.id.hasPrefix("trace:") })
+    }
+
+    /// Geometry is directional and split at GPS gaps. Neither it nor the ID set
+    /// needs to be built until a comparison actually uses that representation.
+    nonisolated struct SimilarityCandidate {
+        private let segments: [LearnedRoadSegment]
+        private lazy var containsTrace = segments.contains { $0.id.hasPrefix("trace:") }
+        private lazy var geometries = DrivingLearningMath.continuousGeometries(segments)
+        private lazy var ids = Set(segments.map(\.id))
+
+        init(_ segments: [LearnedRoadSegment]) { self.segments = segments }
+
+        mutating func similarity(to query: [LearnedRoadSegment], containsTrace queryHasTrace: Bool) -> Double {
+            if queryHasTrace || containsTrace {
+                return DrivingLearningMath.overlap(query, geometries: geometries)
+            }
+            let length = query.reduce(0) { $0 + $1.length }
+            guard length > 0 else { return 0 }
+            let candidateIDs = ids
+            let shared = query.reduce(0.0) { $0 + (candidateIDs.contains($1.id) ? $1.length : 0) }
+            return shared / length
         }
-        let ids = Set(b.map(\.id))
-        let length = a.reduce(0) { $0 + $1.length }
-        guard length > 0 else { return 0 }
-        return a.filter { ids.contains($0.id) }.reduce(0) { $0 + $1.length } / length
     }
 
     static func continuousGeometries(_ segments: [LearnedRoadSegment]) -> [RouteProgressGeometry] {
