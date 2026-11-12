@@ -121,17 +121,30 @@ struct PlannedTrip: Identifiable, Codable, Equatable {
         guard !preferredRoute.isEmpty else { return (routes.first, true) }
         let scores = routes.map { route in
             let geometry = RouteProgressGeometry(route)
-            let hits = preferredRoute.filter { (geometry.project($0)?.distanceFromRoute ?? .infinity) < 150 }.count
-            return (route, Double(hits) / Double(preferredRoute.count))
-        }
-        if let best = scores.max(by: { $0.1 < $1.1 }), best.1 >= 0.8 {
-            if let recommended = routes.first, recommended.id != best.0.id,
-               let preferredTime = measuredTravelTimes[best.0.id], preferredTime.isFinite, preferredTime > 0,
-               let recommendedTime = measuredTravelTimes[recommended.id], recommendedTime.isFinite,
-               recommendedTime >= 0, preferredTime - recommendedTime >= max(120, preferredTime * 0.1) {
-                return (recommended, scores.first(where: { $0.0.id == recommended.id }).map { $0.1 >= 0.8 } ?? false)
+            var alongRoute = 0.0, lateralError = 0.0
+            var hits = 0
+            // Saved samples follow the direction of travel. Use the same 15 m road
+            // tolerance as RouteSimilarity and prefer the closer shape when hits tie.
+            for point in preferredRoute {
+                let matches = geometry.projections(near: point, within: 15)
+                guard let next = matches.filter({ $0.alongRoute >= alongRoute })
+                    .min(by: { $0.distanceFromRoute < $1.distanceFromRoute }) else { continue }
+                alongRoute = next.alongRoute
+                lateralError += next.distanceFromRoute
+                hits += 1
             }
-            return (best.0, true)
+            return (route: route, fraction: Double(hits) / Double(preferredRoute.count), error: lateralError)
+        }
+        if let best = scores.max(by: { lhs, rhs in
+            lhs.fraction == rhs.fraction ? lhs.error > rhs.error : lhs.fraction < rhs.fraction
+        }), best.fraction >= 0.8 {
+            if let recommended = scores.first, recommended.route.id != best.route.id,
+               let preferredTime = measuredTravelTimes[best.route.id], preferredTime.isFinite, preferredTime > 0,
+               let recommendedTime = measuredTravelTimes[recommended.route.id], recommendedTime.isFinite,
+               recommendedTime >= 0, preferredTime - recommendedTime >= max(120, preferredTime * 0.1) {
+                return (recommended.route, recommended.fraction >= 0.8)
+            }
+            return (best.route, true)
         }
         return (routes.first, false)
     }

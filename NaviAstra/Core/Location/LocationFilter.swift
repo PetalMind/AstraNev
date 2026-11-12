@@ -6,8 +6,9 @@ struct LocationFilter {
     private var mode: TransportMode?
 
     mutating func accept(_ location: CLLocation, mode newMode: TransportMode) -> Bool {
-        guard location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 70,
-              abs(location.timestamp.timeIntervalSinceNow) < 15 else { return false }
+        guard CLLocationCoordinate2DIsValid(location.coordinate),
+              (0...70).contains(location.horizontalAccuracy),
+              (-2...15).contains(Date().timeIntervalSince(location.timestamp)) else { return false }
         if mode != newMode {
             previous = nil
             mode = newMode

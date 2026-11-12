@@ -8,6 +8,8 @@ struct OffRouteDetector {
     private var sampleCount = 0
     private var lastSampleTimestamp: Date?
     private var departurePosition: Double?
+    private var departureCoordinate: Coordinate?
+    private var observedRouteID: UUID?
     private var detectsReverseTravel = false
 
     mutating func shouldRequestReroute(
@@ -16,6 +18,13 @@ struct OffRouteDetector {
         projection: RouteProjection,
         matchConfidence: Double
     ) -> Bool {
+        if observedRouteID != route.id { reset() }
+        if let previous = lastSampleTimestamp {
+            let interval = location.timestamp.timeIntervalSince(previous)
+            guard interval > 0 else { return false }
+            // A fix after a GPS outage starts a new sequence of evidence.
+            if interval > 10 { reset() }
+        }
         let hasReliablePosition = location.accuracy.isFinite && (0...45).contains(location.accuracy)
         let isFarFromRoute = projection.distanceFromRoute > max(40, location.accuracy * 1.5)
         let hasWeakRouteMatch = matchConfidence < 0.25
@@ -26,26 +35,29 @@ struct OffRouteDetector {
         let hasInconsistentCourse = (courseDifference ?? 0) >= 55
         let sustainedDeparture = hasReliablePosition && isFarFromRoute && hasWeakRouteMatch &&
             (hasInconsistentCourse || matchConfidence < 0.1)
+        // A neighboring ramp can stay inside 40 m for several seconds. Only
+        // trust a smaller separation with precise fixes and measured movement.
+        let nearbyDeparture = hasReliablePosition && location.accuracy <= 10 && location.speed >= 3 &&
+            projection.distanceFromRoute > max(25, location.accuracy * 3) && matchConfidence < 0.1
         let reverseTravel = hasReliablePosition && location.accuracy <= 20 && location.speed >= 3 &&
             location.courseAccuracy >= 0 && location.courseAccuracy <= 25 &&
             !isFarFromRoute && hasWeakRouteMatch && (courseDifference ?? 0) >= 120
 
-        guard sustainedDeparture || reverseTravel else {
+        guard sustainedDeparture || nearbyDeparture || reverseTravel else {
             reset()
             return false
         }
         if departureSince != nil, detectsReverseTravel != reverseTravel { reset() }
         detectsReverseTravel = reverseTravel
-
-        if lastSampleTimestamp != location.timestamp {
-            sampleCount += 1
-            lastSampleTimestamp = location.timestamp
-        }
+        observedRouteID = route.id
+        sampleCount += 1
+        lastSampleTimestamp = location.timestamp
 
         deviationState = sampleCount >= 2 ? .probablyOffRoute : .suspicious
         guard let departureSince else {
             self.departureSince = location.timestamp
             departurePosition = projection.alongRoute
+            departureCoordinate = location.coordinate
             return false
         }
 
@@ -53,8 +65,11 @@ struct OffRouteDetector {
         if reverseTravel {
             confirmed = sampleCount >= 4 && location.timestamp.timeIntervalSince(departureSince) >= 5 &&
                 (departurePosition ?? projection.alongRoute) - projection.alongRoute >= 15
-        } else {
+        } else if sustainedDeparture {
             confirmed = sampleCount >= 3 && location.timestamp.timeIntervalSince(departureSince) >= 2
+        } else {
+            confirmed = sampleCount >= 4 && location.timestamp.timeIntervalSince(departureSince) >= 5 &&
+                (departureCoordinate?.distance(to: location.coordinate) ?? 0) >= 25
         }
         if confirmed { deviationState = .offRoute }
         return confirmed
@@ -66,6 +81,8 @@ struct OffRouteDetector {
         sampleCount = 0
         lastSampleTimestamp = nil
         departurePosition = nil
+        departureCoordinate = nil
+        observedRouteID = nil
         detectsReverseTravel = false
     }
 
