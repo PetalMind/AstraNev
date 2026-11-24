@@ -13,12 +13,9 @@ struct BackgroundNavigationCriticalTests {
         session.state.voiceEnabled = false
         session.voice.setEnabled(false)
         let destination = Destination(name: "Cel", coordinate: Coordinate(latitude: 52.001, longitude: 21))
-        let coordinates = mode == .car
-            ? [Coordinate(latitude: 52.0017, longitude: 21),
-               Coordinate(latitude: 52.01, longitude: 21), destination.coordinate]
-            : [Coordinate(latitude: 52, longitude: 21), destination.coordinate]
+        let coordinates = [Coordinate(latitude: 52, longitude: 21), destination.coordinate]
         let route = NavigationRoute(coordinates: coordinates,
-                                    distance: mode == .car ? 1_924 : 111,
+                                    distance: 111,
                                     expectedTravelTime: 90, maneuvers: [])
         session.state.route = route
         session.state.destination = destination
@@ -34,19 +31,14 @@ struct BackgroundNavigationCriticalTests {
         session.onTripFinished = { completed.append($0) }
         func fix(_ offset: Double) {
             session.locationManager.onLocation?(CLLocation(
-                coordinate: CLLocationCoordinate2D(latitude: mode == .car ? 52.0017 : 52.0009,
+                coordinate: CLLocationCoordinate2D(latitude: 52.0009,
                                                    longitude: 21), altitude: 0,
                 horizontalAccuracy: 5, verticalAccuracy: 5, course: 0, speed: 0,
                 timestamp: base.addingTimeInterval(offset)))
         }
         fix(0)
         #expect(session.state.status == .navigating)
-        if mode == .car {
-            // Stopped 78 m beyond the destination, with the planned detour still ahead.
-            #expect((session.state.progress?.remainingDistance ?? 0) > 75)
-        } else {
-            #expect((session.state.progress?.remainingDistance ?? .infinity) < 50)
-        }
+        #expect((session.state.progress?.remainingDistance ?? .infinity) < 50)
         #expect(session.state.cameraIntent == cameraIntent)
         // Traffic/timer refreshes reuse the GPS sample and cannot cause arrival.
         for _ in 0..<10 { session.updateProgress() }
@@ -67,6 +59,42 @@ struct BackgroundNavigationCriticalTests {
         #expect(completed.count == 1)
     }
 
+    enum DrivingApproach: CaseIterable { case nearPOIPin, parallelRoad, loopStart, parkingEntrance }
+
+    @Test(arguments: DrivingApproach.allCases)
+    func carArrivalRequiresTheEndOfTheDrivenApproach(_ approach: DrivingApproach) {
+        let session = NavigationSession(dependencies: .live(
+            routeEndpoint: URL(string: "https://routing.invalid")!, trafficAPIKey: nil))
+        let pin = Coordinate(latitude: 52, longitude: 21)
+        let access = Coordinate(latitude: 52.0015, longitude: 21)
+        let start = Coordinate(latitude: 51.999, longitude: 21)
+        var shape = [start, access]
+        let position: Coordinate
+        switch approach {
+        case .nearPOIPin: position = pin
+        case .parallelRoad: position = Coordinate(latitude: 52.00148, longitude: 21.00026)
+        case .loopStart:
+            position = Coordinate(latitude: 52.00134, longitude: 21.00008)
+            shape = [position, Coordinate(latitude: 52.002, longitude: 21.01),
+                     Coordinate(latitude: 51.999, longitude: 21.01), access]
+        case .parkingEntrance: position = Coordinate(latitude: 52.00144, longitude: 21)
+        }
+        let state = session.state
+        state.transportMode = .car
+        state.voiceEnabled = false
+        state.route = NavigationRoute(coordinates: shape, distance: 2_000, expectedTravelTime: 120, maneuvers: [])
+        state.destination = Destination(name: "Sklep", coordinate: pin, poi: POIMetadata(provider: .openStreetMap))
+        state.navigationTarget = POINavigationTarget(coordinate: access, type: .parkingAccess, confidence: 1)
+        state.status = .navigating
+        let now = Date()
+        for offset in [-4.0, -1, 2] {
+            state.location = NavigationLocation(coordinate: position, speed: 0, course: -1, accuracy: 4,
+                                                timestamp: now.addingTimeInterval(offset))
+            session.updateProgress()
+        }
+        #expect(state.status == (approach == .parkingEntrance ? .arrived : .navigating))
+    }
+
     @Test(arguments: [false, true])
     func arrivalRejectsPassThroughPoorGPSAndReusedFixes(carArrival: Bool) {
         let base = Date()
@@ -75,14 +103,15 @@ struct BackgroundNavigationCriticalTests {
                 speed: speed, course: 0, accuracy: accuracy, timestamp: base.addingTimeInterval(seconds))
         }
         var detector = ArrivalDetector()
-        let destinationDistance = carArrival ? 85.0 : 20.0
-        let remainingDistance: Double? = carArrival ? nil : 25
-        let destinationRadius = carArrival ? 100.0 : 50.0
+        let destinationDistance = 20.0
+        let remainingDistance = 25.0
+        let mode: TransportMode = carArrival ? .car : .walking
+        let destinationRadius = carArrival ? ArrivalDetector.carRadiusMeters : 50
         func observe(_ seconds: Double, speed: Double = 0, accuracy: Double = 5,
                      distance: Double? = nil) -> Bool {
             detector.observe(location(seconds, speed: speed, accuracy: accuracy),
                              destinationDistance: distance ?? destinationDistance,
-                             remainingDistance: remainingDistance, destinationRadius: destinationRadius,
+                             remainingDistance: remainingDistance, mode: mode,
                              now: base.addingTimeInterval(seconds))
         }
         #expect(!observe(0))
@@ -97,7 +126,7 @@ struct BackgroundNavigationCriticalTests {
         detector.reset()
         let acceptedStaleFix = detector.observe(location(0), destinationDistance: destinationDistance,
                                                 remainingDistance: remainingDistance,
-                                                destinationRadius: destinationRadius,
+                                                mode: mode,
                                                 now: base.addingTimeInterval(30))
         #expect(!acceptedStaleFix)
         #expect(!observe(20))
@@ -112,10 +141,9 @@ struct BackgroundNavigationCriticalTests {
         #expect(observe(50))
         detector.reset()
         for seconds in [60.0, 62, 65] {
-            // Transit and pending stops still require route completion.
             let acceptedIncompleteRoute = detector.observe(
                 location(seconds), destinationDistance: destinationDistance,
-                remainingDistance: 500, destinationRadius: destinationRadius,
+                remainingDistance: 500, mode: mode,
                 now: base.addingTimeInterval(seconds))
             #expect(!acceptedIncompleteRoute)
         }

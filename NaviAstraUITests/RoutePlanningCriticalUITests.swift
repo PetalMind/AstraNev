@@ -8,6 +8,28 @@ final class RoutePlanningCriticalUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    func testDrivingMapShowsTheSpeedLimitAndOnlyKnownDistance() {
+        for held in [false, true] {
+            let app = XCUIApplication()
+            app.launchEnvironment["NAVIASTRA_DRIVING_UI_AUDIT"] = "1"
+            app.launchEnvironment["NAVIASTRA_DRIVING_UI_SPEED_LIMIT"] = "50"
+            if held { app.launchEnvironment["NAVIASTRA_DRIVING_UI_HELD_LIMIT"] = "1" }
+            else { app.launchEnvironment["NAVIASTRA_DRIVING_UI_LIMIT_METERS"] = "150" }
+            app.launch()
+            let instrument = app.descendants(matching: .any)["driving-speed-instrument"].firstMatch
+            XCTAssertTrue(instrument.waitForExistence(timeout: 20))
+            XCTAssertTrue(instrument.label.contains("Limit 50"))
+            XCTAssertEqual(instrument.label.contains("150 m"), !held)
+            XCTAssertFalse(instrument.label.localizedCaseInsensitiveContains("odczyt"))
+            XCTAssertFalse(instrument.label.localizedCaseInsensitiveContains("źródło"))
+            XCTAssertFalse(app.staticTexts["Ostatni odczyt"].exists)
+            XCTAssertTrue(app.buttons["voice-assistant-button"].exists)
+            XCTAssertFalse(app.staticTexts["Astra"].exists)
+            attachScreenshot(app, name: held ? "Mapa-limit-podtrzymany" : "Mapa-limit-150-m")
+            app.terminate()
+        }
+    }
+
     func testEndpointFormsInLightAndDark() throws {
         for appearance in ["Light", "Dark"] {
             for waypoints in [0, 8] {

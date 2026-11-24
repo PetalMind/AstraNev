@@ -67,6 +67,46 @@ struct VoiceNavigationCriticalTests {
         #expect(VoiceNavigationActions.answer(.traffic, state: state, now: now.addingTimeInterval(600)).contains("GPS"))
     }
 
+    @Test func approachingTrafficIsAnnouncedOnceWithDistanceEvenInConciseGuidance() throws {
+        let route = try #require(activeState().route)
+        let coordinate = try #require(route.coordinates.first)
+        let voice = VoiceGuidanceEngine(preferences: .init(isEnabled: true, verbosity: .concise,
+            voiceIdentifier: nil, speechRate: 0.5, volume: 1))
+        for (category, label) in [(TrafficIncidentCategory.jam, "zaczyna się korek"),
+                                  (.roadClosed, "droga jest zamknięta")] {
+            let early = try #require(voice.trafficNotice(category, coordinate: coordinate, distance: 505, reportID: "odcinek"))
+            let matched = Coordinate(latitude: coordinate.latitude + 0.0005, longitude: coordinate.longitude)
+            let close = try #require(voice.trafficNotice(category, coordinate: matched, distance: 35, reportID: "odcinek"))
+            #expect(early.text == "Za 505 metrów \(label).")
+            #expect(close.text == "Za 35 metrów \(label).")
+            #expect(early.key == close.key)
+            #expect(voice.trafficNotice(category, coordinate: coordinate, distance: 200, reportID: "drugie-źródło")?.key == early.key)
+            #expect(voice.trafficNotice(category, coordinate: coordinate, distance: -2) == nil)
+        }
+        voice.setEnabled(false)
+        #expect(voice.trafficNotice(.jam, coordinate: coordinate, distance: 300) == nil)
+
+        func segment(_ start: Double, _ end: Double, id: UUID, date: Date, closed: Bool = false) -> RouteTrafficSegment {
+            RouteTrafficSegment(id: String(start), routeID: id, startDistance: start, endDistance: end,
+                coordinates: route.coordinates, colorHex: 0, isRoadClosure: closed,
+                currentSpeedKph: 5, freeFlowSpeedKph: 50, measuredAt: date)
+        }
+        let measured = [segment(100, 180, id: route.id, date: now), segment(180, 320, id: route.id, date: now),
+                        segment(390, 460, id: route.id, date: now, closed: true),
+                        segment(600, 700, id: route.id, date: now.addingTimeInterval(-300)),
+                        segment(700, 800, id: UUID(), date: now)]
+        func notices(_ incidents: [TrafficIncident]) -> [TrafficIncident] {
+            RouteTrafficMonitor.flowNotices(in: TrafficSnapshot(flow: nil, incidents: incidents,
+                routeFlowSegments: measured, updatedAt: now, partialError: nil, incidentDataAvailable: true),
+                on: route, at: now)
+        }
+        #expect(notices([]).map(\.category) == [.jam, .roadClosed])
+        #expect(notices([]).compactMap(\.distanceAlongRoute) == [100, 390])
+        let reported = TrafficIncident(id: "reported", description: "Korek", coordinate: coordinate,
+            delaySeconds: nil, category: .jam, severity: .moderate, distanceAlongRoute: 120, observedAt: now)
+        #expect(notices([reported]).map(\.category) == [.roadClosed])
+    }
+
     @Test
     func staleTrafficIsUnavailableEvenWhenVehiclePositionIsFresh() {
         let state = activeState()

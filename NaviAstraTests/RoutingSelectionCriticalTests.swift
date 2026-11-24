@@ -76,6 +76,309 @@ struct RoutingSelectionCriticalTests {
     }
 
     #if os(iOS)
+    @Test(arguments: [170, 171, 442])
+    func roadMatchingRetryKeepsTheRequestedItineraryAndRestrictions(errorCode: Int) async throws {
+        var requests: [URLRequest] = []
+        let provider = ValhallaRouteProvider(endpoint: URL(string: "https://routing.invalid")!) { request in
+            requests.append(request)
+            if requests.count == 1 {
+                return Self.routeReply(request, status: 400, body: #"{"error_code":\#(errorCode)}"#)
+            }
+            let route = #"{"trip":{"legs":[{"shape":"??_ibE?","maneuvers":[]}],"summary":{"length":11,"time":100}}}"#
+            return Self.routeReply(request, status: 200, body: route)
+        }
+        var preferences = RoutingPreferences()
+        preferences.advanced.arrivalSide = .same
+        preferences.avoidTolls = true
+        let stops = errorCode == 170 ? [] : [Coordinate(latitude: 52.015, longitude: 21)]
+        let heading = errorCode == 442 ? 359.9 : 89.5
+        let closure = [[[20.0, 51.0], [20.01, 51.0], [20.01, 51.01], [20.0, 51.0]]]
+        let routes = try await RoadRoutingContext.$allowsPersonalization.withValue(false) {
+            try await RoadRoutingContext.$closurePolygons.withValue(closure) {
+                try await RoadRoutingContext.$heading.withValue(heading) {
+                    try await provider.calculateRoutes(from: road[0], to: road[1], through: stops,
+                        mode: .car, preferences: preferences, avoiding: [Coordinate(latitude: 51, longitude: 20)])
+                }
+            }
+        }
+        #expect(routes.first?.distance == 11_000)
+        try #require(requests.count == 2)
+        let firstBody = try #require(requests[0].httpBody)
+        let retryBody = try #require(requests[1].httpBody)
+        var expected = try #require(JSONSerialization.jsonObject(with: firstBody) as? [String: Any])
+        var locations = try #require(expected["locations"] as? [[String: Any]])
+        #expect(locations.count == stops.count + 2)
+        #expect(locations.allSatisfy { $0["radius"] == nil })
+        #expect(locations.first?["heading"] as? Int == (errorCode == 442 ? 0 : 90))
+        #expect(expected["alternates"] as? Int == (stops.isEmpty ? 2 : 0))
+        for index in locations.indices { locations[index]["radius"] = 50 }
+        expected["locations"] = locations
+        expected["alternates"] = 0
+        expected.removeValue(forKey: "prioritize_bidirectional")
+        let retry = try #require(JSONSerialization.jsonObject(with: retryBody) as? NSDictionary)
+        #expect(retry.isEqual(to: expected))
+    }
+
+    @Test func roadMatchingRetryStopsAfterOneAttemptAndSkipsUnrelatedFailures() async {
+        let noRoad = #"{"error_code":171}"#
+        for (status, body, expectedCount) in [
+            (400, noRoad, 2), (400, #"{"error_code":154}"#, 1),
+            (400, "Bad Request", 1), (429, noRoad, 1), (503, noRoad, 1)
+        ] {
+            var count = 0
+            let provider = ValhallaRouteProvider(endpoint: URL(string: "https://routing.invalid")!) { request in
+                count += 1
+                guard count <= expectedCount else { throw URLError(.badServerResponse) }
+                return Self.routeReply(request, status: status, body: body)
+            }
+            await #expect(throws: ValhallaServerError.self) {
+                try await provider.calculateRoutes(from: road[0], to: road[1], mode: .car)
+            }
+            #expect(count == expectedCount)
+        }
+    }
+
+    @Test func cancellationAfterFailedRoadMatchPreventsRetry() async {
+        let token = TransitPlanningCancellationToken()
+        var count = 0
+        let provider = ValhallaRouteProvider(endpoint: URL(string: "https://routing.invalid")!) { request in
+            count += 1
+            token.cancel()
+            return Self.routeReply(request, status: 400, body: #"{"error_code":171}"#)
+        }
+        await RoadRoutingContext.$cancellationToken.withValue(token) {
+            await #expect(throws: CancellationError.self) {
+                try await provider.calculateRoutes(from: road[0], to: road[1], mode: .car)
+            }
+        }
+        #expect(count == 1)
+    }
+
+    private static func routeReply(_ request: URLRequest, status: Int, body: String) -> (Data, URLResponse) {
+        (Data(body.utf8), HTTPURLResponse(url: request.url!, statusCode: status,
+            httpVersion: "HTTP/1.1", headerFields: nil)!)
+    }
+
+    // Each polyline visits (52.002, 21) before following its own road to the destination.
+    private static let centralTrip = #"{"legs":[{"shape":"_oydbB_sv`g@_|B?_|B?o_h@?owH?","maneuvers":[]}],"summary":{"length":3.4,"time":200}}"#
+    private static let westernTrip = #"{"legs":[{"shape":"_oydbB_sv`g@_|B?_|B~oRo_h@?owH_pR","maneuvers":[]}],"summary":{"length":4.4,"time":230}}"#
+    private static let easternTrip = #"{"legs":[{"shape":"_oydbB_sv`g@_|B?_|B_pRo_h@?owH~oR","maneuvers":[]}],"summary":{"length":4.5,"time":240}}"#
+
+    private static func payload(for request: URLRequest) throws -> [String: Any] {
+        let data = try #require(request.httpBody)
+        return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    @Test func offRouteRecalculationRecoversFromPerimeterLimitAndSelectsOnlyASafeAlternative() async throws {
+        let session = perimeterSession()
+        defer { session.resetRoadSafetyData() }
+        let origin = road[0], destination = road[1]
+        let stop = Destination(name: "Postój", coordinate: Coordinate(latitude: 52.002, longitude: 21))
+        let oldRoad = [Coordinate(latitude: 52, longitude: 20.998), stop.coordinate, destination]
+        session.state.route = NavigationRoute(coordinates: oldRoad, distance: 3_600, expectedTravelTime: 260, maneuvers: [])
+        session.state.waypoints = [stop]
+        session.state.routingPreferences.avoidTolls = true
+        session.state.routingPreferences.advanced.vehicle = .truck
+        session.state.routingPreferences.advanced.truckHeight = 3.75
+        session.state.routingPreferences.advanced.arrivalSide = .same
+        let manual = ValhallaAvoidArea(name: "Moja strefa", vertices: [
+            Coordinate(latitude: 52.010, longitude: 20.989), Coordinate(latitude: 52.010, longitude: 20.991),
+            Coordinate(latitude: 52.014, longitude: 20.991), Coordinate(latitude: 52.014, longitude: 20.989)])
+        session.state.routingPreferences.advanced.avoidAreas = [manual]
+        var requests: [[String: Any]] = []
+        session.routeProvider = ValhallaRouteProvider(endpoint: URL(string: "https://routing.invalid")!) { request in
+            requests.append(try Self.payload(for: request))
+            if requests.count == 1 {
+                return Self.routeReply(request, status: 400, body: #"{"error_code":167}"#)
+            }
+            // All three shapes visit the stop. The central road crosses the closure, the
+            // western road crosses the manual area and the eastern road is clear.
+            let reply = #"{"trip":\#(Self.centralTrip),"alternates":[{"trip":\#(Self.westernTrip)},{"trip":\#(Self.easternTrip)}]}"#
+            return Self.routeReply(request, status: 200, body: reply)
+        }
+        let time = ValhallaPlanningTime(type: 1, value: "2026-11-12T09:30")
+        await RoadRoutingContext.$planningTime.withValue(time) {
+            await session.reroute(from: origin)
+        }
+        #expect(session.state.errorMessage == nil)
+        #expect(session.state.status == .navigating)
+        #expect(session.state.route?.distance == 4_500)
+        #expect(session.state.routeOptions.map(\.distance) == [4_500])
+        #expect(session.state.waypoints == [stop])
+        try #require(requests.count == 2)
+        let originalRings = try #require(requests[0]["exclude_polygons"] as? [[[Double]]])
+        #expect(originalRings.count > 1 && originalRings.contains(manual.closedRing))
+        #expect(requests[1]["exclude_polygons"] as? [[[Double]]] == [manual.closedRing])
+        let locations = try #require(requests[1]["locations"] as? [[String: Any]])
+        #expect(locations.compactMap { $0["lat"] as? Double } == [origin.latitude, stop.coordinate.latitude, destination.latitude])
+        #expect(locations.last?["preferred_side"] as? String == "same")
+        #expect(requests[1]["costing"] as? String == "truck")
+        let costs = try #require((requests[1]["costing_options"] as? [String: [String: Any]])?["truck"])
+        #expect(costs["use_tolls"] as? Double == 0 && costs["height"] as? Double == 3.75)
+        #expect((requests[1]["date_time"] as? [String: Any])?["value"] as? String == time.value)
+    }
+
+    @Test(arguments: [false, true])
+    func targetedRetryKeepsCheckingEvenTheClosureOmittedFromItsRequest(crossesOmittedClosure: Bool) async throws {
+        let session = perimeterSession()
+        let westernClosure = try RoadClosureAvoidance(geometry: [
+            Coordinate(latitude: 52.011, longitude: 20.99), Coordinate(latitude: 52.013, longitude: 20.99)])
+        var requests: [[[[Double]]]] = []
+        session.routeProvider = ValhallaRouteProvider(endpoint: URL(string: "https://routing.invalid")!) { request in
+            let payload = try Self.payload(for: request)
+            requests.append(payload["exclude_polygons"] as? [[[Double]]] ?? [])
+            switch requests.count {
+            case 1:
+                return Self.routeReply(request, status: 400, body: #"{"error_code":167}"#)
+            case 2:
+                return Self.routeReply(request, status: 200, body: #"{"trip":\#(Self.centralTrip)}"#)
+            case 3:
+                let trip = crossesOmittedClosure ? Self.westernTrip : Self.easternTrip
+                return Self.routeReply(request, status: 200, body: #"{"trip":\#(trip)}"#)
+            default:
+                throw URLError(.badServerResponse)
+            }
+        }
+        let result = await RoadRoutingContext.$closurePolygons.withValue(westernClosure.polygons) {
+            try? await session.calculateRoutes(from: road[0], to: road[1])
+        }
+        try #require(requests.count == 3)
+        #expect(requests[0].count == 2 && requests[0].contains(westernClosure.polygons[0]))
+        #expect(requests[1].isEmpty)
+        let barrier = try RoadExclusionPolygon(ring: #require(requests[2].first))
+        #expect(requests[2].count == 1)
+        #expect(barrier.intersects(NavigationRoute(coordinates: road, distance: 3_330,
+                                                  expectedTravelTime: 200, maneuvers: [])))
+        #expect(!requests[2].contains(westernClosure.polygons[0]))
+        if crossesOmittedClosure {
+            #expect(result == nil)
+        } else {
+            #expect(result?.map(\.distance) == [4_500])
+        }
+    }
+
+    @Test func retryCanGuideAnAlternativeAroundASingleLongClosedRoad() async throws {
+        let session = perimeterSession()
+        let closed = [Coordinate(latitude: 52.012, longitude: 20.5), Coordinate(latitude: 52.012, longitude: 21.001)]
+        let incident = TrafficIncident(id: "long", description: "Zamknięcie", coordinate: closed[0],
+            delaySeconds: nil, category: .roadClosed, severity: .major, geometry: closed, observedAt: .now)
+        session.knownRoadClosures = [incident.id: ConfirmedRoadClosure(incident: incident, observedAt: .now, maximumAge: 120)]
+        var rings: [[[[Double]]]] = []
+        session.routeProvider = ValhallaRouteProvider(endpoint: URL(string: "https://routing.invalid")!) { request in
+            rings.append(try Self.payload(for: request)["exclude_polygons"] as? [[[Double]]] ?? [])
+            switch rings.count {
+            case 1: return Self.routeReply(request, status: 400, body: #"{"error_code":167}"#)
+            case 2: return Self.routeReply(request, status: 200, body: #"{"trip":\#(Self.centralTrip)}"#)
+            case 3: return Self.routeReply(request, status: 200, body: #"{"trip":\#(Self.easternTrip)}"#)
+            default: throw URLError(.badServerResponse)
+            }
+        }
+        let result = try await session.calculateRoutes(from: road[0], to: road[1])
+        #expect(result.map(\.distance) == [4_500])
+        try #require(rings.count == 3)
+        #expect(rings[0].count == 1 && rings[1].isEmpty)
+        #expect(!rings[2].isEmpty && rings[2] != rings[0])
+        let crossing = NavigationRoute(coordinates: road, distance: 3_330, expectedTravelTime: 200, maneuvers: [])
+        let barriers = try rings[2].map { try RoadExclusionPolygon(ring: $0) }
+        #expect(barriers.contains { $0.intersects(crossing) })
+        #expect(rings[2].flatMap { $0 }.allSatisfy { abs($0[0] - 21) < 0.01 })
+    }
+
+    @Test func perimeterRetryIsBoundedAndNeverWeakensUserAreasOrRetriesAnotherHTTPStatus() async throws {
+        for (hasClosure, status, expectedCount) in [(true, 400, 2), (false, 400, 1), (true, 500, 1)] {
+            let session = perimeterSession()
+            if !hasClosure { session.knownRoadClosures.removeAll() }
+            let manual = ValhallaAvoidArea(name: "Strefa", vertices: [road[0], road[1],
+                Coordinate(latitude: 52.02, longitude: 21.01)])
+            session.state.routingPreferences.advanced.avoidAreas = [manual]
+            var count = 0
+            session.routeProvider = ValhallaRouteProvider(endpoint: URL(string: "https://routing.invalid")!) { request in
+                count += 1
+                guard count <= expectedCount else { throw URLError(.badServerResponse) }
+                let payload = try Self.payload(for: request)
+                #expect((payload["exclude_polygons"] as? [[[Double]]])?.contains(manual.closedRing) == true)
+                return Self.routeReply(request, status: status, body: #"{"error_code":167}"#)
+            }
+            await session.reroute(from: road[0])
+            #expect(count == expectedCount)
+            #expect(session.state.route == nil)
+            let message = try #require(session.state.errorMessage)
+            #expect(!message.contains("HTTP"))
+        }
+    }
+
+    @Test func cancellationAtThePerimeterLimitStopsRecalculationBeforeTheProbe() async {
+        let session = perimeterSession()
+        let token = TransitPlanningCancellationToken()
+        var count = 0
+        session.routeProvider = ValhallaRouteProvider(endpoint: URL(string: "https://routing.invalid")!) { request in
+            count += 1
+            token.cancel()
+            return Self.routeReply(request, status: 400, body: #"{"error_code":167}"#)
+        }
+        await RoadRoutingContext.$cancellationToken.withValue(token) {
+            await #expect(throws: CancellationError.self) {
+                try await session.calculateRoutes(from: road[0], to: road[1])
+            }
+        }
+        #expect(count == 1)
+    }
+
+    @Test func blockedEVProbeLeavesThePreviouslyAcceptedChargingItineraryInPlace() async throws {
+        let session = perimeterSession()
+        session.state.routingPreferences.evPlanningEnabled = true
+        session.state.routingPreferences.evRangeKilometers = 400
+        let previousCharger = Destination(name: "Zaplanowana ładowarka", coordinate: road[1])
+        session.state.evChargingStops = [previousCharger]
+        let stop = Destination(name: "Postój", coordinate: Coordinate(latitude: 52.002, longitude: 21))
+        session.state.waypoints = [stop]
+        var count = 0
+        session.routeProvider = ValhallaRouteProvider(endpoint: URL(string: "https://routing.invalid")!) { request in
+            count += 1
+            guard count <= 3 else { throw URLError(.badServerResponse) }
+            let payload = try Self.payload(for: request)
+            let locations = try #require(payload["locations"] as? [[String: Any]])
+            #expect(locations.compactMap { $0["lat"] as? Double } == [self.road[0].latitude, stop.coordinate.latitude, self.road[1].latitude])
+            if count == 1 {
+                return Self.routeReply(request, status: 400, body: #"{"error_code":167}"#)
+            }
+            // Feasible with the available battery, but crosses the known closure.
+            return Self.routeReply(request, status: 200, body: #"{"trip":\#(Self.centralTrip)}"#)
+        }
+        do {
+            _ = try await session.calculateRoutes(from: road[0], to: road[1])
+            Issue.record("Zaakceptowano trasę przez potwierdzone zamknięcie")
+        } catch {
+            #expect(error.localizedDescription.localizedCaseInsensitiveContains("zamk"))
+        }
+        #expect((2...3).contains(count))
+        #expect(session.state.evChargingStops == [previousCharger])
+        #expect(session.state.waypoints == [stop])
+    }
+
+    private func perimeterSession() -> NavigationSession {
+        let dependencies = NavigationSessionDependencies.live(
+            routeEndpoint: URL(string: "https://routing.invalid")!, trafficAPIKey: nil)
+        let session = NavigationSession(dependencies: .init(routeProvider: dependencies.routeProvider,
+            transitProvider: dependencies.transitProvider, transitDataProvider: dependencies.transitDataProvider,
+            speedLimitProvider: dependencies.speedLimitProvider, roadDataProvider: PerimeterTestRoadData(),
+            trafficProvider: nil, trafficProviderFactory: dependencies.trafficProviderFactory,
+            voiceGuidance: dependencies.voiceGuidance))
+        session.state.destination = Destination(name: "Cel", coordinate: road[1])
+        session.state.transportMode = .car
+        session.state.status = .navigating
+        session.state.routingPreferences = RoutingPreferences()
+        let closed = [Coordinate(latitude: 52.011, longitude: 21), Coordinate(latitude: 52.013, longitude: 21)]
+        let incident = TrafficIncident(id: "known", description: "Zamknięcie", coordinate: closed[0],
+            delaySeconds: nil, category: .roadClosed, severity: .major, geometry: closed, observedAt: .now)
+        session.knownRoadClosures[incident.id] = ConfirmedRoadClosure(incident: incident, observedAt: .now, maximumAge: 120)
+        return session
+    }
+
+    private struct PerimeterTestRoadData: RoadDataProvider {
+        func load(for route: [Coordinate]) async throws -> RoadDataSnapshot { throw RoutingError.network }
+    }
+
     @Test func previewTrafficTimeAndDescriptionsExpireTogetherWithoutChangingTheRoutingBase() throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         var congested = NavigationRoute(coordinates: road, distance: 10_000, expectedTravelTime: 600,

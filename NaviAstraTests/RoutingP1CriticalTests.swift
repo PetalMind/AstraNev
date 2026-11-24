@@ -169,7 +169,8 @@ struct RoutingP1CriticalTests {
         #expect(decoded.candidates.allSatisfy { $0.tollDistance == nil && $0.unpavedDistance == nil })
         let report = RoutingBenchmarkSuite.run()
         #expect(report.cases.count == 120)
-        #expect(report.failures == 0)
+        let failures = report.cases.filter { !$0.passed }.map { "\($0.id) \($0.category) \($0.measured)" }
+        #expect(failures.isEmpty)
         #expect(report.dataset.contains("syntetycznych"))
     }
 }

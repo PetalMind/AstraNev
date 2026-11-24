@@ -44,6 +44,18 @@ struct RoutingCriticalTests {
             delaySeconds: 900, category: .accident, severity: .major, expiresAt: .distantPast)
         #expect(SafetyAlertEngine.alerts(in: [expired], at: now).isEmpty)
         #expect(RouteTrafficMonitor.incidentProjection(expired, geometry: RouteProgressGeometry(route)) == nil)
+        #if os(iOS)
+        let jam = TrafficIncident(id: "jam", description: "Korek", coordinate: police.coordinate,
+            delaySeconds: 75, category: .jam, severity: .moderate)
+        #expect(jam.mapAlert(showsCongestion: true)?.title == "Korek")
+        #expect(jam.mapAlert(showsCongestion: true)?.symbolName == TrafficIncidentCategory.jam.mapSymbolName)
+        #expect(jam.mapAlert(showsCongestion: false) == nil)
+        let mixed = TrafficIncident(id: "jam-accident", description: "Wypadek i korek",
+            coordinate: police.coordinate, delaySeconds: nil, category: .jam, severity: .major,
+            events: [RoadEventDetail(code: nil, description: nil, category: .accident)])
+        #expect(mixed.mapAlert(showsCongestion: true)?.title == TrafficIncidentCategory.accident.mapLabel)
+        #expect(closure.mapAlert(showsCongestion: true)?.title == TrafficIncidentCategory.roadClosed.mapLabel)
+        #endif
     }
 
     @Test func osmRestrictionsPreserveEmbeddedValuesAndConditionalMeaning() throws {
@@ -333,6 +345,227 @@ struct RoutingCriticalTests {
         #expect(session.knownRoadClosures.count == 2)
     }
 
+    enum SpeedLimitGapEnd: CaseIterable, Sendable { case newLimit, anotherRoad, reverse, ambiguous, offRoute, time, distance }
+
+    @Test func distanceToTheNextKnownSpeedRuleContinuesAcrossEquivalentSections() {
+        let first = RouteSpeedInterval(startMeters: 0, endMeters: 100, rule: .posted(50))
+        let next = RouteSpeedInterval(startMeters: 100, endMeters: 350, rule: .posted(50))
+        let faster = RouteSpeedInterval(startMeters: 350, endMeters: 500, rule: .posted(80))
+        let end = RouteSpeedInterval(startMeters: 500, endMeters: 600, rule: .unrestricted)
+        let profile = RouteSpeedLimitProfile(intervals: [first, next, faster, end])
+        #expect(profile.remainingMeters(from: 25, limit: 50) == 325)
+        #expect(profile.remainingMeters(from: 200, limit: 50) == 150)
+        #expect(profile.remainingMeters(from: 350, limit: 50) == nil)
+        #expect(profile.remainingMeters(from: 350, limit: 80) == 150)
+        #expect(profile.remainingMeters(from: 501, limit: 80) == nil)
+        #expect(RouteSpeedLimitProfile(intervals: [first, next]).remainingMeters(from: 25, limit: 50) == nil)
+        #expect(RouteSpeedLimitProfile(intervals: [first, faster]).remainingMeters(from: 25, limit: 50) == nil)
+        let unknown = RouteSpeedInterval(startMeters: 100, endMeters: 350, rule: .unknown)
+        #expect(RouteSpeedLimitProfile(intervals: [first, unknown, faster]).remainingMeters(from: 25, limit: 50) == nil)
+        let competing = RouteSpeedInterval(startMeters: 100, endMeters: 350, rule: .posted(70))
+        #expect(RouteSpeedLimitProfile(intervals: [first, next, competing, faster]).remainingMeters(from: 25, limit: 50) == nil)
+        #if os(iOS)
+        #expect(DrivingSpeedInstrument.remainingDistanceLabel(149.7) == "150 m")
+        #expect(DrivingSpeedInstrument.remainingDistanceLabel(1_500) == "1,5 km")
+        #expect(DrivingSpeedInstrument.remainingDistanceLabel(2_000) == "2 km")
+        let invalidDistances: [Double?] = [nil, 0, -1, .nan, .infinity]
+        for invalid in invalidDistances {
+            #expect(DrivingSpeedInstrument.remainingDistanceLabel(invalid) == nil)
+        }
+        #endif
+    }
+
+    @Test func speedLimitLookaheadRequiresAnUnambiguousDirectedPostedLimit() async throws {
+        let shape = "_oydbB_sv`g@_|B?"
+        func edge(_ limit: Any, modeled: Int, way: Int = 1, conditional: Bool = false) -> [String: Any] {
+            var info: [String: Any] = ["shape": shape, "way_id": way, "speed_limit": limit]
+            if conditional { info["conditional_speed_limits"] = ["Mo-Fr 07:00-09:00": 30] }
+            return ["edge_info": info, "heading": 180, "distance": 2, "edge": [
+                "forward": false, "access": ["car": true], "speeds": ["type": "tagged", "default": modeled]]]
+        }
+        func read(_ edges: [[String: Any]], heading: Double = 180) async throws -> [RouteSpeedWay] {
+            let data = try JSONSerialization.data(withJSONObject: [["edges": edges]])
+            return try await ValhallaSpeedLimitProvider.speedLimitWays(from: data, headings: [heading])
+        }
+        let posted = edge(50, modeled: 50)
+        let ways = try await read([posted])
+        let way = try #require(ways.first)
+        #expect(way.forward == .posted(50) && way.backward == .unknown)
+        #expect(way.coordinates == Array(Polyline6.decode(shape).reversed()))
+        let opposite = try await read([posted], heading: 0)
+        #expect(opposite.isEmpty)
+        let parallel = try await read([posted, edge(70, modeled: 70, way: 2)])
+        #expect(parallel.isEmpty)
+        for unproven in [edge(0, modeled: 50), edge(50, modeled: 30), edge(50, modeled: 50, conditional: true),
+                         edge("unlimited", modeled: 90)] {
+            let unclear = try await read([unproven])
+            #expect(unclear.first?.forward == .unknown)
+        }
+    }
+
+    @Test func speedLimitBoundaryUsesTheDrivenRoadAndDistanceAlongItsCurve() throws {
+        let bends = [Coordinate(latitude: 52, longitude: 21),
+                     Coordinate(latitude: 52.001, longitude: 21),
+                     Coordinate(latitude: 52.001, longitude: 21.002),
+                     Coordinate(latitude: 52.003, longitude: 21.002)]
+        let geometry = RouteProgressGeometry(coordinates: bends)
+        let roads = [50, 50, 30].enumerated().map { index, limit in
+            RouteSpeedWay(coordinates: [bends[index], bends[index + 1]],
+                          forward: .posted(limit), backward: .unknown)
+        }
+        let boundary = geometry.cumulativeDistances[2]
+        let profile = RouteSpeedLimitProfile(geometry: geometry, from: 0, through: geometry.length, ways: roads, signs: [])
+        let remaining = try #require(profile.remainingMeters(from: 30, limit: 50))
+        #expect(abs(remaining - (boundary - 30)) <= 2)
+        #expect(profile.remainingMeters(from: boundary + 5, limit: 50) == nil)
+        let reverse = RouteProgressGeometry(coordinates: Array(bends.reversed()))
+        let opposite = RouteSpeedLimitProfile(geometry: reverse, from: 0, through: reverse.length, ways: roads, signs: [])
+        #expect(opposite.remainingMeters(from: 30, limit: 50) == nil)
+        // A nearby parallel road with a different limit cannot terminate the current one.
+        let parallel = bends.suffix(2).map { Coordinate(latitude: $0.latitude, longitude: $0.longitude + 0.0003) }
+        let neighboringWays = Array(roads.prefix(2)) + [RouteSpeedWay(coordinates: parallel, forward: .posted(30), backward: .posted(30))]
+        let neighbor = RouteSpeedLimitProfile(geometry: geometry, from: 0, through: geometry.length,
+                                             ways: neighboringWays, signs: [])
+        #expect(neighbor.remainingMeters(from: 30, limit: 50) == nil)
+
+        let endPosition = boundary - 25
+        let coordinate = try #require(geometry.coordinate(at: endPosition))
+        let endSign = RoadSafetyAlert(id: "koniec", type: .speedLimitSign, coordinate: coordinate,
+            source: .openStreetMap, speedLimitKph: 50, signCode: "B-34", distanceAlongRoute: endPosition,
+            signRouteContext: RoadSignRouteContext(road: [bends[1], bends[2]], forward: true, travelBearing: nil))
+        let signed = RouteSpeedLimitProfile(geometry: geometry, from: 0, through: geometry.length,
+                                            ways: Array(roads.prefix(2)), signs: [endSign])
+        let toSign = try #require(signed.remainingMeters(from: 30, limit: 50))
+        #expect(abs(toSign - (endPosition - 30)) <= 2)
+        #expect(signed.remainingMeters(from: endPosition + 1, limit: 50) == nil)
+    }
+
+    private func speedLimitSession(provider: SpeedLimitGapProvider) -> NavigationSession {
+        let live = NavigationSessionDependencies.live(routeEndpoint: URL(string: "https://routing.invalid")!, trafficAPIKey: nil)
+        return NavigationSession(dependencies: .init(routeProvider: live.routeProvider,
+            transitProvider: live.transitProvider, transitDataProvider: live.transitDataProvider,
+            speedLimitProvider: provider, roadDataProvider: provider, trafficProvider: nil,
+            trafficProviderFactory: live.trafficProviderFactory, voiceGuidance: live.voiceGuidance))
+    }
+
+    @Test func matchedOSMSpeedBoundaryCountsDownAndIsClearedWhenTheRoadChanges() async throws {
+        let road = [52.0, 52.005, 52.009, 52.02].map { Coordinate(latitude: $0, longitude: 21) }
+        let ways = [50, 50, 30].enumerated().map { index, kph in
+            OSMRoadSpeedSegment(id: Int64(index + 1), coordinates: [road[index], road[index + 1]],
+                                tags: ["highway": "primary", "name": "Lipowa", "maxspeed": String(kph)])
+        }
+        let provider = SpeedLimitGapProvider()
+        provider.snapshot = RoadDataSnapshot(speedSegments: ways, alerts: [], fetchedAt: .now)
+        let session = speedLimitSession(provider: provider)
+        defer { session.resetRoadSafetyData() }
+        let route = NavigationRoute(coordinates: road, distance: 2_224, expectedTravelTime: 160,
+            maneuvers: [Maneuver(shapeIndex: 0, instruction: "Jedź prosto", type: 8, streetNames: ["Lipowa"])])
+        let geometry = RouteProgressGeometry(route)
+        session.state.transportMode = .car
+        session.state.status = .routePreview
+        session.state.route = route
+        session.loadRoadData(for: route)
+        func waitFor(_ condition: () -> Bool) async throws {
+            let deadline = ContinuousClock.now + .seconds(3)
+            while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+            try #require(condition())
+        }
+        try await waitFor { session.state.roadSafetyStatus == .available }
+        session.state.status = .navigating
+        func refresh(at latitude: Double, ambiguous: Bool = false) throws {
+            let point = Coordinate(latitude: latitude, longitude: 21)
+            let location = NavigationLocation(coordinate: point, speed: 14, course: 0, accuracy: 3,
+                                              timestamp: .now, courseAccuracy: 5)
+            let projection = try #require(geometry.project(point))
+            let match = RouteMatch(projection: projection, confidence: ambiguous ? 0.2 : 0.98)
+            session.state.location = location
+            session.state.routeMatch = NavigationRouteMatch(routeID: route.id, locationTimestamp: location.timestamp,
+                                                            match: match, isAmbiguous: ambiguous)
+            session.state.mapMatchingResult = MapMatchingResult(match: match, roadBearing: 0, roadName: "Lipowa",
+                                                               ambiguous: ambiguous, candidateCount: ambiguous ? 2 : 1)
+            session.refreshSpeedLimit(for: location)
+        }
+        try refresh(at: 52.001)
+        try await waitFor { session.state.speedLimitRemainingMeters != nil }
+        let initial = try #require(session.state.speedLimitRemainingMeters)
+        #expect(abs(initial - road[2].distance(to: Coordinate(latitude: 52.001, longitude: 21))) < 2)
+        try refresh(at: 52.002)
+        let later = try #require(session.state.speedLimitRemainingMeters)
+        #expect(initial - later > 100 && initial - later < 120)
+        try refresh(at: 52.002, ambiguous: true)
+        #expect(session.state.speedLimitRemainingMeters == nil)
+        try refresh(at: 52.0095)
+        #expect(session.state.speedLimitKph == 30)
+        #expect(session.state.speedLimitRemainingMeters == nil)
+        try refresh(at: 52.002)
+        try await waitFor { session.state.speedLimitRemainingMeters != nil }
+        var replacement = route
+        replacement.id = UUID()
+        session.state.route = replacement
+        try refresh(at: 52.002)
+        #expect(session.state.speedLimitRemainingMeters == nil)
+    }
+
+    @Test(arguments: SpeedLimitGapEnd.allCases)
+    func speedLimitSurvivesOnlyAShortGapOnTheSameRoad(_ end: SpeedLimitGapEnd) async throws {
+        let provider = SpeedLimitGapProvider()
+        let session = speedLimitSession(provider: provider)
+        defer { session.invalidateSpeedLimit() }
+        // Two consecutive named roads running north. A change of road can occur without a turn.
+        let roadChange = end == .distance ? 52.015 : 52.003
+        let road = [52.0, roadChange, 52.02].map { Coordinate(latitude: $0, longitude: 21) }
+        let route = NavigationRoute(coordinates: road, distance: 2_224, expectedTravelTime: 160,
+            maneuvers: [Maneuver(shapeIndex: 0, instruction: "Jedź prosto", type: 8, streetNames: ["Lipowa"]),
+                        Maneuver(shapeIndex: 1, instruction: "Jedź prosto", type: 8, streetNames: ["Polna"])])
+        session.state.route = route
+        session.state.status = .navigating
+        session.state.transportMode = .car
+        let start = Date()
+        func refresh(offset: Double, seconds: Double, course: Double = 0, ambiguous: Bool = false,
+                     offRoute: Bool = false) async throws {
+            let point = Coordinate(latitude: 52 + offset, longitude: offRoute ? 21.002 : 21)
+            let location = NavigationLocation(coordinate: point, speed: 12, course: course, accuracy: 4,
+                timestamp: start.addingTimeInterval(seconds), courseAccuracy: 5)
+            let projection = try #require(MapMatcher.project(point, onto: road))
+            let match = RouteMatch(projection: projection, confidence: ambiguous ? 0.2 : 0.95)
+            session.state.location = location
+            session.state.routeMatch = NavigationRouteMatch(routeID: route.id, locationTimestamp: location.timestamp,
+                                                            match: match, isAmbiguous: ambiguous)
+            session.state.mapMatchingResult = MapMatchingResult(match: match, roadBearing: 0,
+                roadName: route.maneuvers[projection.segment].streetName, ambiguous: ambiguous, candidateCount: ambiguous ? 2 : 1)
+            session.state.deviationState = offRoute ? .offRoute : .onRoute
+            session.refreshSpeedLimit(for: location, force: true)
+            await session.speedLimitTask?.value
+        }
+        provider.reading = SpeedLimitReading(speedKph: 50, road: road)
+        try await refresh(offset: 0.0005, seconds: 0)
+        #expect(session.state.speedLimitKph == 50 && session.state.speedLimitSource == .routingProvider)
+        #expect(session.state.speedLimitRemainingMeters == nil)
+        provider.reading = nil
+        try await refresh(offset: 0.0006, seconds: 1)
+        #expect(session.state.speedLimitKph == 50 && session.state.speedLimitSource == .lastKnown)
+        #expect(session.state.speedLimitRemainingMeters == nil)
+        provider.fails = true
+        try await refresh(offset: 0.0007, seconds: 2)
+        #expect(session.state.speedLimitKph == 50 && session.state.speedLimitSource == .lastKnown)
+        provider.fails = false
+        switch end {
+        case .newLimit:
+            provider.reading = SpeedLimitReading(speedKph: 30, road: road)
+            try await refresh(offset: 0.0008, seconds: 3)
+            #expect(session.state.speedLimitKph == 30 && session.state.speedLimitSource == .routingProvider)
+            return
+        case .anotherRoad: try await refresh(offset: 0.0032, seconds: 8)
+        case .reverse: try await refresh(offset: 0.0008, seconds: 3, course: 180)
+        case .ambiguous: try await refresh(offset: 0.0008, seconds: 3, ambiguous: true)
+        case .offRoute: try await refresh(offset: 0.0008, seconds: 3, offRoute: true)
+        case .time: try await refresh(offset: 0.0008, seconds: 40)
+        case .distance: try await refresh(offset: 0.007, seconds: 8)
+        }
+        #expect(session.state.speedLimitKph == nil && session.state.speedLimitSource == nil)
+        #expect(session.state.speedLimitRemainingMeters == nil)
+    }
+
     @Test func wrongWayTravelRequiresSustainedPreciseReverseProgress() {
         let road = [Coordinate(latitude: 52, longitude: 21), Coordinate(latitude: 52.01, longitude: 21)]
         let route = NavigationRoute(coordinates: road, distance: 1_112, expectedTravelTime: 100, maneuvers: [])
@@ -398,13 +631,17 @@ struct RoutingCriticalTests {
 
     }
 
-    @Test func ordinaryRecalculationPreservesClosuresAndRejectsAnIntersectingResponse() async throws {
+    @Test(arguments: [false, true])
+    func ordinaryRecalculationPreservesClosuresAndRejectsAnIntersectingResponse(exceedsRequestBudget: Bool) async throws {
         let road = [Coordinate(latitude: 52, longitude: 21), Coordinate(latitude: 52.02, longitude: 21)]
         let blocked = NavigationRoute(coordinates: road, distance: 2_224, expectedTravelTime: 200, maneuvers: [])
         let safeRoad = [road[0], Coordinate(latitude: 52.001, longitude: 21.003),
                         Coordinate(latitude: 52.019, longitude: 21.003), road[1]]
         let safe = NavigationRoute(coordinates: safeRoad, distance: 2_600, expectedTravelTime: 240, maneuvers: [])
-        let closedRoad = [Coordinate(latitude: 52.006, longitude: 21), Coordinate(latitude: 52.012, longitude: 21)]
+        // Only the tail reaches the blocked route. Truncating the local evidence would open that road.
+        let closedRoad = exceedsRequestBudget
+            ? (0...300).map { Coordinate(latitude: 52.012, longitude: 20.97 + Double($0) * 0.0001) }
+            : [Coordinate(latitude: 52.006, longitude: 21), Coordinate(latitude: 52.012, longitude: 21)]
         let incident = TrafficIncident(id: "known", description: "Zamknięcie", coordinate: closedRoad[0],
             delaySeconds: nil, category: .roadClosed, severity: .major, geometry: closedRoad, observedAt: .now)
         let session = NavigationSession(dependencies: .live(
@@ -420,8 +657,12 @@ struct RoutingCriticalTests {
             try await session.calculateRoutes(from: road[0], to: road[1], commitEVStops: false)
         }
         #expect(routes.map(\.id) == [safe.id])
-        #expect(provider.closurePolygons.count == inherited.polygons.count + 1)
-        #expect(provider.closurePolygons.contains(inherited.polygons[0]))
+        if exceedsRequestBudget {
+            #expect(provider.closurePolygons.count <= 256)
+        } else {
+            #expect(provider.closurePolygons.count == inherited.polygons.count + 1)
+            #expect(provider.closurePolygons.contains(inherited.polygons[0]))
+        }
         #expect(RoadRoutingContext.closurePolygons.isEmpty)
     }
 
@@ -506,6 +747,23 @@ struct RoutingCriticalTests {
         #expect(session.state.errorMessage == nil)
     }
 
+}
+
+@MainActor
+private final class SpeedLimitGapProvider: SpeedLimitProvider, RoadDataProvider {
+    var reading: SpeedLimitReading?
+    var fails = false
+    var snapshot: RoadDataSnapshot?
+
+    func limit(at coordinate: Coordinate, heading: Double?) async throws -> SpeedLimitReading? {
+        if fails { throw RoutingError.network }
+        return reading
+    }
+
+    func load(for route: [Coordinate]) async throws -> RoadDataSnapshot {
+        guard let snapshot else { throw RoutingError.network }
+        return snapshot
+    }
 }
 
 @MainActor

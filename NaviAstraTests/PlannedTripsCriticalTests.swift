@@ -62,10 +62,11 @@ import Testing
         #expect(trip.departure(for: target.addingTimeInterval(86_400)) == nil)
         let changed = NavigationRoute(coordinates: [.init(latitude: 50, longitude: 19), .init(latitude: 50.1, longitude: 19.1)],
             distance: 15_000, expectedTravelTime: 3_600, maneuvers: [])
-        trip.preferredRoute = PlannedTrip.fingerprint(route)
+        let saved = route
+        trip.preferredRoute = PlannedTrip.fingerprint(saved)
         #expect(!trip.preferredOption(in: [changed]).matched)
         #expect(trip.preferredOption(in: [changed]).route?.id == changed.id)
-        #expect(trip.preferredOption(in: [changed, route]).route?.id == route.id)
+        #expect(trip.preferredOption(in: [changed, saved]).route?.id == saved.id)
     }
 
     @Test func intentAndRecurrenceSurviveLocalReloadAndCorruptFileIsNeverOverwritten() throws {
@@ -119,17 +120,24 @@ import Testing
         #expect(trip.preferredOption(in: ordered).route?.id == preferred.id)
     }
 
-    @Test func plannedTripFindsClosureDetourEvenWhenFlowCoverageIsUnavailable() async throws {
+    @Test(arguments: [false, true])
+    func plannedTripFindsClosureDetourEvenWhenFlowCoverageIsUnavailable(betweenSavedSamples: Bool) async throws {
         let start = Coordinate(latitude: 52, longitude: 21), end = Coordinate(latitude: 52.01, longitude: 21)
         let blocked = NavigationRoute(coordinates: [start, end], distance: 1_112, expectedTravelTime: 200, maneuvers: [])
-        let detour = NavigationRoute(coordinates: [start, .init(latitude: 52.002, longitude: 21.002),
-            .init(latitude: 52.008, longitude: 21.002), end], distance: 1_500, expectedTravelTime: 300, maneuvers: [])
+        let detourPoints: [Coordinate] = betweenSavedSamples
+            ? [start, .init(latitude: 52.004835, longitude: 21), .init(latitude: 52.004835, longitude: 21.00045),
+               .init(latitude: 52.005165, longitude: 21.00045), .init(latitude: 52.005165, longitude: 21), end]
+            : [start, .init(latitude: 52.002, longitude: 21.002), .init(latitude: 52.008, longitude: 21.002), end]
+        let closureGeometry: [Coordinate] = betweenSavedSamples
+            ? [.init(latitude: 52.004955, longitude: 21), .init(latitude: 52.005045, longitude: 21)]
+            : [.init(latitude: 52.003, longitude: 21), .init(latitude: 52.007, longitude: 21)]
+        let detour = NavigationRoute(coordinates: detourPoints, distance: betweenSavedSamples ? 1_174 : 1_500,
+            expectedTravelTime: 300, maneuvers: [])
         let routes = PlannedClosureRouteProvider(blocked: blocked, detour: detour)
         let live = NavigationSessionDependencies.live(routeEndpoint: URL(string: "https://routing.invalid")!, trafficAPIKey: nil)
         let traffic = PlannedClosureTrafficProvider(closure: TrafficIncident(id: "closed", description: "Droga zamknięta",
-            coordinate: .init(latitude: 52.003, longitude: 21), delaySeconds: nil,
-            category: .roadClosed, severity: .major,
-            geometry: [.init(latitude: 52.003, longitude: 21), .init(latitude: 52.007, longitude: 21)]))
+            coordinate: closureGeometry[0], delaySeconds: nil, category: .roadClosed, severity: .major,
+            geometry: closureGeometry))
         let dependencies = NavigationSessionDependencies(routeProvider: routes, transitProvider: live.transitProvider,
             transitDataProvider: live.transitDataProvider, speedLimitProvider: live.speedLimitProvider,
             roadDataProvider: live.roadDataProvider, trafficProvider: traffic,
@@ -141,6 +149,7 @@ import Testing
             destination: Destination(name: "Cel", coordinate: end), transportMode: .car,
             preferences: RoutingPreferences(), targetDate: Date().addingTimeInterval(600))
         plan.preferredRoute = PlannedTrip.fingerprint(blocked)
+        if betweenSavedSamples { #expect(plan.preferredOption(in: [detour]).matched) }
         let (selected, matched) = try await service.calculate(plan, occurrence: plan.targetDate, now: true)
         #expect(selected.id == detour.id)
         #expect(!matched)

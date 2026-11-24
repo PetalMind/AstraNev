@@ -276,6 +276,59 @@ import Testing
         #expect(DrivingLearningEngine(store: store).roads.first { $0.id == "a" }?.chosenCount == 7)
     }
 
+    @Test func coldLaunchDefersRecordedRouteGeometryAndRespectsDeletionDuringProfilePreparation() async throws {
+        let (_, store, ordinary, familiar) = localLearningFixture()
+        defer { try? FileManager.default.removeItem(at: store.url.deletingLastPathComponent()) }
+        let preferred = zip(familiar.coordinates, familiar.coordinates.dropFirst()).enumerated().map { index, ends in
+            segment("trace:preferred-\(index)", ends.0, ends.1)
+        }
+        let direct = [segment("trace:direct", origin, destination)]
+        let deviation = DrivingDeviation(id: "objazd", entry: origin, exit: destination,
+            preferred: preferred, avoided: direct, elapsed: 301)
+        let offered = [DrivingObservedVariant(id: "A", segments: direct),
+                       DrivingObservedVariant(id: "B", segments: preferred)]
+        let date = Date()
+        var saved = DrivingProfileSnapshot()
+        saved.trips = (1...4).map { day in
+            let start = date.addingTimeInterval(-Double(day) * 86_400)
+            return LearnedDrivingTrip(id: UUID(), destinationName: "Cel", origin: origin,
+                destination: destination, startedAt: start, duration: 301, context: DrivingPreferenceContext(date: start),
+                segments: preferred, deviations: [deviation], confirmed: true, offeredVariants: offered,
+                selectedVariantID: "B", selectedAgainstAlternative: true)
+        }
+        saved.evidence = saved.trips.flatMap { DrivingEvidenceMath.observations(for: $0) }
+        try store.save(saved)
+        let reference = DrivingLearningEngine(store: store)
+        let cold = DrivingLearningEngine(store: store, preparesInitialProfileInBackground: true)
+        let edited = DrivingLearningEngine(store: store, preparesInitialProfileInBackground: true)
+
+        // This is still the uninterrupted main-actor turn that created both engines.
+        #expect(cold.learnedTripCount == saved.trips.count)
+        #expect(cold.patterns.isEmpty && cold.roads.isEmpty && cold.shortcuts.isEmpty && cold.approaches.isEmpty)
+        let deleted = try #require(saved.trips.first?.id)
+        #expect(edited.removeTrip(deleted))
+        await cold.waitForInitialProfile()
+        await edited.waitForInitialProfile()
+
+        #expect(cold.patterns.map(\.id) == reference.patterns.map(\.id))
+        #expect(cold.roads.map(\.id).sorted() == reference.roads.map(\.id).sorted())
+        #expect(cold.approaches.map(\.id) == reference.approaches.map(\.id))
+        let expectedShortcut = try #require(reference.shortcuts.first)
+        let shortcut = try #require(cold.shortcuts.first)
+        #expect(shortcut.id == expectedShortcut.id && shortcut.chosenCount == saved.trips.count)
+        #expect(shortcut.offeredCount == expectedShortcut.offeredCount)
+        let routes = [ordinary, familiar]
+        #expect(cold.ranked(routes, preference: .personalized).map(\.id)
+            == reference.ranked(routes, preference: .personalized).map(\.id))
+
+        let retained = Set(saved.trips.map(\.id)).subtracting([deleted])
+        #expect(Set(edited.patterns.flatMap { $0.trips.map(\.id) }) == retained)
+        #expect(Set(edited.approaches.flatMap { $0.trips.map(\.id) }) == retained)
+        #expect(edited.shortcuts.first?.chosenCount == retained.count)
+        #expect(!edited.evidence.contains { $0.tripID == deleted })
+        #expect(try Set(store.load().trips.map(\.id)) == retained)
+    }
+
     @Test func longerAlternativeIsNotAShortcutAndDifferentPathsHaveDifferentFingerprints() {
         let alternative = [segment("long", origin, Coordinate(latitude: 52.01, longitude: 21.02)),
                            segment("return", Coordinate(latitude: 52.01, longitude: 21.02), destination)]
